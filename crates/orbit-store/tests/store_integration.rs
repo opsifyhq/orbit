@@ -2642,3 +2642,558 @@ async fn execution_event_filters_apply_before_limit() {
         .unwrap();
     assert!(wildcard.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// State-transition guards and resource lifecycle (#215, #216, #218.5)
+// ---------------------------------------------------------------------------
+
+async fn queued_execution(
+    store: &Store,
+    org: uuid::Uuid,
+    user: uuid::Uuid,
+    agent: &orbit_store::Agent,
+    version: &orbit_store::AgentVersion,
+) -> orbit_store::ExecutionRecord {
+    store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({
+                "task": "x", "payload": {},
+                "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() }
+            }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap()
+}
+
+/// Two racing status changes must behave as if they ran one after the other: a
+/// transition validated against a stale read never lands on top of the other one.
+#[tokio::test]
+async fn concurrent_agent_status_changes_are_serialized() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    for round in 0..15 {
+        let (agent, _) = store
+            .create_agent(org, Some(user), &definition(&format!("Race Agent {round}")))
+            .await
+            .unwrap();
+        store
+            .set_agent_status(org, agent.id, AgentStatus::Active)
+            .await
+            .unwrap();
+        // From `active`, pause and archive are both legal, and pausing an archived
+        // agent is not: so if only one of them wins, it decides the final status.
+        let (archive, pause) = tokio::join!(
+            store.set_agent_status(org, agent.id, AgentStatus::Archived),
+            store.set_agent_status(org, agent.id, AgentStatus::Paused),
+        );
+        let final_status = store.get_agent(org, agent.id).await.unwrap().status;
+        for error in [&archive, &pause]
+            .into_iter()
+            .filter_map(|r| r.as_ref().err())
+        {
+            assert!(
+                matches!(
+                    error,
+                    orbit_store::StoreError::Conflict(_) | orbit_store::StoreError::Invalid(_)
+                ),
+                "round {round}: {error:?}"
+            );
+        }
+        match (archive.is_ok(), pause.is_ok()) {
+            // Paused first, then archived: the only serial order in which both succeed.
+            (true, true) => assert_eq!(final_status, "archived", "round {round}"),
+            (true, false) => assert_eq!(final_status, "archived", "round {round}"),
+            (false, true) => assert_eq!(final_status, "paused", "round {round}"),
+            (false, false) => panic!("round {round}: both transitions were refused"),
+        }
+    }
+}
+
+/// ADR 0013: archiving is reversible. Activating an archived agent restores it.
+#[tokio::test]
+async fn archived_agent_can_be_restored() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, _) = store
+        .create_agent(org, Some(user), &definition("Restore Agent"))
+        .await
+        .unwrap();
+    let archived = store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert_eq!(archived.status, "archived");
+    assert!(archived.archived_at.is_some());
+
+    let restored = store
+        .set_agent_status(org, agent.id, AgentStatus::Active)
+        .await
+        .unwrap();
+    assert_eq!(restored.status, "active");
+    assert!(restored.archived_at.is_none(), "restore clears archived_at");
+
+    // Pausing is still only possible from active.
+    store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .set_agent_status(org, agent.id, AgentStatus::Paused)
+            .await,
+        Err(orbit_store::StoreError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn terminal_team_run_cannot_be_overwritten_and_lease_release_needs_the_token() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_agent_team(org, "Guard Team", "", &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    let run = store
+        .create_team_run(org, team.id, &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+
+    // Lease: a stale holder cannot clear the lease a newer holder took over.
+    let (_, first) = store
+        .claim_team_run_advance(run.id, 60)
+        .await
+        .unwrap()
+        .expect("first claim");
+    assert!(store
+        .claim_team_run_advance(run.id, 60)
+        .await
+        .unwrap()
+        .is_none());
+    sqlx::query(
+        "UPDATE team_runs SET advance_claimed_at = now() - interval '10 minutes' WHERE id = $1",
+    )
+    .bind(run.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let (_, second) = store
+        .claim_team_run_advance(run.id, 60)
+        .await
+        .unwrap()
+        .expect("expired lease can be taken over");
+    assert!(!store.release_team_run_advance(run.id, first).await.unwrap());
+    assert!(
+        store
+            .claim_team_run_advance(run.id, 60)
+            .await
+            .unwrap()
+            .is_none(),
+        "the new holder's lease must survive the stale release"
+    );
+    assert!(store
+        .release_team_run_advance(run.id, second)
+        .await
+        .unwrap());
+
+    // Terminal runs are never overwritten.
+    store
+        .update_team_run(run.id, "failed", None, Some("boom"))
+        .await
+        .unwrap();
+    let err = store
+        .update_team_run(run.id, "running", None, None)
+        .await
+        .expect_err("terminal run must not be revived");
+    assert!(matches!(err, orbit_store::StoreError::Conflict(_)));
+    let err = store
+        .update_team_run(run.id, "succeeded", None, None)
+        .await
+        .expect_err("terminal run must not change outcome");
+    assert!(matches!(err, orbit_store::StoreError::Conflict(_)));
+    let stored = store.get_team_run(org, run.id).await.unwrap();
+    assert_eq!(stored.status, "failed");
+    assert_eq!(stored.error.as_deref(), Some("boom"));
+}
+
+#[tokio::test]
+async fn live_worker_launch_cannot_be_archived() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _) = seed_org(&store).await;
+    let profile = launch_profile_fixture(&store, org, "Archive Guard").await;
+    let launch = new_launch(&store, org, &profile, false).await;
+    let err = store
+        .archive_worker_launch(org, launch.id)
+        .await
+        .expect_err("live launch must not be archived");
+    assert!(matches!(err, orbit_store::StoreError::Conflict(_)));
+    assert!(store
+        .find_live_launch_for_profile(org, profile.id)
+        .await
+        .unwrap()
+        .is_some());
+    let err = store
+        .archive_worker_launch(org, uuid::Uuid::now_v7())
+        .await
+        .expect_err("unknown launch");
+    assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
+
+    store
+        .update_worker_launch(org, launch.id, "stopped", None, None, None, false, true)
+        .await
+        .unwrap();
+    let archived = store.archive_worker_launch(org, launch.id).await.unwrap();
+    assert!(archived.archived_at.is_some());
+}
+
+#[tokio::test]
+async fn launch_claim_binds_the_worker_token_atomically() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Bind Agent"))
+        .await
+        .unwrap();
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    let profile = launch_profile_fixture(&store, org, "Bind").await;
+    let token = store
+        .create_worker_token(
+            org,
+            Some(profile.id),
+            "t",
+            "pfx",
+            &format!("hash-bind-{}", uuid::Uuid::now_v7()),
+            &["mock".into()],
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_execution_for_launch(execution.id, "worker-x", token.id)
+        .await
+        .unwrap()
+        .expect("queued execution is claimable");
+    assert_eq!(claimed.status, "dispatched");
+    assert_eq!(
+        store.execution_worker_token(execution.id).await.unwrap(),
+        Some(token.id)
+    );
+    assert!(store
+        .claim_execution_for_launch(execution.id, "worker-y", token.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn deleting_an_access_team_is_blocked_while_it_owns_team_visible_resources() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_access_team(org, "Doomed", "doomed", Some(user))
+        .await
+        .unwrap();
+    let (agent, _) = store
+        .create_agent(org, Some(user), &definition("Team Owned Agent"))
+        .await
+        .unwrap();
+    store
+        .set_resource_visibility(org, "agents", agent.id, "team", Some(team.id))
+        .await
+        .unwrap();
+    let err = store
+        .delete_access_team(org, team.id)
+        .await
+        .expect_err("team owns a team-visible agent");
+    match err {
+        orbit_store::StoreError::Conflict(message) => {
+            assert!(message.contains("1 agents"), "{message}")
+        }
+        other => panic!("expected conflict, got {other:?}"),
+    }
+    assert!(store.get_access_team(org, team.id).await.is_ok());
+
+    // Once the resource is moved to org visibility the team can go.
+    store
+        .set_resource_visibility(org, "agents", agent.id, "org", Some(team.id))
+        .await
+        .unwrap();
+    store.delete_access_team(org, team.id).await.unwrap();
+    assert!(store.get_access_team(org, team.id).await.is_err());
+}
+
+#[tokio::test]
+async fn hard_deleting_an_agent_removes_its_history_but_not_team_run_history() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+
+    // Agent with executions (+ output webhook secret): hard delete works as documented.
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Hard Delete Agent"))
+        .await
+        .unwrap();
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    let secret_ref = format!("output/{}", uuid::Uuid::now_v7());
+    store
+        .put_secret(
+            Some(org),
+            &secret_ref,
+            &SecretValue::new("https://hook.example/x"),
+            "t",
+        )
+        .await
+        .unwrap();
+    store
+        .create_output(
+            org,
+            &format!("agent-output-{}", uuid::Uuid::now_v7()),
+            "webhook",
+            Some(agent.id),
+            None,
+            &["succeeded".to_string()],
+            &secret_ref,
+            None,
+        )
+        .await
+        .unwrap();
+    store.check_delete_agent(org, agent.id).await.unwrap();
+    store.delete_agent(org, agent.id).await.unwrap();
+    assert!(store.get_agent(org, agent.id).await.is_err());
+    assert!(store.get_execution(org, execution.id).await.is_err());
+    assert!(store.get_secret_value(&secret_ref).await.unwrap().is_none());
+
+    // Agent referenced by a team run step: refused with a clear conflict, nothing deleted.
+    let (blocked, blocked_version) = store
+        .create_agent(org, Some(user), &definition("Team Step Agent"))
+        .await
+        .unwrap();
+    let team = store
+        .create_agent_team(org, "Step Team", "", &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    let run = store
+        .create_team_run(org, team.id, &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    store
+        .create_team_step(
+            run.id,
+            org,
+            0,
+            "s",
+            blocked.id,
+            blocked_version.id,
+            &[],
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    let err = store
+        .delete_agent(org, blocked.id)
+        .await
+        .expect_err("team step history blocks the delete");
+    match err {
+        orbit_store::StoreError::Conflict(message) => {
+            assert!(message.contains("team runs"), "{message}")
+        }
+        other => panic!("expected conflict, got {other:?}"),
+    }
+    assert!(store.get_agent(org, blocked.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _) = seed_org(&store).await;
+    let first = format!("output/{}", uuid::Uuid::now_v7());
+    let second = format!("output/{}", uuid::Uuid::now_v7());
+    for reference in [&first, &second] {
+        store
+            .put_secret(
+                Some(org),
+                reference,
+                &SecretValue::new("https://hook.example/y"),
+                "t",
+            )
+            .await
+            .unwrap();
+    }
+    let output = store
+        .create_output(
+            org,
+            &format!("secret-output-{}", uuid::Uuid::now_v7()),
+            "webhook",
+            None,
+            None,
+            &["succeeded".to_string()],
+            &first,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .update_output(
+            org,
+            output.id,
+            &output.name,
+            "webhook",
+            None,
+            None,
+            &["succeeded".to_string()],
+            Some(&second),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(store.get_secret_value(&first).await.unwrap().is_none());
+    assert!(store.get_secret_value(&second).await.unwrap().is_some());
+    store.delete_output(org, output.id).await.unwrap();
+    assert!(store.get_secret_value(&second).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn org_level_worker_profile_does_not_claim_team_private_executions() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_access_team(org, "Claim Team", "claim-team", Some(user))
+        .await
+        .unwrap();
+    let (private_agent, private_version) = store
+        .create_agent(org, Some(user), &definition("Claim Private Agent"))
+        .await
+        .unwrap();
+    store
+        .set_resource_visibility(org, "agents", private_agent.id, "team", Some(team.id))
+        .await
+        .unwrap();
+    let private_exec = queued_execution(&store, org, user, &private_agent, &private_version).await;
+
+    let none = store
+        .claim_next_queued_for_profile(
+            org,
+            "org-profile-worker",
+            &["mock".into()],
+            "local",
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        none.is_none(),
+        "org-level profile claimed a team-private run"
+    );
+    assert_eq!(
+        store
+            .get_execution(org, private_exec.id)
+            .await
+            .unwrap()
+            .status,
+        "queued"
+    );
+
+    // An org-visible agent is claimable by the org-level profile.
+    let (open_agent, open_version) = store
+        .create_agent(org, Some(user), &definition("Claim Open Agent"))
+        .await
+        .unwrap();
+    store
+        .set_resource_visibility(org, "agents", open_agent.id, "org", None)
+        .await
+        .unwrap();
+    let open_exec = queued_execution(&store, org, user, &open_agent, &open_version).await;
+    let claimed = store
+        .claim_next_queued_for_profile(
+            org,
+            "org-profile-worker",
+            &["mock".into()],
+            "local",
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("org-visible execution is claimable");
+    assert_eq!(claimed.id, open_exec.id);
+
+    // The owning team's profile still claims the team-private one.
+    let claimed = store
+        .claim_next_queued_for_profile(
+            org,
+            "team-profile-worker",
+            &["mock".into()],
+            "local",
+            &[],
+            Some(team.id),
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("team profile claims its own team's execution");
+    assert_eq!(claimed.id, private_exec.id);
+}
+
+#[tokio::test]
+async fn team_members_must_belong_to_the_teams_org() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (other_org, other_user) = seed_org(&store).await;
+    let team = store
+        .create_access_team(org, "Members", "members", Some(user))
+        .await
+        .unwrap();
+    store
+        .upsert_team_member(team.id, user, "lead")
+        .await
+        .unwrap();
+    let err = store
+        .upsert_team_member(team.id, other_user, "member")
+        .await
+        .expect_err("cross-org user must be refused");
+    assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
+    let err = store
+        .upsert_team_member(team.id, uuid::Uuid::now_v7(), "member")
+        .await
+        .expect_err("unknown user looks identical");
+    assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
+    assert_ne!(org, other_org);
+    assert_eq!(store.list_team_members(team.id).await.unwrap().len(), 1);
+}

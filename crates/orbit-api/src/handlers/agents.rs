@@ -40,8 +40,10 @@ pub async fn list_agents(
 ) -> Result<Json<AgentPage>, ApiError> {
     auth.require(Permission::AgentsRead)?;
     if let Some(status) = &query.status {
-        if AgentStatus::parse(status).is_none() {
-            return Err(ApiError::bad_request(format!("unknown status '{status}'")));
+        if status != "current" && AgentStatus::parse(status).is_none() {
+            return Err(ApiError::bad_request(format!(
+                "unknown status '{status}'; expected draft, active, paused, archived, or current (everything not archived)"
+            )));
         }
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;

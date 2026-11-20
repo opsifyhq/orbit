@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -61,7 +62,7 @@ export default function AgentTeamPage() {
   const connections = useConnections();
   const envMappings = useEnvMappings();
   const workerProfiles = useWorkerProfiles();
-  const runs = useTeamRuns(undefined);
+  const runs = useTeamRuns({ teamId });
   const queue = useTeamQueue(teamId);
 
   // The open tab lives in the URL hash so a link or reload returns to it.
@@ -87,6 +88,7 @@ export default function AgentTeamPage() {
 
   const agent = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
   const teamRuns = useMemo(
+    // The server already filters by team; the check also covers data cached before it did.
     () => (runs.data ?? []).filter((run) => run.teamId === teamId),
     [runs.data, teamId],
   );
@@ -100,16 +102,14 @@ export default function AgentTeamPage() {
       </div>
     );
   }
-  if (team.isError || !team.data) {
+  if (!team.data) {
     return (
-      <EmptyState
-        title="Agent team not found"
-        description={team.error ? errorMessage(team.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/agent-teams">Back to agent teams</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent team"
+        error={team.error}
+        back={{ href: "/agent-teams", label: "Back to agent teams" }}
+        onRetry={() => void team.refetch()}
+        retrying={team.isFetching}
       />
     );
   }

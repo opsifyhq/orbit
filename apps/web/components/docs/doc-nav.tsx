@@ -84,7 +84,7 @@ function NavList({ index, current }: { index: DocIndex; current: string }) {
               aria-controls={listId}
               onClick={() => toggle(category.id, folded)}
               className={cn(
-                "flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-semibold uppercase tracking-wider transition-colors",
+                "flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-semibold transition-colors",
                 hasCurrent ? "text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >

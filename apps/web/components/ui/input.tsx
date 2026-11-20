@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
  * 16px on phones: iOS zooms the page when a focused control is smaller than that.
  */
 export const controlClass =
-  "w-full rounded-md border border-input bg-card px-3 text-base text-foreground md:text-sm transition-colors placeholder:text-muted-foreground/80 hover:border-muted-foreground focus-visible:border-ring focus-visible:outline-offset-0 disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-60 aria-[invalid=true]:border-destructive";
+  "w-full rounded-md border border-input bg-card px-3 text-base text-foreground md:text-sm transition-colors placeholder:text-muted-foreground hover:border-muted-foreground focus-visible:border-ring focus-visible:outline-offset-0 disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-60 aria-[invalid=true]:border-destructive";
 
 const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, type, ...props }, ref) => (

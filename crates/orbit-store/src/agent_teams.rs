@@ -177,6 +177,8 @@ impl Store {
         &self,
         org_id: Uuid,
         archived: Option<bool>,
+        team_id: Option<Uuid>,
+        limit: i64,
         access: Option<&crate::access::ResourceAccess>,
     ) -> StoreResult<Vec<TeamRun>> {
         let (privileged, user_id, team_ids, isolation) = crate::access::binds(access);
@@ -185,6 +187,7 @@ impl Store {
             SELECT r.* FROM team_runs r
             JOIN agent_teams t ON t.id = r.team_id AND t.org_id = r.org_id
             WHERE r.org_id = $1
+              AND ($7::uuid IS NULL OR r.team_id = $7)
               AND ($2::boolean IS NULL
                    OR ($2 = FALSE AND r.archived_at IS NULL)
                    OR ($2 = TRUE AND r.archived_at IS NOT NULL))
@@ -194,7 +197,7 @@ impl Store {
                         ELSE t.visibility = 'org'
                              OR (t.visibility = 'team' AND t.owner_team_id = ANY($5)) END)
             ORDER BY r.created_at DESC
-            LIMIT 100
+            LIMIT $8
             "#,
         )
         .bind(org_id)
@@ -203,6 +206,8 @@ impl Store {
         .bind(user_id)
         .bind(&team_ids)
         .bind(isolation)
+        .bind(team_id)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -242,11 +247,11 @@ impl Store {
         &self,
         run_id: Uuid,
         lease_secs: i64,
-    ) -> StoreResult<Option<TeamRun>> {
-        Ok(sqlx::query_as::<_, TeamRun>(
+    ) -> StoreResult<Option<(TeamRun, chrono::DateTime<chrono::Utc>)>> {
+        let row = sqlx::query(
             r#"
             UPDATE team_runs
-            SET advance_claimed_at = now()
+            SET advance_claimed_at = clock_timestamp()
             WHERE id = $1 AND status = 'running'
               AND (advance_claimed_at IS NULL
                    OR advance_claimed_at < now() - make_interval(secs => $2::double precision))
@@ -256,15 +261,30 @@ impl Store {
         .bind(run_id)
         .bind(lease_secs as f64)
         .fetch_optional(&self.pool)
-        .await?)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let claimed_at: chrono::DateTime<chrono::Utc> =
+            sqlx::Row::try_get(&row, "advance_claimed_at")?;
+        let run = <TeamRun as sqlx::FromRow<sqlx::postgres::PgRow>>::from_row(&row)?;
+        Ok(Some((run, claimed_at)))
     }
 
-    pub async fn release_team_run_advance(&self, run_id: Uuid) -> StoreResult<()> {
-        sqlx::query("UPDATE team_runs SET advance_claimed_at = NULL WHERE id = $1")
-            .bind(run_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    /// Release the advance lease, but only if `claimed_at` (the token returned by
+    /// `claim_team_run_advance`) is still the current lease. A holder whose lease expired
+    /// and was taken over must not clear the new holder's lease.
+    pub async fn release_team_run_advance(
+        &self,
+        run_id: Uuid,
+        claimed_at: chrono::DateTime<chrono::Utc>,
+    ) -> StoreResult<bool> {
+        let result = sqlx::query(
+            "UPDATE team_runs SET advance_claimed_at = NULL WHERE id = $1 AND advance_claimed_at = $2",
+        )
+        .bind(run_id)
+        .bind(claimed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Move a `running` run to a terminal status. `None` when it was no longer running.
@@ -307,6 +327,7 @@ impl Store {
                 finished_at = CASE WHEN $5 THEN now() ELSE finished_at END,
                 updated_at = now()
             WHERE id = $1
+              AND (status NOT IN ('succeeded', 'failed', 'cancelled') OR status = $2)
             RETURNING *
             "#,
         )
@@ -315,9 +336,9 @@ impl Store {
         .bind(output)
         .bind(error)
         .bind(finished)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StoreError::Conflict("team run is already finished".into()))
     }
 
     #[allow(clippy::too_many_arguments)]

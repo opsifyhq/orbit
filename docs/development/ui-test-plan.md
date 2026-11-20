@@ -91,10 +91,17 @@ Then:
 4. Edit → replace credential; confirm it still never appears in the response or UI.
 
 ### Connections
-5. **Connections → New connection**: connector **X**, credential `invalid-test-token`,
-   capability `posts.search`, advanced config `{"query":"#orbit"}`.
-6. Card shows `credential set`; no secret in the network payload.
-7. Remove the connection afterwards.
+5. **Connectors** list: same layout as Agents (search, **All / Connected / Check failed / Not
+   checked** filter, status column, row checkboxes with **Change access**, count). **Connect**
+   on a catalogue card opens Connection Studio at `/connections/new?connector=<slug>` on the
+   Account section.
+6. **New connection**: service **X**, credential `invalid-test-token`, capability
+   `posts.search` (Capabilities groups them as Read only / Change data / Act outside ORBIT,
+   each with **Allow all**), Advanced config `{"query":"#orbit"}`. Create with no name or an
+   invalid URL jumps to Account and lists the problem.
+7. The connection page shows the allowed capabilities by group and **Credential: Stored,
+   encrypted**; no secret in the network payload. Edit keeps the stored credential when the
+   field is left empty. **Test**, then remove the connection from the ⋯ menu.
 
 ### Settings
 8. **Settings**: identity, org, permissions, platform/feature readiness.
@@ -195,7 +202,8 @@ approvals UI is still being finished.
 | Save a team | Card shows mode, agents (primary/subagent), skills, optional work source |
 | Run | Primary executes, then each subagent in order; steps visible in the run dialog |
 | Queue | Enqueue `owner/repo#123`, run pending, retry/requeue/cancel per item |
-| Runs list | Active/Archived/All filter works |
+| `/agent-teams` list | Same layout as Agents: search, **All / Picks up issues / On demand** filter, status column, row checkboxes with **Change access**, count under the list |
+| **Runs** (header) | `/agent-teams/runs`: search plus Active/Archived/All filter; old `/agent-teams#runs` links land here |
 
 ## Flow 12 — Skills (5 min)
 

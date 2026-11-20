@@ -90,7 +90,7 @@ export function ImageFields({ form }: { form: WorkerFormApi }) {
         >
           <Input
             id="wp-image"
-            className="font-mono text-[13px]"
+            className="font-mono text-base md:text-[13px]"
             value={values.image}
             onChange={(event) => set({ image: event.target.value })}
           />
@@ -146,7 +146,7 @@ export function VersionFields({
         <Field label="Tag" htmlFor="wp-tag">
           <Input
             id="wp-tag"
-            className="font-mono text-[13px]"
+            className="font-mono text-base md:text-[13px]"
             value={tag}
             placeholder={platformVersion ?? "0.21.0"}
             onChange={(event) => set({ tag: event.target.value })}

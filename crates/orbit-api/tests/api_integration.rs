@@ -6442,7 +6442,7 @@ async fn approval_list_applies_visibility_in_sql() {
         orbit_store::access::ResourceAccess::new(alice.id, false, vec![]).with_team_isolation(true);
     let rows = app
         .store
-        .list_approvals(app.org_id, Some("pending"), 2, Some(&alice_access))
+        .list_approvals(app.org_id, Some("pending"), None, 2, Some(&alice_access))
         .await
         .unwrap();
     let mut got: Vec<Uuid> = rows.iter().map(|r| r.approval.id).collect();
@@ -6454,7 +6454,7 @@ async fn approval_list_applies_visibility_in_sql() {
     // Internal access and the privileged owner see all 7 rows.
     let all = app
         .store
-        .list_approvals(app.org_id, Some("pending"), 50, None)
+        .list_approvals(app.org_id, Some("pending"), None, 50, None)
         .await
         .unwrap();
     assert_eq!(all.len(), 7);
@@ -6610,6 +6610,135 @@ async fn changing_provider_base_url_requires_reentering_the_credential() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn output_webhook_urls_are_validated_on_create_and_update() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/outputs",
+            json!({
+                "name": "Bad hook",
+                "kind": "webhook",
+                "webhookUrl": "http://169.254.169.254/latest/meta-data"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
+
+    let secret_ref = format!("secret://output/{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &secret_ref,
+            &orbit_security::SecretValue::new("http://93.184.216.34/hook"),
+            "test hook",
+        )
+        .await
+        .unwrap();
+    let output = app
+        .store
+        .create_output(
+            app.org_id,
+            "Patchable hook",
+            "webhook",
+            None,
+            None,
+            &["succeeded".to_string()],
+            &secret_ref,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/outputs/{}", output.id))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "name": "Patchable hook",
+                    "kind": "webhook",
+                    "events": ["succeeded"],
+                    "enabled": true,
+                    "webhookUrl": "http://169.254.169.254/latest/meta-data"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
+}
+
+#[tokio::test]
+async fn connection_base_urls_are_validated_on_create_and_update() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Bad base URL",
+                "config": { "baseUrl": "http://169.254.169.254" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Good base URL",
+                "config": { "baseUrl": "https://93.184.216.34" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/connections/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "config": { "baseUrl": "http://169.254.169.254" } }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
 }
 
 #[tokio::test]
@@ -7511,4 +7640,453 @@ async fn bulk_skills_are_delete_only_with_manage_access_and_id_bounds() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
+}
+
+/// #207: the Connections "Test" button called a handler that was never routed.
+#[tokio::test]
+async fn connection_test_endpoint_is_routed_and_honest_about_unsupported_connectors() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let create = |slug: &'static str, extra: Value| {
+        let router = app.router.clone();
+        async move {
+            let mut body = json!({ "connectorSlug": slug, "name": format!("{slug} test") });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (status, body) = send(&router, post("/api/v1/connections", body)).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            body
+        }
+    };
+    let status_of = |id: String| {
+        let router = app.router.clone();
+        async move {
+            let (_, list) = send(&router, get("/api/v1/connections")).await;
+            list.as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id.as_str())
+                .map(|row| row["status"].clone())
+                .unwrap()
+        }
+    };
+
+    // A connector with a probe: the result is recorded on the connection.
+    let mock = create("mock", json!({})).await;
+    let mock_id = mock["id"].as_str().unwrap().to_string();
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supported"], true);
+    assert_eq!(body["ok"], true);
+    // `active` is the only status workers accept; the check time proves it ran.
+    assert_eq!(status_of(mock_id.clone()).await, "active");
+    let (_, list) = send(&app.router, get("/api/v1/connections")).await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == mock_id.as_str())
+        .unwrap();
+    assert!(row["lastCheckedAt"].is_string(), "{row}");
+
+    // A failed check is recoverable: testing again restores `active`.
+    sqlx::query("UPDATE connections SET status = 'error' WHERE id = $1")
+        .bind(Uuid::parse_str(&mock_id).unwrap())
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (_, body) = send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(status_of(mock_id.clone()).await, "active");
+
+    // A probe never revives a revoked connection.
+    sqlx::query("UPDATE connections SET status = 'revoked' WHERE id = $1")
+        .bind(Uuid::parse_str(&mock_id).unwrap())
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(status_of(mock_id).await, "revoked");
+
+    // A connector without one: say so, contact nothing, and do not mark it failed.
+    let telegram = create("telegram", json!({ "credential": "123456:bot-secret" })).await;
+    let telegram_id = telegram["id"].as_str().unwrap().to_string();
+    let before = status_of(telegram_id.clone()).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{telegram_id}/test"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supported"], false);
+    assert_eq!(body["ok"], false);
+    assert!(body["message"].as_str().unwrap().contains("Telegram"));
+    assert!(!body.to_string().contains("bot-secret"));
+    assert_eq!(status_of(telegram_id).await, before);
+
+    // Unknown connection → enveloped 404.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{}/test", Uuid::now_v7()),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn connection_test_route_returns_connection_test_response() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user = owner_user(&app).await;
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            "Missing base URL",
+            &json!({ "baseUrl": "" }),
+            &[],
+            None,
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{}/test", connection.id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supported"], true);
+    assert_eq!(body["ok"], false);
+    assert!(body["status"].is_null(), "{body}");
+    assert!(body["latencyMs"].as_u64().is_some(), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("missing baseUrl"),
+        "{body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #216 memory retention and #215 launch archive guard
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn worker_memory_honours_the_agents_retention_days() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let mut definition = definition();
+    definition["metadata"]["name"] = json!("Retention Agent");
+    definition["spec"]["memory"] =
+        json!({ "enabled": true, "strategy": "short_term", "retentionDays": 2 });
+    let definition: orbit_domain::AgentDefinition = serde_json::from_value(definition).unwrap();
+    let (agent, _) = app
+        .store
+        .create_agent(app.org_id, Some(owner), &definition)
+        .await
+        .unwrap();
+    app.store
+        .set_agent_status(app.org_id, agent.id, orbit_domain::AgentStatus::Active)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{}/executions", agent.id),
+            "test-token",
+            json!({ "task": "retention" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let token = worker_token(&app.store, app.org_id, "retention-worker").await;
+    // Other queued executions in this org (the demo agent's) may be claimed first.
+    let execution = loop {
+        let claimed = claim_as(&app, &token, "retention-worker")
+            .await
+            .expect("execution to claim");
+        if app
+            .store
+            .get_execution(app.org_id, claimed)
+            .await
+            .unwrap()
+            .agent_id
+            == agent.id
+        {
+            break claimed;
+        }
+    };
+
+    // A stored entry expires after the agent's retention window, whatever the worker sends.
+    let (status, _) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/store",
+            &token,
+            Some(json!({
+                "executionId": execution,
+                "kind": "short_term",
+                "content": "fresh",
+                "retentionDays": 3650
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = app
+        .store
+        .list_memory(app.org_id, agent.id, None, 20)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    let expires = entries[0].expires_at.expect("retention sets expires_at");
+    let days = (expires - chrono::Utc::now()).num_hours() as f64 / 24.0;
+    assert!((1.9..=2.1).contains(&days), "expires in {days} days");
+
+    // Entries older than the window (legacy rows without expires_at) are not injected.
+    let stale = app
+        .store
+        .store_memory(
+            app.org_id,
+            agent.id,
+            "short_term",
+            "stale",
+            &json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE agent_memory SET created_at = now() - interval '5 days' WHERE id = $1")
+        .bind(stale.id)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    let (status, listed) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/list",
+            &token,
+            Some(json!({ "executionId": execution })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let contents: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, vec!["fresh"]);
+}
+
+#[tokio::test]
+async fn archiving_a_live_worker_launch_is_a_conflict() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let profile = app
+        .store
+        .create_worker_profile(
+            app.org_id,
+            "Archive API",
+            "pi",
+            "docker",
+            "process",
+            "orbit-worker-pi",
+            "0.3.0",
+            "all",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            &json!({}),
+            &json!([]),
+            &json!({}),
+            false,
+            false,
+            false,
+            false,
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            profile.id,
+            &profile.name,
+            "docker",
+            "img:1",
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/v1/worker-launches/{}/archive", launch.id);
+    let (status, body) = send(&app.router, auth_post(&path, "test-token", json!({}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+
+    app.store
+        .update_worker_launch(
+            app.org_id, launch.id, "stopped", None, None, None, false, true,
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(&app.router, auth_post(&path, "test-token", json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["archivedAt"].is_string());
+}
+
+/// Lists are filtered where the data lives: the web app used to fetch a capped page and
+/// filter it in the browser, so anything beyond the cap silently disappeared.
+#[tokio::test]
+async fn execution_team_run_and_approval_lists_filter_server_side() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let pool = raw_pool().await;
+
+    // Executions: one status, or several separated by commas.
+    // The demo agent runs one execution at a time: finish each before starting the next.
+    let mut finished = Vec::new();
+    for status in ["failed", "timed_out"] {
+        let id = new_execution(&app, app.agent_id).await;
+        sqlx::query("UPDATE executions SET status = $2, finished_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        finished.push(id);
+    }
+    let (failed, timed_out) = (finished[0], finished[1]);
+    let queued = new_execution(&app, app.agent_id).await;
+    let ids = |body: &Value| -> Vec<Uuid> {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().parse().unwrap())
+            .collect()
+    };
+    let (status, body) = send(
+        &app.router,
+        get("/api/v1/executions?status=failed,timed_out"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = ids(&body);
+    assert!(listed.contains(&failed) && listed.contains(&timed_out));
+    assert!(!listed.contains(&queued));
+    assert_eq!(body["total"], 2);
+
+    let (_, body) = send(&app.router, get("/api/v1/executions?status=queued")).await;
+    assert_eq!(ids(&body), vec![queued]);
+
+    let (status, body) = send(&app.router, get("/api/v1/executions?status=failed,nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"].as_str().unwrap().contains("nope"));
+
+    // Approvals: only those of one execution.
+    for execution in [failed, queued] {
+        app.store
+            .create_approval(
+                app.org_id,
+                execution,
+                json!({ "capability": "issues.create" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/approvals?status=pending&executionId={queued}"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["executionId"], queued.to_string());
+
+    // Team runs: only those of one team, newest first, with a limit.
+    let user = owner_user(&app).await;
+    let mut teams = Vec::new();
+    for name in ["Filter Team A", "Filter Team B"] {
+        let team = app
+            .store
+            .create_agent_team(app.org_id, name, "", &json!({}), Some(user.id))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            sqlx::query(
+                "INSERT INTO team_runs (id, org_id, team_id, status, input) VALUES ($1, $2, $3, 'succeeded', '{}'::jsonb)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(app.org_id)
+            .bind(team.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        teams.push(team.id);
+    }
+    let (status, body) = send(
+        &app.router,
+        get(&format!("/api/v1/team-runs?teamId={}", teams[0])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runs = body.as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|run| run["teamId"] == teams[0].to_string()));
+
+    let (_, body) = send(&app.router, get("/api/v1/team-runs?limit=3")).await;
+    assert_eq!(body.as_array().unwrap().len(), 3);
 }

@@ -182,9 +182,13 @@ async fn main() -> anyhow::Result<()> {
             .await;
         // This process is PID 1 in its container, which ignores an unhandled SIGTERM:
         // handle it like the long-running path (cancel, let the adapter stop, report).
-        let result =
-            runner::run_single_until(state.clone(), execution_id, shutdown_signal(), shutdown_grace())
-                .await;
+        let result = runner::run_single_until(
+            state.clone(),
+            execution_id,
+            shutdown_signal(),
+            shutdown_grace(),
+        )
+        .await;
         let _ = state.client.offline(&state.worker_id).await;
         result?;
         tracing::info!(%execution_id, "single-execution worker finished");

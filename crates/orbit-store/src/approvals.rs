@@ -44,6 +44,7 @@ impl Store {
         &self,
         org_id: Uuid,
         status: Option<&str>,
+        execution_id: Option<Uuid>,
         limit: i64,
         access: Option<&crate::access::ResourceAccess>,
     ) -> StoreResult<Vec<ApprovalWithExecution>> {
@@ -56,6 +57,7 @@ impl Store {
             JOIN agents a ON a.id = e.agent_id
             WHERE ap.org_id = $1
               AND ($2::text IS NULL OR ap.status = $2)
+              AND ($8::uuid IS NULL OR ap.execution_id = $8)
               AND ($4::bool OR a.owner_user_id = $5
                    OR CASE WHEN $7::bool AND a.owner_team_id IS NOT NULL
                         THEN a.owner_team_id = ANY($6)
@@ -72,6 +74,7 @@ impl Store {
         .bind(user_id)
         .bind(&team_ids)
         .bind(isolation)
+        .bind(execution_id)
         .fetch_all(&self.pool)
         .await?)
     }

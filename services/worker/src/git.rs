@@ -759,7 +759,9 @@ mod tests {
         plant_script(&workspace.join(".git/hooks/pre-commit"), &marker);
         plant_script(&workspace.join(".git/hooks/commit-msg"), &marker);
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        stage_workspace_changes(&workspace, &CancellationToken::new()).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
         let output = commit_command(&workspace, "test commit")
             .output()
             .await
@@ -787,7 +789,9 @@ mod tests {
             &["config", "core.fsmonitor", &script.display().to_string()],
         );
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        stage_workspace_changes(&workspace, &CancellationToken::new()).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
         let output = commit_command(&workspace, "fsmonitor")
             .output()
             .await
@@ -810,10 +814,16 @@ mod tests {
         );
         std::fs::write(workspace.join(".gitattributes"), "* filter=evil\n").unwrap();
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        let err = stage_workspace_changes(&workspace, &CancellationToken::new()).await.unwrap_err();
+        let err = stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("filter.evil.clean"), "{err}");
         assert!(!marker.exists(), "filter executed");
-        assert!(ensure_safe_repo_config(&workspace, &CancellationToken::new()).await.is_err());
+        assert!(
+            ensure_safe_repo_config(&workspace, &CancellationToken::new())
+                .await
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(workspace);
     }
 
@@ -884,7 +894,9 @@ mod tests {
         std::fs::write(&source, "pub fn change() {}\n").unwrap();
         git(&workspace, &["add", "-A"]);
 
-        stage_workspace_changes(&workspace, &CancellationToken::new()).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
 
         let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
         let paths = String::from_utf8(staged.stdout).unwrap();
@@ -906,7 +918,9 @@ mod tests {
         std::fs::write(&source, "pub fn change() {}\n").unwrap();
         git(&workspace, &["add", "-A"]);
 
-        stage_workspace_changes(&workspace, &CancellationToken::new()).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
 
         let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
         let paths = String::from_utf8(staged.stdout).unwrap();

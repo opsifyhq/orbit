@@ -23,7 +23,7 @@ export function NavSignal({ href, signals }: { href: string; signals: NavSignals
   if (href === "/approvals" && signals.pendingApprovals > 0) {
     return (
       <span
-        className="tabular min-w-5 rounded-full bg-warning px-1.5 text-center text-xs font-semibold leading-5 text-[hsl(var(--ink))]"
+        className="tabular min-w-5 rounded-full bg-warning px-1.5 text-center text-xs font-semibold leading-5 text-ink"
         aria-label={`${signals.pendingApprovals} waiting`}
       >
         {signals.pendingApprovals > 99 ? "99+" : signals.pendingApprovals}
