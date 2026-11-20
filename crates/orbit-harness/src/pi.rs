@@ -3,12 +3,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::process_env::child_environment;
+use crate::stream::{self, MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
     HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
@@ -326,6 +327,20 @@ fn build_prompt(request: &ExecutionRequest) -> String {
     )
 }
 
+fn validate_prompt_arg(prompt: &str) -> Result<(), HarnessError> {
+    if prompt.len() > MAX_PROMPT_ARG_BYTES {
+        return Err(HarnessError::new(
+            HarnessErrorKind::InvalidConfig,
+            format!(
+                "Pi prompt is {} bytes; prompts larger than {} bytes cannot be passed safely as a CLI argument",
+                prompt.len(),
+                MAX_PROMPT_ARG_BYTES
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn build_system_append(request: &ExecutionRequest) -> String {
     let mut content = String::new();
     content.push_str("## ORBIT trusted instructions\n\n");
@@ -381,6 +396,17 @@ fn truncate(value: &str, limit: usize) -> String {
     }
 }
 
+fn truncate_json(value: &Value, limit: usize) -> Value {
+    let Ok(serialized) = serde_json::to_string(value) else {
+        return json!("[unserializable JSON]");
+    };
+    if serialized.len() <= limit {
+        value.clone()
+    } else {
+        json!(truncate(&serialized, limit))
+    }
+}
+
 fn map_event(value: &Value, usage: &mut Usage, text: String) -> (Option<HarnessEvent>, String) {
     match value.get("type").and_then(Value::as_str) {
         Some("message_update") => {
@@ -423,7 +449,11 @@ fn map_event(value: &Value, usage: &mut Usage, text: String) -> (Option<HarnessE
                     );
                     event.data = json!({
                         "tool": tool,
-                        "arguments": call.get("arguments").or_else(|| call.get("args")).cloned().unwrap_or(Value::Null),
+                        "arguments": call
+                            .get("arguments")
+                            .or_else(|| call.get("args"))
+                            .map(|value| truncate_json(value, MAX_EVENT_DATA_BYTES))
+                            .unwrap_or(Value::Null),
                     });
                     (Some(event), text)
                 }
@@ -501,6 +531,39 @@ async fn emit(sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>, event: H
     }
 }
 
+const OUTPUT_DELTA_BATCH_BYTES: usize = 4 * 1024;
+
+async fn flush_output_delta(
+    sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>,
+    pending: &mut String,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let text = std::mem::take(pending);
+    emit(
+        sender,
+        HarnessEvent::new(HarnessEventKind::OutputDelta, LogLevel::Debug, text),
+    )
+    .await;
+}
+
+async fn emit_batched(
+    sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>,
+    pending: &mut String,
+    event: HarnessEvent,
+) {
+    if event.kind == HarnessEventKind::OutputDelta {
+        pending.push_str(&event.message);
+        if pending.len() >= OUTPUT_DELTA_BATCH_BYTES {
+            flush_output_delta(sender, pending).await;
+        }
+    } else {
+        flush_output_delta(sender, pending).await;
+        emit(sender, event).await;
+    }
+}
+
 fn terminate(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     {
@@ -560,6 +623,7 @@ impl PiHarnessAdapter {
         );
         let system_append = build_system_append(&request);
         let prompt = build_prompt(&request);
+        validate_prompt_arg(&prompt)?;
         let mut args = settings.cli_args(
             &prompt,
             request.autonomy,
@@ -686,8 +750,21 @@ impl PiHarnessAdapter {
         let stderr_task = {
             let buffer = stderr_buffer.clone();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                let lines = stream::lines(stderr);
+                tokio::pin!(lines);
+                while let Some(line) = lines.next().await {
+                    let line = match line {
+                        Ok(line) => line,
+                        Err(error) => {
+                            let mut buffer = buffer.lock().expect("stderr lock");
+                            if buffer.len() < 16_000 {
+                                buffer.push_str(&format!(
+                                    "[skipped oversized stderr line: {error}]\n"
+                                ));
+                            }
+                            continue;
+                        }
+                    };
                     {
                         let mut buffer = buffer.lock().expect("stderr lock");
                         if buffer.len() < 16_000 {
@@ -714,7 +791,9 @@ impl PiHarnessAdapter {
         let mut text = String::new();
         let mut session = session_ref.clone();
         let mut error: Option<String> = None;
-        let mut lines = BufReader::new(stdout).lines();
+        let lines = stream::lines(stdout);
+        tokio::pin!(lines);
+        let mut pending_output = String::new();
         // Active time only: waiting for a human approval does not use up the timeout.
         let pause = request.pause.clone();
         let deadline = pause.deadline(timeout);
@@ -727,9 +806,9 @@ impl PiHarnessAdapter {
                 biased;
                 _ = cancel.cancelled() => { cancelled = true; terminate(&mut child); let _=child.wait().await; break; }
                 _ = &mut deadline => { timed_out = true; terminate(&mut child); let _=child.wait().await; break; }
-                line = lines.next_line() => {
+                line = lines.next() => {
                     match line {
-                        Ok(Some(line)) => {
+                        Some(Ok(line)) => {
                             if line.trim().is_empty() { continue; }
                             let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
                             if value.get("type").and_then(Value::as_str) == Some("session") {
@@ -746,20 +825,33 @@ impl PiHarnessAdapter {
                             }
                             let (event, next_text) = map_event(&value, &mut usage, text);
                             text = next_text;
-                            if let Some(event) = event { emit(&sender, event).await; }
+                            if let Some(event) = event {
+                                emit_batched(&sender, &mut pending_output, event).await;
+                            }
                         }
-                        Ok(None) => break,
-                        Err(err) => { error = Some(format!("failed to read Pi output: {err}")); break; }
+                        Some(Err(err)) => {
+                            flush_output_delta(&sender, &mut pending_output).await;
+                            emit(
+                                &sender,
+                                HarnessEvent::log(
+                                    LogLevel::Warn,
+                                    format!("Pi output line skipped: {err}"),
+                                ),
+                            )
+                            .await;
+                        }
+                        None => break,
                     }
                 }
             }
         }
+        flush_output_delta(&sender, &mut pending_output).await;
         let status = child.wait().await.map_err(|e| {
             HarnessError::new(HarnessErrorKind::Internal, format!("pi wait failed: {e}"))
         })?;
         let _ = tokio::time::timeout(Duration::from_secs(2), stderr_task).await;
         usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
-        usage.cpu_millis = usage.wall_time_ms;
+        usage.cpu_millis = None;
 
         if cancelled {
             let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
@@ -1023,6 +1115,36 @@ mod tests {
         assert_eq!(text.trim(), "hello");
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.output_tokens, Some(4));
+    }
+
+    #[test]
+    fn rejects_prompt_that_would_be_too_large_for_argv() {
+        let error = validate_prompt_arg(&"x".repeat(MAX_PROMPT_ARG_BYTES + 1)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot be passed safely as a CLI argument"));
+    }
+
+    #[tokio::test]
+    async fn batches_small_output_deltas() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        let sender = Some(sender);
+        let mut pending = String::new();
+        emit_batched(
+            &sender,
+            &mut pending,
+            HarnessEvent::new(HarnessEventKind::OutputDelta, LogLevel::Debug, "hello "),
+        )
+        .await;
+        emit_batched(
+            &sender,
+            &mut pending,
+            HarnessEvent::new(HarnessEventKind::OutputDelta, LogLevel::Debug, "world"),
+        )
+        .await;
+        assert!(receiver.try_recv().is_err());
+        flush_output_delta(&sender, &mut pending).await;
+        assert_eq!(receiver.recv().await.unwrap().message, "hello world");
     }
 }
 
