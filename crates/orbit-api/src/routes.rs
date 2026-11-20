@@ -595,6 +595,29 @@ mod tests {
         );
     }
 
+    /// The committed document is what `packages/api-client` is generated from (the web
+    /// job checks that half). The version is ignored so a release bump alone is not drift.
+    #[test]
+    fn committed_openapi_document_is_current() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/api-client/openapi.json"
+        );
+        let committed = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{path}: {error}. Run `pnpm api:generate`."));
+        let mut committed: serde_json::Value =
+            serde_json::from_str(&committed).expect("openapi.json is valid JSON");
+        let mut current = serde_json::to_value(ApiDoc::openapi()).expect("serializable spec");
+        for spec in [&mut committed, &mut current] {
+            spec["info"]["version"] = serde_json::Value::Null;
+        }
+        assert!(
+            committed == current,
+            "packages/api-client/openapi.json is stale: the API changed. \
+             Run `pnpm api:generate` and commit openapi.json and src/schema.d.ts."
+        );
+    }
+
     #[test]
     fn provider_kind_schema_uses_the_wire_names() {
         let spec = serde_json::to_value(ApiDoc::openapi()).expect("serializable spec");
