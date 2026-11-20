@@ -223,12 +223,21 @@ impl Store {
         match inserted {
             Ok(user) => Ok(user),
             // A concurrent first login for the same identity won the race: use its row.
+            // The unique violation is reported after the other insert commits, but a
+            // separate pool connection can briefly take a snapshot before that row is
+            // visible. Retry the lookup for a few milliseconds instead of turning the
+            // losing side of a legitimate concurrent login into a Conflict.
             Err(err) if err.is_unique_violation() => {
-                match self.get_user_by_oidc(issuer, subject).await? {
-                    Some(user) => Self::active_oidc_user(user),
-                    // The collision was on the email (another identity or invite created it).
-                    None => Err(StoreError::Conflict(EMAIL_LINKED_ELSEWHERE.into())),
+                for attempt in 0..5 {
+                    if let Some(user) = self.get_user_by_oidc(issuer, subject).await? {
+                        return Self::active_oidc_user(user);
+                    }
+                    if attempt < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
                 }
+                // The collision was on the email (another identity or invite created it).
+                Err(StoreError::Conflict(EMAIL_LINKED_ELSEWHERE.into()))
             }
             Err(err) => Err(err),
         }

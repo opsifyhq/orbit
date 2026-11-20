@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ORBIT execution-plane worker. Harness binaries are NOT bundled here: harness
 # containers/Jobs are separate images by design (see docs/architecture/runtime-contract.md).
-FROM rust:1.100-bookworm AS builder
+FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -37,9 +37,8 @@ COPY docs ./docs
 COPY services ./services
 RUN cargo build --release --locked -p orbit-worker --bin orbit-worker
 
-FROM debian:bookworm-slim AS harness
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS harness
 RUN apt-get update \
-    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates procps git \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 orbit \
