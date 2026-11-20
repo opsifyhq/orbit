@@ -67,7 +67,12 @@ impl MockHarnessAdapter {
         }
     }
 
-    async fn run(request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError> {
+    /// `session` receives the session ref as soon as it is known, so a run that is
+    /// cancelled or times out can still report which session it belonged to.
+    async fn run(
+        request: ExecutionRequest,
+        session: std::sync::Arc<std::sync::OnceLock<String>>,
+    ) -> Result<ExecutionOutcome, HarnessError> {
         let started = Instant::now();
         let task = request.input.task.trim().to_string();
         let task_is_empty = task.is_empty();
@@ -76,6 +81,7 @@ impl MockHarnessAdapter {
             .session_ref
             .clone()
             .unwrap_or_else(|| format!("mock-{}", uuid::Uuid::now_v7()));
+        let _ = session.set(session_ref.clone());
 
         Self::emit(&request.events, HarnessEvent::started(&session_ref)).await;
         Self::emit(
@@ -228,7 +234,8 @@ impl HarnessAdapter for MockHarnessAdapter {
         let started = Instant::now();
         let pause = request.pause.clone();
 
-        let future = Self::run(request);
+        let session = std::sync::Arc::new(std::sync::OnceLock::new());
+        let future = Self::run(request, session.clone());
         tokio::pin!(future);
 
         let outcome = tokio::select! {
@@ -237,6 +244,8 @@ impl HarnessAdapter for MockHarnessAdapter {
                 Self::emit(&events, HarnessEvent::log(LogLevel::Warn, "execution cancelled")).await;
                 let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
                 outcome.status = ExecutionStatus::Cancelled;
+                // A continuous runtime resumes from here: keep the session it started.
+                outcome.session_ref = session.get().cloned();
                 outcome
             }
             result = &mut future => result?,
@@ -244,6 +253,7 @@ impl HarnessAdapter for MockHarnessAdapter {
                 Self::emit(&events, HarnessEvent::new(HarnessEventKind::Error, LogLevel::Error, "execution timed out")).await;
                 let mut outcome = ExecutionOutcome::failed(HarnessError::timeout(timeout_seconds));
                 outcome.status = ExecutionStatus::TimedOut;
+                outcome.session_ref = session.get().cloned();
                 outcome
             }
         };
