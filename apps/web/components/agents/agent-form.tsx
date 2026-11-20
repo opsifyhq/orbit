@@ -1,5 +1,6 @@
 "use client";
 
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { createContext, useContext, useMemo, useRef, useState, type ReactNode, useEffect } from "react";
 import Link from "next/link";
 import { Check, Plus, Trash2 } from "lucide-react";
@@ -197,6 +198,8 @@ export function AgentForm({
   const [definition, setDefinition] = useState<AgentDefinition>(() =>
     initial ? structuredClone(initial) : emptyAgentDefinition(),
   );
+  // A definition takes a while to write: do not let a stray click on the sidebar lose it.
+  useUnsavedChanges(definition);
   const [issues, setIssues] = useState<Array<{ path: string; message: string }>>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const meta = useMeta();

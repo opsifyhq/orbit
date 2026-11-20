@@ -1,5 +1,6 @@
 "use client";
 
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronLeft, FilePlus2, FileText, Trash2, Upload } from "lucide-react";
@@ -165,6 +166,7 @@ export function SkillForm({
 }) {
   const editing = Boolean(skill);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(skill));
+  useUnsavedChanges(draft);
   const [slugTouched, setSlugTouched] = useState(editing);
   const [selectedFile, setSelectedFile] = useState(0);
   const [bodyView, setBodyView] = useState<"write" | "preview">("write");

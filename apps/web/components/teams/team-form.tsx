@@ -1,5 +1,6 @@
 "use client";
 
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronLeft, Plus, X } from "lucide-react";
@@ -222,6 +223,7 @@ export function TeamForm({
   const harnesses = useHarnesses();
 
   const [draft, setDraft] = useState<Draft>(() => draftFrom(team));
+  useUnsavedChanges(draft);
   const accessRef = useRef<ResourceAccessHandle>(null);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const patchWorkSource = (patch: Partial<WorkSource>) =>
