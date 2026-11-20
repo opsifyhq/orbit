@@ -73,6 +73,7 @@ export const queryKeys = {
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
   workers: ["workers"] as const,
   skills: ["skills"] as const,
+  skill: (id: string) => ["skills", id] as const,
   workerProfiles: ["worker-profiles"] as const,
   workerLaunches: ["worker-launches"] as const,
   agentTeams: ["agent-teams"] as const,
@@ -377,6 +378,14 @@ export function useSkills() {
   return useQuery<Skill[]>({
     queryKey: queryKeys.skills,
     queryFn: async () => unwrap(await api.GET("/api/v1/skills")),
+  });
+}
+
+export function useSkill(id: string | undefined) {
+  return useQuery<Skill>({
+    queryKey: queryKeys.skill(id ?? ""),
+    queryFn: async () => unwrap(await api.GET("/api/v1/skills/{skill_id}", { params: { path: { skill_id: id! } } })),
+    enabled: Boolean(id),
   });
 }
 

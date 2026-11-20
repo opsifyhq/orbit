@@ -6,6 +6,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Added
+
+- Skill pages (`/skills/<id>`) with formatted instructions, bundled file contents, and the
+  agents, teams and worker profiles that use the skill. Agent summaries now list their
+  skill slugs (`skills`) so usage needs no extra requests.
+
+### Changed
+
+- Skill Studio replaces the skill dialogs: the same section layout as Agent and Team Studio,
+  name/slug/description as fields that are written into the SKILL.md frontmatter (other keys
+  kept), a Markdown preview, and bundled files as a file list with upload (text files only)
+  instead of JSON. The Skills list follows the Agents list with an In use / Unused filter.
+
+### Fixed
+
+- New skills no longer ship the template's `name: example-skill` and placeholder description
+  to agents, and editing the description now reaches the SKILL.md agents read.
+- Deleting a skill names the agents and teams that use it, and Agent Studio and Team Studio
+  show a deleted skill so it can be removed (the API refused to save them while it was
+  referenced).
+
 ## [0.25.0] - 2026-11-20
 
 ### Added

@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -48,8 +48,41 @@ export function SkillPicker({
     });
   }, [sorted, query, show, value]);
 
+  // Selected slugs with no skill behind them: deleted since, or not visible to you. The
+  // API refuses to save an agent that references them, so they are shown and removable.
+  const missing = value.filter((slug) => !skills.some((skill) => skill.slug === slug));
+  const missingNotice = missing.length ? (
+    <div role="alert" className="rounded-lg border border-warning/35 bg-warning/[0.08] p-3 text-[13px]">
+      <p className="font-medium">
+        {missing.length === 1 ? "A selected skill no longer exists" : `${missing.length} selected skills no longer exist`}
+      </p>
+      <p className="mt-0.5 text-muted-foreground">
+        Deleted, or not visible to you. Remove {missing.length === 1 ? "it" : "them"} to save.
+      </p>
+      <ul className="mt-2 flex flex-wrap gap-1.5">
+        {missing.map((slug) => (
+          <li key={slug}>
+            <button
+              type="button"
+              onClick={() => onChange(value.filter((item) => item !== slug))}
+              aria-label={`Remove ${slug}`}
+              className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 font-mono text-xs hover:bg-muted"
+            >
+              {slug} <X className="h-3 w-3" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  ) : null;
+
   if (skills.length === 0) {
-    return <div className="text-[13px] text-muted-foreground">{empty ?? "No skills yet."}</div>;
+    return (
+      <div className="space-y-2.5">
+        {missingNotice}
+        <div className="text-[13px] text-muted-foreground">{empty ?? "No skills yet."}</div>
+      </div>
+    );
   }
 
   const toggle = (slug: string, checked: boolean) =>
@@ -58,6 +91,7 @@ export function SkillPicker({
 
   return (
     <div className={cn("space-y-2.5", className)}>
+      {missingNotice}
       <div className="flex flex-wrap items-center gap-2">
         {searchable ? (
           <div className="relative min-w-0 flex-1 basis-48">

@@ -6706,3 +6706,41 @@ async fn worker_context_injects_gh_token_from_agent_connection() {
         .iter()
         .any(|item| item["envVar"] == "GITLAB_TOKEN" && item["value"] == "glab-test-token"));
 }
+
+#[tokio::test]
+async fn agent_summaries_list_their_skills() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for slug in ["release-notes", "code-review"] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/skills",
+                json!({ "name": slug, "slug": slug, "description": "", "content": "# Skill", "files": {} }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let mut with_skills = definition();
+    with_skills["metadata"]["name"] = json!("Skilled Agent");
+    with_skills["spec"]["skills"] = json!(["release-notes", "code-review"]);
+    let (status, body) = send(&app.router, post("/api/v1/agents", with_skills)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(&app.router, get("/api/v1/agents?limit=50")).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let skilled = items
+        .iter()
+        .find(|item| item["id"] == id)
+        .expect("new agent listed");
+    assert_eq!(skilled["skills"], json!(["release-notes", "code-review"]));
+    // Agents without skills report an empty list rather than omitting the field.
+    assert!(items
+        .iter()
+        .filter(|item| item["id"] != id)
+        .all(|item| item["skills"] == json!([])));
+}
