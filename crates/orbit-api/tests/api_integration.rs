@@ -6528,3 +6528,180 @@ async fn provider_probe_requires_manage_and_refuses_metadata_addresses() {
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"], "endpoint refused (blocked)");
 }
+
+#[tokio::test]
+async fn worker_context_injects_gh_token_from_agent_connection() {
+    let Some(app) = test_app(false).await else {
+        return;
+    };
+    let user = owner_user(&app).await;
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let reference = orbit_security::new_secret_ref("connection");
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &reference,
+            &orbit_security::SecretValue::new("gh-test-token"),
+            "test github connection",
+        )
+        .await
+        .unwrap();
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            "Agent GitHub",
+            &json!({ "defaultRepository": "opsifyhq/orbit" }),
+            &["repo.checkout".to_string()],
+            Some(&reference),
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+
+    let gitlab = app
+        .store
+        .get_connector_by_slug(app.org_id, "gitlab")
+        .await
+        .unwrap()
+        .expect("gitlab connector");
+    let gitlab_reference = orbit_security::new_secret_ref("connection");
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &gitlab_reference,
+            &orbit_security::SecretValue::new("glab-test-token"),
+            "test gitlab connection",
+        )
+        .await
+        .unwrap();
+    let gitlab_connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            gitlab.id,
+            "Agent GitLab",
+            &json!({}),
+            &["repo.checkout".to_string()],
+            Some(&gitlab_reference),
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+
+    let mut definition: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).unwrap();
+    definition.spec.connectors = vec![
+        orbit_domain::ConnectorBinding {
+            connector: "github".into(),
+            connection_id: Some(connection.id),
+            capabilities: vec!["repo.checkout".into()],
+        },
+        orbit_domain::ConnectorBinding {
+            connector: "gitlab".into(),
+            connection_id: Some(gitlab_connection.id),
+            capabilities: vec!["repo.checkout".into()],
+        },
+    ];
+    let (agent, version) = app
+        .store
+        .create_agent(app.org_id, Some(user.id), &definition)
+        .await
+        .unwrap();
+    let profile = app
+        .store
+        .create_worker_profile(
+            app.org_id,
+            "gh worker",
+            "mock",
+            "local",
+            "process",
+            "orbit-worker",
+            "0.1.0",
+            "selected",
+            &[agent.id],
+            &[],
+            None,
+            None,
+            None,
+            &json!({}),
+            &json!([]),
+            &json!({}),
+            false,
+            false,
+            true,
+            true,
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let issued = orbit_security::issue_worker_token();
+    let token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            Some(profile.id),
+            "gh-worker",
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    let execution = app
+        .store
+        .create_execution(orbit_store::executions::NewExecution {
+            org_id: app.org_id,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: orbit_domain::HarnessKind::Mock,
+            trigger_source: orbit_domain::TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: json!({ "task": "pr" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user.id),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    app.store
+        .claim_execution(execution.id, "gh-worker")
+        .await
+        .unwrap()
+        .expect("queued");
+    app.store
+        .bind_execution_worker_token(execution.id, token.id)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "GET",
+            &format!("/api/v1/worker/executions/{}/context", execution.id),
+            &issued.token,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let env = body["env"].as_array().unwrap();
+    assert!(env
+        .iter()
+        .any(|item| item["envVar"] == "GH_TOKEN" && item["value"] == "gh-test-token"));
+    assert!(env
+        .iter()
+        .any(|item| item["envVar"] == "GITLAB_TOKEN" && item["value"] == "glab-test-token"));
+}
