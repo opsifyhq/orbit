@@ -429,6 +429,7 @@ pub async fn create_team(
     if !body.repositories.is_empty() {
         issues.extend(validate_repositories(&body.repositories));
     }
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
     for step in &body.steps {
         if !agent_ids.insert(step.agent_id) {
@@ -437,12 +438,14 @@ pub async fn create_team(
                 "the same agent cannot appear twice in one team",
             ));
         }
-        if state
-            .store
-            .get_agent(auth.org_id, step.agent_id)
-            .await
-            .is_err()
-        {
+        // An agent the caller cannot view is reported exactly like a missing one.
+        let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
+            Ok(agent) => {
+                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+            }
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "steps.agentId",
                 format!("unknown agent '{}'", step.agent_id),
@@ -452,7 +455,26 @@ pub async fn create_team(
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    if let Some(profile_id) = body.worker_profile_id {
+        let viewable = match state
+            .store
+            .get_worker_profile(auth.org_id, profile_id)
+            .await
+        {
+            Ok(profile) => access.can_view(
+                profile.owner_user_id,
+                profile.owner_team_id,
+                &profile.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
+            issues.push(ValidationIssue::new(
+                "workerProfileId",
+                format!("unknown worker profile '{profile_id}'"),
+            ));
+        }
+    }
     issues.extend(
         crate::preflight::unusable_skill_issues(
             &state,
@@ -487,12 +509,15 @@ pub async fn create_team(
         }
     }
     for mapping_id in &body.env_mapping_ids {
-        if state
-            .store
-            .get_env_mapping(auth.org_id, *mapping_id)
-            .await
-            .is_err()
-        {
+        let viewable = match state.store.get_env_mapping(auth.org_id, *mapping_id).await {
+            Ok(mapping) => access.can_view(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "envMappingIds",
                 format!("unknown environment mapping '{mapping_id}'"),
@@ -590,6 +615,7 @@ pub async fn update_team(
     if !body.repositories.is_empty() {
         issues.extend(validate_repositories(&body.repositories));
     }
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
     for step in &body.steps {
         if !agent_ids.insert(step.agent_id) {
@@ -598,12 +624,14 @@ pub async fn update_team(
                 "the same agent cannot appear twice in one team",
             ));
         }
-        if state
-            .store
-            .get_agent(auth.org_id, step.agent_id)
-            .await
-            .is_err()
-        {
+        // An agent the caller cannot view is reported exactly like a missing one.
+        let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
+            Ok(agent) => {
+                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+            }
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "steps.agentId",
                 format!("unknown agent '{}'", step.agent_id),
@@ -613,7 +641,26 @@ pub async fn update_team(
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    if let Some(profile_id) = body.worker_profile_id {
+        let viewable = match state
+            .store
+            .get_worker_profile(auth.org_id, profile_id)
+            .await
+        {
+            Ok(profile) => access.can_view(
+                profile.owner_user_id,
+                profile.owner_team_id,
+                &profile.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
+            issues.push(ValidationIssue::new(
+                "workerProfileId",
+                format!("unknown worker profile '{profile_id}'"),
+            ));
+        }
+    }
     issues.extend(
         crate::preflight::unusable_skill_issues(
             &state,
@@ -648,12 +695,15 @@ pub async fn update_team(
         }
     }
     for mapping_id in &body.env_mapping_ids {
-        if state
-            .store
-            .get_env_mapping(auth.org_id, *mapping_id)
-            .await
-            .is_err()
-        {
+        let viewable = match state.store.get_env_mapping(auth.org_id, *mapping_id).await {
+            Ok(mapping) => access.can_view(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "envMappingIds",
                 format!("unknown environment mapping '{mapping_id}'"),

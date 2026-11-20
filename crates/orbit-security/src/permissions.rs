@@ -110,6 +110,25 @@ pub fn scope_granted(held: &[String], scope: &str) -> bool {
     held.iter().any(|h| h == "*" || h == scope)
 }
 
+/// Permissions in `requested` that `held` does not cover (the grant ceiling).
+///
+/// `held` covers everything when it contains `*` or when it contains every known
+/// permission (the Owner's built-in set, which is spelled out rather than `*`). A
+/// requested `*` is therefore only covered by one of those two.
+pub fn ungranted_permissions(held: &[String], requested: &[String]) -> Vec<String> {
+    let all = Permission::all_for(UserRole::Owner);
+    let holds_everything =
+        held.iter().any(|h| h == "*") || all.iter().all(|p| held.iter().any(|h| h == p));
+    if holds_everything {
+        return Vec::new();
+    }
+    requested
+        .iter()
+        .filter(|scope| scope.as_str() == "*" || !held.iter().any(|h| h == scope.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Intersect a token's scopes with the owner's current permissions, handling the `*`
 /// wildcard on either side. The result never grants more than `held`.
 pub fn intersect_scopes(token_scopes: &[String], held: &[String]) -> Vec<String> {
@@ -179,6 +198,31 @@ mod tests {
         );
         assert_eq!(intersect_scopes(&v(&["*"]), &v(&["*"])), v(&["*"]));
         assert!(intersect_scopes(&v(&["audit:read"]), &held).is_empty());
+    }
+
+    #[test]
+    fn ceiling_compares_real_permission_sets() {
+        let held = v(&["settings:write", "agents:read"]);
+        assert!(ungranted_permissions(&held, &v(&["agents:read"])).is_empty());
+        assert_eq!(
+            ungranted_permissions(&held, &v(&["agents:read", "audit:read", "*"])),
+            v(&["audit:read", "*"])
+        );
+        // `*` holders and the Owner's spelled-out full set may grant anything.
+        assert!(ungranted_permissions(&v(&["*"]), &v(&["*", "audit:read"])).is_empty());
+        let owner: Vec<String> = Permission::all_for(UserRole::Owner)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(ungranted_permissions(&owner, &v(&["*"])).is_empty());
+        // Admin lacks part of the Owner set, so it cannot grant `*`.
+        let admin: Vec<String> = Permission::all_for(UserRole::Admin)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        if admin.len() < owner.len() {
+            assert_eq!(ungranted_permissions(&admin, &v(&["*"])), v(&["*"]));
+        }
     }
 
     #[test]

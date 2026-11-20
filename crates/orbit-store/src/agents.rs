@@ -524,14 +524,31 @@ impl Store {
 }
 
 impl Store {
+    /// Instances of agents the caller may view (`None` = platform access).
     pub async fn list_agent_instances(
         &self,
         org_id: Uuid,
+        access: Option<&crate::access::ResourceAccess>,
     ) -> StoreResult<Vec<crate::models::AgentInstance>> {
+        let (privileged, user_id, team_ids, isolation) = crate::access::binds(access);
         Ok(sqlx::query_as::<_, crate::models::AgentInstance>(
-            "SELECT * FROM agent_instances WHERE org_id = $1 ORDER BY created_at DESC LIMIT 100",
+            r#"
+            SELECT i.* FROM agent_instances i
+            JOIN agents a ON a.id = i.agent_id AND a.org_id = i.org_id
+            WHERE i.org_id = $1
+              AND ($2::bool OR a.owner_user_id = $3
+                   OR CASE WHEN $5::bool AND a.owner_team_id IS NOT NULL
+                        THEN a.owner_team_id = ANY($4)
+                        ELSE a.visibility = 'org'
+                             OR (a.visibility = 'team' AND a.owner_team_id = ANY($4)) END)
+            ORDER BY i.created_at DESC LIMIT 100
+            "#,
         )
         .bind(org_id)
+        .bind(privileged)
+        .bind(user_id)
+        .bind(&team_ids)
+        .bind(isolation)
         .fetch_all(&self.pool)
         .await?)
     }
