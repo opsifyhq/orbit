@@ -488,14 +488,13 @@ async fn build_context(
     slugs.dedup();
     let skills = state.store.skills_by_slugs(org_id, &slugs).await?;
     let env = resolve_team_env(&state.store, org_id, execution, &spec, profile).await;
-    let tool_policies = state
-        .store
-        .effective_tool_policy_rules(org_id, execution.agent_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(error = %error, "failed to load tool policies; using platform decisions only");
-            Vec::new()
-        });
+    let tool_policies = require_loaded_policies(
+        execution.id,
+        state
+            .store
+            .effective_tool_policy_rules(org_id, execution.agent_id)
+            .await,
+    )?;
     Ok(WorkerExecutionContext {
         execution: execution.clone(),
         spec,
@@ -1231,6 +1230,30 @@ async fn resolve_model(
     }))
 }
 
+/// Tool policies only ever restrict, so a load failure must stop the run instead of
+/// continuing with "no rules" (fail closed).
+fn require_loaded_policies(
+    execution_id: Uuid,
+    loaded: Result<Vec<ToolPolicyRule>, orbit_store::StoreError>,
+) -> Result<Vec<ToolPolicyRule>, ApiError> {
+    loaded.map_err(|error| {
+        tracing::error!(%error, %execution_id, "failed to load tool policies; refusing to build context");
+        ApiError::internal("failed to load tool policies; run not started")
+    })
+}
+
+/// Effect of `capability` in a connector catalog, or `None` when it is absent or its effect
+/// string does not parse.
+fn capability_effect(catalog: &serde_json::Value, capability: &str) -> Option<CapabilityEffect> {
+    catalog
+        .as_array()?
+        .iter()
+        .find(|item| item.get("id").and_then(|id| id.as_str()) == Some(capability))?
+        .get("effect")?
+        .as_str()
+        .and_then(CapabilityEffect::parse)
+}
+
 async fn resolve_grants(store: &Store, org_id: Uuid, spec: &AgentSpec) -> Vec<GrantedCapability> {
     let mut grants = Vec::new();
     for binding in &spec.connectors {
@@ -1246,17 +1269,15 @@ async fn resolve_grants(store: &Store, org_id: Uuid, spec: &AgentSpec) -> Vec<Gr
             }
         };
         for capability in &binding.capabilities {
-            let effect = connector
-                .capabilities
-                .as_array()
-                .and_then(|items| {
-                    items.iter().find(|item| {
-                        item.get("id").and_then(|id| id.as_str()) == Some(capability.as_str())
-                    })
-                })
-                .and_then(|item| item.get("effect").and_then(|effect| effect.as_str()))
-                .and_then(CapabilityEffect::parse)
-                .unwrap_or(CapabilityEffect::Read);
+            // An unknown capability or unparseable effect grants nothing (fail closed).
+            let Some(effect) = capability_effect(&connector.capabilities, capability) else {
+                tracing::warn!(
+                    connector = %binding.connector,
+                    %capability,
+                    "capability missing from the connector catalog or has an unparseable effect; no grant issued"
+                );
+                continue;
+            };
             grants.push(GrantedCapability {
                 connection_id: binding.connection_id.unwrap_or(Uuid::nil()),
                 connector: binding.connector.clone(),
@@ -1490,5 +1511,44 @@ mod worker_payload_tests {
             json["triggers"][1],
             serde_json::json!({ "type": "schedule", "cron": "0 8 * * 1-5" })
         );
+    }
+}
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_or_unparseable_capabilities_grant_nothing() {
+        let catalog = json!([
+            { "id": "issues.list", "effect": "read" },
+            { "id": "issues.create", "effect": "write" },
+            { "id": "broken", "effect": "sideways" },
+            { "id": "no-effect" }
+        ]);
+        assert_eq!(
+            capability_effect(&catalog, "issues.list"),
+            Some(CapabilityEffect::Read)
+        );
+        assert_eq!(
+            capability_effect(&catalog, "issues.create"),
+            Some(CapabilityEffect::Write)
+        );
+        assert_eq!(capability_effect(&catalog, "missing"), None);
+        assert_eq!(capability_effect(&catalog, "broken"), None);
+        assert_eq!(capability_effect(&catalog, "no-effect"), None);
+        assert_eq!(capability_effect(&json!({}), "issues.list"), None);
+    }
+
+    #[test]
+    fn policy_load_failure_fails_the_context_request() {
+        let error = require_loaded_policies(
+            Uuid::nil(),
+            Err(orbit_store::StoreError::Internal("boom".into())),
+        )
+        .unwrap_err();
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(require_loaded_policies(Uuid::nil(), Ok(Vec::new())).is_ok());
     }
 }

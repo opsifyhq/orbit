@@ -155,6 +155,7 @@ pub async fn create(
             "webhookUrl must be http(s)",
         )]));
     }
+    guard_webhook_url(url).await?;
     let secret_ref = new_secret_ref("output");
     state
         .store
@@ -207,6 +208,7 @@ pub async fn update(
                     "webhookUrl must be http(s)",
                 )]));
             }
+            guard_webhook_url(url).await?;
             let reference = new_secret_ref("output");
             state
                 .store

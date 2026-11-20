@@ -257,18 +257,8 @@ pub async fn execute_agent(
     let mut skills = body.skills.clone();
     skills.sort();
     skills.dedup();
-    for slug in &skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            return Err(ApiError::validation(vec![
-                orbit_domain::ValidationIssue::new("skills", format!("unknown skill '{slug}'")),
-            ]));
-        }
-    }
+    crate::preflight::require_skills_use(&state, auth.org_id, &access, &skills, "skills", false)
+        .await?;
 
     // Harness resolution: explicit request -> legacy agent version -> org default.
     let requested_harness = body.harness.as_deref().or(body.harness_override.as_deref());
@@ -576,7 +566,24 @@ pub async fn rerun_execution(
         .store
         .get_agent(auth.org_id, original.agent_id)
         .await?;
+    // A team step carries the team's connections, env mappings and subagents in its input.
+    // Replaying that without re-running the team authorization would hand them to whoever
+    // can merely view the execution, so team steps can only be re-run through the team.
+    if original.team_run_id.is_some() || original.input.get("team").is_some() {
+        return Err(ApiError::conflict(
+            "this execution is a team step and cannot be rerun on its own; re-run the team instead",
+        ));
+    }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    crate::preflight::require_skills_use(
+        &state,
+        auth.org_id,
+        &access,
+        &original.skills,
+        "skills",
+        false,
+    )
+    .await?;
     let version = state
         .store
         .get_agent_version_by_id(auth.org_id, original.agent_version_id)

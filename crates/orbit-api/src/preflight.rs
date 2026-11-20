@@ -59,9 +59,58 @@ pub async fn require_connection_use(
         .map_err(|error| with_field(error, path))
 }
 
+/// Issues for skill slugs the principal may not use. A skill the caller cannot see or use
+/// is reported exactly like a missing one ("unknown skill"), so private slugs do not leak.
+/// `path` is the field name; with `indexed` each issue is reported at `path[idx]`.
+pub async fn unusable_skill_issues(
+    state: &AppState,
+    org_id: Uuid,
+    access: &AccessScope,
+    slugs: &[String],
+    path: &str,
+    indexed: bool,
+) -> Result<Vec<ValidationIssue>, ApiError> {
+    let mut issues = Vec::new();
+    for (idx, slug) in slugs.iter().enumerate() {
+        let usable = match state.store.get_skill_by_slug(org_id, slug).await? {
+            Some(skill) => access.can_use(skill.owner_user_id, skill.owner_team_id, &skill.visibility),
+            None => false,
+        };
+        if !usable {
+            let field = if indexed {
+                format!("{path}[{idx}]")
+            } else {
+                path.to_string()
+            };
+            issues.push(ValidationIssue::new(field, format!("unknown skill '{slug}'")));
+        }
+    }
+    Ok(issues)
+}
+
+/// Require that the principal may use every skill slug (agent specs, executions, teams).
+/// Failures are a 422 with an "unknown skill" field error, identical to a missing skill.
+pub async fn require_skills_use(
+    state: &AppState,
+    org_id: Uuid,
+    access: &AccessScope,
+    slugs: &[String],
+    path: &str,
+    indexed: bool,
+) -> Result<(), ApiError> {
+    let issues = unusable_skill_issues(state, org_id, access, slugs, path, indexed).await?;
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::validation(issues))
+    }
+}
+
 /// Require use rights on every connection and the platform provider a spec references.
 /// Used by agent create/update/import (the author must be able to use what they bind)
 /// and by the execution preflight (the runner must be able to use what the agent binds).
+/// Skills are checked at authoring time via [`require_spec_use`]: running a shared agent
+/// does not require the runner to have been granted the agent's own skills.
 pub async fn require_spec_references_use(
     state: &AppState,
     org_id: Uuid,
@@ -86,6 +135,17 @@ pub async fn require_spec_references_use(
         require_provider_use(state, org_id, access, name, "spec.model.provider").await?;
     }
     Ok(())
+}
+
+/// Authoring-time check: connections, provider and skills of a spec the caller is saving.
+pub async fn require_spec_use(
+    state: &AppState,
+    org_id: Uuid,
+    access: &AccessScope,
+    spec: &AgentSpec,
+) -> Result<(), ApiError> {
+    require_skills_use(state, org_id, access, &spec.skills, "spec.skills", true).await?;
+    require_spec_references_use(state, org_id, access, spec).await
 }
 
 /// Require use rights on a provider named in a model binding. Names that match no
@@ -231,6 +291,18 @@ pub async fn authorize_team_run(
         team.owner_team_id,
         &team.visibility,
     )?;
+    let team_skills: Vec<String> = team
+        .definition
+        .get("skills")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    require_skills_use(state, org_id, access, &team_skills, "skills", false).await?;
     for (idx, connection_id) in connection_ids.iter().enumerate() {
         require_connection_use(
             state,

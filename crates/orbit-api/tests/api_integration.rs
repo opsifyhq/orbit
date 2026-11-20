@@ -7512,3 +7512,175 @@ async fn bulk_skills_are_delete_only_with_manage_access_and_id_bounds() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// #216 memory retention and #215 launch archive guard
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn worker_memory_honours_the_agents_retention_days() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let mut definition = definition();
+    definition["metadata"]["name"] = json!("Retention Agent");
+    definition["spec"]["memory"] =
+        json!({ "enabled": true, "strategy": "short_term", "retentionDays": 2 });
+    let definition: orbit_domain::AgentDefinition = serde_json::from_value(definition).unwrap();
+    let (agent, _) = app
+        .store
+        .create_agent(app.org_id, Some(owner), &definition)
+        .await
+        .unwrap();
+    app.store
+        .set_agent_status(app.org_id, agent.id, orbit_domain::AgentStatus::Active)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{}/executions", agent.id),
+            "test-token",
+            json!({ "task": "retention" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let token = worker_token(&app.store, app.org_id, "retention-worker").await;
+    // Other queued executions in this org (the demo agent's) may be claimed first.
+    let execution = loop {
+        let claimed = claim_as(&app, &token, "retention-worker")
+            .await
+            .expect("execution to claim");
+        if app.store.get_execution(app.org_id, claimed).await.unwrap().agent_id == agent.id {
+            break claimed;
+        }
+    };
+
+    // A stored entry expires after the agent's retention window, whatever the worker sends.
+    let (status, _) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/store",
+            &token,
+            Some(json!({
+                "executionId": execution,
+                "kind": "short_term",
+                "content": "fresh",
+                "retentionDays": 3650
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = app
+        .store
+        .list_memory(app.org_id, agent.id, None, 20)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    let expires = entries[0].expires_at.expect("retention sets expires_at");
+    let days = (expires - chrono::Utc::now()).num_hours() as f64 / 24.0;
+    assert!((1.9..=2.1).contains(&days), "expires in {days} days");
+
+    // Entries older than the window (legacy rows without expires_at) are not injected.
+    let stale = app
+        .store
+        .store_memory(
+            app.org_id,
+            agent.id,
+            "short_term",
+            "stale",
+            &json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE agent_memory SET created_at = now() - interval '5 days' WHERE id = $1")
+        .bind(stale.id)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    let (status, listed) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/list",
+            &token,
+            Some(json!({ "executionId": execution })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let contents: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, vec!["fresh"]);
+}
+
+#[tokio::test]
+async fn archiving_a_live_worker_launch_is_a_conflict() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let profile = app
+        .store
+        .create_worker_profile(
+            app.org_id,
+            "Archive API",
+            "pi",
+            "docker",
+            "process",
+            "orbit-worker-pi",
+            "0.3.0",
+            "all",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            &json!({}),
+            &json!([]),
+            &json!({}),
+            false,
+            false,
+            false,
+            false,
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            profile.id,
+            &profile.name,
+            "docker",
+            "img:1",
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/v1/worker-launches/{}/archive", launch.id);
+    let (status, body) = send(&app.router, auth_post(&path, "test-token", json!({}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+
+    app.store
+        .update_worker_launch(
+            app.org_id, launch.id, "stopped", None, None, None, false, true,
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(&app.router, auth_post(&path, "test-token", json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["archivedAt"].is_string());
+}

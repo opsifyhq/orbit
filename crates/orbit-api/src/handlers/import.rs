@@ -144,7 +144,7 @@ pub async fn import_markdown(
                 return Err(ApiError::validation(report.issues));
             }
             let access = crate::access::AccessScope::load(&state, &auth).await?;
-            crate::preflight::require_spec_references_use(
+            crate::preflight::require_spec_use(
                 &state,
                 auth.org_id,
                 &access,

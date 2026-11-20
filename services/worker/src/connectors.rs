@@ -118,7 +118,8 @@ pub async fn hydrate(
             .to_string();
         let url = format!("{base_url}{X_SEARCH_PATH}");
 
-        let client = orbit_security::client_with_custom_ca(std::time::Duration::from_secs(20));
+        // Guarded: the base URL is tenant-supplied and the request carries a credential.
+        let client = orbit_security::guarded_client(std::time::Duration::from_secs(20));
         let response = client
             .get(&url)
             .bearer_auth(&credential.value)
@@ -132,7 +133,10 @@ pub async fn hydrate(
             .map_err(|e| {
                 HarnessError::new(
                     HarnessErrorKind::Unavailable,
-                    format!("X API request failed: {e}"),
+                    format!(
+                        "X API request failed: {}",
+                        orbit_security::describe_request_error(&e)
+                    ),
                 )
             })?;
 

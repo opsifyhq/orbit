@@ -553,6 +553,45 @@ pub async fn list_connections(
     Ok(Json(rows))
 }
 
+/// Config keys that hold an outbound URL the worker or API will call with the connection's
+/// credential.
+const CONNECTION_URL_FIELDS: [&str; 3] = ["baseUrl", "cloneBaseUrl", "url"];
+
+/// Validate URL-typed connection config fields against the outbound policy
+/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`). Private ranges are
+/// allowed by default so self-hosted GitLab/GitHub Enterprise keep working; loopback,
+/// link-local and cloud-metadata targets are refused with a 422 on `config.<field>`.
+async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
+    let policy = orbit_security::OutboundPolicy::from_env();
+    let mut issues = Vec::new();
+    for field in CONNECTION_URL_FIELDS {
+        let Some(value) = config.get(field) else {
+            continue;
+        };
+        let Some(url) = value.as_str().map(str::trim).filter(|url| !url.is_empty()) else {
+            if value.is_null() || value.as_str().is_some() {
+                continue;
+            }
+            issues.push(orbit_domain::ValidationIssue::new(
+                format!("config.{field}"),
+                format!("{field} must be a string"),
+            ));
+            continue;
+        };
+        if let Err(error) = orbit_security::check_outbound_url(url, &policy).await {
+            issues.push(orbit_domain::ValidationIssue::new(
+                format!("config.{field}"),
+                error.to_string(),
+            ));
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::validation(issues))
+    }
+}
+
 #[utoipa::path(post, path = "/api/v1/connections", tag = "connectors", request_body = CreateConnectionRequest, responses((status = 201, body = ConnectionView)))]
 pub async fn create_connection(
     State(state): State<AppState>,
@@ -570,6 +609,7 @@ pub async fn create_connection(
         .get_connector_by_slug(auth.org_id, &body.connector_slug)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("connector '{}'", body.connector_slug)))?;
+    validate_connection_urls(&body.config).await?;
 
     let secret_ref = if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
@@ -656,6 +696,9 @@ pub async fn update_connection(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    if let Some(config) = &body.config {
+        validate_connection_urls(config).await?;
+    }
     let name = body
         .name
         .as_deref()
