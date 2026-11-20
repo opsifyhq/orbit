@@ -13,6 +13,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - Skill pages (`/skills/<id>`) with formatted instructions, bundled file contents, and the
   agents, teams and worker profiles that use the skill. Agent summaries now list their
   skill slugs (`skills`) so usage needs no extra requests.
+- Bulk lifecycle actions for agents and skills: agents can be archived or permanently
+  deleted, skills can be deleted (archive is out of scope — see ADR 0013). A dry-run
+  preview explains mixed selections before confirmation, partial failures keep their ids
+  selected, and one audit event records each bulk operation (#249).
 
 ### Changed
 

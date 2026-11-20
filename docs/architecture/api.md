@@ -53,6 +53,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/me` | current user, organization, role, permissions |
 | `GET/POST /api/v1/agents` | list (filter/search) / create agent + version 1 |
 | `GET/PATCH/DELETE /api/v1/agents/{id}` | read / new version or metadata / archive |
+| `POST /api/v1/agents/bulk/{archive,delete}` | bulk archive / permanent delete (1–500 deduped ids, `dryRun`, per-id failures) |
 | `POST /api/v1/agents/{id}/activate` | draft/paused → active |
 | `POST /api/v1/agents/{id}/pause` | active → paused |
 | `GET /api/v1/agents/{id}/versions` | immutable version history |
@@ -76,6 +77,7 @@ validated with field-level `details` and recorded in the audit log.
 | `PATCH/DELETE /api/v1/triggers/{id}` | update / delete trigger |
 | `GET/POST /api/v1/skills` | list / create skill |
 | `GET/PATCH/DELETE /api/v1/skills/{id}` | read / update / delete skill |
+| `POST /api/v1/skills/bulk/delete` | bulk permanent delete (1–500 deduped ids, `dryRun`, per-id failures); skills have no archive state (ADR 0013) |
 | `GET/POST /api/v1/agent-teams` | list / create Agent Team |
 | `GET/PATCH/DELETE /api/v1/agent-teams/{id}` | read / update / delete team |
 | `POST /api/v1/agent-teams/{id}/runs` | start a team run |

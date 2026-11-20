@@ -145,4 +145,19 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Check delete eligibility with the same SQL as `delete_skill`, then roll back.
+    pub async fn check_delete_skill(&self, org_id: Uuid, skill_id: Uuid) -> StoreResult<()> {
+        let mut tx = self.begin().await?;
+        let result = sqlx::query("DELETE FROM skills WHERE org_id = $1 AND id = $2")
+            .bind(org_id)
+            .bind(skill_id)
+            .execute(&mut *tx)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound("skill".into()));
+        }
+        tx.rollback().await?;
+        Ok(())
+    }
 }

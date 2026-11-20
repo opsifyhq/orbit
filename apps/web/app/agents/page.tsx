@@ -7,7 +7,7 @@ import { Bot, Plus, Search, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { Callout } from "@/components/ui/callout";
 import { Card } from "@/components/ui/card";
@@ -143,26 +143,31 @@ export default function AgentsPage() {
       </div>
 
       {selected.size ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-subtle px-3 py-2.5">
-          <Checkbox
-            aria-label="Select all shown agents"
-            checked={visible.every((agent) => selected.has(agent.id))}
-            onChange={(event) =>
-              setSelected(
-                event.target.checked
-                  ? new Set([...selected, ...visible.map((agent) => agent.id)])
-                  : new Set([...selected].filter((id) => !visible.some((agent) => agent.id === id))),
-              )
-            }
-          />
-          <span className="text-[13px] font-medium">{selected.size} selected</span>
-          <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
-            Change access
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            Clear selection
-          </Button>
-        </div>
+        <BulkActionsBar
+          resource="agents"
+          selectedIds={[...selected]}
+          allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
+          onToggleAllShown={(checked) =>
+            setSelected(
+              checked
+                ? new Set([...selected, ...visible.map((agent) => agent.id)])
+                : new Set([...selected].filter((id) => !visible.some((agent) => agent.id === id))),
+            )
+          }
+          onChangeAccess={() => setBulkOpen(true)}
+          archivedIds={all
+            .filter((agent) => selected.has(agent.id) && agent.status === "archived")
+            .map((agent) => agent.id)}
+          onSucceeded={(ids) => {
+            setSelected((current) => {
+              const next = new Set(current);
+              ids.forEach((id) => next.delete(id));
+              return next;
+            });
+            void invalidateAgents();
+          }}
+          onClear={() => setSelected(new Set())}
+        />
       ) : null}
 
       <BulkAccessDialog

@@ -15,3 +15,4 @@ new decision; do not edit an accepted one, supersede it.
 - [0010 — Offline licensing and entitlements](0010-offline-licensing.md)
 - [0011 — Multi-team access model](0011-multi-team-access-model.md)
 - [0012 — Decouple agents from harnesses](0012-decouple-agent-and-harness.md)
+- [0013 — Bulk lifecycle: agents archive, skills delete only](0013-bulk-lifecycle.md)
