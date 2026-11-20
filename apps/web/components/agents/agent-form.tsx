@@ -27,6 +27,8 @@ import {
 } from "@orbit/contracts";
 import { cn, titleCase } from "@/lib/utils";
 import { brandName, cronDescription, effectLabel } from "@/lib/presentation";
+import { browserTimeZone } from "@/lib/schedule";
+import { ScheduleEditor } from "@/components/schedule-editor";
 
 type Trigger = AgentDefinition["spec"]["triggers"][number];
 type SectionId =
@@ -268,7 +270,7 @@ export function AgentForm({
   function addTrigger(type: Trigger["type"]) {
     const trigger: Trigger =
       type === "schedule"
-        ? { type: "schedule", cron: "*/30 * * * *" }
+        ? { type: "schedule", cron: "0 9 * * 1-5", timezone: browserTimeZone() }
         : type === "event"
           ? { type: "event", subject: "" }
           : { type: "webhook" };
@@ -399,7 +401,7 @@ export function AgentForm({
     if (spec.triggers.length === 0) return "Manual only";
     if (spec.triggers.length === 1) {
       const only = spec.triggers[0];
-      return only.type === "schedule" ? cronDescription(only.cron) : titleCase(only.type);
+      return only.type === "schedule" ? cronDescription(only.cron, only.timezone) : titleCase(only.type);
     }
     return `${spec.triggers.length} triggers`;
   })();
@@ -1180,21 +1182,13 @@ export function AgentForm({
                   </Button>
                 </div>
                 {trigger.type === "schedule" ? (
-                  <Field
-                    label="Cron schedule"
-                    htmlFor={`trigger-${index}`}
-                    hint={`Five fields, in UTC. Currently: ${cronDescription(trigger.cron)}`}
-                  >
-                    <Input
-                      id={`trigger-${index}`}
-                      className="font-mono"
-                      value={trigger.cron}
-                      onChange={(event) =>
-                        updateTrigger(index, { ...trigger, cron: event.target.value })
-                      }
-                      placeholder="*/30 * * * *"
-                    />
-                  </Field>
+                  <ScheduleEditor
+                    id={`trigger-${index}`}
+                    value={{ cron: trigger.cron, timezone: trigger.timezone }}
+                    onChange={(next) =>
+                      updateTrigger(index, { ...trigger, cron: next.cron, timezone: next.timezone || undefined })
+                    }
+                  />
                 ) : null}
                 {trigger.type === "schedule" ? (
                   <Field

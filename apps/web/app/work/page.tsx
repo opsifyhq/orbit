@@ -4,15 +4,16 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, CalendarClock, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
+import { Bot, CalendarClock, ChevronLeft, ChevronRight, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
 import { toast } from "sonner";
 
+import { ScheduleEditor, type ScheduleValue } from "@/components/schedule-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
@@ -27,7 +28,6 @@ import {
   unwrap,
   useAgents,
   useAgentTeams,
-  useConnectors,
   useDefaultHarness,
   useHarnesses,
   useOutputs,
@@ -38,17 +38,89 @@ import { api } from "@/lib/api";
 import { toAgentDefinitionBody } from "@/lib/agent-body";
 import { errorMessage } from "@orbit/api-client";
 import { cn, titleCase } from "@/lib/utils";
-import { brandName, autonomyName, cronDescription } from "@/lib/presentation";
+import { brandName, autonomyName } from "@/lib/presentation";
+import { browserTimeZone, cronError, describeSchedule } from "@/lib/schedule";
 import { defaultWorkerImage } from "@/lib/worker-images";
 
 type WhoType = "agent" | "team";
+type When = "manual" | "schedule";
+type SectionId = "who" | "what" | "when" | "where" | "then";
 
+const SECTION_ORDER: SectionId[] = ["who", "what", "when", "where", "then"];
+const SECTION_TITLES: Record<SectionId, string> = {
+  who: "Who",
+  what: "What",
+  when: "When",
+  where: "Where",
+  then: "Then",
+};
+const SECTION_QUESTIONS: Record<SectionId, string> = {
+  who: "Who does the work?",
+  what: "What should be done?",
+  when: "When should it start, and does it repeat?",
+  where: "Where should it run?",
+  then: "What happens after?",
+};
+const isSectionId = (value: string): value is SectionId => (SECTION_ORDER as string[]).includes(value);
+
+interface Issue {
+  section: SectionId;
+  message: string;
+}
+
+function FormSection({
+  id,
+  active,
+  go,
+  children,
+}: {
+  id: SectionId;
+  active: SectionId;
+  go: (id: SectionId) => void;
+  children: ReactNode;
+}) {
+  if (active !== id) return null;
+  const index = SECTION_ORDER.indexOf(id);
+  const previous = SECTION_ORDER[index - 1];
+  const next = SECTION_ORDER[index + 1];
+  return (
+    <Card id={`section-${id}`} className="scroll-mt-20" aria-labelledby={`section-${id}-title`}>
+      <CardHeader>
+        <h2 id={`section-${id}-title`} className="text-[15px] font-semibold leading-6">
+          {SECTION_TITLES[id]}
+        </h2>
+        <p className="text-[13px] text-muted-foreground">{SECTION_QUESTIONS[id]}</p>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {children}
+        <div className="flex items-center justify-between gap-3 border-t pt-4">
+          {previous ? (
+            <Button type="button" variant="ghost" onClick={() => go(previous)}>
+              <ChevronLeft /> {SECTION_TITLES[previous]}
+            </Button>
+          ) : (
+            <span />
+          )}
+          {next ? (
+            <Button type="button" variant="outline" onClick={() => go(next)}>
+              {SECTION_TITLES[next]} <ChevronRight />
+            </Button>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Start work: the same one-section-at-a-time layout as Agent Studio and Team Studio.
+ * The section rail doubles as the summary, problems show per section, and the start
+ * button stays in view.
+ */
 export default function WorkPage() {
   const router = useRouter();
-  const [when, setWhen] = useState<"manual" | "schedule" | "event" | "connector">("manual");
-  const [cron, setCron] = useState("*/30 * * * *");
-  const [subject, setSubject] = useState("connector.telegram.message");
-  const [connectorSlug, setConnectorSlug] = useState("");
+  const [when, setWhen] = useState<When>("manual");
+  const [schedule, setSchedule] = useState<ScheduleValue>(() => ({ cron: "0 9 * * 1-5", timezone: undefined }));
   const [where, setWhere] = useState<"auto" | "local" | "docker" | "kubernetes">("auto");
   const [harness, setHarness] = useState("");
   const [whoType, setWhoType] = useState<WhoType>("agent");
@@ -59,21 +131,27 @@ export default function WorkPage() {
   const [autoApprove, setAutoApprove] = useState(false);
   const [longRunning, setLongRunning] = useState(false);
 
+  // New schedules start in the viewer's own time zone (set after mount: the server
+  // render cannot know it).
+  useEffect(() => {
+    const zone = browserTimeZone();
+    setSchedule((current) => (current.timezone ? current : { ...current, timezone: zone === "UTC" ? undefined : zone }));
+  }, []);
+
   // Drafts can be run by hand, so they are offered too (marked as drafts).
   const agents = useAgents({ limit: 100 });
   const teams = useAgentTeams();
   const harnesses = useHarnesses();
   const workerProfiles = useWorkerProfiles();
   const workers = useWorkers();
-  const connectors = useConnectors();
   const outputs = useOutputs();
 
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
 
   /**
-   * "On a schedule" adds a schedule trigger (cron + this task) to the agent by saving
-   * a new version, the same thing Agent Studio does, so it shows up and can be
+   * "On a schedule" adds a schedule trigger (cron, time zone and this task) to the agent
+   * by saving a new version, the same thing Agent Studio does, so it shows up and can be
    * edited or removed there.
    */
   async function createSchedule() {
@@ -81,6 +159,12 @@ export default function WorkPage() {
       await api.GET("/api/v1/agents/{agent_id}", { params: { path: { agent_id: who } } }),
     );
     const spec = detail.spec as unknown as { triggers?: unknown[] };
+    const trigger = {
+      type: "schedule",
+      cron: schedule.cron.trim(),
+      ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
+      task: task.trim(),
+    };
     const definition = {
       apiVersion: "orbit.io/v1",
       kind: "Agent",
@@ -91,7 +175,7 @@ export default function WorkPage() {
       },
       spec: {
         ...spec,
-        triggers: [...(spec.triggers ?? []), { type: "schedule", cron: cron.trim(), task: task.trim() }],
+        triggers: [...(spec.triggers ?? []), trigger],
       },
     };
     unwrap(
@@ -107,7 +191,12 @@ export default function WorkPage() {
   }
 
   async function createWork() {
-    if (!who || !task.trim()) return;
+    if (issues.length) {
+      setShowIssues(true);
+      go(issues[0].section);
+      toast.error(issues.length === 1 ? issues[0].message : "Fix the highlighted sections");
+      return;
+    }
     setCreating(true);
     try {
       if (scheduled) {
@@ -205,10 +294,10 @@ export default function WorkPage() {
     (worker) => worker.live && worker.harnesses.includes(harness),
   ).length;
   const agentOptions = (agents.data?.items ?? []).filter(
-    (agent) =>
-      (agent.status === "active" || agent.status === "draft") &&
-      (!harness || !agent.harness || agent.harness === harness),
+    (agent) => agent.status === "active" || agent.status === "draft",
   );
+  // An agent with its own harness runs on it; other harnesses are not offered for it.
+  const agentHarness = whoType === "agent" ? selectedAgent?.harness ?? null : null;
   // Harness is chosen per run: with none on the agent and no organization default,
   // "Agent default" cannot resolve and the API would refuse the execution.
   const needsHarness =
@@ -219,207 +308,209 @@ export default function WorkPage() {
     defaultHarnessKnown &&
     !defaultHarness;
   const scheduled = when === "schedule" && whoType === "agent";
-  const cronValid = cron.trim().split(/\s+/).length === 5;
   const scheduleHarness = selectedAgent?.harness || defaultHarness;
-  const missing = scheduled && !cronValid
-    ? "Enter a cron expression with five fields"
-    : scheduled && selectedAgent && defaultHarnessKnown && !scheduleHarness
-      ? "Set a default harness in Settings first: a schedule runs on the agent's harness or the default"
-      : !who
-    ? `Choose the ${whoType === "agent" ? "agent" : "team"} that does the work`
-    : needsHarness
-      ? `Choose a harness under Where: ${selectedAgent?.name} has none and no default is set`
-      : !task.trim()
-        ? "Describe the task"
-        : null;
+  const scheduleProblem = scheduled ? cronError(schedule.cron, schedule.timezone) : null;
 
-  const whenSummary =
-    when === "manual"
-      ? "Now, started by you"
-      : when === "schedule"
-        ? cronDescription(cron)
-        : when === "event"
-          ? `On event ${subject || "(no subject)"}`
-          : `From connector ${connectorSlug || "(none chosen)"}`;
+  // ------------------------------------------------------------------ validation
+  const issues: Issue[] = [];
+  if (!who) issues.push({ section: "who", message: `Choose the ${whoType === "agent" ? "agent" : "team"} that does the work.` });
+  if (!task.trim()) issues.push({ section: "what", message: "Describe the task." });
+  if (scheduleProblem) issues.push({ section: "when", message: scheduleProblem });
+  if (scheduled && selectedAgent && defaultHarnessKnown && !scheduleHarness)
+    issues.push({
+      section: "when",
+      message: "Set a default harness in Settings first: a schedule runs on the agent's harness or the default.",
+    });
+  if (!scheduled && needsHarness)
+    issues.push({ section: "where", message: `Choose a harness: ${selectedAgent?.name} has none and no default is set.` });
+  const [showIssues, setShowIssues] = useState(false);
+  const issueCount = (id: SectionId) => (showIssues ? issues.filter((issue) => issue.section === id).length : 0);
+
+  // ------------------------------------------------------------------ sections
+  // One section on screen at a time; the URL hash remembers which.
+  const [active, setActive] = useState<SectionId>("who");
+  const [focusRequest, setFocusRequest] = useState(0);
+  useEffect(() => {
+    const sync = () => {
+      const fromHash = window.location.hash.replace(/^#/, "");
+      if (isSectionId(fromHash)) setActive(fromHash);
+    };
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+  useEffect(() => {
+    if (!focusRequest) return;
+    const node = document.getElementById(`section-${active}`);
+    node?.scrollIntoView({ block: "start" });
+    node
+      ?.querySelector<HTMLElement>("[role=radio][aria-checked=true], input:not([type=hidden]), textarea, select")
+      ?.focus({ preventScroll: true });
+  }, [focusRequest, active]);
+  const pillNavRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = pillNavRef.current;
+    const pill = nav?.querySelector<HTMLElement>(`[data-section="${active}"]`);
+    if (!nav || !pill) return;
+    const left = pill.offsetLeft - nav.offsetLeft;
+    if (left < nav.scrollLeft || left + pill.offsetWidth > nav.scrollLeft + nav.clientWidth) {
+      nav.scrollTo({ left: Math.max(0, left - 16) });
+    }
+  }, [active]);
+  function go(id: SectionId) {
+    setActive(id);
+    setFocusRequest((count) => count + 1);
+    window.history.replaceState(null, "", `#${id}`);
+  }
+
+  // ------------------------------------------------------------------ summaries
+  const whoName = (whoType === "agent" ? selectedAgent?.name : selectedTeam?.name) ?? null;
+  const scheduleSummary = useMemo(() => describeSchedule(schedule.cron, schedule.timezone), [schedule]);
+  const summary: Record<SectionId, { value: string; missing?: boolean }> = {
+    who: { value: whoName ?? "Not chosen", missing: !whoName },
+    what: { value: name.trim() || task.trim() || "No task yet", missing: !task.trim() },
+    when: { value: scheduled ? scheduleSummary : "Now, started by you" },
+    where: {
+      value: scheduled
+        ? `Any free worker${scheduleHarness ? `, ${brandName(scheduleHarness)}` : ""}`
+        : `${where === "auto" ? "Anywhere" : titleCase(where)}${harness ? `, ${brandName(harness)}` : ""}`,
+    },
+    then: {
+      value: visibleOutputs.length
+        ? `${visibleOutputs.length} output${visibleOutputs.length === 1 ? "" : "s"}`
+        : "No outputs",
+    },
+  };
+
+  const sectionIssues = (id: SectionId) =>
+    showIssues && issues.some((issue) => issue.section === id) ? (
+      <Callout tone="danger" title="Fix before starting">
+        <ul className="list-disc space-y-0.5 pl-4">
+          {issues
+            .filter((issue) => issue.section === id)
+            .map((issue) => (
+              <li key={issue.message}>{issue.message}</li>
+            ))}
+        </ul>
+      </Callout>
+    ) : null;
+
+  const actionLabel = scheduled ? "Create schedule" : "Start work";
+  const actionIcon = scheduled ? <CalendarClock /> : <Play />;
+  const actionHint = scheduled
+    ? "Adds the schedule to the agent as a new version. Nothing runs until it next fires."
+    : "Starts an execution and opens its live timeline.";
+
+  const sectionNav = (
+    <nav aria-label="Work sections">
+      <ol className="space-y-0.5">
+        {SECTION_ORDER.map((id, index) => {
+          const current = id === active;
+          const problems = issueCount(id);
+          return (
+            <li key={id}>
+              <button
+                type="button"
+                onClick={() => go(id)}
+                aria-current={current ? "step" : undefined}
+                className={cn(
+                  "flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
+                  current ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
+                )}
+              >
+                <span
+                  className={cn(
+                    "tabular mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium",
+                    problems
+                      ? "bg-destructive/15 text-destructive"
+                      : current
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {problems ? "!" : index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">{SECTION_TITLES[id]}</span>
+                  <span
+                    className={cn(
+                      "block line-clamp-2 text-xs",
+                      problems ? "text-destructive" : summary[id].missing ? "text-warning" : "text-muted-foreground",
+                    )}
+                  >
+                    {problems ? `${problems} to fix` : summary[id].value}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-28 lg:pb-0">
       <PageHeader
         title="Start work"
-        description="Five questions define a piece of work: when it starts, where it runs, who does it, what they do, and what happens after."
+        description="Who does it, what they do, when it starts, where it runs and what happens after. Run it once now, or put it on a schedule."
       />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
-        <div className="space-y-4">
-          <Step number={1} title="When" question="When should this work start?">
-            <div role="radiogroup" aria-label="Trigger type" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {([
-                { value: "manual", label: "Now", desc: "Start as soon as you create it", icon: <Play /> },
-                { value: "schedule", label: "On a schedule", desc: "Repeat it, for example every morning", icon: <CalendarClock /> },
-                { value: "event", label: "On an event", desc: "Not available yet", icon: <Zap /> },
-                { value: "connector", label: "From a connector", desc: "Not available yet", icon: <Plug /> },
-              ] as const).map((opt) => (
-                <ChoiceCard
-                  key={opt.value}
-                  selected={when === opt.value}
-                  onSelect={() => setWhen(opt.value)}
-                  // Events and connector messages cannot start work yet; a schedule
-                  // belongs to one agent, so it is not offered for a team.
-                  disabled={
-                    opt.value === "event" ||
-                    opt.value === "connector" ||
-                    (opt.value === "schedule" && whoType === "team")
-                  }
-                  title={opt.label}
-                  description={opt.desc}
-                  icon={opt.icon}
-                />
-              ))}
-            </div>
-            <p className="text-[13px] text-muted-foreground">
-              Starting on an event or a connector message is not available yet.
-              {whoType === "team" ? " Schedules are set per agent, so they are not offered for a team." : ""}
-            </p>
-            {when === "schedule" ? (
-              <Field
-                label="Cron expression"
-                htmlFor="work-cron"
-                hint={`UTC, five fields. Reads as: ${cronDescription(cron)}.`}
-              >
-                <Input
-                  id="work-cron"
-                  className="font-mono sm:max-w-xs"
-                  value={cron}
-                  onChange={(e) => setCron(e.target.value)}
-                  placeholder="*/30 * * * *"
-                />
-              </Field>
-            ) : null}
-            {scheduled ? (
-              <Callout
-                tone={selectedAgent?.status === "draft" ? "warning" : "info"}
-                title={
-                  selectedAgent
-                    ? `This adds a schedule to ${selectedAgent.name}`
-                    : "This adds a schedule to the agent you choose"
-                }
-              >
-                The agent gets the task below every time the schedule fires, until you remove the
-                schedule on its page. It runs on the agent&apos;s own harness or the organization
-                default, wherever a matching worker is free.
-                {selectedAgent?.status === "draft"
-                  ? " This agent is still a draft: schedules only fire once it is activated."
-                  : ""}
-              </Callout>
-            ) : null}
-            {when === "event" ? (
-              <Field label="Event subject" htmlFor="work-subject">
-                <Input
-                  id="work-subject"
-                  className="font-mono sm:max-w-md"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="connector.telegram.message"
-                />
-              </Field>
-            ) : null}
-            {when === "connector" ? (
-              <div role="radiogroup" aria-label="Connector" className="grid gap-2 sm:grid-cols-2">
-                {(connectors.data ?? []).map((c) => (
-                  <ChoiceCard
-                    key={c.slug}
-                    selected={connectorSlug === c.slug}
-                    onSelect={() => setConnectorSlug(c.slug)}
-                    title={c.name}
-                    description={`${Array.isArray(c.capabilities) ? c.capabilities.length : 0} capabilities`}
-                    icon={<Plug />}
-                  />
-                ))}
-              </div>
-            ) : null}
-          </Step>
-
-          <Step number={2} title="Where" question="Where should it run?">
-            <div role="radiogroup" aria-label="Placement" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {([
-                { value: "auto", label: "Anywhere", desc: "Any worker that matches", icon: <Sparkles /> },
-                { value: "local", label: "Local", desc: "A worker on this host", icon: <Server /> },
-                { value: "docker", label: "Docker", desc: "A Docker worker", icon: <Server /> },
-                { value: "kubernetes", label: "Kubernetes", desc: "A Kubernetes worker", icon: <Server /> },
-              ] as const).map((opt) => (
-                <ChoiceCard
-                  key={opt.value}
-                  selected={where === opt.value}
-                  onSelect={() => setWhere(opt.value)}
-                  title={opt.label}
-                  description={opt.desc}
-                  icon={opt.icon}
-                />
-              ))}
-            </div>
-            <div className="space-y-1.5">
-              <p className="text-[13px] font-medium">Harness</p>
-              <div role="radiogroup" aria-label="Harness" className="grid gap-2 sm:grid-cols-2">
-                <ChoiceCard
-                  selected={harness === ""}
-                  onSelect={() => setHarness("")}
-                  title="Agent default"
-                  description={
-                    defaultHarness
-                      ? `The agent's own harness, or the organization default (${titleCase(defaultHarness)})`
-                      : "The harness set on the agent, if it has one"
-                  }
-                />
-                {(harnesses.data ?? []).map((h) => (
-                  <ChoiceCard
-                    key={h.kind}
-                    selected={harness === h.kind}
-                    onSelect={() => setHarness(h.kind)}
-                    disabled={h.implementationStatus !== "available"}
-                    title={h.name}
-                    trailing={<ImplementationBadge status={h.implementationStatus} />}
-                  />
-                ))}
-              </div>
-            </div>
-            {harness ? (
-              liveForHarness ? (
-                <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                  <StatusGlyph shape="solid" tone="success" />
-                  {liveForHarness === 1 ? (/^[aeiou]/i.test(brandName(harness)) ? "An" : "A") : liveForHarness} {brandName(harness)} worker{liveForHarness === 1 ? " is" : "s are"} online and will pick this up.
-                </p>
-              ) : harnessProfiles.length ? (
-                <div className="space-y-1.5">
-                  <p className="text-[13px] font-medium">Worker profiles for {brandName(harness)}</p>
-                  <ul className="divide-y rounded-lg border bg-card">
-                    {harnessProfiles.map((p) => (
-                      <li key={p.id} className={cn("flex items-center justify-between gap-3 px-3 py-2 text-sm", !p.enabled && "text-muted-foreground")}>
-                        <span className="truncate font-medium">{p.name}</span>
-                        <span className="shrink-0 text-[13px] text-muted-foreground">
-                          {p.enabled ? "Enabled" : "Disabled"}, {p.target}, {p.agentIds.length} agent{p.agentIds.length === 1 ? "" : "s"}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : (
-                <Callout
-                  tone="warning"
-                  title={`No worker profile for ${brandName(harness)}`}
-                  action={
-                    <Button asChild size="sm" variant="outline">
-                      <Link href={`/workers?create=1&harness=${harness}&placement=${where}`}>Create profile</Link>
-                    </Button>
-                  }
+      {/* Phones and tablets: the sections as a scrollable row of steps. */}
+      <nav
+        ref={pillNavRef}
+        aria-label="Work sections"
+        className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] lg:hidden [&::-webkit-scrollbar]:hidden"
+      >
+        <ol className="flex w-max gap-1.5">
+          {SECTION_ORDER.map((id, index) => {
+            const current = id === active;
+            const problems = issueCount(id);
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  onClick={() => go(id)}
+                  aria-current={current ? "step" : undefined}
+                  data-section={id}
+                  className={cn(
+                    "inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
+                    current
+                      ? "border-primary/40 bg-accent text-accent-foreground"
+                      : "bg-card text-muted-foreground hover:text-foreground",
+                    problems && "border-destructive/40 text-destructive",
+                  )}
                 >
-                  A worker profile sets the image, credentials and resources for this harness. One is
-                  created for you when you start the work, or you can set it up yourself first.
-                </Callout>
-              )
-            ) : null}
-          </Step>
+                  <span className="tabular text-xs opacity-70">{problems ? "!" : index + 1}</span>
+                  {SECTION_TITLES[id]}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
 
-          <Step number={3} title="Who" question="Who does the work?">
+      <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
+        <aside className="hidden lg:sticky lg:top-6 lg:block">
+          {sectionNav}
+          <div className="mt-4 space-y-2 border-t pt-4">
+            {showIssues && issues.length ? (
+              <p className="text-[13px] text-destructive" role="status">
+                {issues.length} {issues.length === 1 ? "issue needs" : "issues need"} fixing.
+              </p>
+            ) : null}
+            <Button size="lg" className="w-full" loading={creating} onClick={() => void createWork()}>
+              {actionIcon} {actionLabel}
+            </Button>
+            <p className="text-[13px] text-muted-foreground" aria-live="polite">
+              {actionHint}
+            </p>
+          </div>
+        </aside>
+
+        <div className="min-w-0 max-w-3xl space-y-5">
+          <FormSection id="who" active={active} go={go}>
+            {sectionIssues("who")}
             <Segmented
               label="Executor type"
               value={whoType}
@@ -440,7 +531,11 @@ export default function WorkPage() {
                     <ChoiceCard
                       key={agent.id}
                       selected={who === agent.id}
-                      onSelect={() => setWho(agent.id)}
+                      onSelect={() => {
+                        setWho(agent.id);
+                        // A harness picked for another agent may not apply to this one.
+                        if (agent.harness && harness && agent.harness !== harness) setHarness("");
+                      }}
                       title={agent.name}
                       description={`${agent.harness ? brandName(agent.harness) : "Any harness"}, ${autonomyName(agent.autonomyLevel).toLowerCase()}`}
                       trailing={agent.status === "draft" ? <Badge variant="secondary">Draft</Badge> : undefined}
@@ -449,11 +544,9 @@ export default function WorkPage() {
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  {harness && agents.data?.items.length
-                    ? `No active agent uses the ${brandName(harness)} harness. Pick another harness above, or `
-                    : "There are no agents to run yet. "}
+                  There are no agents to run yet.{" "}
                   <Link href="/agents/new" className="font-medium text-primary underline-offset-4 hover:underline">
-                    {harness && agents.data?.items.length ? "create one" : "Create an agent"}
+                    Create an agent
                   </Link>
                   .
                 </p>
@@ -473,16 +566,21 @@ export default function WorkPage() {
             ) : (
               <p className="text-sm text-muted-foreground">
                 There are no agent teams yet.{" "}
-                <Link href="/agent-teams" className="font-medium text-primary underline-offset-4 hover:underline">
+                <Link href="/agent-teams/new" className="font-medium text-primary underline-offset-4 hover:underline">
                   Create a team
                 </Link>
                 .
               </p>
             )}
-          </Step>
+          </FormSection>
 
-          <Step number={4} title="What" question="What should be done?">
-            <Field label="Task" htmlFor="work-task">
+          <FormSection id="what" active={active} go={go}>
+            {sectionIssues("what")}
+            <Field
+              label="Task"
+              htmlFor="work-task"
+              hint={scheduled ? "Sent to the agent every time the schedule fires." : undefined}
+            >
               <Textarea
                 id="work-task"
                 className="min-h-[120px]"
@@ -491,24 +589,161 @@ export default function WorkPage() {
                 placeholder="Describe the outcome you want, as you would to a colleague."
               />
             </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Name" optional htmlFor="work-name" hint="Shown in the executions list instead of the agent name.">
-                <Input id="work-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Evaluate article X" />
-              </Field>
-              <Field label="Repository" optional htmlFor="work-repo" hint="Checked out into the workspace when the agent has a GitHub or GitLab connector that allows it.">
-                <Input id="work-repo" className="font-mono" value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="owner/repo" />
-              </Field>
-            </div>
-            {repository.trim() && whoType === "agent" && selectedAgent && selectedAgent.connectorCount === 0 ? (
+            {scheduled ? null : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Name" optional htmlFor="work-name" hint="Shown in the executions list instead of the agent name.">
+                  <Input id="work-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Evaluate article X" />
+                </Field>
+                <Field label="Repository" optional htmlFor="work-repo" hint="Checked out into the workspace when the agent has a GitHub or GitLab connector that allows it.">
+                  <Input id="work-repo" className="font-mono" value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="owner/repo" />
+                </Field>
+              </div>
+            )}
+            {!scheduled && repository.trim() && whoType === "agent" && selectedAgent && selectedAgent.connectorCount === 0 ? (
               <Callout tone="warning" title="This repository will not be checked out">
                 {selectedAgent.name} has no connector, so it starts in an empty workspace and cannot
                 reach {repository.trim()}. Add a GitHub or GitLab connector with “Check out repository”
                 in Agent Studio first.
               </Callout>
             ) : null}
-          </Step>
+          </FormSection>
 
-          <Step number={5} title="Then" question="What happens after?">
+          <FormSection id="when" active={active} go={go}>
+            {sectionIssues("when")}
+            <div role="radiogroup" aria-label="When" className="grid gap-2 sm:grid-cols-2">
+              <ChoiceCard
+                selected={when === "manual"}
+                onSelect={() => setWhen("manual")}
+                title="Now"
+                description="Runs once, as soon as you start it"
+                icon={<Play />}
+              />
+              <ChoiceCard
+                selected={when === "schedule"}
+                onSelect={() => setWhen("schedule")}
+                // A schedule belongs to one agent, so it is not offered for a team.
+                disabled={whoType === "team"}
+                title="On a schedule"
+                description={whoType === "team" ? "Schedules are set per agent, not per team" : "Repeats, for example every weekday morning"}
+                icon={<CalendarClock />}
+              />
+            </div>
+            {scheduled ? (
+              <>
+                <ScheduleEditor id="work-schedule" value={schedule} onChange={setSchedule} />
+                <Callout
+                  tone={selectedAgent?.status === "draft" ? "warning" : "info"}
+                  title={selectedAgent ? `This adds a schedule to ${selectedAgent.name}` : "This adds a schedule to the agent you choose"}
+                >
+                  The agent gets the task every time the schedule fires, until you remove the schedule
+                  in Agent Studio.
+                  {selectedAgent?.status === "draft" ? " This agent is still a draft: schedules only fire once it is activated." : ""}
+                </Callout>
+              </>
+            ) : null}
+            <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+              <Zap className="h-3.5 w-3.5" aria-hidden />
+              <Plug className="h-3.5 w-3.5" aria-hidden />
+              Starting on an event or a connector message is not available yet.
+            </p>
+          </FormSection>
+
+          <FormSection id="where" active={active} go={go}>
+            {sectionIssues("where")}
+            {scheduled ? (
+              <Callout tone="info" title="Scheduled runs go to any free worker">
+                Each run uses {selectedAgent ? `${selectedAgent.name}'s` : "the agent's"} own harness
+                {scheduleHarness ? ` (${brandName(scheduleHarness)})` : ""} or the organization default, and
+                starts wherever a matching worker is free. Placement and harness are picked per run only
+                for work you start now.
+              </Callout>
+            ) : (
+              <>
+                <div role="radiogroup" aria-label="Placement" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {([
+                    { value: "auto", label: "Anywhere", desc: "Any worker that matches", icon: <Sparkles /> },
+                    { value: "local", label: "Local", desc: "A worker on this host", icon: <Server /> },
+                    { value: "docker", label: "Docker", desc: "A Docker worker", icon: <Server /> },
+                    { value: "kubernetes", label: "Kubernetes", desc: "A Kubernetes worker", icon: <Server /> },
+                  ] as const).map((opt) => (
+                    <ChoiceCard
+                      key={opt.value}
+                      selected={where === opt.value}
+                      onSelect={() => setWhere(opt.value)}
+                      title={opt.label}
+                      description={opt.desc}
+                      icon={opt.icon}
+                    />
+                  ))}
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-[13px] font-medium">Harness</p>
+                  <div role="radiogroup" aria-label="Harness" className="grid gap-2 sm:grid-cols-2">
+                    <ChoiceCard
+                      selected={harness === ""}
+                      onSelect={() => setHarness("")}
+                      title="Agent default"
+                      description={
+                        agentHarness
+                          ? `${selectedAgent?.name} runs on ${brandName(agentHarness)}`
+                          : defaultHarness
+                            ? `The agent's own harness, or the organization default (${titleCase(defaultHarness)})`
+                            : "The harness set on the agent, if it has one"
+                      }
+                    />
+                    {(harnesses.data ?? []).map((h) => (
+                      <ChoiceCard
+                        key={h.kind}
+                        selected={harness === h.kind}
+                        onSelect={() => setHarness(h.kind)}
+                        disabled={h.implementationStatus !== "available" || Boolean(agentHarness && agentHarness !== h.kind)}
+                        title={h.name}
+                        trailing={<ImplementationBadge status={h.implementationStatus} />}
+                      />
+                    ))}
+                  </div>
+                </div>
+                {harness ? (
+                  liveForHarness ? (
+                    <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                      <StatusGlyph shape="solid" tone="success" />
+                      {liveForHarness === 1 ? (/^[aeiou]/i.test(brandName(harness)) ? "An" : "A") : liveForHarness} {brandName(harness)} worker{liveForHarness === 1 ? " is" : "s are"} online and will pick this up.
+                    </p>
+                  ) : harnessProfiles.length ? (
+                    <div className="space-y-1.5">
+                      <p className="text-[13px] font-medium">Worker profiles for {brandName(harness)}</p>
+                      <ul className="divide-y rounded-lg border bg-card">
+                        {harnessProfiles.map((p) => (
+                          <li key={p.id} className={cn("flex items-center justify-between gap-3 px-3 py-2 text-sm", !p.enabled && "text-muted-foreground")}>
+                            <span className="truncate font-medium">{p.name}</span>
+                            <span className="shrink-0 text-[13px] text-muted-foreground">
+                              {p.enabled ? "Enabled" : "Disabled"}, {p.target}, {p.agentIds.length} agent{p.agentIds.length === 1 ? "" : "s"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <Callout
+                      tone="warning"
+                      title={`No worker profile for ${brandName(harness)}`}
+                      action={
+                        <Button asChild size="sm" variant="outline">
+                          <Link href={`/workers?create=1&harness=${harness}&placement=${where}`}>Create profile</Link>
+                        </Button>
+                      }
+                    >
+                      A worker profile sets the image, credentials and resources for this harness. One is
+                      created for you when you start the work, or you can set it up yourself first.
+                    </Callout>
+                  )
+                ) : null}
+              </>
+            )}
+          </FormSection>
+
+          <FormSection id="then" active={active} go={go}>
+            {sectionIssues("then")}
             <div className="grid gap-2 sm:grid-cols-2">
               <CheckboxField
                 checked={autoApprove}
@@ -553,106 +788,21 @@ export default function WorkPage() {
                 </p>
               )}
             </div>
-          </Step>
+          </FormSection>
         </div>
-
-        <Card className="p-4 sm:p-5 lg:sticky lg:top-6">
-          <h2 className="text-[15px] font-semibold">Summary</h2>
-          <dl className="mt-3 divide-y text-[13px]">
-            <SummaryRow label="When" value={whenSummary} />
-            <SummaryRow
-              label="Where"
-              value={
-                scheduled
-                  ? `Any free worker, ${scheduleHarness ? brandName(scheduleHarness) : "default harness"}`
-                  : `${where === "auto" ? "Anywhere" : titleCase(where)}${harness ? `, ${brandName(harness)}` : ""}`
-              }
-            />
-            <SummaryRow
-              label="Who"
-              value={(whoType === "agent" ? selectedAgent?.name : selectedTeam?.name) ?? null}
-              placeholder="Not chosen"
-            />
-            <SummaryRow label="What" value={name.trim() || task.trim() || null} placeholder="No task yet" />
-            <SummaryRow
-              label="Then"
-              value={[
-                autoApprove ? "Auto-approve writes" : "Ask before writes",
-                longRunning ? "keep running" : null,
-                visibleOutputs.length ? `${visibleOutputs.length} output${visibleOutputs.length === 1 ? "" : "s"}` : null,
-              ]
-                .filter(Boolean)
-                .join(", ")}
-            />
-          </dl>
-          <Button
-            className="mt-4 w-full"
-            size="lg"
-            disabled={Boolean(missing) || creating}
-            loading={creating}
-            onClick={() => void createWork()}
-          >
-            {scheduled ? <CalendarClock /> : <Play />} {scheduled ? "Create schedule" : "Start work"}
-          </Button>
-          <p className="mt-2 text-center text-[13px] text-muted-foreground" aria-live="polite">
-            {missing ??
-              (scheduled
-                ? "Adds the schedule to the agent as a new version. Nothing runs until it next fires."
-                : "Starts an execution and opens its live timeline.")}
-          </p>
-        </Card>
       </div>
-    </div>
-  );
-}
 
-function Step({
-  number,
-  title,
-  question,
-  children,
-}: {
-  number: number;
-  title: string;
-  question: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className="p-4 sm:p-5">
-      <section aria-labelledby={`work-step-${number}`} className="grid gap-4 sm:grid-cols-[2.25rem_minmax(0,1fr)]">
-        <span
-          aria-hidden
-          className="font-display tabular flex h-9 w-9 items-center justify-center rounded-full border border-border-strong text-[15px] text-muted-foreground"
-        >
-          {number}
-        </span>
-        <div className="min-w-0 space-y-4">
-          <h2 id={`work-step-${number}`} className="flex flex-wrap items-baseline gap-x-2 pt-1.5">
-            <span className="text-[15px] font-semibold">{title}</span>
-            <span className="text-[13px] font-normal text-muted-foreground">{question}</span>
-          </h2>
-          {children}
+      {/* Phones and tablets: the action stays within thumb reach. */}
+      <div className="fixed inset-x-0 bottom-14 z-30 border-t bg-background/95 p-3 backdrop-blur lg:hidden">
+        <div className="flex items-center justify-between gap-3">
+          <p className="min-w-0 truncate text-[13px] text-muted-foreground">
+            {[whoName, scheduled ? scheduleSummary : "Now"].filter(Boolean).join(" · ")}
+          </p>
+          <Button size="lg" className="shrink-0" loading={creating} onClick={() => void createWork()}>
+            {actionIcon} {actionLabel}
+          </Button>
         </div>
-      </section>
-    </Card>
-  );
-}
-
-function SummaryRow({
-  label,
-  value,
-  placeholder,
-}: {
-  label: string;
-  value: string | null;
-  placeholder?: string;
-}) {
-  return (
-    <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-3 py-2 first:pt-0 last:pb-0">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className={cn("line-clamp-3 break-words font-medium", !value && "font-normal text-muted-foreground")}>
-        {value || placeholder}
-      </dd>
+      </div>
     </div>
   );
 }

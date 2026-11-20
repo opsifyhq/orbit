@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Changed
+
+- Schedules no longer need cron: one schedule picker in Start work and Agent Studio offers
+  minutes, hourly, daily, weekly and monthly patterns, a time zone (yours by default, daylight
+  saving included), a plain-English summary and the next three runs; Custom keeps raw cron with
+  clear errors. Schedule summaries now name their time zone.
+- Start work uses the Studio layout of Agent and Team Studio: a section rail that doubles as the
+  summary, one section at a time (Who, What, When, Where, Then) and the action always in view.
+
 ## [0.24.0] - 2026-11-20
 
 ### Added

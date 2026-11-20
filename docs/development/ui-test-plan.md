@@ -33,7 +33,8 @@ Time: ~25 minutes for flows 1–5, plus ~25 minutes for flows 6–14.
 2. Identity: name `UI Smoke Agent`, description “UI test”.
 3. Instructions: “You are a concise test agent. Summarize the task.”
 4. Model: managed by **The harness**; leave provider/model empty.
-5. Add a **Schedule** trigger (`*/30 * * * *`) and leave it enabled.
+5. Add a **Schedule** trigger: it starts as **Weekly**, weekdays at 09:00 in your own time zone, with a
+   plain-English summary and the next three runs. Leave it enabled.
 6. Autonomy: **Recommend** (level 2); under **Run limits** set timeout 120s, concurrency 1.
 7. **Create agent** → redirected to detail page.
 
@@ -171,19 +172,19 @@ approvals UI is still being finished.
 
 | Step | Expected |
 |---|---|
-| Open `/work` (sidebar **Start work**) | One page with five numbered sections (When, Where, Who, What, Then) and a Summary that stays in view on desktop |
+| Open `/work` (sidebar **Start work**) | The Studio layout: a section rail (Who, What, When, Where, Then) that shows each answer, one section on screen at a time, and the start button in the rail (pinned at the bottom on phones) |
+| Who → Agent or Agent Team | Active and draft agents (drafts marked); teams are listed |
+| What | Task, plus optional name and repository (hidden for a schedule: a schedule only carries its task) |
 | When → Now | Default; **Start work** queues one execution |
-| When → On a schedule | Cron field and a notice naming the agent; the button reads **Create schedule**; saving adds a schedule trigger with this task to the agent (new version) and opens the agent, where the trigger and its task are listed. Disabled for an agent team |
-| When → event / connector | Disabled, marked “Not available yet” |
-| Where | Placement cards (anywhere/local/docker/kubernetes) and harness cards, including **Agent default** |
+| When → On a schedule | Schedule picker: Minutes, Hourly, Daily, Weekly, Monthly or Custom, with only the controls that frequency needs, a time zone (yours by default), a plain-English summary, the next three runs and the cron it stores. The button reads **Create schedule**; saving adds a schedule trigger with this task and time zone to the agent (new version) and opens the agent, where it reads e.g. “Every weekday at 09:00 Amsterdam time”. Disabled for an agent team |
+| When → Custom | Invalid cron shows why (for example “Invalid value for minute: 61”); **Edit as cron** from any other frequency opens it with the current expression |
+| Where | Placement and harness cards, including **Agent default**; harnesses other than the agent's own are disabled. For a schedule, a notice that runs go to any free worker instead |
 | Where → pick a harness | Matching worker profiles are shown, or a create link |
-| Who → Agent or Agent Team | Agents are filtered by the chosen harness; teams are listed |
-| What | Optional name, task, repository |
 | Then | “Auto-approve writes” and “Keep the agent running” are shown disabled (not wired yet); outputs for the chosen agent/team |
-| Summary | Live read-back of all five answers; **Start work** enabled only when Who + What are set, and the line under it says what is missing |
+| Start with something missing | Jumps to the first section with a problem, marks it in the rail and lists what to fix |
 | Start work | Execution starts, a matching worker profile is created/launched, redirect to the execution |
 
-**Watch for:** agents from another harness appearing, and the Summary button staying disabled.
+**Watch for:** a schedule whose next runs disagree with the agent page after saving, and controls wrapping off-screen at 360px.
 
 ## Flow 11 — Agent Teams and queue (5 min)
 

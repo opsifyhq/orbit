@@ -13,7 +13,7 @@ contain an execution loop; a worker runs it through a harness adapter.
 | `spec.instructions` | Trusted system prompt, kept separate from untrusted input |
 | `spec.runDefaults.task` | Optional task pre-filled for manual runs; never used as system instructions |
 | `spec.connectors` | Connector bindings and the capabilities the agent may request |
-| `spec.triggers` | Manual, schedule (cron), event or webhook |
+| `spec.triggers` | Manual, schedule (cron plus an optional IANA `timezone`, UTC when omitted), event or webhook |
 | `spec.autonomy` | Level 1–4, approval mode and per-hour quota |
 | `spec.resources` | Execution timeout, concurrency, max output tokens. Worker CPU/memory live on the worker profile. `network` (egress mode and allowed hosts) is validated and recorded but **not yet enforced** (see below) |
 | `spec.memory` | Whether the agent reads/writes durable memory |

@@ -1,4 +1,5 @@
 import { AUTONOMY_LEVELS } from "@orbit/contracts";
+import { describeSchedule } from "@/lib/schedule";
 
 // Human-friendly labels for the technical primitives ORBIT exposes in the UI.
 // Kept in one place so capability ids, effects, cron expressions and event kinds
@@ -166,58 +167,12 @@ function cap(value: string): string {
 }
 
 /**
- * Describe a 5-field cron expression in plain English. Falls back to the raw
- * expression when it cannot be recognized.
+ * Describe a schedule in plain English ("Every weekday at 09:00 Amsterdam time").
+ * Expressions without a simple reading are shown as cron.
  */
-export function cronDescription(cron: string | null | undefined): string {
+export function cronDescription(cron: string | null | undefined, timezone?: string | null): string {
   if (!cron) return "—";
-  const fields = cron.trim().split(/\s+/);
-  if (fields.length !== 5) return cron;
-
-  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
-  if (dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
-    if (minute.startsWith("*/") && hour === "*") {
-      const minutes = minute.slice(2);
-      return `Every ${minutes} minute${minutes === "1" ? "" : "s"}`;
-    }
-    if (minute === "0" && hour.startsWith("*/")) {
-      const hours = hour.slice(2);
-      return `Every ${hours} hour${hours === "1" ? "" : "s"}`;
-    }
-    if (minute === "0" && hour === "*") return "Every hour";
-    if (minute === "0" && hour === "12") return "Every day at noon";
-    if (minute === "0" && hour === "0") return "Every day at midnight";
-    if (minute === "0" && hour !== "*") return `Every day at ${formatHour(hour)}`;
-  }
-  if (dayOfMonth === "*" && month === "*" && dayOfWeek !== "*" && minute === "0" && hour !== "*") {
-    return `${describeWeekdays(dayOfWeek)} at ${formatHour(hour)} UTC`;
-  }
-  return cron;
-}
-
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-/** "1-5" → "Every weekday", "1" → "Every Monday", "1,3" → "Every Monday and Wednesday". */
-function describeWeekdays(field: string): string {
-  if (field === "1-5") return "Every weekday";
-  if (field === "0,6" || field === "6,0" || field === "6,7") return "Every weekend day";
-  const range = field.match(/^(\d)-(\d)$/);
-  if (range && WEEKDAYS[Number(range[1])] && WEEKDAYS[Number(range[2])]) {
-    return `Every ${WEEKDAYS[Number(range[1])]} to ${WEEKDAYS[Number(range[2])]}`;
-  }
-  const days = field.split(",").map((part) => WEEKDAYS[Number(part)]);
-  if (days.every(Boolean)) {
-    return `Every ${days.length > 1 ? `${days.slice(0, -1).join(", ")} and ${days.at(-1)}` : days[0]}`;
-  }
-  return `On days ${field}`;
-}
-
-function formatHour(value: string): string {
-  const number = Number(value);
-  if (Number.isNaN(number)) return value;
-  const suffix = number < 12 ? "am" : "pm";
-  const hour12 = number % 12 === 0 ? 12 : number % 12;
-  return `${hour12}${suffix}`;
+  return describeSchedule(cron, timezone);
 }
 
 /**

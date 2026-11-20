@@ -429,7 +429,10 @@ export default function AgentDetailPage() {
                           <span className="min-w-0 flex-1 text-sm">
                             <span className="block truncate">
                               {trigger.kind === "schedule"
-                                ? cronDescription(String((trigger.config as { cron?: string }).cron ?? ""))
+                                ? cronDescription(
+                                    String((trigger.config as { cron?: string }).cron ?? ""),
+                                    (trigger.config as { timezone?: string | null }).timezone,
+                                  )
                                 : trigger.kind === "event"
                                   ? String((trigger.config as { subject?: string }).subject ?? "")
                                   : trigger.kind === "webhook"
