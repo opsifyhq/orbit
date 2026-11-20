@@ -52,17 +52,17 @@ deployment topology): [`docs/architecture/diagram.md`](docs/architecture/diagram
 
 | Put an agent to work on… | Start it with… | What happens |
 |---|---|---|
-| **An issue → a pull request** | Manual, schedule, webhook, or queue | Agent reads the issue, implements the fix, runs tests, commits, pushes, opens a PR |
+| **An issue → a pull request** | Manual, schedule, or an agent team's issue queue | Agent reads the issue, implements the fix, runs tests, commits, pushes, opens a PR |
 | **Dependency updates and daily briefings** | A cron schedule | Run saved instructions on a schedule, with separate history per run |
 | **Agent Teams** | Manual or auto-dispatch from GitHub/GitLab issues | Sequential or native subagent handoffs, each step is a normal execution |
-| **Monitoring and triage** | Event triggers (Telegram, webhooks) | Agent classifies, drafts replies, proposes actions for approval |
+| **Monitoring and triage** | A schedule today (event and webhook triggers are planned) | Agent classifies, drafts replies, proposes actions for approval |
 | **Research and analysis** | Manual execution | Agent gathers info, summarizes, marks uncertainty |
 
 ## Five answers describe the work
 
 | | Your choice |
 |---|---|
-| **When** | Manual, schedule (cron), event, webhook, or connector-triggered |
+| **When** | Manual, schedule (cron), or auto-dispatch from GitHub/GitLab issues. Event and webhook triggers are planned |
 | **Where** | Local worker, Docker, or Kubernetes — auto-routed by placement |
 | **Who** | A single agent or an Agent Team (primary + subagents) |
 | **What** | A task, repository, connectors, and skills |

@@ -1188,7 +1188,7 @@ export function AgentForm({
                   <Field
                     label="Event subject"
                     htmlFor={`trigger-${index}`}
-                    hint="The agent runs when an event with this subject is published."
+                    hint="Saved with the agent, but events cannot start work yet, so this trigger does not fire."
                   >
                     <Input
                       id={`trigger-${index}`}
