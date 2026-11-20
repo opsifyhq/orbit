@@ -26,6 +26,7 @@ import {
   emptyAgentDefinition,
 } from "@orbit/contracts";
 import { cn, titleCase } from "@/lib/utils";
+import { connectorIssues, formatValidationPath } from "@/lib/connector-validation";
 import { brandName, cronDescription, effectLabel } from "@/lib/presentation";
 import { browserTimeZone } from "@/lib/schedule";
 import { ScheduleEditor } from "@/components/schedule-editor";
@@ -80,9 +81,13 @@ function sectionForPath(path: string): SectionId {
   return "autonomy";
 }
 
-/** "spec.resources.timeoutSeconds" becomes "timeout seconds". */
+/** "spec.resources.timeoutSeconds" and "spec.connectors[0].connectionId" become field words. */
 function fieldWords(path: string): string {
-  const last = path.split(".").filter((part) => !/^\d+$/.test(part)).pop() ?? "";
+  const last = path
+    .split(".")
+    .map((part) => part.replace(/\[\d+\]/g, ""))
+    .filter((part) => part && !/^\d+$/.test(part))
+    .pop() ?? "";
   return last
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .toLowerCase()
@@ -109,6 +114,21 @@ function issueText(path: string, rawMessage: string): string {
     .some((word) => message.toLowerCase().includes(word));
   if (!field || mentioned) return sentence;
   return `${field.charAt(0).toUpperCase()}${field.slice(1)}: ${message}`;
+}
+
+/**
+ * Shared contract shape plus the connector rule (#260). Paths use the API envelope's
+ * bracket form so a field error and its inline message are the same field.
+ */
+function fieldIssues(definition: AgentDefinition): Array<{ path: string; message: string }> {
+  const parsed = agentDefinitionSchema.safeParse(definition);
+  const shapeIssues = parsed.success
+    ? []
+    : parsed.error.issues.map((issue) => ({
+        path: formatValidationPath(issue.path),
+        message: issue.message,
+      }));
+  return [...shapeIssues, ...connectorIssues(definition.spec.connectors)];
 }
 
 function FormSection({
@@ -366,34 +386,36 @@ export function AgentForm({
   // Once a submit has failed, keep the error list honest while the person fixes things.
   useEffect(() => {
     if (!failedSubmits || issues.length === 0) return;
-    const parsed = agentDefinitionSchema.safeParse(buildCandidate());
-    const next = parsed.success
-      ? []
-      : parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }));
+    const next = fieldIssues(buildCandidate());
     if (JSON.stringify(next) !== JSON.stringify(issues)) setIssues(next);
   }, [definition]);
 
   async function handleSubmit() {
-    const parsed = agentDefinitionSchema.safeParse(buildCandidate());
-    if (!parsed.success) {
-      revealIssues(
-        parsed.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message,
-        })),
-      );
+    const candidate = buildCandidate();
+    const nextIssues = fieldIssues(candidate);
+    if (nextIssues.length > 0) {
+      revealIssues(nextIssues);
       toast.error("Fix the highlighted fields");
       return;
     }
     setIssues([]);
     if ((await accessRef.current?.save()) === false) return;
-    await onSubmit(parsed.data as unknown as AgentDefinition);
+    await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition);
   }
-
-  const issueFor = (path: string) => issues.find((issue) => issue.path === path)?.message;
 
   const editing = Boolean(initial);
   const spec = definition.spec;
+
+  // Connector errors show as soon as a row is enabled; other fields still report on submit.
+  const connectorProblems = useMemo(() => connectorIssues(spec.connectors), [spec.connectors]);
+  const visibleIssues = useMemo(() => {
+    const all = [...issues];
+    for (const problem of connectorProblems) {
+      if (!all.some((issue) => issue.path === problem.path)) all.push(problem);
+    }
+    return all;
+  }, [issues, connectorProblems]);
+  const issueFor = (path: string) => visibleIssues.find((issue) => issue.path === path)?.message;
   const autonomy = AUTONOMY_LEVELS.find((level) => level.level === spec.autonomy.level);
   const modelSummary =
     [spec.model.provider, spec.model.model].filter(Boolean).join(" / ") || "Harness default";
@@ -442,10 +464,19 @@ export function AgentForm({
     sharing: { value: resourceId ? "Who can see and use it" : "After the first save" },
   };
   const issueCount = (id: SectionId) =>
-    issues.filter((issue) => sectionForPath(issue.path) === id).length;
+    visibleIssues.filter((issue) => sectionForPath(issue.path) === id).length;
+  const saveBlocked = connectorProblems.length > 0;
+  const saveBlockedHint = "Choose a connection for every enabled connector before saving.";
 
   const submitButton = (className?: string) => (
-    <Button onClick={handleSubmit} loading={submitting} size="lg" className={className}>
+    <Button
+      onClick={handleSubmit}
+      loading={submitting}
+      disabled={saveBlocked}
+      title={saveBlocked ? saveBlockedHint : undefined}
+      size="lg"
+      className={className}
+    >
       {submitLabel}
     </Button>
   );
@@ -546,6 +577,7 @@ export function AgentForm({
                 {issues.length} {issues.length === 1 ? "issue needs" : "issues need"} fixing.
               </p>
             ) : null}
+            {saveBlocked ? <p className="text-[13px] text-destructive">{saveBlockedHint}</p> : null}
             {submitButton("w-full")}
             <Button asChild variant="ghost" className="w-full">
               <Link href={cancelHref}>Cancel</Link>
@@ -1003,7 +1035,9 @@ export function AgentForm({
               ) : null}
               <ul className="divide-y overflow-hidden rounded-lg border bg-card">
               {(connectors.data ?? []).map((connector) => {
-                const binding = spec.connectors.find((c) => c.connector === connector.slug);
+                const bindingIndex = spec.connectors.findIndex((c) => c.connector === connector.slug);
+                const binding = spec.connectors[bindingIndex];
+                const connectionError = issueFor(`spec.connectors[${bindingIndex}].connectionId`);
                 const capabilities = (connector.capabilities ?? []) as Array<{
                   id: string;
                   name: string;
@@ -1039,10 +1073,12 @@ export function AgentForm({
                         <Field
                           label="Connection"
                           htmlFor={`conn-${connector.slug}`}
-                          hint="The saved credentials this agent uses. Without one, live reads are skipped."
+                          error={connectionError}
+                          hint="The saved credentials this agent uses for live reads."
                         >
                           <Select
                             id={`conn-${connector.slug}`}
+                            aria-invalid={connectionError ? true : undefined}
                             value={binding.connectionId ?? ""}
                             onChange={(event) =>
                               updateSpec({
@@ -1407,6 +1443,9 @@ export function AgentForm({
 
       {/* Phone and tablet: submit bar pinned above the 56px tab bar. */}
       <div className="fixed inset-x-0 bottom-14 z-30 border-t bg-background/95 p-3 backdrop-blur lg:hidden">
+        {saveBlocked ? (
+          <p className="mb-2 text-center text-[13px] text-destructive">{saveBlockedHint}</p>
+        ) : null}
         <div className="flex items-center justify-between gap-3">
           <Button asChild variant="ghost">
             <Link href={cancelHref}>Cancel</Link>
