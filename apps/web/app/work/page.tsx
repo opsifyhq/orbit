@@ -175,7 +175,11 @@ export default function WorkPage() {
     unwrap(
       await api.PATCH("/api/v1/agents/{agent_id}", {
         params: { path: { agent_id: who } },
-        body: { definition: toAgentDefinitionBody(definition as never) },
+        // Read-then-write of the whole definition: refuse to clobber an edit made in between.
+        body: {
+          definition: toAgentDefinitionBody(definition as never),
+          expectedVersion: detail.currentVersion,
+        },
       }),
     );
     void queryClient.invalidateQueries({ queryKey: queryKeys.agent(who) });

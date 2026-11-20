@@ -146,6 +146,15 @@ pub async fn update_agent(
         let access = crate::access::AccessScope::load(&state, &auth).await?;
         crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
         let agent = state.store.get_agent(auth.org_id, agent_id).await?;
+        // Someone else saved a newer version since this edit was opened: refuse rather
+        // than silently overwrite their work (the version write re-checks under a lock).
+        if let Some(expected) = body.expected_version {
+            if expected != agent.current_version {
+                return Err(ApiError::conflict(
+                    orbit_store::agents::stale_version_message(expected, agent.current_version),
+                ));
+            }
+        }
         let current = state.store.get_current_version(auth.org_id, &agent).await?;
         let candidate_spec = serde_json::to_value(&definition.spec)
             .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -174,7 +183,13 @@ pub async fn update_agent(
         } else {
             let (_, version) = state
                 .store
-                .add_agent_version(auth.org_id, agent_id, Some(auth.user_id), definition)
+                .add_agent_version_expecting(
+                    auth.org_id,
+                    agent_id,
+                    Some(auth.user_id),
+                    definition,
+                    body.expected_version,
+                )
                 .await?;
             audit::record(
                 &state,

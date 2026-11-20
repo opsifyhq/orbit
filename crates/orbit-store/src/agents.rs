@@ -243,6 +243,22 @@ impl Store {
         actor: Option<Uuid>,
         definition: &AgentDefinition,
     ) -> StoreResult<(Agent, AgentVersion)> {
+        self.add_agent_version_expecting(org_id, agent_id, actor, definition, None)
+            .await
+    }
+
+    /// [`Self::add_agent_version`] for an edit that started from a known version: when
+    /// `expected_version` is given and the agent has moved on since, nothing is written
+    /// and a `Conflict` says so. Checked under the row lock, so two people saving at the
+    /// same moment cannot both win.
+    pub async fn add_agent_version_expecting(
+        &self,
+        org_id: Uuid,
+        agent_id: Uuid,
+        actor: Option<Uuid>,
+        definition: &AgentDefinition,
+        expected_version: Option<i32>,
+    ) -> StoreResult<(Agent, AgentVersion)> {
         let mut tx = self.begin().await?;
         let current = sqlx::query_as::<_, Agent>(
             "SELECT * FROM agents WHERE org_id = $1 AND id = $2 FOR UPDATE",
@@ -256,6 +272,14 @@ impl Store {
             return Err(StoreError::Invalid(
                 "archived agents cannot be modified".into(),
             ));
+        }
+        if let Some(expected) = expected_version {
+            if expected != current.current_version {
+                return Err(StoreError::Conflict(stale_version_message(
+                    expected,
+                    current.current_version,
+                )));
+            }
         }
 
         let checksum = definition.checksum();
@@ -557,4 +581,12 @@ fn agent_delete_error(error: sqlx::Error) -> StoreError {
         ),
         None => error.into(),
     }
+}
+
+/// What a person sees when their edit started from an older version of the agent.
+pub fn stale_version_message(expected: i32, current: i32) -> String {
+    format!(
+        "this agent changed while you were editing: you started from version {expected} and it is \
+         now version {current}. Reload to see the latest configuration, then make your changes again"
+    )
 }

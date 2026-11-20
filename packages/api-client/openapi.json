@@ -9336,6 +9336,14 @@
               "null"
             ]
           },
+          "expectedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The agent version this edit started from. When given and the agent has a newer\nversion by now, the update is refused with 409 instead of overwriting it."
+          },
           "labels": {},
           "name": {
             "type": [

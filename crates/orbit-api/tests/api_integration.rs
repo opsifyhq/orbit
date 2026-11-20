@@ -8422,3 +8422,56 @@ async fn execution_placement_can_be_chosen_per_run() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"]["details"][0]["path"], "placement");
 }
+
+/// Two people edit the same agent: the second save must not silently overwrite the first.
+#[tokio::test]
+async fn agent_update_refuses_an_edit_based_on_an_older_version() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, created) = send(&app.router, post("/api/v1/agents", definition())).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["currentVersion"], 1);
+    let path = format!("/api/v1/agents/{id}");
+    let edit = |system: &str, expected: Option<i64>| {
+        let mut body = definition();
+        body["spec"]["instructions"]["system"] = json!(system);
+        let mut request = json!({ "definition": body });
+        if let Some(version) = expected {
+            request["expectedVersion"] = json!(version);
+        }
+        auth_patch(&path, "test-token", request)
+    };
+
+    // Alice saves from version 1: version 2.
+    let (status, body) = send(&app.router, edit("Alice's instructions", Some(1))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 2);
+
+    // Bob also started from version 1: refused, and nothing is written.
+    let (status, body) = send(&app.router, edit("Bob's instructions", Some(1))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("version 1") && message.contains("version 2"),
+        "{message}"
+    );
+    let (_, current) = send(&app.router, get(&path)).await;
+    assert_eq!(current["currentVersion"], 2);
+    assert_eq!(
+        current["spec"]["instructions"]["system"],
+        "Alice's instructions"
+    );
+
+    // After reloading, Bob's edit from version 2 goes through.
+    let (status, body) = send(&app.router, edit("Bob's instructions", Some(2))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 3);
+
+    // Clients that do not send a version keep the old last-write-wins behaviour.
+    let (status, body) = send(&app.router, edit("No version sent", None)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 4);
+}

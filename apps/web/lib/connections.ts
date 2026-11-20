@@ -40,7 +40,8 @@ export function connectionStatus(
 ): StatusMeta {
   const health = connectionHealth(connection);
   if (health === "connected") return { label: "Connected", tone: "success", shape: "solid" };
-  if (health === "error") return { label: "Check failed", tone: "danger", shape: "cross" };
+  // Degraded, not broken: agents can still use a connection whose last check failed.
+  if (health === "error") return { label: "Check failed", tone: "warning", shape: "cross" };
   return { label: "Not checked", tone: "neutral", shape: "ring" };
 }
 

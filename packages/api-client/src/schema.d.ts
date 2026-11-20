@@ -3206,6 +3206,12 @@ export interface components {
         UpdateAgentRequest: {
             definition?: components["schemas"]["AgentDefinition"] | null;
             description?: string | null;
+            /**
+             * Format: int32
+             * @description The agent version this edit started from. When given and the agent has a newer
+             *     version by now, the update is refused with 409 instead of overwriting it.
+             */
+            expectedVersion?: number | null;
             labels?: unknown;
             name?: string | null;
         };

@@ -157,8 +157,10 @@ export default function ConnectionPage() {
       />
 
       {data.status === "error" ? (
-        <Callout tone="danger" title="The last check failed">
-          Run <span className="font-medium">Test</span> again after fixing the URL or credential in Edit.
+        <Callout tone="warning" title="The last check failed">
+          Agents can still use this connection: the check runs from the ORBIT API, which may not
+          reach what your workers reach. If the URL or credential is wrong, fix it in Edit and run{" "}
+          <span className="font-medium">Test</span> again.
         </Callout>
       ) : null}
       {!data.hasCredential ? (

@@ -190,6 +190,10 @@ pub struct UpdateAgentRequest {
     /// A new full definition; creates a new immutable version when the spec changed.
     #[serde(default)]
     pub definition: Option<AgentDefinition>,
+    /// The agent version this edit started from. When given and the agent has a newer
+    /// version by now, the update is refused with 409 instead of overwriting it.
+    #[serde(default)]
+    pub expected_version: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
