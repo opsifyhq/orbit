@@ -7,7 +7,7 @@ use orbit_domain::{
     ResourceLimits, TriggerSource, TriggerSpec, UserRole,
 };
 use orbit_security::{SecretCipher, SecretValue};
-use orbit_store::executions::NewExecution;
+use orbit_store::executions::{EventFilter, NewExecution};
 use orbit_store::{Store, WorkerProfile};
 
 async fn test_store() -> Option<Store> {
@@ -2468,4 +2468,132 @@ async fn stale_worker_heartbeats_are_pruned_after_retention() {
             .await
             .unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn execution_event_filters_apply_before_limit() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Event Filter Agent"))
+        .await
+        .unwrap();
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "filters" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+
+    for (kind, message, data) in [
+        (
+            "tool_call",
+            "github.issues_list executed",
+            serde_json::json!({ "tool": "github_issues_list", "connector": "github", "effect": "read" }),
+        ),
+        ("output", "final answer", serde_json::json!({})),
+        (
+            "error",
+            "issues.comment failed",
+            serde_json::json!({ "capability": "issues.comment", "effect": "write" }),
+        ),
+        ("log", "routine", serde_json::json!({})),
+    ] {
+        store
+            .append_execution_event(org, execution.id, kind, LogLevel::Info, message, &data)
+            .await
+            .unwrap();
+    }
+
+    let all = store
+        .list_execution_events(org, execution.id, 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 4);
+
+    // A limit of one still finds the matching row instead of the first row.
+    let tool = store
+        .list_execution_events_filtered(
+            org,
+            execution.id,
+            0,
+            1,
+            &EventFilter {
+                kinds: vec!["tool_call".into()],
+                tool: Some("GITHUB".into()),
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(tool.len(), 1);
+    assert_eq!(tool[0].seq, all[0].seq);
+
+    let query = store
+        .list_execution_events_filtered(
+            org,
+            execution.id,
+            0,
+            100,
+            &EventFilter {
+                kinds: Vec::new(),
+                tool: None,
+                q: Some("FINAL".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(query.len(), 1);
+    assert_eq!(query[0].seq, all[1].seq);
+
+    let capability = store
+        .list_execution_events_filtered(
+            org,
+            execution.id,
+            0,
+            100,
+            &EventFilter {
+                kinds: vec!["error".into()],
+                tool: Some("issues.comment".into()),
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(capability.len(), 1);
+    assert_eq!(capability[0].seq, all[2].seq);
+
+    // Literal `%` is not a wildcard in the text match.
+    let wildcard = store
+        .list_execution_events_filtered(
+            org,
+            execution.id,
+            0,
+            100,
+            &EventFilter {
+                kinds: Vec::new(),
+                tool: None,
+                q: Some("%".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(wildcard.is_empty());
 }

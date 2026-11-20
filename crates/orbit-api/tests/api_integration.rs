@@ -6706,3 +6706,99 @@ async fn worker_context_injects_gh_token_from_agent_connection() {
         .iter()
         .any(|item| item["envVar"] == "GITLAB_TOKEN" && item["value"] == "glab-test-token"));
 }
+
+#[tokio::test]
+async fn execution_event_list_accepts_kind_tool_and_q_filters() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, execution) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{}/executions", app.agent_id),
+            json!({ "task": "event filters" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{execution}");
+    let execution_id = execution["id"].as_str().unwrap();
+    for (kind, message, data) in [
+        (
+            "tool_call",
+            "github.issues_list executed",
+            json!({ "tool": "github_issues_list", "connector": "github" }),
+        ),
+        ("output", "the answer", json!({})),
+        (
+            "error",
+            "issues.comment failed",
+            json!({ "capability": "issues.comment" }),
+        ),
+    ] {
+        app.store
+            .append_execution_event(
+                app.org_id,
+                Uuid::parse_str(execution_id).unwrap(),
+                kind,
+                orbit_domain::LogLevel::Info,
+                message,
+                &data,
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(execution_events(&app, execution_id, "").await.len(), 4); // includes the queued status event
+    assert_eq!(
+        execution_events(&app, execution_id, "&kind=tool_call,error")
+            .await
+            .len(),
+        2
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&tool=GITHUB")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&q=answer")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&kind=tool_call&tool=issues.comment")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&afterSeq=3")
+            .await
+            .len(),
+        1
+    );
+
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/executions/{execution_id}/events?kind=bogus"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "bad_request");
+}
+
+async fn execution_events(app: &TestApp, execution_id: &str, query: &str) -> Vec<Value> {
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/executions/{execution_id}/events?limit=100{query}"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["items"].as_array().unwrap().clone()
+}

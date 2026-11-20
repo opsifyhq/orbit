@@ -54,6 +54,12 @@ pub struct ArchiveListQuery {
 pub struct EventListQuery {
     pub after_seq: Option<i64>,
     pub limit: Option<u32>,
+    /// Comma-separated event kinds (`status`, `log`, `tool_call`, `output`, `error`, `metric`).
+    pub kind: Option<String>,
+    /// Case-insensitive substring of a tool, capability, connector or connection identifier.
+    pub tool: Option<String>,
+    /// Case-insensitive substring of the event message or tool/action identifiers.
+    pub q: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]

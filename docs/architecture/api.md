@@ -61,7 +61,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/agents/{id}/executions` | executions for agent |
 | `GET /api/v1/executions` | all executions (status, agent, cursor) |
 | `GET /api/v1/executions/{id}` | execution detail with output/error/usage |
-| `GET /api/v1/executions/{id}/events` | stored events (paginated, `after_seq`) |
+| `GET /api/v1/executions/{id}/events` | stored events (`afterSeq`, `limit`, optional `kind`, `tool`, `q`) |
 | `GET /api/v1/executions/{id}/events/stream` | SSE stream (replay + tail) |
 | `POST /api/v1/executions/{id}/cancel` | request cancellation |
 | `GET /api/v1/harnesses` | harness registry + capabilities + health |
@@ -105,6 +105,12 @@ validated with field-level `details` and recorded in the audit log.
 
 Every execution and team-run list accepts `?archived=true|false|all`; the default view
 hides archived terminal records.
+
+Execution events can be narrowed in SQL before `limit` with comma-separated `kind`
+(`status`, `log`, `tool_call`, `output`, `error`, `metric`) and literal case-insensitive
+substrings `tool` (tool/capability/connector/connection identifiers) and `q` (message or
+identifiers). These are read-only presentation filters: they never rewrite events or the
+SSE stream. Unknown kinds and terms longer than 200 characters return 400.
 
 ### Worker API (token-authenticated, `/api/v1/worker/*`)
 

@@ -2161,8 +2161,13 @@ export interface components {
             name: string;
             /** Format: uuid */
             orgId: string;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
+            /** Format: uuid */
+            ownerUserId?: string | null;
             /** Format: date-time */
             updatedAt: string;
+            visibility: string;
         };
         EnvMappingRequest: {
             description?: string;
@@ -2523,6 +2528,11 @@ export interface components {
             redirectUri?: string;
             /** @description Deny users whose groups match no role/team mapping. */
             requireMappedGroup?: boolean;
+            /**
+             * @description Link an incoming identity to an existing user by email only when the token says
+             *     `email_verified: true` (a missing claim also blocks linking). Default false.
+             */
+            requireVerifiedEmail?: boolean;
             /** @description Claim carrying IdP groups/roles (default `groups`). */
             roleClaim?: string;
             scopes?: string;
@@ -2636,7 +2646,7 @@ export interface components {
          *     modules are unaffected.
          * @enum {string}
          */
-        ProviderKind: "open_ai_compatible" | "harness_managed";
+        ProviderKind: "open_ai_compatible" | "anthropic" | "harness_managed";
         ProviderProbeResponse: {
             error?: string | null;
             /** Format: int64 */
@@ -4302,6 +4312,12 @@ export interface operations {
             query?: {
                 afterSeq?: number;
                 limit?: number;
+                /** @description Comma-separated event kinds (`status`, `log`, `tool_call`, `output`, `error`, `metric`). */
+                kind?: string;
+                /** @description Case-insensitive substring of a tool, capability, connector or connection identifier. */
+                tool?: string;
+                /** @description Case-insensitive substring of the event message or tool/action identifiers. */
+                q?: string;
             };
             header?: never;
             path: {
