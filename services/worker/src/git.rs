@@ -3,10 +3,15 @@
 //! Credentials are injected only into the short-lived git child process via
 //! `GIT_ASKPASS`; they are not written to the repository remote URL or workspace files.
 
+use std::io::Write;
 use std::path::Path;
+use std::process::{Output, Stdio};
+use std::time::Duration;
 
 use serde_json::Value;
+use tempfile::NamedTempFile;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use crate::client::{WorkerClient, WorkerConnection};
 
@@ -21,6 +26,7 @@ const ORBIT_GENERATED_PATHS: &[&str] = &[
     ".pi/skills",
     ".pi-sessions",
 ];
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,21 +226,20 @@ fn push_command(workspace: &Path, branch: &str) -> Command {
     command
 }
 
-async fn write_askpass() -> anyhow::Result<std::path::PathBuf> {
-    let path = std::env::temp_dir().join(format!(".orbit-git-askpass-{}.sh", uuid::Uuid::now_v7()));
-    tokio::fs::write(
-        &path,
-        "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s' \"${ORBIT_GIT_USERNAME:-x-access-token}\" ;;\n  Password*) printf '%s' \"$ORBIT_GIT_TOKEN\" ;;\nesac\n",
-    )
-    .await?;
+fn write_askpass() -> anyhow::Result<NamedTempFile> {
+    let mut file = tempfile::Builder::new()
+        .prefix(".orbit-git-askpass-")
+        .suffix(".sh")
+        .tempfile()?;
+    file.write_all(b"#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s' \"${ORBIT_GIT_USERNAME:-x-access-token}\" ;;\n  Password*) printf '%s' \"$ORBIT_GIT_TOKEN\" ;;\nesac\n")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = tokio::fs::metadata(&path).await?.permissions();
+        let mut permissions = file.as_file().metadata()?.permissions();
         permissions.set_mode(0o700);
-        tokio::fs::set_permissions(&path, permissions).await?;
+        file.as_file().set_permissions(permissions)?;
     }
-    Ok(path)
+    Ok(file)
 }
 
 async fn stage_workspace_changes(workspace: &Path) -> anyhow::Result<()> {
@@ -373,7 +378,11 @@ pub async fn checkout(
     connection_id: Option<uuid::Uuid>,
     input: &Value,
     workspace: &Path,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Option<String>> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("repository checkout cancelled");
+    }
     let Some(connection_id) = connection_id else {
         return Ok(None);
     };
@@ -390,6 +399,7 @@ pub async fn checkout(
         &repo,
         input_string(input, "branch").as_deref(),
         workspace,
+        cancel,
     )
     .await
     .map(Some)
@@ -405,7 +415,11 @@ pub async fn checkout_workspace(
     default_connection_id: Option<uuid::Uuid>,
     input: &Value,
     workspace: &Path,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<String>> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("repository checkout cancelled");
+    }
     let specs = repo_specs(input);
     if specs.is_empty() {
         if let Some(note) = checkout(
@@ -414,6 +428,7 @@ pub async fn checkout_workspace(
             default_connection_id,
             input,
             workspace,
+            cancel,
         )
         .await?
         {
@@ -425,6 +440,9 @@ pub async fn checkout_workspace(
     let single = specs.len() == 1;
     let mut notes = Vec::new();
     for spec in &specs {
+        if cancel.is_cancelled() {
+            anyhow::bail!("repository checkout cancelled");
+        }
         validate_repo_path(&spec.path)?;
         let target = if single && spec.path.is_empty() {
             workspace.to_path_buf()
@@ -445,6 +463,7 @@ pub async fn checkout_workspace(
                 &spec.repository,
                 spec.branch.as_deref(),
                 &target,
+                cancel,
             )
             .await?,
         );
@@ -459,7 +478,11 @@ async fn checkout_repository(
     repo: &str,
     branch: Option<&str>,
     workspace: &Path,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<String> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("repository checkout cancelled");
+    }
     if workspace.join(".git").exists() {
         return Ok(format!("repository {repo} already checked out"));
     }
@@ -473,7 +496,7 @@ async fn checkout_repository(
         .as_ref()
         .map(|secret| secret.value.clone());
     let askpass = match &token {
-        Some(_) => Some(write_askpass().await?),
+        Some(_) => Some(write_askpass()?),
         None => None,
     };
     let clone_base = connection
@@ -501,12 +524,9 @@ async fn checkout_repository(
         command.env("ORBIT_GIT_TOKEN", token);
     }
     if let Some(askpass) = &askpass {
-        apply_git_auth(&mut command, askpass, &username);
+        apply_git_auth(&mut command, askpass.path(), &username);
     }
-    let output = command.output().await?;
-    if let Some(askpass) = &askpass {
-        let _ = tokio::fs::remove_file(askpass).await;
-    }
+    let output = run_clone_command(command, cancel, GIT_CLONE_TIMEOUT).await?;
     if !output.status.success() {
         anyhow::bail!(
             "git clone failed: {}",
@@ -514,6 +534,28 @@ async fn checkout_repository(
         );
     }
     Ok(format!("checked out {repo}"))
+}
+
+async fn run_clone_command(
+    mut command: Command,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> anyhow::Result<Output> {
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn()?;
+    let output = child.wait_with_output();
+    tokio::pin!(output);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("git clone cancelled"),
+        result = tokio::time::timeout(timeout, &mut output) => match result {
+            Ok(result) => Ok(result?),
+            Err(_) => anyhow::bail!("git clone timed out after {} seconds", timeout.as_secs()),
+        },
+    }
 }
 
 /// Commit all workspace changes. Returns the commit subject/status.
@@ -532,12 +574,11 @@ pub async fn commit(
         .map(|secret| secret.value.clone())
         .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
     stage_workspace_changes(workspace).await?;
-    let askpass = write_askpass().await?;
+    let askpass = write_askpass()?;
     let mut command = commit_command(workspace, message);
     command.env("ORBIT_GIT_TOKEN", &token);
-    apply_git_auth(&mut command, &askpass, &username);
+    apply_git_auth(&mut command, askpass.path(), &username);
     let output = command.output().await?;
-    let _ = tokio::fs::remove_file(&askpass).await;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("nothing to commit") {
@@ -576,12 +617,11 @@ pub async fn push(
         .map(|secret| secret.value.clone())
         .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
     ensure_safe_repo_config(workspace).await?;
-    let askpass = write_askpass().await?;
+    let askpass = write_askpass()?;
     let mut command = push_command(workspace, branch);
     command.env("ORBIT_GIT_TOKEN", &token);
-    apply_git_auth(&mut command, &askpass, &username);
+    apply_git_auth(&mut command, askpass.path(), &username);
     let output = command.output().await?;
-    let _ = tokio::fs::remove_file(&askpass).await;
     if !output.status.success() {
         anyhow::bail!(
             "git push failed: {}",
@@ -610,6 +650,7 @@ mod tests {
         output
     }
 
+    #[cfg(unix)]
     fn init_repo(name: &str) -> std::path::PathBuf {
         let workspace =
             std::env::temp_dir().join(format!("orbit-git-{name}-{}", uuid::Uuid::now_v7()));
@@ -838,5 +879,58 @@ mod tests {
         assert_eq!(paths.lines().collect::<Vec<_>>(), ["src/change.rs"]);
         assert!(workspace.join("opencode.json").exists());
         let _ = std::fs::remove_dir_all(workspace);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn askpass_file_is_removed_when_guard_drops() {
+        let askpass = write_askpass().unwrap();
+        let path = askpass.path().to_path_buf();
+        assert!(path.is_file());
+        drop(askpass);
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    fn long_running_command() -> Command {
+        let mut command = Command::new("ping.exe");
+        command.args(["-n", "20", "127.0.0.1"]);
+        command
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn clone_timeout_kills_child_process() {
+        let error = run_clone_command(
+            long_running_command(),
+            &CancellationToken::new(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out after 1 seconds"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn clone_cancellation_kills_child_process() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            run_clone_command(
+                long_running_command(),
+                &task_cancel,
+                Duration::from_secs(30),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
     }
 }
