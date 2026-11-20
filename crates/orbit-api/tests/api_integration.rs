@@ -6744,3 +6744,40 @@ async fn agent_summaries_list_their_skills() {
         .filter(|item| item["id"] != id)
         .all(|item| item["skills"] == json!([])));
 }
+
+#[tokio::test]
+async fn agent_update_can_return_to_an_earlier_configuration() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut original = definition();
+    original["metadata"]["name"] = json!("Revert API Agent");
+    let (status, body) = send(&app.router, post("/api/v1/agents", original.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let patch = |definition: Value| {
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/agents/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "definition": definition }).to_string()))
+            .unwrap()
+    };
+
+    let mut changed = original.clone();
+    changed["spec"]["autonomy"]["level"] = json!(3);
+    let (status, body) = send(&app.router, patch(changed)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 2);
+
+    // Undoing the change is saved as version 3 instead of being refused.
+    let (status, body) = send(&app.router, patch(original.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 3);
+    assert_eq!(body["spec"]["autonomy"]["level"], 2);
+
+    // Saving the current configuration again stays a metadata-only update.
+    let (status, body) = send(&app.router, patch(original)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["currentVersion"], 3);
+}

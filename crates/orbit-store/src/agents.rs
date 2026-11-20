@@ -229,7 +229,9 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("agent".into()))
     }
 
-    /// Append an immutable version. Rejects duplicate specs (same checksum).
+    /// Append an immutable version. Rejects a spec identical to the current version
+    /// (same checksum); one identical to an older version is appended as the next
+    /// version, so an agent can return to an earlier configuration.
     pub async fn add_agent_version(
         &self,
         org_id: Uuid,
@@ -253,15 +255,17 @@ impl Store {
         }
 
         let checksum = definition.checksum();
-        let duplicate: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM agent_versions WHERE agent_id = $1 AND checksum = $2")
-                .bind(agent_id)
-                .bind(&checksum)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if duplicate.is_some() {
+        let unchanged: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM agent_versions WHERE agent_id = $1 AND version = $2 AND checksum = $3",
+        )
+        .bind(agent_id)
+        .bind(current.current_version)
+        .bind(&checksum)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if unchanged.is_some() {
             return Err(StoreError::Conflict(
-                "this agent configuration is identical to an existing version".into(),
+                "nothing changed: this configuration is already the current version".into(),
             ));
         }
 

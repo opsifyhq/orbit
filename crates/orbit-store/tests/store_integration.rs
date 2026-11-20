@@ -2469,3 +2469,48 @@ async fn stale_worker_heartbeats_are_pruned_after_retention() {
             .unwrap();
     assert_eq!(remaining, 0);
 }
+
+#[tokio::test]
+async fn agent_can_return_to_an_earlier_configuration() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let original = definition("Revert Agent");
+    let (agent, v1) = store
+        .create_agent(org, Some(user), &original)
+        .await
+        .expect("create agent");
+    assert_eq!(v1.version, 1);
+
+    let mut changed = original.clone();
+    changed.spec.autonomy.level = 3;
+    let (_, v2) = store
+        .add_agent_version(org, agent.id, Some(user), &changed)
+        .await
+        .expect("version 2");
+    assert_eq!(v2.version, 2);
+
+    // Going back to version 1's configuration appends version 3 with the same spec.
+    let (agent, v3) = store
+        .add_agent_version(org, agent.id, Some(user), &original)
+        .await
+        .expect("returning to an earlier configuration is a new version");
+    assert_eq!(v3.version, 3);
+    assert_eq!(agent.current_version, 3);
+    assert_eq!(v3.checksum, v1.checksum);
+    assert_eq!(v3.spec, v1.spec);
+
+    // Saving what is already current is still refused.
+    let err = store
+        .add_agent_version(org, agent.id, Some(user), &original)
+        .await
+        .expect_err("unchanged spec must conflict");
+    assert!(matches!(err, orbit_store::StoreError::Conflict(_)));
+
+    // History keeps every version, in order.
+    let versions = store.list_agent_versions(org, agent.id).await.unwrap();
+    let numbers: Vec<i32> = versions.iter().map(|version| version.version).collect();
+    assert_eq!(numbers.len(), 3);
+    assert!(numbers.contains(&1) && numbers.contains(&2) && numbers.contains(&3));
+}

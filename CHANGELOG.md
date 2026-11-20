@@ -28,6 +28,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - Deleting a skill names the agents and teams that use it, and Agent Studio and Team Studio
   show a deleted skill so it can be removed (the API refused to save them while it was
   referenced).
+- Agents can return to an earlier configuration: a spec identical to an older version is
+  saved as the next version instead of being refused ("identical to an existing version"),
+  so undoing a change or removing a just-added skill works. Saving without changes still
+  creates no version. Migration `0049_agent_version_revert` drops the unique checksum rule.
 
 ## [0.25.0] - 2026-11-20
 

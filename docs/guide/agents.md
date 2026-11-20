@@ -48,7 +48,8 @@ empty or malformed entries are rejected.
 ## Lifecycle
 
 Draft → Active → Paused → Archived. Editing creates a new immutable version; executions
-pin the version they started with. Agent Studio shows the resolved harness/provider/model
+pin the version they started with. Undoing a change (returning to an earlier configuration)
+is saved as a new version too; saving without changes creates none. Agent Studio shows the resolved harness/provider/model
 and the execution limits. Run an agent from its page, the Work wizard, or an API/trigger.
 
 ## Harness vs agent
