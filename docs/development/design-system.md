@@ -82,7 +82,7 @@ numbers that sit in columns or update in place.
 | `Input`, `Textarea`, `Select` | `ui/*.tsx` | Share `controlClass`. `Select` is the native element on purpose |
 | `Checkbox`, `CheckboxField` | `ui/checkbox.tsx` | Native checkbox; `CheckboxField` is the titled, fully clickable row |
 | `Switch` | `ui/switch.tsx` | For settings that apply immediately |
-| `Field` | `ui/field.tsx` | Label + control + hint/error; pass `optional` instead of writing "(optional)" |
+| `Field` | `ui/field.tsx` | Label + control + hint/error; pass `optional` instead of writing "(optional)". A single control child is wired for assistive tech automatically: the label names it, the hint or error describes it (`aria-describedby`) and an error marks it invalid. Pass `htmlFor` (with the control's `id`) only when the control sits inside a wrapper |
 | `ChoiceCard` | `ui/choice-card.tsx` | Radio option with title and explanation; wrap a set in `role="radiogroup"` |
 | `Disclosure` | `ui/disclosure.tsx` | Collapsed group of settings most people skip ("Advanced"); `summary` says what is inside or currently set |
 | `Callout` | `ui/callout.tsx` | Inline page message: `info`, `warning`, `danger`, `neutral`, with optional `action` |
@@ -95,6 +95,8 @@ numbers that sit in columns or update in place.
 | `TagList` | `ui/tag-list.tsx` | A short row of tags; the rest fold behind "+N more". Use instead of a comma-joined value |
 | `SkillPicker` | `skill-picker.tsx` | Choosing skills: fixed-height scrolling list, search past six items, an "All / Selected" filter, descriptions cleaned and clamped to two lines |
 | `Skeleton` | `ui/skeleton.tsx` | Loading placeholder shaped like what will appear |
+| `SectionRail`, `SectionPills`, `SectionCard` | `ui/section-nav.tsx` | The frame of a long editor (see **Long editors**): the desktop section list with current values, the phone step pills, and the section card with Back / Next. Every Studio uses these; do not copy them. `SectionCard keepMounted` hides a section instead of unmounting it, for one whose own state Save still reads (the sharing fields) |
+| `LoadFailure` | `load-failure.tsx` | The object a page is about did not load: "not found" only for a 404, "no access" for a 403, and Retry for anything else. Render it only while there is no data at all (`if (!query.data)`), never on `query.isError`: a failed background refetch must not replace a page or a half-filled form |
 
 ## Patterns
 
@@ -131,7 +133,10 @@ what is missing beside it.
 section at a time. A section nav lists every section with its current value, so it doubles
 as the summary, and marks sections with errors; Save stays in view under it. Each section
 ends with Back / Next. On phones the nav is a row of step pills. The URL hash names the
-section (`#model`). A failed save opens the first section with a problem.
+section (`#model`). A failed save opens the first section with a problem, whether the
+form or the server found it (`validationDetails(error)` from `lib/http` gives the server's
+field errors). `useUnsavedChanges(state)` asks before a link click, reload or close throws
+away edits; saving navigates in code and never prompts.
 
 **Imported text.** Descriptions written for machines (SKILL.md frontmatter) go through
 `cleanDescription()` before display: YAML block markers and wrapping quotes are formatting,
@@ -150,7 +155,14 @@ tone="danger"` with the server message), empty (`EmptyState`) and filtered-empty
 that filters hide results and offer "Clear filters").
 
 **Filters.** Client-side and instant where the set is small; otherwise keep them in the
-URL (`?status=failed`) so views can be linked and survive the back button.
+URL (`?status=failed`) so views can be linked and survive the back button. Filter where the
+data lives: never fetch a capped page and filter it in the browser (ask the API for the
+team's runs, the execution's approval, the statuses in a group). A filter chip is a group a
+person thinks in, and every status belongs to exactly one, so nothing is unreachable and a
+tile that counts a group links to the same group.
+
+**Selection.** Bulk actions act on the selected rows that are on screen. A selection made
+under another filter or search is not counted, shown or changed.
 
 **Execution events.** `lib/execution-events.ts` turns raw harness events into timeline
 lines (`describeEvent`) and decides what belongs in the default "Story" view (`isKeyEvent`).

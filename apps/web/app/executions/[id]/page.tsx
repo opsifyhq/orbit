@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Bot, Check, Copy, RotateCw, X } from "lucide-react";
+import { Ban, Bot, Check, Copy, RotateCw, Workflow, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { executionTask, executionTitle } from "@/components/executions/execution-row";
@@ -281,6 +281,14 @@ function ExecutionDetail() {
               }}
             >
               <Ban /> Cancel
+            </Button>
+          ) : execution.teamRunId ? (
+            // A team step ran with its team's connections and environment; on its own it
+            // would not be the same run. The team run is what can be repeated.
+            <Button asChild variant="outline">
+              <Link href={`/agent-teams/runs/${execution.teamRunId}`}>
+                <Workflow /> Open team run
+              </Link>
             </Button>
           ) : task ? (
             <Button variant="outline" loading={rerun.isPending} onClick={() => rerun.mutate()}>

@@ -215,16 +215,15 @@ export function SectionCard<Id extends string>({
       </CardHeader>
       <CardContent className="space-y-5">
         {children}
-        <div className="flex items-center justify-between gap-3 border-t pt-4">
+        {/* Two long section names do not fit side by side on a phone: Next wraps below. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t pt-4">
           {previous ? (
             <Button type="button" variant="ghost" onClick={() => onGo(previous.id)}>
               <ChevronLeft /> {previous.title}
             </Button>
-          ) : (
-            <span />
-          )}
+          ) : null}
           {next ? (
-            <Button type="button" variant="outline" onClick={() => onGo(next.id)}>
+            <Button type="button" variant="outline" className="ml-auto" onClick={() => onGo(next.id)}>
               {next.title} <ChevronRight />
             </Button>
           ) : null}
