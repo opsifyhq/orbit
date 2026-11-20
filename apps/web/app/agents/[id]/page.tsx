@@ -43,7 +43,7 @@ import { api } from "@/lib/api";
 import { request, requestRaw } from "@/lib/http";
 import { copyText } from "@/lib/browser";
 import { agentSpecSchema } from "@orbit/contracts";
-import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions } from "@/lib/queries";
+import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useSkills } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import { formatDateTime, relativeTime, titleCase } from "@/lib/utils";
 import { autonomyName, brandName, capabilityLabel, cronDescription } from "@/lib/presentation";
@@ -58,6 +58,7 @@ export default function AgentDetailPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const agent = useAgent(agentId);
+  const skillList = useSkills();
   const versions = useAgentVersions(agentId);
   const executions = useExecutions({ agentId, limit: 20 });
 
@@ -480,7 +481,27 @@ export default function AgentDetailPage() {
                       { label: "Models managed by", value: titleCase(spec.model.management) },
                       { label: "Provider", value: spec.model.provider ?? "Harness default" },
                       { label: "Model", value: spec.model.model ?? "Harness default" },
-                      { label: "Skills", value: spec.skills.length ? spec.skills.join(", ") : "None" },
+                      {
+                        label: "Skills",
+                        value: spec.skills.length ? (
+                          <span className="inline-flex flex-wrap justify-end gap-x-2 gap-y-0.5">
+                            {spec.skills.map((slug) => {
+                              const skill = skillList.data?.find((item) => item.slug === slug);
+                              return skill ? (
+                                <Link key={slug} href={`/skills/${skill.id}`} className="text-primary underline-offset-4 hover:underline">
+                                  {skill.name}
+                                </Link>
+                              ) : (
+                                <span key={slug} className="text-warning" title="This skill no longer exists">
+                                  {slug} (missing)
+                                </span>
+                              );
+                            })}
+                          </span>
+                        ) : (
+                          "None"
+                        ),
+                      },
                     ]}
                   />
                 </CardContent>

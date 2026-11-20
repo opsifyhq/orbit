@@ -1694,6 +1694,8 @@ export interface components {
             labels: unknown;
             model?: string | null;
             name: string;
+            /** @description Slugs of the skills in the current version, so a skill can show which agents use it. */
+            skills: string[];
             slug: string;
             status: string;
             /** Format: date-time */
@@ -2161,8 +2163,13 @@ export interface components {
             name: string;
             /** Format: uuid */
             orgId: string;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
+            /** Format: uuid */
+            ownerUserId?: string | null;
             /** Format: date-time */
             updatedAt: string;
+            visibility: string;
         };
         EnvMappingRequest: {
             description?: string;
@@ -2523,6 +2530,11 @@ export interface components {
             redirectUri?: string;
             /** @description Deny users whose groups match no role/team mapping. */
             requireMappedGroup?: boolean;
+            /**
+             * @description Link an incoming identity to an existing user by email only when the token says
+             *     `email_verified: true` (a missing claim also blocks linking). Default false.
+             */
+            requireVerifiedEmail?: boolean;
             /** @description Claim carrying IdP groups/roles (default `groups`). */
             roleClaim?: string;
             scopes?: string;
@@ -2636,7 +2648,7 @@ export interface components {
          *     modules are unaffected.
          * @enum {string}
          */
-        ProviderKind: "open_ai_compatible" | "harness_managed";
+        ProviderKind: "open_ai_compatible" | "anthropic" | "harness_managed";
         ProviderProbeResponse: {
             error?: string | null;
             /** Format: int64 */

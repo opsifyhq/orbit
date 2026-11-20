@@ -197,14 +197,21 @@ approvals UI is still being finished.
 | Queue | Enqueue `owner/repo#123`, run pending, retry/requeue/cancel per item |
 | Runs list | Active/Archived/All filter works |
 
-## Flow 12 — Skills with scripts (3 min)
+## Flow 12 — Skills (5 min)
 
 | Step | Expected |
 |---|---|
-| `/skills` → New | SKILL.md content + bundled files JSON + **Upload files** |
-| Upload `scripts/check.sh` | File appears in the JSON map |
-| Save | No validation error for an allowed extension |
-| Upload `scripts/check.exe` | Validation error: script extension not allowed |
+| `/skills` | Rows like Agents: whole row opens the skill, columns Skill / Used by / Updated, **All / In use / Unused** filter, header checkbox selects all shown |
+| **New skill** | Skill Studio at `/skills/new`: rail with Identity, Instructions, Bundled files, Access control; Create stays in view (pinned on phones) |
+| Create with nothing filled | Jumps to Identity and lists “Enter a name.” and “Enter a slug.” |
+| Name `Release Notes Writer!` | Slug fills in as `release-notes-writer` until edited by hand |
+| Instructions → Preview | The body renders as Markdown |
+| Bundled files → New file `scripts/check.txt` | Path error: scripts must end in an allowed extension |
+| Upload a PNG and a `.py` | The PNG is refused (“not a text file”), the `.py` is added |
+| Create | Opens `/skills/<id>`; its SKILL.md frontmatter has `name: <slug>` and the description from the form |
+| Skill page | Formatted / SKILL.md views, bundled files expand to their contents, **Used by** lists agents, teams and worker profiles with links |
+| A skill whose SKILL.md name or description differs (e.g. imported or older) | Warning on the skill page; Edit shows what Save will change; one Save fixes it and keeps other frontmatter keys |
+| Delete a skill an agent uses | The confirmation names the agent; afterwards Agent Studio shows “A selected skill no longer exists” with a remove button, and the agent page marks it missing |
 | Run an agent with the skill | Script is materialized and executable in the workspace |
 
 ## Flow 13 — Workers, launches, and env mappings (4 min)

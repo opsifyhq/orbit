@@ -1,246 +1,132 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  BookOpen,
-  ChevronDown,
-  Download,
-  Ellipsis,
-  Pencil,
-  Plus,
-  Search,
-  Trash2,
-  Upload,
-} from "lucide-react";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
+import { BookOpen, Plus, Search, X } from "lucide-react";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
-import { cleanDescription } from "@/lib/presentation";
-import { Badge } from "@/components/ui/badge";
+import { BulkAccessDialog } from "@/components/bulk-access-dialog";
+import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { BulkAccessDialog } from "@/components/bulk-access-dialog";
-import { useConfirm } from "@/components/ui/confirm";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
-import { ImportPortableButton } from "@/components/import-portable-dialog";
-import { exportResource } from "@/components/export-resource-button";
+import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
-import { queryKeys, unwrap, useAgentTeams, useSkills } from "@/lib/queries";
-import { errorMessage } from "@orbit/api-client";
-import { cn, relativeTime } from "@/lib/utils";
+import { cleanDescription } from "@/lib/presentation";
+import { queryKeys, useSkills } from "@/lib/queries";
+import { usageSummary, useSkillUsage, type SkillUser } from "@/lib/skill-usage";
 import type { Skill } from "@/lib/types";
+import { relativeTime } from "@/lib/utils";
+import { errorMessage } from "@orbit/api-client";
 
-const TEMPLATE = `---
-name: example-skill
-description: What this skill does and when the agent should use it.
----
+type Filter = "all" | "used" | "unused";
 
-# Instructions
-
-Describe the workflow, constraints and any bundled files.
-`;
-
-function parseFiles(text: string): Record<string, string> | null {
-  try {
-    const value = JSON.parse(text);
-    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
+function fileCount(skill: Skill): number {
+  const files = skill.files;
+  return files && typeof files === "object" && !Array.isArray(files) ? Object.keys(files).length : 0;
 }
 
-function bundledPaths(skill: Skill): string[] {
-  const files = skill.files;
-  return files && typeof files === "object" && !Array.isArray(files) ? Object.keys(files) : [];
+function SkillRow({
+  skill,
+  users,
+  selected,
+  onSelect,
+}: {
+  skill: Skill;
+  users: SkillUser[];
+  selected: boolean;
+  onSelect: (checked: boolean) => void;
+}) {
+  const description = cleanDescription(skill.description);
+  const files = fileCount(skill);
+  return (
+    <li className="group relative border-b last:border-b-0">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 px-4 py-3.5 transition-colors group-hover:bg-muted/50 sm:px-5 md:grid-cols-[1.5rem_minmax(0,1fr)_12rem_6.5rem] md:items-center md:gap-x-4">
+        {/* Above the row link so ticking it does not open the skill. */}
+        <Checkbox
+          aria-label={`Select ${skill.name}`}
+          className="relative z-10 mt-0.5 md:mt-0"
+          checked={selected}
+          onChange={(event) => onSelect(event.target.checked)}
+        />
+        <div className="min-w-0">
+          <p className="flex min-w-0 items-baseline gap-2">
+            <Link
+              href={`/skills/${skill.id}`}
+              className="truncate text-sm font-semibold after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
+            >
+              {skill.name}
+            </Link>
+            {skill.name !== skill.slug ? (
+              <span className="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline">{skill.slug}</span>
+            ) : null}
+          </p>
+          <p className={description ? "mt-0.5 line-clamp-1 text-[13px] text-muted-foreground" : "mt-0.5 text-[13px] text-warning"}>
+            {description || "No description: agents cannot tell when to use it"}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground md:hidden">
+            {usageSummary(users)}
+            {files ? ` · ${files} file${files === 1 ? "" : "s"}` : ""} · {relativeTime(skill.updatedAt)}
+          </p>
+        </div>
+        <div className="hidden min-w-0 text-[13px] md:block">
+          <p className={users.length ? "truncate" : "text-muted-foreground"}>{usageSummary(users)}</p>
+          {users.length ? (
+            <p className="truncate text-xs text-muted-foreground">{users.map((user) => user.name).join(", ")}</p>
+          ) : files ? (
+            <p className="text-xs text-muted-foreground">{files} bundled file{files === 1 ? "" : "s"}</p>
+          ) : null}
+        </div>
+        <p className="tabular hidden text-right text-[13px] text-muted-foreground md:block">{relativeTime(skill.updatedAt)}</p>
+      </div>
+    </li>
+  );
 }
 
 export default function SkillsPage() {
-  const accessRef = useRef<ResourceAccessHandle>(null);
   const skills = useSkills();
-  const teams = useAgentTeams();
+  const { usersOf } = useSkillUsage();
   const queryClient = useQueryClient();
-  const confirm = useConfirm();
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Skill | null>(null);
-  const [viewing, setViewing] = useState<Skill | null>(null);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [description, setDescription] = useState("");
-  const [content, setContent] = useState(TEMPLATE);
-  const [filesText, setFilesText] = useState("{}");
-  const [showFiles, setShowFiles] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = event.target.files;
-    if (!files) return;
-    // If the text is invalid, start from the stored files rather than silently
-    // replacing them with `{}` as soon as a new file is picked.
-    const stored = editing?.files;
-    const fallback = stored && typeof stored === "object" && !Array.isArray(stored)
-      ? (stored as Record<string, string>)
-      : {};
-    const current: Record<string, string> = { ...(parseFiles(filesText) ?? fallback) };
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const content = e.target?.result as string;
-        current[file.name] = content;
-        setFilesText(JSON.stringify(current, null, 2));
-      };
-      reader.readAsText(file);
-    });
-    // Reset input so the same file can be uploaded again.
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }
-
-  const reset = () => {
-    setEditing(null);
-    setName("");
-    setSlug("");
-    setDescription("");
-    setContent(TEMPLATE);
-    setFilesText("{}");
-    setShowFiles(false);
+  const all = skills.data ?? [];
+  const counts = {
+    all: all.length,
+    used: all.filter((skill) => usersOf(skill.slug).length).length,
+    unused: all.filter((skill) => !usersOf(skill.slug).length).length,
   };
-
-  function openCreate() {
-    reset();
-    setOpen(true);
-  }
-
-  function openEdit(skill: Skill) {
-    setViewing(null);
-    setEditing(skill);
-    setName(skill.name);
-    setSlug(skill.slug);
-    setDescription(skill.description);
-    setContent(skill.content);
-    setFilesText(JSON.stringify(skill.files ?? {}, null, 2));
-    setShowFiles(bundledPaths(skill).length > 0);
-    setOpen(true);
-  }
-
-  const save = useMutation({
-    mutationFn: async () => {
-      if (editing) {
-        return unwrap(
-          await api.PATCH("/api/v1/skills/{skill_id}", {
-            params: { path: { skill_id: editing.id } },
-            body: { name, description, content, files: parseFiles(filesText) ?? {} },
-          }),
-        );
-      }
-      return unwrap(
-        await api.POST("/api/v1/skills", {
-          body: { name, slug, description, content, files: parseFiles(filesText) ?? {} },
-        }),
-      );
-    },
-    onSuccess: () => {
-      toast.success(editing ? "Skill updated" : "Skill created");
-      setOpen(false);
-      reset();
-      void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
-    },
-    onError: (error) => toast.error(errorMessage(error)),
-  });
-
-  async function saveSkill() {
-    if (filesInvalid) {
-      toast.error("Fix the bundled files JSON before saving.");
-      return;
-    }
-    if ((await accessRef.current?.save()) === false) return;
-    save.mutate();
-  }
-
-  const remove = useMutation({
-    mutationFn: async (id: string) =>
-      unwrap(
-        await api.DELETE("/api/v1/skills/{skill_id}", {
-          params: { path: { skill_id: id } },
-        }),
-      ),
-    onSuccess: () => {
-      toast.success("Skill deleted");
-      setViewing(null);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
-    },
-    onError: (error) => toast.error(errorMessage(error)),
-  });
-
-  // Teams are the only place a skill's use is visible without opening each agent.
-  const teamsUsing = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const team of teams.data ?? []) {
-      for (const slugName of team.definition.skills ?? []) {
-        map.set(slugName, [...(map.get(slugName) ?? []), team.name]);
-      }
-    }
-    return map;
-  }, [teams.data]);
-
-  async function deleteSkill(skill: Skill) {
-    const used = teamsUsing.get(skill.slug)?.length ?? 0;
-    const confirmed = await confirm({
-      title: `Delete ${skill.name}?`,
-      description: used
-        ? `${used === 1 ? "One agent team uses" : `${used} agent teams use`} this skill. Agents and teams that reference it lose it. This cannot be undone.`
-        : "Agents that reference it lose it. This cannot be undone.",
-      confirmLabel: "Delete skill",
-      destructive: true,
-    });
-    if (confirmed) remove.mutate(skill.id);
-  }
-
   const shown = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const items = skills.data ?? [];
-    if (!query) return items;
-    return items.filter((skill) =>
-      [skill.name, skill.slug, skill.description].some((value) => value.toLowerCase().includes(query)),
-    );
-  }, [skills.data, search]);
+    const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+    return all.filter((skill) => {
+      const used = usersOf(skill.slug).length > 0;
+      if (filter === "used" && !used) return false;
+      if (filter === "unused" && used) return false;
+      const haystack = `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [all, search, filter, usersOf]);
 
-  const parsedFiles = parseFiles(filesText);
-  const filesInvalid = filesText.trim() !== "" && parsedFiles === null;
+  const allShownSelected = shown.length > 0 && shown.every((skill) => selected.has(skill.id));
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Skills"
-        description="Reusable SKILL.md packages that are copied into an agent's workspace when it runs. Attach them to an agent in its settings, or to a team."
+        description="Reusable SKILL.md packages. An agent loads a skill when its description fits the task; attach skills to agents, teams or worker profiles."
         actions={
           <div className="flex flex-wrap gap-2">
             <ImportPortableButton label="Import" />
-            <Button onClick={openCreate}>
-              <Plus /> New skill
+            <Button asChild>
+              <Link href="/skills/new">
+                <Plus /> New skill
+              </Link>
             </Button>
           </div>
         }
@@ -255,48 +141,62 @@ export default function SkillsPage() {
           ))}
         </Card>
       ) : skills.isError ? (
-        <Callout tone="danger" title="Could not load skills">
+        <Callout tone="danger" title="Skills could not be loaded">
           {errorMessage(skills.error)}
         </Callout>
-      ) : !skills.data?.length ? (
+      ) : !all.length ? (
         <EmptyState
           icon={<BookOpen />}
           title="No skills yet"
           description="Write a SKILL.md once, then attach it to any agent. Pi finds it under .pi/skills; OpenCode under .opencode/skills."
           action={
-            <Button variant="outline" onClick={openCreate}>
-              <Plus /> New skill
+            <Button asChild variant="outline">
+              <Link href="/skills/new">
+                <Plus /> New skill
+              </Link>
             </Button>
           }
         />
       ) : (
-        <>
-          {skills.data.length > 4 ? (
-            <div className="relative max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                aria-label="Search skills"
-                className="pl-9"
-                placeholder="Search skills"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
-          ) : null}
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <Segmented
+              label="Show skills"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: "all", label: "All", count: counts.all },
+                { value: "used", label: "In use", count: counts.used },
+                { value: "unused", label: "Unused", count: counts.unused },
+              ]}
+            />
+            {all.length > 3 ? (
+              <div className="relative sm:w-72">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  className="pl-9 pr-9 [&::-webkit-search-cancel-button]:hidden"
+                  placeholder="Filter by name, slug or description"
+                  aria-label="Filter skills"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+                {search ? (
+                  <button
+                    type="button"
+                    aria-label="Clear filter"
+                    onClick={() => setSearch("")}
+                    className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
 
           {selected.size ? (
             <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-subtle px-3 py-2.5">
-              <Checkbox
-                aria-label="Select all shown skills"
-                checked={shown.every((skill) => selected.has(skill.id))}
-                onChange={(event) =>
-                  setSelected(
-                    event.target.checked
-                      ? new Set([...selected, ...shown.map((skill) => skill.id)])
-                      : new Set([...selected].filter((id) => !shown.some((skill) => skill.id === id))),
-                  )
-                }
-              />
               <span className="text-[13px] font-medium">{selected.size} selected</span>
               <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
                 Change access
@@ -314,292 +214,67 @@ export default function SkillsPage() {
             ids={[...selected]}
             onDone={() => {
               setSelected(new Set());
-              void queryClient.invalidateQueries({ queryKey: ["skills"] });
+              void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
             }}
           />
 
-          {shown.length === 0 ? (
+          {shown.length ? (
+            <Card className="overflow-hidden">
+              <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 border-b bg-subtle px-4 py-2 text-xs font-medium text-muted-foreground sm:px-5 md:grid-cols-[1.5rem_minmax(0,1fr)_12rem_6.5rem] md:gap-x-4">
+                <Checkbox
+                  aria-label="Select all shown skills"
+                  checked={allShownSelected}
+                  onChange={(event) =>
+                    setSelected(
+                      event.target.checked
+                        ? new Set([...selected, ...shown.map((skill) => skill.id)])
+                        : new Set([...selected].filter((id) => !shown.some((skill) => skill.id === id))),
+                    )
+                  }
+                />
+                <span>Skill</span>
+                <span className="hidden md:block">Used by</span>
+                <span className="hidden text-right md:block">Updated</span>
+              </div>
+              <ul>
+                {shown.map((skill) => (
+                  <SkillRow
+                    key={skill.id}
+                    skill={skill}
+                    users={usersOf(skill.slug)}
+                    selected={selected.has(skill.id)}
+                    onSelect={(checked) =>
+                      setSelected((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(skill.id);
+                        else next.delete(skill.id);
+                        return next;
+                      })
+                    }
+                  />
+                ))}
+              </ul>
+            </Card>
+          ) : (
             <EmptyState
               icon={<Search />}
               title="No skills match"
-              description="Try a different name or clear the search."
+              description={search ? `Nothing matches "${search}".` : "No skills in this view."}
               action={
-                <Button variant="outline" onClick={() => setSearch("")}>
-                  Clear search
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    setFilter("all");
+                  }}
+                >
+                  Show all skills
                 </Button>
               }
             />
-          ) : (
-            <Card className="overflow-hidden">
-              {shown.map((skill) => {
-                const users = teamsUsing.get(skill.slug) ?? [];
-                const files = bundledPaths(skill);
-                return (
-                  <div
-                    key={skill.id}
-                    className="flex flex-col gap-3 border-b px-4 py-4 last:border-b-0 sm:px-5 md:flex-row md:items-center md:gap-5"
-                  >
-                    <Checkbox
-                      aria-label={`Select ${skill.name}`}
-                      checked={selected.has(skill.id)}
-                      onChange={(event) =>
-                        setSelected((current) => {
-                          const next = new Set(current);
-                          if (event.target.checked) next.add(skill.id);
-                          else next.delete(skill.id);
-                          return next;
-                        })
-                      }
-                    />
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setViewing(skill)}
-                          className="min-w-0 truncate rounded text-left text-sm font-medium hover:text-primary hover:underline"
-                        >
-                          {skill.name}
-                        </button>
-                        <span className="break-all font-mono text-xs text-muted-foreground">{skill.slug}</span>
-                        <Badge variant="outline">Version {skill.version}</Badge>
-                      </div>
-                      <p className="line-clamp-2 text-[13px] text-muted-foreground">
-                        {cleanDescription(skill.description) || "No description. Agents cannot tell when to load this skill."}
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        {users.length
-                          ? `Used by ${users.length === 1 ? "team" : "teams"} ${users.join(", ")}.`
-                          : "Not attached to any team."}{" "}
-                        {files.length ? `${files.length} bundled ${files.length === 1 ? "file" : "files"}. ` : ""}
-                        Updated {relativeTime(skill.updatedAt)}.
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setViewing(skill)}>
-                        View
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => openEdit(skill)}>
-                        <Pencil /> Edit
-                      </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button size="icon-sm" variant="ghost" aria-label={`More actions for ${skill.name}`}>
-                            <Ellipsis />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => void exportResource("skills", skill.id, skill.name, "markdown")}>
-                            <Download /> Export SKILL.md
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => void exportResource("skills", skill.id, skill.name)}>
-                            <Download /> Export with files (YAML)
-                          </DropdownMenuItem>
-                          <DropdownMenuItem destructive onSelect={() => void deleteSkill(skill)}>
-                            <Trash2 /> Delete skill
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </div>
-                );
-              })}
-            </Card>
           )}
-        </>
+        </div>
       )}
-
-      <Dialog open={Boolean(viewing)} onOpenChange={(next) => !next && setViewing(null)}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{viewing?.name}</DialogTitle>
-            <DialogDescription>
-              {cleanDescription(viewing?.description) || "No description."}
-            </DialogDescription>
-          </DialogHeader>
-          {viewing ? (
-            <div className="min-w-0 space-y-4">
-              <div className="space-y-1.5">
-                <p className="text-[13px] font-medium">SKILL.md</p>
-                <pre className="code-block max-h-[50vh] whitespace-pre-wrap break-words">{viewing.content}</pre>
-              </div>
-              {bundledPaths(viewing).length ? (
-                <div className="space-y-1.5">
-                  <p className="text-[13px] font-medium">Bundled files</p>
-                  <ul className="flex flex-wrap gap-1.5">
-                    {bundledPaths(viewing).map((path) => (
-                      <li key={path}>
-                        <Badge variant="secondary" className="font-mono">
-                          {path}
-                        </Badge>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setViewing(null)}>
-              Close
-            </Button>
-            {viewing ? (
-              <Button onClick={() => openEdit(viewing)}>
-                <Pencil /> Edit skill
-              </Button>
-            ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (!next) reset();
-        }}
-      >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${editing.name}` : "New skill"}</DialogTitle>
-            <DialogDescription>
-              SKILL.md follows the Agent Skills format. Agents read the description to decide when to load it.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Name" htmlFor="skill-name">
-                <Input
-                  id="skill-name"
-                  value={name}
-                  onChange={(event) => {
-                    setName(event.target.value);
-                    if (!editing) {
-                      setSlug(
-                        event.target.value
-                          .toLowerCase()
-                          .replace(/[^a-z0-9]+/g, "-")
-                          .replace(/^-|-$/g, "")
-                          .slice(0, 64),
-                      );
-                    }
-                  }}
-                  placeholder="GitLab triage"
-                />
-              </Field>
-              <Field
-                label="Slug"
-                htmlFor="skill-slug"
-                hint={editing ? "The slug cannot change after creation." : "Short identifier used when attaching the skill."}
-              >
-                <Input
-                  id="skill-slug"
-                  className="font-mono"
-                  value={slug}
-                  disabled={Boolean(editing)}
-                  onChange={(event) => setSlug(event.target.value)}
-                  placeholder="gitlab-triage"
-                />
-              </Field>
-            </div>
-            <Field
-              label="Description"
-              htmlFor="skill-description"
-              hint="Say when the agent should use this skill."
-            >
-              <Input
-                id="skill-description"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                placeholder="Use when triaging GitLab issues and proposing labels."
-              />
-            </Field>
-            <Field label="SKILL.md" htmlFor="skill-content">
-              <Textarea
-                id="skill-content"
-                className="min-h-[280px] font-mono text-xs"
-                spellCheck={false}
-                value={content}
-                onChange={(event) => setContent(event.target.value)}
-              />
-            </Field>
-
-            <div className="rounded-lg border">
-              <button
-                type="button"
-                aria-expanded={showFiles}
-                onClick={() => setShowFiles((value) => !value)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left"
-              >
-                <span>
-                  <span className="block text-sm font-medium">Bundled files</span>
-                  <span className="block text-[13px] text-muted-foreground">
-                    {parsedFiles
-                      ? `${Object.keys(parsedFiles).length} ${Object.keys(parsedFiles).length === 1 ? "file" : "files"}. Scripts and other files the skill needs.`
-                      : "Scripts and other files the skill needs."}
-                  </span>
-                </span>
-                <ChevronDown
-                  className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", showFiles && "rotate-180")}
-                />
-              </button>
-              {showFiles ? (
-                <div className="space-y-2 border-t px-3 py-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[13px] text-muted-foreground">
-                      JSON mapping each path to its content. Scripts go under{" "}
-                      <code className="font-mono text-xs">scripts/</code> and may end in .sh, .bash, .py, .js,
-                      .ts, .rb, .pl or .go.
-                    </p>
-                    <Button type="button" size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
-                      <Upload /> Add files
-                    </Button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      aria-label="Add bundled files"
-                      onChange={handleFileUpload}
-                    />
-                  </div>
-                  <Field
-                    label="Files as JSON"
-                    htmlFor="skill-files"
-                    error={filesInvalid ? "This is not valid JSON. Fix it before saving." : undefined}
-                  >
-                    <Textarea
-                      id="skill-files"
-                      className="min-h-[120px] font-mono text-xs"
-                      spellCheck={false}
-                      value={filesText}
-                      onChange={(event) => setFilesText(event.target.value)}
-                      placeholder='{"scripts/run.sh": "#!/bin/bash\necho hello"}'
-                    />
-                  </Field>
-                </div>
-              ) : null}
-            </div>
-          </div>
-          {filesInvalid ? (
-            <Callout tone="danger" title="Fix the bundled files JSON before saving">
-              The Files as JSON field is not valid JSON. Correct it, then try saving again.
-            </Callout>
-          ) : null}
-          <ResourceAccessFields ref={accessRef} resource="skills" resourceId={editing?.id} />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => void saveSkill()}
-              loading={save.isPending}
-              disabled={!name.trim() || !slug.trim() || !content.trim() || filesInvalid}
-            >
-              {editing ? "Save skill" : "Create skill"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

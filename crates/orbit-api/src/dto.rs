@@ -81,6 +81,8 @@ pub struct AgentSummary {
     pub autonomy_level: Option<u8>,
     pub model: Option<String>,
     pub connector_count: usize,
+    /// Slugs of the skills in the current version, so a skill can show which agents use it.
+    pub skills: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -99,6 +101,7 @@ impl AgentSummary {
             autonomy_level: spec.map(|s| s.autonomy.level),
             model: spec.and_then(|s| s.model.model.clone().or_else(|| s.model.provider.clone())),
             connector_count: spec.map(|s| s.connectors.len()).unwrap_or(0),
+            skills: spec.map(|s| s.skills.clone()).unwrap_or_default(),
             created_at: agent.created_at,
             updated_at: agent.updated_at,
         }
