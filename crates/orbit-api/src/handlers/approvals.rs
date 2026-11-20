@@ -16,6 +16,8 @@ use crate::state::AppState;
 #[into_params(parameter_in = Query)]
 pub struct ApprovalListQuery {
     pub status: Option<String>,
+    /// Only approvals requested by this execution.
+    pub execution_id: Option<Uuid>,
     pub limit: Option<u32>,
 }
 
@@ -46,6 +48,7 @@ pub async fn list_approvals(
         .list_approvals(
             auth.org_id,
             status,
+            query.execution_id,
             query.limit.unwrap_or(50).clamp(1, 200) as i64,
             Some(&store_access),
         )

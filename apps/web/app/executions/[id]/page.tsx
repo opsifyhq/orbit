@@ -86,6 +86,8 @@ function ExecutionDetail() {
   // Only a run that is waiting can have a pending approval: nothing to poll otherwise.
   const pendingApprovals = useApprovals("pending", {
     enabled: execution?.status === "awaiting_approval",
+    // Asked for by execution: a long org-wide queue cannot hide this run's request.
+    executionId,
   });
   const pendingApproval =
     execution?.status === "awaiting_approval"

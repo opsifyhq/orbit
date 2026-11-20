@@ -11,7 +11,7 @@ use orbit_domain::{HarnessKind, TriggerSource, ValidationIssue};
 use orbit_security::{AuthContext, Permission};
 use orbit_store::{AgentTeam, TeamRun, TeamStep};
 
-use crate::dto::ArchiveListQuery;
+use crate::dto::TeamRunListQuery;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::work_sources::{
@@ -1119,18 +1119,24 @@ pub async fn create_run(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(ArchiveListQuery), responses((status = 200, body = [orbit_store::TeamRun])))]
+#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(TeamRunListQuery), responses((status = 200, body = [orbit_store::TeamRun])))]
 pub async fn list_runs(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Query(query): Query<ArchiveListQuery>,
+    Query(query): Query<TeamRunListQuery>,
 ) -> Result<Json<Vec<TeamRun>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     Ok(Json(
         state
             .store
-            .list_team_runs(auth.org_id, query.archived, Some(&access.store_access()))
+            .list_team_runs(
+                auth.org_id,
+                query.archived,
+                query.team_id,
+                query.limit.unwrap_or(100).clamp(1, 200) as i64,
+                Some(&access.store_access()),
+            )
             .await?,
     ))
 }

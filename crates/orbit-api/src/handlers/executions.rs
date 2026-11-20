@@ -113,11 +113,24 @@ pub async fn list_executions(
     Query(query): Query<ExecutionListQuery>,
 ) -> Result<Json<ExecutionPage>, ApiError> {
     auth.require(Permission::ExecutionsRead)?;
-    if let Some(status) = &query.status {
-        if ExecutionStatus::parse(status).is_none() {
-            return Err(ApiError::bad_request(format!("unknown status '{status}'")));
+    // One status, or several separated by commas ("failed,timed_out"): the groups people
+    // think in (in flight, failed) span more than one status.
+    let status = match query.status.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(raw) => {
+            let mut statuses = Vec::new();
+            for part in raw
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+            {
+                let parsed = ExecutionStatus::parse(part)
+                    .ok_or_else(|| ApiError::bad_request(format!("unknown status '{part}'")))?;
+                statuses.push(parsed.as_str());
+            }
+            Some(statuses.join(","))
         }
-    }
+    };
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let store_access = access.store_access();
     let (items, next_cursor, total) = state
@@ -126,7 +139,7 @@ pub async fn list_executions(
             auth.org_id,
             limit(query.limit),
             query.cursor.as_deref(),
-            query.status.as_deref(),
+            status.as_deref(),
             query.agent_id,
             query.archived,
             Some(&store_access),

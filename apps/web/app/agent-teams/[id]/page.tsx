@@ -62,7 +62,7 @@ export default function AgentTeamPage() {
   const connections = useConnections();
   const envMappings = useEnvMappings();
   const workerProfiles = useWorkerProfiles();
-  const runs = useTeamRuns(undefined);
+  const runs = useTeamRuns({ teamId });
   const queue = useTeamQueue(teamId);
 
   // The open tab lives in the URL hash so a link or reload returns to it.
@@ -88,6 +88,7 @@ export default function AgentTeamPage() {
 
   const agent = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
   const teamRuns = useMemo(
+    // The server already filters by team; the check also covers data cached before it did.
     () => (runs.data ?? []).filter((run) => run.teamId === teamId),
     [runs.data, teamId],
   );

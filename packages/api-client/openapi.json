@@ -744,6 +744,7 @@
           {
             "name": "status",
             "in": "query",
+            "description": "One execution status, or several separated by commas (`failed,timed_out`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1100,6 +1101,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "executionId",
+            "in": "query",
+            "description": "Only approvals requested by this execution.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           },
           {
@@ -1731,6 +1742,7 @@
           {
             "name": "status",
             "in": "query",
+            "description": "One execution status, or several separated by commas (`failed,timed_out`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -3108,6 +3120,27 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "teamId",
+            "in": "query",
+            "description": "Only runs of this agent team.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Newest first; 1 to 200, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         ],

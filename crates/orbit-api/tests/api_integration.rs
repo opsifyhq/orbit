@@ -6442,7 +6442,7 @@ async fn approval_list_applies_visibility_in_sql() {
         orbit_store::access::ResourceAccess::new(alice.id, false, vec![]).with_team_isolation(true);
     let rows = app
         .store
-        .list_approvals(app.org_id, Some("pending"), 2, Some(&alice_access))
+        .list_approvals(app.org_id, Some("pending"), None, 2, Some(&alice_access))
         .await
         .unwrap();
     let mut got: Vec<Uuid> = rows.iter().map(|r| r.approval.id).collect();
@@ -6454,7 +6454,7 @@ async fn approval_list_applies_visibility_in_sql() {
     // Internal access and the privileged owner see all 7 rows.
     let all = app
         .store
-        .list_approvals(app.org_id, Some("pending"), 50, None)
+        .list_approvals(app.org_id, Some("pending"), None, 50, None)
         .await
         .unwrap();
     assert_eq!(all.len(), 7);
@@ -7979,4 +7979,114 @@ async fn archiving_a_live_worker_launch_is_a_conflict() {
     let (status, body) = send(&app.router, auth_post(&path, "test-token", json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["archivedAt"].is_string());
+}
+
+/// Lists are filtered where the data lives: the web app used to fetch a capped page and
+/// filter it in the browser, so anything beyond the cap silently disappeared.
+#[tokio::test]
+async fn execution_team_run_and_approval_lists_filter_server_side() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let pool = raw_pool().await;
+
+    // Executions: one status, or several separated by commas.
+    // The demo agent runs one execution at a time: finish each before starting the next.
+    let mut finished = Vec::new();
+    for status in ["failed", "timed_out"] {
+        let id = new_execution(&app, app.agent_id).await;
+        sqlx::query("UPDATE executions SET status = $2, finished_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        finished.push(id);
+    }
+    let (failed, timed_out) = (finished[0], finished[1]);
+    let queued = new_execution(&app, app.agent_id).await;
+    let ids = |body: &Value| -> Vec<Uuid> {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().parse().unwrap())
+            .collect()
+    };
+    let (status, body) = send(
+        &app.router,
+        get("/api/v1/executions?status=failed,timed_out"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = ids(&body);
+    assert!(listed.contains(&failed) && listed.contains(&timed_out));
+    assert!(!listed.contains(&queued));
+    assert_eq!(body["total"], 2);
+
+    let (_, body) = send(&app.router, get("/api/v1/executions?status=queued")).await;
+    assert_eq!(ids(&body), vec![queued]);
+
+    let (status, body) = send(&app.router, get("/api/v1/executions?status=failed,nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"].as_str().unwrap().contains("nope"));
+
+    // Approvals: only those of one execution.
+    for execution in [failed, queued] {
+        app.store
+            .create_approval(
+                app.org_id,
+                execution,
+                json!({ "capability": "issues.create" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/approvals?status=pending&executionId={queued}"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["executionId"], queued.to_string());
+
+    // Team runs: only those of one team, newest first, with a limit.
+    let user = owner_user(&app).await;
+    let mut teams = Vec::new();
+    for name in ["Filter Team A", "Filter Team B"] {
+        let team = app
+            .store
+            .create_agent_team(app.org_id, name, "", &json!({}), Some(user.id))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            sqlx::query(
+                "INSERT INTO team_runs (id, org_id, team_id, status, input) VALUES ($1, $2, $3, 'succeeded', '{}'::jsonb)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(app.org_id)
+            .bind(team.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        teams.push(team.id);
+    }
+    let (status, body) = send(
+        &app.router,
+        get(&format!("/api/v1/team-runs?teamId={}", teams[0])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runs = body.as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|run| run["teamId"] == teams[0].to_string()));
+
+    let (_, body) = send(&app.router, get("/api/v1/team-runs?limit=3")).await;
+    assert_eq!(body.as_array().unwrap().len(), 3);
 }

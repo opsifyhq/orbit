@@ -3870,6 +3870,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description One execution status, or several separated by commas (`failed,timed_out`). */
                 status?: string;
                 agentId?: string;
                 archived?: boolean;
@@ -4118,6 +4119,8 @@ export interface operations {
         parameters: {
             query?: {
                 status?: string;
+                /** @description Only approvals requested by this execution. */
+                executionId?: string;
                 limit?: number;
             };
             header?: never;
@@ -4585,6 +4588,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description One execution status, or several separated by commas (`failed,timed_out`). */
                 status?: string;
                 agentId?: string;
                 archived?: boolean;
@@ -5616,6 +5620,10 @@ export interface operations {
         parameters: {
             query?: {
                 archived?: boolean;
+                /** @description Only runs of this agent team. */
+                teamId?: string;
+                /** @description Newest first; 1 to 200, default 100. */
+                limit?: number;
             };
             header?: never;
             path?: never;

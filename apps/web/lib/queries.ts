@@ -502,11 +502,18 @@ export function useTeamRun(runId: string) {
   });
 }
 
-export function useTeamRuns(archived?: boolean) {
+/**
+ * Team runs, newest first. Pass `teamId` for one team's runs: the server filters, so a
+ * busy organization cannot push this team's runs out of the page.
+ */
+export function useTeamRuns(options: { archived?: boolean; teamId?: string; limit?: number } = {}) {
+  const { archived, teamId, limit } = options;
   return useQuery<TeamRun[]>({
-    queryKey: [...queryKeys.teamRuns, archived ?? "all"],
-    queryFn: () => listTeamRuns(archived),
-    refetchInterval: 3_000,
+    queryKey: [...queryKeys.teamRuns, archived ?? "all", teamId ?? "any", limit ?? "default"],
+    queryFn: () => listTeamRuns({ archived, teamId, limit }),
+    // Fast while something is running, slow otherwise (new runs still show up).
+    refetchInterval: (query) =>
+      query.state.data?.some((run) => !TERMINAL_RUN.has(run.status)) ? 3_000 : 15_000,
   });
 }
 
@@ -520,15 +527,19 @@ export function useWorkerLaunches(includeInactive = false) {
 
 export function useApprovals(
   status?: string,
-  options: { refetchInterval?: number | false; enabled?: boolean } = {},
+  options: { refetchInterval?: number | false; enabled?: boolean; executionId?: string } = {},
 ) {
+  const { executionId } = options;
   return useQuery<ApprovalWithExecution[]>({
-    queryKey: queryKeys.approvals(status),
+    // Under the same prefix as the plain list, so a decision refreshes both.
+    queryKey: executionId
+      ? [...queryKeys.approvals(status), executionId]
+      : queryKeys.approvals(status),
     enabled: options.enabled ?? true,
     queryFn: async () =>
       unwrap(
         await api.GET("/api/v1/approvals", {
-          params: { query: { status, limit: 100 } },
+          params: { query: { status, executionId, limit: 100 } },
         }),
       ),
     refetchInterval: options.refetchInterval ?? 5_000,

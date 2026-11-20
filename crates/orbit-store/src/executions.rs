@@ -128,6 +128,7 @@ impl Store {
     /// Keyset-paginated execution list with optional filters. Visibility is applied in SQL
     /// via the owning agent (`access = None` means org-wide/internal). The returned total
     /// uses the same predicate, so it is the visible total for the filter.
+    /// `status` is one status or a comma-separated set (`failed,timed_out`).
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub async fn list_executions(
         &self,
@@ -152,7 +153,7 @@ impl Store {
             SELECT e.* FROM executions e
             JOIN agents a ON a.id = e.agent_id
             WHERE e.org_id = $1
-              AND ($2::text IS NULL OR e.status = $2)
+              AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
               AND ($3::uuid IS NULL OR e.agent_id = $3)
               AND ($4::timestamptz IS NULL OR (e.created_at, e.id) < ($4::timestamptz, $5::uuid))
               AND ($6::boolean IS NULL OR ($6 = FALSE AND e.archived_at IS NULL) OR ($6 = TRUE AND e.archived_at IS NOT NULL))
@@ -184,7 +185,7 @@ impl Store {
             SELECT COUNT(*) FROM executions e
             JOIN agents a ON a.id = e.agent_id
             WHERE e.org_id = $1
-              AND ($2::text IS NULL OR e.status = $2)
+              AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
               AND ($3::uuid IS NULL OR e.agent_id = $3)
               AND ($4::boolean IS NULL OR ($4 = FALSE AND e.archived_at IS NULL) OR ($4 = TRUE AND e.archived_at IS NOT NULL))
               AND ($5::bool OR a.owner_user_id = $6

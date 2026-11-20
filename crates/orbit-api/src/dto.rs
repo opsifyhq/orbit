@@ -38,6 +38,7 @@ pub struct AgentListQuery {
 pub struct ExecutionListQuery {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// One execution status, or several separated by commas (`failed,timed_out`).
     pub status: Option<String>,
     pub agent_id: Option<Uuid>,
     pub archived: Option<bool>,
@@ -48,6 +49,17 @@ pub struct ExecutionListQuery {
 #[into_params(parameter_in = Query)]
 pub struct ArchiveListQuery {
     pub archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct TeamRunListQuery {
+    pub archived: Option<bool>,
+    /// Only runs of this agent team.
+    pub team_id: Option<Uuid>,
+    /// Newest first; 1 to 200, default 100.
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]

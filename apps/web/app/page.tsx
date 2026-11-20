@@ -93,7 +93,7 @@ export default function OverviewPage() {
                   <StatusGlyph shape="orbiting" tone="info" className="h-5 w-5" />
                 ) : null,
               detail: summary.runningExecutions > 0 ? "Live executions" : "Nothing in flight",
-              href: "/executions?status=running",
+              href: "/executions?status=active",
             },
             {
               label: "Executions, last 24 h",
