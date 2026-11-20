@@ -262,6 +262,7 @@ impl Store {
             SET status = 'running',
                 session_ref = COALESCE($2, session_ref),
                 started_at = COALESCE(started_at, now()),
+                running_started_at = COALESCE(running_started_at, now()),
                 updated_at = now()
             WHERE id = $1 AND status IN ('dispatched', 'awaiting_approval')
             RETURNING *

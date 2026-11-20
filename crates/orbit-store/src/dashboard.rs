@@ -58,6 +58,8 @@ impl Store {
                     COUNT(*) FILTER (WHERE e.status IN ('queued', 'dispatched', 'running'))
                 FROM executions e JOIN agents a ON a.id = e.agent_id
                 WHERE e.org_id = $1 AND {agent_ok}
+                  AND (e.created_at > now() - interval '24 hours'
+                       OR e.status IN ('queued', 'dispatched', 'running'))
                 "#
             )))
             .bind(org_id)

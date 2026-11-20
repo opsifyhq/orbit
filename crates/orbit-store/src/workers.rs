@@ -206,7 +206,9 @@ impl Store {
     /// Liveness is otherwise tracked per worker: a healthy worker whose runner task died,
     /// or whose `/complete` call never got through, keeps heartbeating while the run stays
     /// `running` and holds the agent's concurrency slot. A run is ended as `timed_out`
-    /// once `started_at + timeout_seconds + grace_seconds` has passed. Time spent waiting
+    /// once `running_started_at + timeout_seconds + grace_seconds` has passed (the clock
+    /// starts when the harness reports `running`, so checkout and worker start-up do not
+    /// count; dispatch is bounded by [`Self::reap_unstarted_executions`]). Time spent waiting
     /// on approvals is added to the deadline because the worker pauses the run's clock
     /// for it. The conditional `status = 'running'` makes this safe to run from several
     /// API replicas and loses cleanly to a worker that reports in at the same moment.
@@ -228,9 +230,9 @@ impl Store {
                 finished_at = now(),
                 updated_at = now()
             WHERE e.status = 'running'
-              AND e.started_at IS NOT NULL
+              AND COALESCE(e.running_started_at, e.started_at) IS NOT NULL
               AND ($2::uuid IS NULL OR e.org_id = $2)
-              AND e.started_at
+              AND COALESCE(e.running_started_at, e.started_at)
                   + make_interval(secs =>
                         e.timeout_seconds::float8
                         + $1

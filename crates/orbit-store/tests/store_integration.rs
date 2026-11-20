@@ -795,7 +795,7 @@ async fn running_executions_past_timeout_and_grace_are_ended_on_a_live_worker() 
         let store = &store;
         async move {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE executions SET started_at = now() - interval '{interval}' WHERE id = $1"
+                "UPDATE executions SET running_started_at = now() - interval '{interval}' WHERE id = $1"
             )))
             .bind(id)
             .execute(store.pool())
@@ -3196,4 +3196,164 @@ async fn team_members_must_belong_to_the_teams_org() {
     assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
     assert_ne!(org, other_org);
     assert_eq!(store.list_team_members(team.id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn timeout_counts_from_running_not_from_dispatch() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Timeout From Running Agent"))
+        .await
+        .unwrap();
+    let make = |key: &'static str| {
+        let store = &store;
+        let agent = &agent;
+        async move {
+            let execution = store
+                .create_execution(NewExecution {
+                    org_id: org,
+                    agent_id: agent.id,
+                    agent_version_id: version.id,
+                    agent_name: &agent.name,
+                    harness_kind: HarnessKind::Mock,
+                    trigger_source: TriggerSource::Manual,
+                    placement: "auto",
+                    trigger_id: None,
+                    input: serde_json::json!({ "task": "x", "payload": {}, "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() } }),
+                    session_ref: None,
+                    skills: &[],
+                    timeout_seconds: 300,
+                    requested_by: Some(user),
+                    idempotency_key: Some(key),
+                    team_run_id: None,
+                    team_step_index: None,
+                })
+                .await
+                .unwrap();
+            store
+                .claim_execution(execution.id, "worker-slow-checkout")
+                .await
+                .unwrap();
+            execution
+        }
+    };
+    let set = |id: uuid::Uuid, column: &'static str, interval: &'static str| {
+        let store = &store;
+        async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE executions SET {column} = now() - interval '{interval}' WHERE id = $1"
+            )))
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+    };
+
+    // Dispatched 15 minutes ago (slow checkout), only now reports running.
+    let slow = make("slow-checkout").await;
+    set(slow.id, "started_at", "15 minutes").await;
+    store
+        .mark_execution_running(slow.id, Some("s"))
+        .await
+        .unwrap();
+    // Running for longer than timeout (300s) + grace (300s).
+    let stuck = make("stuck-running").await;
+    set(stuck.id, "started_at", "15 minutes").await;
+    store
+        .mark_execution_running(stuck.id, Some("s"))
+        .await
+        .unwrap();
+    set(stuck.id, "running_started_at", "11 minutes").await;
+
+    let reaped = store
+        .reap_timed_out_executions(Some(org), 300)
+        .await
+        .unwrap();
+    assert_eq!(reaped.len(), 1, "{reaped:?}");
+    assert_eq!(reaped[0].id, stuck.id);
+    assert_eq!(
+        store.get_execution(org, slow.id).await.unwrap().status,
+        "running"
+    );
+    // The dispatch time is untouched, so durations shown to users keep their meaning.
+    let slow_after = store.get_execution(org, slow.id).await.unwrap();
+    assert!(slow_after.started_at.unwrap() < chrono::Utc::now() - chrono::Duration::minutes(14));
+}
+
+#[tokio::test]
+async fn running_team_runs_are_all_visited_by_keyset_paging() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_agent_team(
+            org,
+            &format!("Team {}", uuid::Uuid::now_v7()),
+            "paging",
+            &serde_json::json!({ "steps": [] }),
+            Some(user),
+        )
+        .await
+        .unwrap();
+    let mut expected = std::collections::HashSet::new();
+    for _ in 0..60 {
+        let run = store
+            .create_team_run(
+                org,
+                team.id,
+                &serde_json::json!({ "task": "t" }),
+                Some(user),
+            )
+            .await
+            .unwrap();
+        expected.insert(run.id);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut after = None;
+    loop {
+        let page = store.list_running_team_runs(after, 50).await.unwrap();
+        let Some(last) = page.last() else { break };
+        after = Some(last.id);
+        seen.extend(page.into_iter().map(|run| run.id));
+    }
+    assert!(expected.is_subset(&seen), "every running run is visited");
+}
+
+#[tokio::test]
+async fn prune_audit_logs_deletes_in_batches() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _) = seed_org(&store).await;
+    // More than one batch (5000) of old rows plus one recent row.
+    sqlx::query(
+        "INSERT INTO audit_logs (org_id, action, created_at)
+         SELECT $1, 'test.bulk', now() - interval '400 days' + (g * interval '1 second')
+         FROM generate_series(1, 5100) g",
+    )
+    .bind(org)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO audit_logs (org_id, action) VALUES ($1, 'test.keep')")
+        .bind(org)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let removed = store
+        .prune_audit_logs(chrono::Utc::now() - chrono::Duration::days(365))
+        .await
+        .unwrap();
+    assert!(removed >= 5100, "removed {removed}");
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE org_id = $1")
+        .bind(org)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1);
 }

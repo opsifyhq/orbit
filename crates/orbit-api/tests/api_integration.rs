@@ -1681,8 +1681,13 @@ async fn runtime_row(
 }
 
 async fn fail_execution(pool: &sqlx::PgPool, execution_id: uuid::Uuid) {
-    sqlx::query("UPDATE executions SET status = 'failed', error = '\"boom\"'::jsonb, finished_at = now() WHERE id = $1")
+    end_execution(pool, execution_id, "failed").await;
+}
+
+async fn end_execution(pool: &sqlx::PgPool, execution_id: uuid::Uuid, status: &str) {
+    sqlx::query("UPDATE executions SET status = $2, error = '\"boom\"'::jsonb, finished_at = now() WHERE id = $1")
         .bind(execution_id)
+        .bind(status)
         .execute(pool)
         .await
         .unwrap();
@@ -1700,6 +1705,15 @@ async fn make_runtime_due(pool: &sqlx::PgPool, runtime_id: uuid::Uuid) {
 
 #[tokio::test]
 async fn runtime_stops_after_consecutive_failures() {
+    runtime_stops_after_consecutive("failed").await;
+}
+
+#[tokio::test]
+async fn runtime_stops_after_consecutive_timeouts() {
+    runtime_stops_after_consecutive("timed_out").await;
+}
+
+async fn runtime_stops_after_consecutive(ended_as: &str) {
     let Some(app) = test_app(false).await else {
         return;
     };
@@ -1724,7 +1738,7 @@ async fn runtime_stops_after_consecutive_failures() {
             .await
             .unwrap();
         let id = runtime_row(&app, agent_id).await.last_execution_id.unwrap();
-        fail_execution(&pool, id).await;
+        end_execution(&pool, id, ended_as).await;
         make_runtime_due(&pool, runtime.id).await;
         orbit_api::background::runtime_tick(&app.state)
             .await
