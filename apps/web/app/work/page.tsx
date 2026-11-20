@@ -134,9 +134,13 @@ export default function WorkPage() {
           return;
         }
 
-        // Reuse an existing profile for this harness, otherwise create and enable one.
+        // Reuse an enabled profile for this harness that covers this agent; a disabled
+        // or out-of-scope profile would accept the work and then never run it.
         let profileId = (workerProfiles.data ?? []).find(
-          (p) => p.harnessKind === effectiveHarness,
+          (p) =>
+            p.harnessKind === effectiveHarness &&
+            p.enabled &&
+            (p.agentScope !== "selected" || p.agentIds.includes(who)),
         )?.id;
         if (!profileId) {
           try {
@@ -157,9 +161,11 @@ export default function WorkPage() {
               }),
             );
             profileId = created.id;
-            await api.POST("/api/v1/worker-profiles/{profile_id}/enable", {
-              params: { path: { profile_id: created.id } },
-            });
+            unwrap(
+              await api.POST("/api/v1/worker-profiles/{profile_id}/enable", {
+                params: { path: { profile_id: created.id } },
+              }),
+            );
             toast.success("Worker profile created");
           } catch (error) {
             toast.error(errorMessage(error));
@@ -168,10 +174,11 @@ export default function WorkPage() {
 
         if (profileId) {
           try {
-            await api.POST("/api/v1/worker-profiles/{profile_id}/launch", {
-              params: { path: { profile_id: profileId } },
-            });
-            toast.success("Worker launched");
+            unwrap(
+              await api.POST("/api/v1/worker-profiles/{profile_id}/launch", {
+                params: { path: { profile_id: profileId } },
+              }),
+            );
           } catch {
             toast.warning(
               `No ${brandName(effectiveHarness)} worker is online and ORBIT could not start one. The work is queued until a worker connects.`,
