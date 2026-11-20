@@ -20,6 +20,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   name/slug/description as fields that are written into the SKILL.md frontmatter (other keys
   kept), a Markdown preview, and bundled files as a file list with upload (text files only)
   instead of JSON. The Skills list follows the Agents list with an In use / Unused filter.
+- Agent teams and Skills lists follow the Agents list: search and a status filter with counts,
+  a status column (how a team gets work; whether a skill is in use), selection with bulk
+  access for teams too, and a count under the list, built on shared list components. Team
+  runs moved from a tab to their own page (`/agent-teams/runs`), and list headers now line up
+  with their columns.
 
 ### Fixed
 

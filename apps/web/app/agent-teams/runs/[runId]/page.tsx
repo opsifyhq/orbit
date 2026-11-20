@@ -53,7 +53,7 @@ export default function TeamRunPage() {
         description={run.error ? errorMessage(run.error) : undefined}
         action={
           <Button asChild>
-            <Link href="/agent-teams#runs">Back to runs</Link>
+            <Link href="/agent-teams/runs">Back to runs</Link>
           </Button>
         }
       />

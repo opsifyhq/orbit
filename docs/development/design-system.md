@@ -108,6 +108,15 @@ header row (`bg-subtle text-xs font-medium text-muted-foreground`) appears once 
 (`ExecutionListHeader`, the agents list); compact previews such as Overview's recent list omit it.
 Use cards in a grid only for a catalogue of unlike things (connectors, harnesses).
 
+**Registry lists** (Agents, Agent teams, Skills, Team runs) share `components/ui/resource-list.tsx`:
+`ListToolbar` with `SearchField` (always shown, left) and a `Segmented` filter with counts;
+`SelectionBar` once a row is ticked (select all shown, bulk actions, clear); `ListCard` whose
+header uses the same `LIST_GRID` as `ListRow`, so labels sit over their cells including the
+checkbox column; rows are name · status · details · updated, with the name cell holding the
+whole-row link (`ROW_LINK`) plus a small fact (`v5`, `2 agents`) and a one-line description;
+`ListCount` underneath ("3 agents." / "2 of 5 agents match."). Status uses `<Status>`
+glyphs: lifecycle for agents, how work arrives for teams, in use or not for skills.
+
 **Detail pages.** `PageHeader` with `back` and `meta`; primary action first, then
 secondary buttons, then a `DropdownMenu` for rare and destructive actions. Body is
 `grid lg:grid-cols-[minmax(0,1fr)_21rem]`: the work on the left, facts on the right.
