@@ -7,8 +7,11 @@
 
 ## Fast path (everything in containers)
 
+Create the auth export first; it is gitignored and contains secrets:
+
 ```bash
 cp .env.example .env
+opencode auth export > .orbit-auth-export.json
 docker compose -f deploy/compose/compose.yaml up --build -d
 docker compose -f deploy/compose/compose.yaml ps
 docker compose -f deploy/compose/compose.yaml logs -f --tail=100 api worker web

@@ -42,7 +42,8 @@ helm --kube-context your-cluster upgrade --install orbit deploy/helm/orbit \
   --namespace orbit --create-namespace \
   -f deploy/helm/orbit/values.yaml \
   --set imageRegistry=registry.example.com:5000 \
-  --set api.tag=<version> --set worker.tag=<version> --set web.tag=<version>
+  --set api.tag=<version> --set worker.tag=<version> --set web.tag=<version> \
+  --set auth.acknowledgeInsecureDev=true
 ```
 
 After the API is up it seeds one launchable mock worker profile and the launcher starts
@@ -60,8 +61,9 @@ profile bootstrap manifests instead.
 
 ```bash
 # explicit launcher token (GitOps-friendly)
-helm upgrade orbit deploy/helm/orbit -n orbit -f values.yaml \
-  --set launcher.token="$LAUNCHER_TOKEN"
+helm upgrade orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
+  --set launcher.token="$LAUNCHER_TOKEN" \
+  --set auth.acknowledgeInsecureDev=true
 ```
 
 Launch images must be pullable by the cluster. Each launch sets `ORBIT_API_URL` and the

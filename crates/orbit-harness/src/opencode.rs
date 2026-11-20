@@ -3,12 +3,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::process_env::child_environment;
+use crate::stream::{self, MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
     HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
@@ -276,6 +277,20 @@ fn build_prompt(request: &ExecutionRequest) -> String {
         truncate(&payload_text, 120_000)
     ));
     prompt
+}
+
+fn validate_prompt_arg(prompt: &str) -> Result<(), HarnessError> {
+    if prompt.len() > MAX_PROMPT_ARG_BYTES {
+        return Err(HarnessError::new(
+            HarnessErrorKind::InvalidConfig,
+            format!(
+                "OpenCode prompt is {} bytes; prompts larger than {} bytes cannot be passed safely as a CLI argument",
+                prompt.len(),
+                MAX_PROMPT_ARG_BYTES
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// OpenCode native tools that mutate files or run commands. `edit` is the umbrella
@@ -673,6 +688,17 @@ fn truncate(value: &str, limit: usize) -> String {
     }
 }
 
+fn truncate_json(value: &Value, limit: usize) -> Value {
+    let Ok(serialized) = serde_json::to_string(value) else {
+        return json!("[unserializable JSON]");
+    };
+    if serialized.len() <= limit {
+        value.clone()
+    } else {
+        json!(truncate(&serialized, limit))
+    }
+}
+
 fn map_open_code_event(
     value: &Value,
     usage: &mut Usage,
@@ -745,8 +771,14 @@ fn map_open_code_event(
             event.data = json!({
                 "tool": tool,
                 "status": status,
-                "input": state.get("input").cloned().unwrap_or(Value::Null),
-                "output": state.get("output").and_then(Value::as_str).map(|s| truncate(s, 4_000)),
+                "input": state
+                    .get("input")
+                    .map(|value| truncate_json(value, MAX_EVENT_DATA_BYTES))
+                    .unwrap_or(Value::Null),
+                "output": state
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .map(|s| truncate(s, MAX_EVENT_DATA_BYTES)),
             });
             Some(event)
         }
@@ -894,6 +926,7 @@ impl OpenCodeHarnessAdapter {
         }
         let model = settings.model_selector(request.model.as_ref());
         let prompt = build_prompt(&request);
+        validate_prompt_arg(&prompt)?;
         let args = settings.cli_args(
             &prompt,
             session_ref.as_deref(),
@@ -962,8 +995,21 @@ impl OpenCodeHarnessAdapter {
         let stderr_task = {
             let buffer = stderr_buffer.clone();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                let lines = stream::lines(stderr);
+                tokio::pin!(lines);
+                while let Some(line) = lines.next().await {
+                    let line = match line {
+                        Ok(line) => line,
+                        Err(error) => {
+                            let mut buffer = buffer.lock().expect("stderr lock");
+                            if buffer.len() < 16_000 {
+                                buffer.push_str(&format!(
+                                    "[skipped oversized stderr line: {error}]\n"
+                                ));
+                            }
+                            continue;
+                        }
+                    };
                     {
                         let mut buffer = buffer.lock().expect("stderr lock");
                         if buffer.len() < 16_000 {
@@ -993,7 +1039,8 @@ impl OpenCodeHarnessAdapter {
         let mut usage = Usage::default();
         let mut text = String::new();
         let mut session = session_ref.clone();
-        let mut lines = BufReader::new(stdout).lines();
+        let lines = stream::lines(stdout);
+        tokio::pin!(lines);
         let mut timed_out = false;
         let mut cancelled = false;
         // Active time only: waiting for a human approval does not use up the timeout.
@@ -1016,9 +1063,9 @@ impl OpenCodeHarnessAdapter {
                     wait_or_kill(&mut child, Duration::from_secs(3)).await;
                     break;
                 }
-                line = lines.next_line() => {
+                line = lines.next() => {
                     match line {
-                        Ok(Some(line)) => {
+                        Some(Ok(line)) => {
                             if line.trim().is_empty() { continue; }
                             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                                 emit(&sender, HarnessEvent::log(LogLevel::Debug, format!("opencode: {line}"))).await;
@@ -1031,11 +1078,13 @@ impl OpenCodeHarnessAdapter {
                                 emit(&sender, event).await;
                             }
                         }
-                        Ok(None) => break,
-                        Err(err) => {
-                            emit(&sender, HarnessEvent::new(HarnessEventKind::Error, LogLevel::Error, format!("failed to read opencode output: {err}"))).await;
-                            break;
+                        Some(Err(err)) => {
+                            emit(&sender, HarnessEvent::log(
+                                LogLevel::Warn,
+                                format!("opencode output line skipped: {err}"),
+                            )).await;
                         }
+                        None => break,
                     }
                 }
             }
@@ -1055,7 +1104,7 @@ impl OpenCodeHarnessAdapter {
         let _ = tokio::time::timeout(Duration::from_secs(2), stderr_task).await;
 
         usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
-        usage.cpu_millis = usage.wall_time_ms;
+        usage.cpu_millis = None;
 
         if cancelled {
             let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
@@ -1424,6 +1473,23 @@ mod tests {
     fn truncation_is_utf8_safe() {
         let value = "a".repeat(10) + "é";
         assert!(truncate(&value, 11).ends_with("… [truncated]"));
+    }
+
+    #[test]
+    fn rejects_prompt_that_would_be_too_large_for_argv() {
+        let error = validate_prompt_arg(&"x".repeat(MAX_PROMPT_ARG_BYTES + 1)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot be passed safely as a CLI argument"));
+    }
+
+    #[test]
+    fn truncates_large_tool_input_with_an_explicit_marker() {
+        let value = truncate_json(&serde_json::json!({ "content": "x".repeat(20_000) }), 128);
+        let text = value
+            .as_str()
+            .expect("large JSON should be represented as text");
+        assert!(text.ends_with("… [truncated]"));
     }
 }
 

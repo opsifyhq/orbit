@@ -114,6 +114,7 @@ services:
       - "${DOCKER_GID:-0}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Must exist as a file before `docker compose up`; otherwise Docker creates a directory.
       - ../../.orbit-auth-export.json:/auth/auth-export.json:ro
     restart: unless-stopped
 

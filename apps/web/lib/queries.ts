@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import { apiErrorFromBody, handleUnauthorized, isSessionError, request } from "./http";
+import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
 import { listEnvMappings, workerProfileEnvMappings } from "./env-mappings";
 import { listOutputs } from "./outputs";
 import type {
@@ -40,7 +40,7 @@ export function unwrap<T>(result: {
   response: Response;
 }): T {
   if (result.error) {
-    // Throw an ApiError so callers keep the HTTP status (401/403 vs 5xx) and the message.
+    // Throw an ApiError so callers keep the HTTP status (401 vs 403 vs 5xx) and the message.
     if (result.response.status === 401) handleUnauthorized();
     throw apiErrorFromBody(result.response.status, result.error, result.response.statusText);
   }
@@ -147,9 +147,11 @@ export function useMe(enabled = true) {
     enabled,
     queryFn: async () => unwrap(await api.GET("/api/v1/me")),
     staleTime: 60_000,
-    // 401/403 will not heal by retrying. Transient failures (5xx, network) back off
-    // exponentially (TanStack default: 1 s, 2 s, 4 s) before the shell shows a retry state.
-    retry: (failureCount, error) => !isSessionError(error) && failureCount < 3,
+    // 401 (session over) and 403 (no access) will not heal by retrying. Transient
+    // failures (5xx, network) back off exponentially (TanStack default: 1 s, 2 s, 4 s)
+    // before the shell shows a retry state.
+    retry: (failureCount, error) =>
+      !isSessionError(error) && !isNoAccessError(error) && failureCount < 3,
   });
 }
 

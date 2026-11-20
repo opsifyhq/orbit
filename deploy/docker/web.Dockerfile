@@ -10,7 +10,8 @@ COPY packages/api-client/package.json packages/api-client/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 RUN pnpm install --frozen-lockfile
 
-COPY . .
+COPY apps ./apps
+COPY packages ./packages
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @orbit/web build
 

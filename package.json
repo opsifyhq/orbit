@@ -12,11 +12,5 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "api:generate": "node scripts/generate-api-client.mjs"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp"
-    ]
   }
 }

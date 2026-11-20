@@ -26,3 +26,18 @@ export function safeNextPath(value: string | null | undefined): string {
   }
   return value;
 }
+
+/**
+ * Current browser path including query and fragment. SSR-safe: returns "/" when no
+ * window exists. Callers are client-side effects/handlers that need a return URL.
+ */
+export function currentLocationPath(): string {
+  if (typeof window === "undefined") return "/";
+  const { pathname, search, hash } = window.location;
+  return `${pathname}${search}${hash}`;
+}
+
+/** Build a login URL that returns to `target`, validating it as a same-origin path. */
+export function loginPathFor(target: string | null | undefined): string {
+  return `/login?next=${encodeURIComponent(safeNextPath(target))}`;
+}
