@@ -105,18 +105,32 @@ export function WorkerEditor({
   const platformVersion = meta.data?.version;
   const envMappingLibrary = useEnvMappings();
   const profileEnvMappings = useWorkerProfileEnvMappings(editing?.id);
+  // Seed the checkbox state once. Refetches return the same mappings, and re-seeding
+  // would throw away any unsaved ticks the user has made in the meantime.
+  const envMappingsSeeded = useRef(false);
 
   useEffect(() => {
-    if (editing && profileEnvMappings.data) {
-      const attached = profileEnvMappings.data.map((mapping) => mapping.id);
-      form.set({
-        envMappingIds:
-          attachMappingId && !attached.includes(attachMappingId) ? [...attached, attachMappingId] : attached,
-      });
-    }
+    if (!editing || !profileEnvMappings.data || envMappingsSeeded.current) return;
+    envMappingsSeeded.current = true;
+    const attached = profileEnvMappings.data.map((mapping) => mapping.id);
+    form.set({
+      envMappingIds:
+        attachMappingId && !attached.includes(attachMappingId) ? [...attached, attachMappingId] : attached,
+    });
     // form.set merges with a functional update, so it is safe to leave out; the data is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, profileEnvMappings.data, attachMappingId]);
+
+  // Saving while an attached-mapping read failed would send a form with no ids and
+  // detach every mapping. Wait for a successful read before allowing a save.
+  const envMappingsLoading = Boolean(editing) && profileEnvMappings.isLoading;
+  const envMappingsFailed = Boolean(editing) && profileEnvMappings.isError;
+  const envMappingsBlocked = envMappingsLoading || envMappingsFailed;
+  const envMappingsReason = envMappingsLoading
+    ? "Attached environment mappings are still loading."
+    : envMappingsFailed
+      ? `Attached environment mappings could not be loaded: ${errorMessage(profileEnvMappings.error)}. Saving is disabled so they are not detached.`
+      : null;
 
   const activeProfileLaunches = launches.filter(
     (item) => editing && item.profileId === editing.id && isActive(item),
@@ -220,6 +234,10 @@ export function WorkerEditor({
   const summaries = sectionSummaries(values, Boolean(editing));
 
   async function requestSave() {
+    if (envMappingsBlocked) {
+      toast.error(envMappingsReason ?? "Attached environment mappings are unavailable.");
+      return;
+    }
     if (issues.length) {
       // Open the first section with a problem rather than leaving a dead button.
       setAttempted(true);
@@ -237,7 +255,14 @@ export function WorkerEditor({
 
   const saveLabel = editing ? "Save changes" : "Create profile";
   const saveButton = (className?: string) => (
-    <Button onClick={() => void requestSave()} loading={save.isPending} size="lg" className={className}>
+    <Button
+      onClick={() => void requestSave()}
+      loading={save.isPending}
+      disabled={envMappingsBlocked}
+      title={envMappingsReason ?? undefined}
+      size="lg"
+      className={className}
+    >
       {saveLabel}
     </Button>
   );
@@ -300,6 +325,11 @@ export function WorkerEditor({
         </aside>
 
         <div className="min-w-0 max-w-3xl space-y-5">
+          {envMappingsReason ? (
+            <Callout tone={envMappingsFailed ? "danger" : "neutral"} title="Environment mappings are not ready">
+              {envMappingsReason}
+            </Callout>
+          ) : null}
           {needsRelaunch ? (
             <Callout tone="warning" title="A running worker will not pick these changes up yet">
               {runningCount} {runningCount === 1 ? "launch is" : "launches are"} running on this profile.

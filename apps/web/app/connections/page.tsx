@@ -49,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Status, type StatusMeta } from "@/components/ui/status";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { setConfigField } from "@/lib/connection-config";
 import { request } from "@/lib/http";
 import { queryKeys, unwrap, useConnections, useConnectors } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
@@ -104,6 +105,7 @@ export default function ConnectionsPage() {
   const [credential, setCredential] = useState("");
   const [scopes, setScopes] = useState<string[]>([]);
   const [configText, setConfigText] = useState("{}");
+  const [configError, setConfigError] = useState<string | null>(null);
   const [connectionUrl, setConnectionUrl] = useState("");
   const [schemaValues, setSchemaValues] = useState<Record<string, string>>({});
 
@@ -145,26 +147,14 @@ export default function ConnectionsPage() {
   }, [connections.data]);
 
   function setSchemaField(key: string, value: string) {
-    const next = { ...schemaValues, [key]: value };
-    setSchemaValues(next);
-    let config: Record<string, unknown> = {};
-    try {
-      config = JSON.parse(configText || "{}") as Record<string, unknown>;
-    } catch {
-      config = {};
+    setSchemaValues((current) => ({ ...current, [key]: value }));
+    const result = setConfigField(configText, key, value, schema.properties?.[key]);
+    if (result.error) {
+      setConfigError(result.error);
+      return;
     }
-    for (const [field, raw] of Object.entries(next)) {
-      const property = schema.properties?.[field];
-      if (raw === "") continue;
-      if (property?.type === "number" || property?.type === "integer") {
-        config[field] = Number(raw);
-      } else if (property?.type === "boolean") {
-        config[field] = raw === "true";
-      } else {
-        config[field] = raw;
-      }
-    }
-    setConfigText(JSON.stringify(config, null, 2));
+    setConfigError(null);
+    setConfigText(result.configText);
   }
 
   const save = useMutation({
@@ -222,6 +212,7 @@ export default function ConnectionsPage() {
       setCredential("");
       setScopes([]);
       setConfigText("{}");
+      setConfigError(null);
       setConnectionUrl("");
       void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
       void queryClient.invalidateQueries({ queryKey: queryKeys.connectors });
@@ -234,6 +225,7 @@ export default function ConnectionsPage() {
     setConnectorSlug(slug);
     setScopes([]);
     setConfigText(defaultConfig(slug));
+    setConfigError(null);
     setSchemaValues({});
     setConnectionUrl(slug === "gitlab" ? "https://gitlab.com" : "");
   }
@@ -248,6 +240,7 @@ export default function ConnectionsPage() {
       setConnectorSlug("telegram");
       setScopes([]);
       setConfigText(defaultConfig("telegram"));
+      setConfigError(null);
       setSchemaValues({});
       setConnectionUrl("");
     }
@@ -265,6 +258,7 @@ export default function ConnectionsPage() {
     setCredential("");
     setScopes(connection.scopes);
     setConfigText(JSON.stringify(connection.config ?? {}, null, 2));
+    setConfigError(null);
     const config = (connection.config ?? {}) as Record<string, unknown>;
     setSchemaValues(
       Object.fromEntries(
@@ -562,7 +556,7 @@ export default function ConnectionsPage() {
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
-              if (name.trim() && !save.isPending) void saveConnection();
+              if (name.trim() && !configError && !save.isPending) void saveConnection();
             }}
           >
             <div className="grid gap-4 sm:grid-cols-2">
@@ -712,12 +706,20 @@ export default function ConnectionsPage() {
             </fieldset>
 
             <Disclosure title="Advanced configuration" summary="Raw JSON">
-                <Field label="Config" htmlFor="connection-config-json" hint="Must be a JSON object.">
+                <Field
+                  label="Config"
+                  htmlFor="connection-config-json"
+                  hint="Must be a JSON object."
+                  error={configError ?? undefined}
+                >
                   <Textarea
                     id="connection-config-json"
                     className="min-h-28 font-mono text-xs"
                     value={configText}
-                    onChange={(event) => setConfigText(event.target.value)}
+                    onChange={(event) => {
+                      setConfigText(event.target.value);
+                      setConfigError(null);
+                    }}
                   />
                 </Field>
               </Disclosure>
@@ -727,7 +729,7 @@ export default function ConnectionsPage() {
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={save.isPending} disabled={!name.trim()}>
+              <Button type="submit" loading={save.isPending} disabled={!name.trim() || Boolean(configError)}>
                 {editing ? "Save changes" : "Create connection"}
               </Button>
             </DialogFooter>
