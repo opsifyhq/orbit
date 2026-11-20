@@ -149,11 +149,16 @@ Migrations are embedded in the binaries and applied automatically at startup
 ## API client generation
 
 ```bash
-# with the API running
-pnpm api:generate
+pnpm api:generate            # after any API change
+pnpm api:generate --check    # what CI runs for the TypeScript half
 ```
 
-Writes `packages/api-client/src/schema.d.ts` from `/api/v1/openapi.json`.
+No running API or database is needed. The command prints the OpenAPI document from the
+Rust code (`cargo run -p orbit-api --example openapi`), saves it as
+`packages/api-client/openapi.json` and generates `packages/api-client/src/schema.d.ts`
+from it. Both files are committed. CI fails when either is stale: a Rust test compares
+`openapi.json` with the code (and the router with the document), and the web job
+compares `schema.d.ts` with `openapi.json`.
 
 ## Useful commands
 

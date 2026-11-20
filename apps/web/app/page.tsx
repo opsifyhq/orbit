@@ -25,14 +25,15 @@ function plural(count: number, noun: string) {
 
 export default function OverviewPage() {
   const dashboard = useDashboard();
-  const agents = useAgents({ limit: 6 });
+  // Archived agents are not "your agents": ask for the current ones, not six of anything.
+  const agents = useAgents({ limit: 6, status: "current" });
   const harnessDefault = useDefaultHarness();
   const summary = dashboard.data?.summary;
   const usage =
     ((dashboard.data?.usage ?? {}) as { days?: Array<{ day: string; executions: number }> }).days ??
     [];
   const firstRun = summary ? summary.totalAgents === 0 : false;
-  const currentAgents = (agents.data?.items ?? []).filter((agent) => agent.status !== "archived");
+  const currentAgents = agents.data?.items ?? [];
 
   return (
     <div className="space-y-7">
@@ -92,7 +93,7 @@ export default function OverviewPage() {
                   <StatusGlyph shape="orbiting" tone="info" className="h-5 w-5" />
                 ) : null,
               detail: summary.runningExecutions > 0 ? "Live executions" : "Nothing in flight",
-              href: "/executions?status=running",
+              href: "/executions?status=active",
             },
             {
               label: "Executions, last 24 h",

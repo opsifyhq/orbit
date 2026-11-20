@@ -67,7 +67,7 @@ export function NativeToolFields({ form }: { form: WorkerFormApi }) {
     >
       <Textarea
         id="wp-native-tools"
-        className="min-h-24 font-mono text-xs"
+        className="min-h-24 font-mono text-base md:text-xs"
         value={form.values.nativeToolsText}
         onChange={(event) => form.set({ nativeToolsText: event.target.value })}
         aria-invalid={error ? true : undefined}

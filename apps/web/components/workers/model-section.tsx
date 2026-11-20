@@ -152,7 +152,7 @@ export function AuthSecretField({ form }: { form: WorkerFormApi }) {
     >
       <Input
         id="wp-auth"
-        className="font-mono text-[13px]"
+        className="font-mono text-base md:text-[13px]"
         value={form.values.authSecret}
         onChange={(event) => form.set({ authSecret: event.target.value })}
         placeholder="orbit-opencode-auth"

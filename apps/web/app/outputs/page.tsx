@@ -33,7 +33,7 @@ import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useAgents, useAgentTeams } from "@/lib/queries";
+import { useAllAgents, useAgentTeams } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import {
   createOutput,
@@ -80,7 +80,7 @@ export default function OutputsPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const outputs = useQuery({ queryKey: ["outputs"], queryFn: listOutputs, staleTime: 15_000 });
-  const agents = useAgents({ limit: 100 });
+  const agents = useAllAgents();
   const teams = useAgentTeams();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<OutputView | null>(null);
@@ -273,6 +273,8 @@ export default function OutputsPage() {
                   variant="outline"
                   onClick={() => test.mutate(output.id)}
                   loading={test.isPending && test.variables === output.id}
+                  disabled={!output.hasWebhook}
+                  title={output.hasWebhook ? undefined : "Add a webhook URL first"}
                 >
                   <Send /> Send test
                 </Button>
@@ -444,7 +446,12 @@ export default function OutputsPage() {
             <Button
               onClick={() => save.mutate()}
               loading={save.isPending}
-              disabled={!form.name.trim() || form.events.length === 0}
+              disabled={
+                !form.name.trim() ||
+                form.events.length === 0 ||
+                // A new output needs somewhere to send to; an existing one keeps its URL.
+                (!editing?.hasWebhook && !form.webhookUrl.trim())
+              }
             >
               {editing ? "Save changes" : "Create output"}
             </Button>

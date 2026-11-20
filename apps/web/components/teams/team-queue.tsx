@@ -63,15 +63,19 @@ export function TeamQueue({ team }: { team: AgentTeam }) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.teamRuns });
   }
 
-  async function act(key: string, action: () => Promise<unknown>, success: string) {
+  /** Runs one queue action; resolves to whether it succeeded. The list is refreshed either way. */
+  async function act(key: string, action: () => Promise<unknown>, success: string): Promise<boolean> {
     setBusy(key);
     try {
       await action();
-      await refresh();
       toast.success(success);
+      return true;
     } catch (error) {
       toast.error(errorMessage(error));
+      return false;
     } finally {
+      // A failure can still have changed the queue (some items started before one failed).
+      await refresh().catch(() => undefined);
       setBusy(null);
     }
   }
@@ -79,8 +83,13 @@ export function TeamQueue({ team }: { team: AgentTeam }) {
   async function add() {
     const parsed = parseItems(text);
     if (!parsed.length) return;
-    await act("add", () => enqueueTeamItems(team.id, parsed), `${parsed.length === 1 ? "Item" : `${parsed.length} items`} added`);
-    setText("");
+    const added = await act(
+      "add",
+      () => enqueueTeamItems(team.id, parsed),
+      `${parsed.length === 1 ? "Item" : `${parsed.length} items`} added`,
+    );
+    // Keep what was typed when the server refused it.
+    if (added) setText("");
   }
 
   async function runOne(item: TeamQueueItem) {
@@ -99,7 +108,18 @@ export function TeamQueue({ team }: { team: AgentTeam }) {
     await act(
       "pending",
       async () => {
-        for (const item of pending) await runTeamQueueItem(team.id, item.id);
+        let started = 0;
+        for (const item of pending) {
+          try {
+            await runTeamQueueItem(team.id, item.id);
+            started += 1;
+          } catch (error) {
+            // Say how far it got: the earlier items are already running.
+            throw new Error(
+              `${started} of ${pending.length} started, then: ${errorMessage(error)}`,
+            );
+          }
+        }
       },
       `${pending.length === 1 ? "1 item" : `${pending.length} items`} started`,
     );
@@ -219,7 +239,7 @@ export function TeamQueue({ team }: { team: AgentTeam }) {
           <Field label="Items" htmlFor="queue-items" hint="One per line: a key, or key|repository. Items with the same key are added once.">
             <Textarea
               id="queue-items"
-              className="min-h-28 font-mono text-xs"
+              className="min-h-28 font-mono text-base md:text-xs"
               spellCheck={false}
               value={text}
               onChange={(event) => setText(event.target.value)}

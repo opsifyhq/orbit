@@ -246,7 +246,7 @@ export function ImportPortableButton({
             <Field label="Contents" htmlFor="import-content">
               <Textarea
                 id="import-content"
-                className="min-h-32 font-mono text-[13px]"
+                className="min-h-32 font-mono text-base md:text-[13px]"
                 spellCheck={false}
                 placeholder={"apiVersion: orbit.io/v1\nkind: Skill\nmetadata:\n  name: ..."}
                 value={content}

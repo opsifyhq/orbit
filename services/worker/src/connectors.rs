@@ -117,8 +117,16 @@ pub async fn hydrate(
             .trim_end_matches('/')
             .to_string();
         let url = format!("{base_url}{X_SEARCH_PATH}");
+        orbit_security::check_outbound_url(&url, &orbit_security::OutboundPolicy::from_env())
+            .await
+            .map_err(|error| {
+                HarnessError::new(
+                    HarnessErrorKind::InvalidConfig,
+                    format!("X base URL refused ({})", error.category()),
+                )
+            })?;
 
-        let client = orbit_security::client_with_custom_ca(std::time::Duration::from_secs(20));
+        let client = orbit_security::guarded_client(std::time::Duration::from_secs(20));
         let response = client
             .get(&url)
             .bearer_auth(&credential.value)

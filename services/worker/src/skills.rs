@@ -32,48 +32,34 @@ pub async fn materialize(
     let mut materialized = Vec::new();
     for skill in skills {
         for base in [".pi/skills", ".opencode/skills"] {
-            let dir = workspace.join(base).join(&skill.slug);
-            tokio::fs::create_dir_all(&dir)
-                .await
-                .with_context(|| format!("could not create skill directory {}", dir.display()))?;
-            tokio::fs::write(dir.join("SKILL.md"), &skill.content)
-                .await
-                .with_context(|| format!("could not write {}", dir.join("SKILL.md").display()))?;
+            // The repository is untrusted: nothing here is written through a symlink it
+            // shipped (a linked `.opencode/skills` would otherwise redirect these writes).
+            let dir = Path::new(base).join(&skill.slug);
+            let skill_file = dir.join("SKILL.md");
+            orbit_harness::paths::write_workspace_file(workspace, &skill_file, &skill.content)
+                .with_context(|| format!("could not write {}", skill_file.display()))?;
             if let Some(files) = skill.files.as_object() {
                 for (path, content) in files {
                     if path.starts_with('/') || path.contains("..") || path.contains('\\') {
                         anyhow::bail!("skill {} contains invalid file path {path:?}", skill.slug);
                     }
-                    if let Some(content) = content.as_str() {
-                        let target = dir.join(path);
-                        if let Some(parent) = target.parent() {
-                            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                                format!(
-                                    "could not create skill file directory {}",
-                                    parent.display()
-                                )
-                            })?;
-                        }
-                        tokio::fs::write(&target, content)
-                            .await
-                            .with_context(|| format!("could not write {}", target.display()))?;
-                        // Make scripts executable.
-                        let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
-                        if is_script {
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let mut perms = tokio::fs::metadata(&target).await?.permissions();
-                                perms.set_mode(0o755);
-                                tokio::fs::set_permissions(&target, perms).await?;
-                            }
-                            tracing::info!(skill = %skill.slug, path = %path, "materialized executable script");
-                        }
-                    } else {
+                    let Some(content) = content.as_str() else {
                         anyhow::bail!(
                             "skill {} file {path:?} must contain string content",
                             skill.slug
                         );
+                    };
+                    let target = dir.join(path);
+                    let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
+                    if is_script {
+                        orbit_harness::paths::write_workspace_executable(
+                            workspace, &target, content,
+                        )
+                        .with_context(|| format!("could not write {}", target.display()))?;
+                        tracing::info!(skill = %skill.slug, path = %path, "materialized executable script");
+                    } else {
+                        orbit_harness::paths::write_workspace_file(workspace, &target, content)
+                            .with_context(|| format!("could not write {}", target.display()))?;
                     }
                 }
             }
@@ -135,9 +121,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("could not create skill directory"));
+        // The whole chain: which file could not be written, and why.
+        let message = format!("{error:#}");
+        assert!(message.contains("could not write"), "{message}");
+        assert!(message.contains("not a directory"), "{message}");
     }
 
     #[tokio::test]
@@ -165,5 +152,34 @@ mod tests {
             .unwrap(),
             "Write-Output ok"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn leaves_symlinked_opencode_skills_target_untouched() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(workspace.path().join(".opencode"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join(".opencode/skills"))
+            .unwrap();
+
+        let error = materialize(&spec(), &[], &[], &[skill()], workspace.path())
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("symlink"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!outside.path().join("example").exists());
+        assert!(workspace
+            .path()
+            .join(".opencode/skills")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }

@@ -148,12 +148,18 @@ export default function EnvironmentMappingsPage() {
         description: description.trim(),
         mappings: rows
           .filter((row) => row.envVar.trim())
-          .map<EnvMappingEntry>((row) => ({
-            envVar: row.envVar.trim(),
-            connectionId: row.source === "connection" ? row.connectionId || null : null,
-            secretKey: row.secretKey.trim() || null,
-            ...(row.secretRef ? { secretRef: row.secretRef } : {}),
-          })),
+          // A variable has one source. Whatever the other source held before the
+          // switch is not sent, so a stale secret can never ride along with a connection.
+          .map<EnvMappingEntry>((row) =>
+            row.source === "connection"
+              ? { envVar: row.envVar.trim(), connectionId: row.connectionId || null, secretKey: null }
+              : {
+                  envVar: row.envVar.trim(),
+                  connectionId: null,
+                  secretKey: row.secretKey.trim() || null,
+                  ...(row.secretRef ? { secretRef: row.secretRef } : {}),
+                },
+          ),
       };
       return editing ? updateEnvMapping(editing.id, body) : createEnvMapping(body);
     },
@@ -477,7 +483,7 @@ export default function EnvironmentMappingsPage() {
                               placeholder="GITLAB_TOKEN"
                               autoCapitalize="characters"
                               spellCheck={false}
-                              className="font-mono text-[13px]"
+                              className="font-mono text-base md:text-[13px]"
                               aria-invalid={nameError ? true : undefined}
                               onChange={(event) =>
                                 updateRow(index, {
@@ -520,7 +526,7 @@ export default function EnvironmentMappingsPage() {
                               ) : (
                                 <Input
                                   aria-labelledby={`em-${index}-source`}
-                                  className="font-mono text-[13px]"
+                                  className="font-mono text-base md:text-[13px]"
                                   value={row.secretKey}
                                   placeholder="Key of the stored secret"
                                   spellCheck={false}

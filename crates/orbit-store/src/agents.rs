@@ -125,6 +125,8 @@ impl Store {
 
     /// List agents with their current spec in one query.
     #[allow(clippy::type_complexity)]
+    /// `status` is an agent status, or `current` for every agent that is not archived
+    /// (what a person means by "my agents").
     pub async fn list_agents(
         &self,
         org_id: Uuid,
@@ -148,7 +150,8 @@ impl Store {
             FROM agents a
             LEFT JOIN agent_versions av ON av.agent_id = a.id AND av.version = a.current_version
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::timestamptz IS NULL OR (a.created_at, a.id) < ($4::timestamptz, $5::uuid))
               AND ($7::bool OR a.owner_user_id = $8
@@ -177,7 +180,8 @@ impl Store {
             r#"
             SELECT COUNT(*) FROM agents a
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::bool OR a.owner_user_id = $5
                    OR CASE WHEN $7::bool AND a.owner_team_id IS NOT NULL
@@ -356,12 +360,13 @@ impl Store {
                 "agent has no configuration version to activate".into(),
             ));
         }
+        // `archived_at` is set on archive and cleared when the agent is restored.
         let archived_at = (target == AgentStatus::Archived).then(Utc::now);
         sqlx::query_as::<_, Agent>(
             r#"
             UPDATE agents
-            SET status = $3, archived_at = COALESCE($4, archived_at), updated_at = now()
-            WHERE org_id = $1 AND id = $2
+            SET status = $3, archived_at = $4, updated_at = now()
+            WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,
         )
@@ -369,17 +374,22 @@ impl Store {
         .bind(agent_id)
         .bind(target.as_str())
         .bind(archived_at)
+        .bind(current_status.as_str())
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| StoreError::NotFound("agent".into()))
+        .ok_or_else(|| StoreError::Conflict("agent status changed concurrently; retry".into()))
     }
 
+    /// Permanently delete an agent together with its versions, executions and other
+    /// agent-owned history. Refused with a `Conflict` while team run steps still reference
+    /// the agent: that history belongs to the team, not to the agent.
     pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
         let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(agent_id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -395,7 +405,8 @@ impl Store {
             .bind(org_id)
             .bind(agent_id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -505,5 +516,23 @@ impl Store {
         .bind(org_id)
         .fetch_one(&self.pool)
         .await?)
+    }
+}
+
+/// Translate the FK violation raised by an agent delete into an actionable conflict.
+fn agent_delete_error(error: sqlx::Error) -> StoreError {
+    let constraint = error
+        .as_database_error()
+        .filter(|db| db.is_foreign_key_violation())
+        .and_then(|db| db.constraint().map(str::to_owned));
+    match constraint.as_deref() {
+        Some(name) if name.starts_with("team_steps_") => StoreError::Conflict(
+            "agent is used by agent team runs; delete those runs or archive the agent instead"
+                .into(),
+        ),
+        Some(_) => StoreError::Conflict(
+            "agent is still referenced by other records; archive it instead".into(),
+        ),
+        None => error.into(),
     }
 }

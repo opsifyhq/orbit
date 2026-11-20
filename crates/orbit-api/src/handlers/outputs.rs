@@ -144,17 +144,12 @@ pub async fn create(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            ApiError::validation(vec![ValidationIssue::new(
+            ApiError::validation(vec![orbit_domain::ValidationIssue::new(
                 "webhookUrl",
                 "webhookUrl is required",
             )])
         })?;
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "webhookUrl",
-            "webhookUrl must be http(s)",
-        )]));
-    }
+    guard_webhook_url(url).await?;
     let secret_ref = new_secret_ref("output");
     state
         .store
@@ -165,7 +160,7 @@ pub async fn create(
             &format!("output:{name}"),
         )
         .await?;
-    let output = state
+    let output = match state
         .store
         .create_output(
             auth.org_id,
@@ -177,7 +172,15 @@ pub async fn create(
             &secret_ref,
             body.template.as_deref(),
         )
-        .await?;
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            // The secret was written first; do not leave it behind when the row is refused.
+            let _ = state.store.delete_secret(&secret_ref).await;
+            return Err(error.into());
+        }
+    };
     audit::record(
         &state,
         &auth,
@@ -201,12 +204,7 @@ pub async fn update(
     let (name, events) = validated(&body)?;
     let secret_ref = match body.webhook_url.as_deref().map(str::trim) {
         Some(url) if !url.is_empty() => {
-            if !url.starts_with("https://") && !url.starts_with("http://") {
-                return Err(ApiError::validation(vec![ValidationIssue::new(
-                    "webhookUrl",
-                    "webhookUrl must be http(s)",
-                )]));
-            }
+            guard_webhook_url(url).await?;
             let reference = new_secret_ref("output");
             state
                 .store
@@ -221,7 +219,7 @@ pub async fn update(
         }
         _ => None,
     };
-    let output = state
+    let output = match state
         .store
         .update_output(
             auth.org_id,
@@ -235,7 +233,16 @@ pub async fn update(
             body.template.as_deref(),
             body.enabled,
         )
-        .await?;
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(reference) = secret_ref.as_deref() {
+                let _ = state.store.delete_secret(reference).await;
+            }
+            return Err(error.into());
+        }
+    };
     audit::record(
         &state,
         &auth,

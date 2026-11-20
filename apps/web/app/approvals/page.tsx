@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Check, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
@@ -26,8 +26,12 @@ type ApprovalDecision = "approved" | "rejected";
 
 export default function ApprovalsPage() {
   const pending = useApprovals("pending");
-  const decided = useApprovals(undefined);
+  // History only changes when someone decides; it does not need the pending list's pace.
+  const decided = useApprovals(undefined, { refetchInterval: 30_000 });
   const queryClient = useQueryClient();
+  // One entry per approval being decided: each card owns its own in-flight state, so
+  // deciding a second card cannot re-enable the first while its request is still out.
+  const [deciding, setDeciding] = useState<Record<string, ApprovalDecision>>({});
 
   const history = useMemo(
     () => (decided.data ?? []).filter((item) => item.status !== "pending").slice(0, 30),
@@ -53,8 +57,19 @@ export default function ApprovalsPage() {
           },
         ),
       ),
+    onMutate: ({ approval, decision }) =>
+      setDeciding((current) => ({ ...current, [approval.id]: decision })),
     onSuccess: (_, variables) => {
       toast.success(variables.decision === "approved" ? "Approved" : "Rejected");
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+    // Also after a failure: "already decided" or "expired" means the card is stale.
+    onSettled: (_data, _error, variables) => {
+      setDeciding((current) => {
+        const next = { ...current };
+        delete next[variables.approval.id];
+        return next;
+      });
       void queryClient.invalidateQueries({ queryKey: queryKeys.approvals("pending") });
       void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(undefined) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
@@ -62,7 +77,6 @@ export default function ApprovalsPage() {
         queryKey: queryKeys.execution(variables.approval.executionId),
       });
     },
-    onError: (error) => toast.error(errorMessage(error)),
   });
 
   return (
@@ -85,12 +99,8 @@ export default function ApprovalsPage() {
               <li key={approval.id}>
                 <ApprovalCard
                   approval={approval}
-                  pending={decide.isPending && decide.variables?.approval.id === approval.id}
-                  pendingDecision={
-                    decide.isPending && decide.variables?.approval.id === approval.id
-                      ? decide.variables?.decision
-                      : undefined
-                  }
+                  pending={approval.id in deciding}
+                  pendingDecision={deciding[approval.id]}
                   onApprove={() => decide.mutate({ approval, decision: "approved" })}
                   onReject={() => decide.mutate({ approval, decision: "rejected" })}
                 />
@@ -169,6 +179,8 @@ function ApprovalCard({
   onApprove: () => void;
   onReject: () => void;
 }) {
+  // Past its deadline the platform refuses the action whatever is clicked here.
+  const expired = approval.expiresAt ? new Date(approval.expiresAt).getTime() <= Date.now() : false;
   return (
     <Card className="border-warning/40">
       <div className="flex flex-col gap-4 p-4 sm:p-5">
@@ -187,10 +199,18 @@ function ApprovalCard({
               {approval.expiresAt ? (
                 <>
                   .{" "}
-                  <span className="font-medium text-warning" title={formatDateTime(approval.expiresAt)}>
-                    Expires {relativeTime(approval.expiresAt)}
-                  </span>
-                  ; after that the action is refused
+                  {expired ? (
+                    <span className="font-medium text-destructive" title={formatDateTime(approval.expiresAt)}>
+                      Expired {relativeTime(approval.expiresAt)}; the action was refused
+                    </span>
+                  ) : (
+                    <>
+                      <span className="font-medium text-warning" title={formatDateTime(approval.expiresAt)}>
+                        Expires {relativeTime(approval.expiresAt)}
+                      </span>
+                      ; after that the action is refused
+                    </>
+                  )}
                 </>
               ) : null}
             </p>
@@ -201,7 +221,7 @@ function ApprovalCard({
               className="flex-1 text-destructive hover:border-destructive/50 hover:bg-destructive/10 sm:flex-none"
               onClick={onReject}
               loading={pending && pendingDecision === "rejected"}
-              disabled={pending}
+              disabled={pending || expired}
             >
               <X /> Reject
             </Button>
@@ -209,7 +229,7 @@ function ApprovalCard({
               className="flex-1 sm:flex-none"
               onClick={onApprove}
               loading={pending && pendingDecision === "approved"}
-              disabled={pending}
+              disabled={pending || expired}
             >
               <Check /> Approve
             </Button>

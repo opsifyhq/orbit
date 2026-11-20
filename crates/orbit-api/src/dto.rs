@@ -26,6 +26,8 @@ pub struct PageQuery {
 pub struct AgentListQuery {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// `draft`, `active`, `paused`, `archived`, or `current` for every agent that is
+    /// not archived.
     pub status: Option<String>,
     pub q: Option<String>,
 }
@@ -36,6 +38,7 @@ pub struct AgentListQuery {
 pub struct ExecutionListQuery {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// One execution status, or several separated by commas (`failed,timed_out`).
     pub status: Option<String>,
     pub agent_id: Option<Uuid>,
     pub archived: Option<bool>,
@@ -46,6 +49,17 @@ pub struct ExecutionListQuery {
 #[into_params(parameter_in = Query)]
 pub struct ArchiveListQuery {
     pub archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct TeamRunListQuery {
+    pub archived: Option<bool>,
+    /// Only runs of this agent team.
+    pub team_id: Option<Uuid>,
+    /// Newest first; 1 to 200, default 100.
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]
@@ -528,6 +542,6 @@ pub struct CreatedApiToken {
 /// Helper used by handlers to build the effective provider kind.
 pub fn parse_provider_kind(value: &str) -> Result<ProviderKind, String> {
     ProviderKind::parse(value).ok_or_else(|| {
-        format!("unknown provider kind '{value}'; expected openai_compatible or harness_managed")
+        format!("unknown provider kind '{value}'; expected openai_compatible, anthropic or harness_managed")
     })
 }

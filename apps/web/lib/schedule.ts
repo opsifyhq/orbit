@@ -44,13 +44,17 @@ const int = (value: string, min: number, max: number): number | null => {
   return n >= min && n <= max ? n : null;
 };
 
-/** `*`, or `*\/N` → N (1 for `*`). Null for anything else. */
-const step = (value: string, max: number): number | null => {
+/**
+ * `*`, or `*\/N` → N (1 for `*`). Null for anything else, including a step that does
+ * not divide the period: cron restarts the count at every boundary, so `*\/45` fires at
+ * :00 and :45 (gaps of 45 and 15 minutes) and cannot honestly be read as "every 45".
+ */
+const step = (value: string, period: number): number | null => {
   if (value === "*") return 1;
   const match = /^\*\/(\d{1,2})$/.exec(value);
   if (!match) return null;
   const n = Number(match[1]);
-  return n >= 1 && n <= max ? n : null;
+  return n >= 1 && n < period && period % n === 0 ? n : null;
 };
 
 /** `1-5`, `0,6`, `1,3,5`, `7` (Sunday) → sorted day numbers; null when not a plain list. */
@@ -88,14 +92,14 @@ export function parseCron(cron: string): ScheduleModel {
   const [mi, h, dom, mon, dow] = fields;
   if (mon !== "*") return custom;
 
-  const minutes = step(mi, 59);
+  const minutes = step(mi, 60);
   if (minutes !== null && h === "*" && dom === "*" && dow === "*") {
     return { ...DEFAULT_MODEL, frequency: "minutes", every: minutes };
   }
   const minute = int(mi, 0, 59);
   if (minute === null) return custom;
 
-  const hours = step(h, 23);
+  const hours = step(h, 24);
   if (hours !== null && dom === "*" && dow === "*") {
     return { ...DEFAULT_MODEL, frequency: "hourly", every: hours, minute };
   }

@@ -25,6 +25,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# Least privilege by default; jobs that publish raise their own permissions.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
@@ -35,9 +39,6 @@ jobs:
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write  # rustsec/audit-check publishes its result as a check run
     services:
       postgres:
         image: postgres:17-alpine
@@ -57,6 +58,17 @@ jobs:
 
       - name: Check version alignment
         run: ./scripts/check-versions.sh
+
+      # A release tag must name the version that is actually in the tree; otherwise the
+      # images get the tag's version while the chart still deploys the previous one.
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(awk -F'"' '/^appVersion:/ {print $2; exit}' deploy/helm/orbit/Chart.yaml)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match the version in the tree (${version}). Bump the version first."
+            exit 1
+          fi
 
       # The toolchain version (and components) come from rust-toolchain.toml, the single
       # source of truth, so CI and local builds use the same compiler.
@@ -120,6 +132,14 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @orbit/web typecheck
 
+      - name: Unit tests
+        run: pnpm --filter @orbit/web test
+
+      # The other half of the API drift gate: a Rust test keeps openapi.json in step with
+      # the code, this keeps the generated TypeScript in step with openapi.json.
+      - name: API client is up to date
+        run: node scripts/generate-api-client.mjs --check
+
       - name: Build
         run: pnpm --filter @orbit/web build
 
@@ -164,6 +184,38 @@ jobs:
         run: >-
           helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml
           --set auth.acknowledgeInsecureDev=true > /dev/null
+
+      # The variants people actually deploy: the production example and the optional parts.
+      - name: helm template (production example, network policy, fixed worker)
+        run: |
+          helm template orbit deploy/helm/orbit -n orbit \
+            -f deploy/helm/orbit/values-prod.example.yaml > /dev/null
+          helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
+            --set auth.acknowledgeInsecureDev=true \
+            --set networkPolicy.enabled=true \
+            --set worker.enabled=true --set worker.token=render-check-only > /dev/null
+
+  # ---------------------------------------------------------------- migrations
+  # AGENTS.md rule 7: migrations are append-only. A migration that already exists on the
+  # base branch may have been applied somewhere, so a PR may add files but never edit,
+  # rename or delete one.
+  migrations:
+    name: Migrations are append-only
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: No existing migration was changed
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-status --no-renames "${base}...HEAD" -- crates/orbit-store/migrations | grep -v '^A' || true)"
+          if [ -n "${changed}" ]; then
+            echo "::error::Existing migrations were modified or removed. Add a new migration instead."
+            echo "${changed}"
+            exit 1
+          fi
 
   # ---------------------------------------------------------------- image build check
   # PR-time proof that the Dockerfiles still build. Nothing is pushed or logged in, so it
@@ -373,6 +425,8 @@ jobs:
   release:
     name: Release binaries
     runs-on: ubuntu-latest
+    # Like the images and the chart: nothing is published from a tree that fails its tests.
+    needs: [rust, web]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

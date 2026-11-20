@@ -87,9 +87,15 @@ export function startTeamRun(
   });
 }
 
-export function listTeamRuns(archived?: boolean): Promise<TeamRun[]> {
-  const query = archived === undefined ? "" : `?archived=${archived}`;
-  return request<TeamRun[]>(`/api/v1/team-runs${query}`);
+export function listTeamRuns(
+  options: { archived?: boolean; teamId?: string; limit?: number } = {},
+): Promise<TeamRun[]> {
+  const params = new URLSearchParams();
+  if (options.archived !== undefined) params.set("archived", String(options.archived));
+  if (options.teamId) params.set("teamId", options.teamId);
+  if (options.limit) params.set("limit", String(options.limit));
+  const query = params.toString();
+  return request<TeamRun[]>(`/api/v1/team-runs${query ? `?${query}` : ""}`);
 }
 
 export function getTeamRun(runId: string): Promise<TeamRunDetail> {

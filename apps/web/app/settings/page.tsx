@@ -249,7 +249,9 @@ function TokensTab() {
   const confirm = useConfirm();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [tokenName, setTokenName] = useState("automation");
-  const [createdToken, setCreatedToken] = useState<string | null>(null);
+  // The value is shown once and cannot be fetched again, so it must survive anything
+  // that does not concern this very token.
+  const [createdToken, setCreatedToken] = useState<{ id: string; value: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   const createToken = useMutation({
@@ -260,7 +262,7 @@ function TokensTab() {
         }),
       ),
     onSuccess: (result) => {
-      setCreatedToken(result.token);
+      setCreatedToken({ id: result.id, value: result.token });
       setCopied(false);
       setDialogOpen(false);
       setTokenName("automation");
@@ -276,10 +278,10 @@ function TokensTab() {
           params: { path: { token_id: id } },
         }),
       ),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       toast.success("Token revoked");
-      // The one-time value above may belong to the token just revoked.
-      setCreatedToken(null);
+      // Hide the one-time value only when it belongs to the token just revoked.
+      setCreatedToken((current) => (current?.id === id ? null : current));
       void queryClient.invalidateQueries({ queryKey: queryKeys.tokens });
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -287,7 +289,7 @@ function TokensTab() {
 
   async function copyToken() {
     if (!createdToken) return;
-    const ok = await copyText(createdToken);
+    const ok = await copyText(createdToken.value);
     if (ok) {
       setCopied(true);
       toast.success("Token copied");
@@ -325,7 +327,7 @@ function TokensTab() {
               <code
                 className="block min-w-0 flex-1 select-all break-all rounded-md border bg-card px-3 py-2 font-mono text-xs text-foreground"
               >
-                {createdToken}
+                {createdToken.value}
               </code>
               <Button onClick={() => void copyToken()} className="shrink-0">
                 {copied ? <Check /> : <Copy />} {copied ? "Copied" : "Copy token"}
@@ -522,7 +524,6 @@ function OidcSettingsEditor({ loaded }: { loaded: OidcSettings }) {
   const [autoProvision, setAutoProvision] = useState(loaded.autoProvision ?? true);
   const [defaultRole, setDefaultRole] = useState(loaded.defaultRole || "viewer");
   const [emailClaim, setEmailClaim] = useState(loaded.emailClaim || "email");
-  const [requireMappedGroup, setRequireMappedGroup] = useState(loaded.requireMappedGroup ?? false);
 
   const saveSettings = useMutation({
     mutationFn: async (edited: Partial<OidcSettings>) =>
@@ -554,7 +555,8 @@ function OidcSettingsEditor({ loaded }: { loaded: OidcSettings }) {
       autoProvision,
       defaultRole,
       emailClaim,
-      requireMappedGroup,
+      // `requireMappedGroup` and the other unrendered fields ride along from the loaded
+      // object (see saveSettings); this form has no control for them.
     });
   }
 

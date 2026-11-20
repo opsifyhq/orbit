@@ -5,141 +5,117 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Play, Plus, Search, Users, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { History, Plus, Users } from "lucide-react";
 
+import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
-import { AgentLineup, MODE_LABEL, agentLookup, teamMode } from "@/components/teams/team-parts";
-import { Badge } from "@/components/ui/badge";
+import { MODE_LABEL, agentLookup, teamMode } from "@/components/teams/team-parts";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
-import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  ListCard,
+  ListCount,
+  ListRow,
+  ListSkeleton,
+  ListToolbar,
+  ROW_LINK,
+  SearchField,
+  SelectionBar,
+  toggleId,
+  toggleShown,
+} from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ExecutionStatusBadge } from "@/components/ui/status-badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAllAgents, useAgentTeams, useTeamRuns } from "@/lib/queries";
-import type { AgentTeam, TeamRun } from "@/lib/types";
+import { Status, type StatusMeta } from "@/components/ui/status";
+import { queryKeys, useAllAgents, useAgentTeams } from "@/lib/queries";
+import type { AgentTeam } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
 
-type ListTab = "teams" | "runs";
+type Filter = "all" | "source" | "manual";
 
-function TeamRow({ team, agentName }: { team: AgentTeam; agentName: (id: string) => string }) {
-  const mode = teamMode(team);
-  const source = team.definition.workSource;
+const FILTER_LABEL: Record<Filter, string> = {
+  all: "All",
+  source: "Picks up issues",
+  manual: "On demand",
+};
+
+/** How a team gets its work: from a work source (healthy or failing), or when someone runs it. */
+function teamStatus(team: AgentTeam): StatusMeta {
+  if (!team.definition.workSource?.enabled) return { label: "On demand", tone: "neutral", shape: "ring" };
+  if (team.lastPollError) return { label: "Source failing", tone: "warning", shape: "alert" };
+  return { label: "Picks up issues", tone: "success", shape: "solid" };
+}
+
+/** The lineup as one line of text, cut off at the end like the other detail columns. */
+function LineupText({ team, agentName }: { team: AgentTeam; agentName: (id: string) => string }) {
+  const names = (team.definition.steps ?? []).map((step) => agentName(step.agentId));
+  if (!names.length) return <span className="block max-w-full truncate text-muted-foreground">No agents yet</span>;
+  const [lead, ...rest] = names;
+  const joiner = teamMode(team) === "native" ? " with " : " → ";
+  const tail = rest.length ? `${joiner}${rest.join(teamMode(team) === "native" ? ", " : " → ")}` : "";
   return (
-    <li className="group relative border-b last:border-b-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3.5 transition-colors group-hover:bg-muted/50 sm:px-5 md:grid-cols-[minmax(0,1fr)_minmax(0,16rem)_6.5rem]">
-        <div className="min-w-0">
-          <p className="flex min-w-0 items-center gap-2">
-            <Link
-              href={`/agent-teams/${team.id}`}
-              className="truncate text-sm font-semibold after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
-            >
-              {team.name}
-            </Link>
-            {source?.enabled ? (
-              <Badge variant={team.lastPollError ? "warning" : "secondary"} className="shrink-0">
-                {team.lastPollError ? "Work source failing" : "Picks up issues"}
-              </Badge>
-            ) : null}
-          </p>
-          <p className="mt-0.5 line-clamp-1 text-[13px] text-muted-foreground">
-            {team.description || team.definition.instructions || "No description"}
-          </p>
-          <div className="mt-1.5 text-xs text-muted-foreground md:hidden">
-            <AgentLineup team={team} agentName={agentName} />
-          </div>
-        </div>
-
-        <div className="hidden min-w-0 text-[13px] md:block">
-          <AgentLineup team={team} agentName={agentName} className="text-muted-foreground" />
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {MODE_LABEL[mode]}
-            {team.definition.repository ? <span className="font-mono"> · {team.definition.repository}</span> : null}
-          </p>
-        </div>
-
-        <p className="tabular text-right text-[13px] text-muted-foreground">{relativeTime(team.updatedAt)}</p>
-      </div>
-    </li>
+    <span className="block max-w-full truncate" title={`${lead}${tail}`}>
+      <span className="font-medium text-foreground">{lead}</span>
+      <span className="text-muted-foreground">{tail}</span>
+    </span>
   );
 }
 
-function RunRow({ run, teamName }: { run: TeamRun; teamName?: string }) {
-  const task = String(run.input.task ?? "") || "Agent team run";
-  return (
-    <li className="group relative border-b last:border-b-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 px-4 py-3.5 transition-colors group-hover:bg-muted/50 sm:px-5 md:grid-cols-[8rem_minmax(0,1fr)_6.5rem]">
-        <ExecutionStatusBadge status={run.status} className="col-start-2 row-start-1 justify-self-end md:col-start-auto md:justify-self-start" />
-        <div className="col-start-1 row-start-1 min-w-0 md:col-start-auto">
-          <Link
-            href={`/agent-teams/runs/${run.id}`}
-            className="block truncate text-sm font-medium after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring"
-          >
-            {task}
-          </Link>
-          <p className="truncate text-[13px] text-muted-foreground">{teamName ?? "Agent team"}</p>
-          {run.error ? <p className="line-clamp-1 text-[13px] text-destructive">{run.error}</p> : null}
-        </div>
-        <p className="tabular hidden text-right text-[13px] text-muted-foreground md:block">{relativeTime(run.createdAt)}</p>
-      </div>
-    </li>
-  );
-}
-
-function RowsSkeleton() {
-  return (
-    <Card className="overflow-hidden">
-      {Array.from({ length: 3 }).map((_, index) => (
-        <div key={index} className="border-b px-5 py-4 last:border-b-0">
-          <Skeleton className="h-10" />
-        </div>
-      ))}
-    </Card>
-  );
+function inFilter(team: AgentTeam, filter: Filter) {
+  if (filter === "all") return true;
+  const fromSource = Boolean(team.definition.workSource?.enabled);
+  return filter === "source" ? fromSource : !fromSource;
 }
 
 export default function AgentTeamsPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const teams = useAgentTeams();
   const agents = useAllAgents();
-  const [runsFilter, setRunsFilter] = useState<"active" | "archived" | "all">("active");
-  const runs = useTeamRuns(runsFilter === "all" ? undefined : runsFilter === "archived");
-  const [tab, setTab] = useState<ListTab>("teams");
+  const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
 
-  // Old links (`/agent-teams?run=<id>`) open the run page; `#runs` opens the Runs tab.
+  // Old links: `/agent-teams?run=<id>` opens that run, `#runs` the runs list.
   useEffect(() => {
     const runId = new URLSearchParams(window.location.search).get("run");
-    if (runId) {
-      router.replace(`/agent-teams/runs/${runId}`);
-      return;
-    }
-    if (window.location.hash === "#runs") setTab("runs");
+    if (runId) router.replace(`/agent-teams/runs/${runId}`);
+    else if (window.location.hash === "#runs") router.replace("/agent-teams/runs");
   }, [router]);
-
-  function selectTab(next: string) {
-    setTab(next as ListTab);
-    window.history.replaceState(null, "", next === "teams" ? window.location.pathname : `#${next}`);
-  }
 
   const agent = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
   const agentName = (id: string) => agent(id).name;
-  const teamName = (id: string) => teams.data?.find((team) => team.id === id)?.name;
 
-  const visibleTeams = useMemo(() => {
+  const all = teams.data ?? [];
+  const counts = useMemo(() => {
+    const result: Record<Filter, number> = { all: 0, source: 0, manual: 0 };
+    for (const team of all) {
+      for (const key of Object.keys(result) as Filter[]) if (inFilter(team, key)) result[key] += 1;
+    }
+    return result;
+  }, [all]);
+
+  const visible = useMemo(() => {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
-    return (teams.data ?? []).filter((team) => {
+    return all.filter((team) => {
+      if (!inFilter(team, filter)) return false;
       if (!terms.length) return true;
       const names = (team.definition.steps ?? []).map((step) => agent(step.agentId).name).join(" ");
       const haystack = `${team.name} ${team.description} ${team.definition.repository ?? ""} ${names}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [teams.data, search, agent]);
+  }, [all, filter, search, agent]);
+
+  // Bulk actions only ever touch rows that are on screen.
+  const selectedIds = useMemo(
+    () => visible.filter((team) => selected.has(team.id)).map((team) => team.id),
+    [visible, selected],
+  );
 
   return (
     <div className="space-y-6">
@@ -148,6 +124,11 @@ export default function AgentTeamsPage() {
         description="A primary agent and its helpers working toward one goal. Open a team to run it, follow its runs and manage its queue."
         actions={
           <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline">
+              <Link href="/agent-teams/runs">
+                <History /> Runs
+              </Link>
+            </Button>
             <ImportPortableButton />
             <Button asChild>
               <Link href="/agent-teams/new">
@@ -158,144 +139,142 @@ export default function AgentTeamsPage() {
         }
       />
 
-      <Tabs value={tab} onValueChange={selectTab}>
-        <TabsList>
-          <TabsTrigger value="teams">
-            Teams
-            {teams.data ? <span className="tabular text-xs text-muted-foreground">{teams.data.length}</span> : null}
-          </TabsTrigger>
-          <TabsTrigger value="runs">Runs</TabsTrigger>
-        </TabsList>
+      <ListToolbar>
+        <SearchField
+          value={search}
+          onChange={setSearch}
+          placeholder="Filter by name, agent or repository"
+          label="Filter agent teams"
+        />
+        <Segmented
+          label="How teams get work"
+          value={filter}
+          onChange={setFilter}
+          options={(Object.keys(FILTER_LABEL) as Filter[]).map((value) => ({
+            value,
+            label: FILTER_LABEL[value],
+            count: teams.data ? counts[value] : undefined,
+          }))}
+        />
+      </ListToolbar>
 
-        <TabsContent value="teams" className="space-y-4">
-          {(teams.data?.length ?? 0) > 3 ? (
-            <div className="relative md:w-80">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                className="pl-9 pr-9 [&::-webkit-search-cancel-button]:hidden"
-                placeholder="Filter by name, agent or repository"
-                aria-label="Filter agent teams"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              {search ? (
-                <button
-                  type="button"
-                  aria-label="Clear filter"
-                  onClick={() => setSearch("")}
-                  className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+      <SelectionBar
+        count={selectedIds.length}
+        noun="agent teams"
+        allShownSelected={visible.length > 0 && selectedIds.length === visible.length}
+        onSelectAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((team) => team.id), checked))}
+        onClear={() => setSelected(new Set())}
+      >
+        <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
+          Change access
+        </Button>
+      </SelectionBar>
 
-          {teams.isLoading ? (
-            <RowsSkeleton />
-          ) : teams.isError ? (
-            <Callout tone="danger" title="Agent teams could not be loaded">
-              {errorMessage(teams.error)}
-            </Callout>
-          ) : !teams.data?.length ? (
-            <EmptyState
-              icon={<Users />}
-              title="No agent teams yet"
-              description="A team pairs a primary agent with helpers, such as a builder, a tester and a reviewer, that take over in turn or work as its subagents."
-              action={
-                <Button asChild variant="outline">
-                  <Link href="/agent-teams/new">
-                    <Plus /> New agent team
-                  </Link>
-                </Button>
-              }
-            />
-          ) : visibleTeams.length ? (
-            <Card className="overflow-hidden">
-              <div
-                aria-hidden
-                className="hidden grid-cols-[minmax(0,1fr)_minmax(0,16rem)_6.5rem] gap-x-4 border-b bg-subtle px-5 py-2 text-xs font-medium text-muted-foreground md:grid"
-              >
-                <span>Team</span>
-                <span>Agents</span>
-                <span className="text-right">Updated</span>
-              </div>
-              <ul>
-                {visibleTeams.map((team) => (
-                  <TeamRow key={team.id} team={team} agentName={agentName} />
-                ))}
-              </ul>
-            </Card>
-          ) : (
-            <EmptyState
-              icon={<Search />}
-              title="No teams match"
-              description={`Nothing matches "${search}".`}
-              action={
-                <Button variant="outline" onClick={() => setSearch("")}>
-                  Clear filter
-                </Button>
-              }
-            />
-          )}
-        </TabsContent>
+      <BulkAccessDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        resource="agent_teams"
+        ids={selectedIds}
+        onDone={() => {
+          setSelected(new Set());
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams });
+        }}
+      />
 
-        <TabsContent value="runs" className="space-y-4">
-          <Segmented
-            label="Show runs"
-            value={runsFilter}
-            onChange={setRunsFilter}
-            options={[
-              { value: "active", label: "Active" },
-              { value: "archived", label: "Archived" },
-              { value: "all", label: "All" },
-            ]}
-          />
-          {runs.isLoading ? (
-            <RowsSkeleton />
-          ) : runs.isError ? (
-            <Callout tone="danger" title="Runs could not be loaded">
-              {errorMessage(runs.error)}
-            </Callout>
-          ) : !runs.data?.length ? (
-            <EmptyState
-              icon={<Play />}
-              title={runsFilter === "active" ? "No runs yet" : `No ${runsFilter === "all" ? "" : "archived "}runs`}
-              description={
-                runsFilter === "active"
-                  ? (teams.data ?? []).length
-                    ? "Open a team and choose Run. Its runs show up here."
-                    : "Create a team first; its runs show up here."
-                  : "Nothing matches this filter."
-              }
-              action={
-                runsFilter !== "active" ? (
-                  <Button variant="outline" onClick={() => setRunsFilter("active")}>
-                    Show active runs
-                  </Button>
-                ) : undefined
-              }
-            />
-          ) : (
-            <Card className="overflow-hidden">
-              <div
-                aria-hidden
-                className="hidden grid-cols-[8rem_minmax(0,1fr)_6.5rem] gap-x-4 border-b bg-subtle px-5 py-2 text-xs font-medium text-muted-foreground md:grid"
-              >
-                <span>Status</span>
-                <span>Task</span>
-                <span className="text-right">Started</span>
-              </div>
-              <ul>
-                {runs.data.map((run) => (
-                  <RunRow key={run.id} run={run} teamName={teamName(run.teamId)} />
-                ))}
-              </ul>
-            </Card>
-          )}
-        </TabsContent>
-      </Tabs>
+      {teams.isLoading ? (
+        <ListSkeleton />
+      ) : teams.isError ? (
+        <Callout tone="danger" title="Agent teams could not be loaded">
+          {errorMessage(teams.error)}
+        </Callout>
+      ) : visible.length ? (
+        <>
+          <ListCard columns={["Team", "Status", "Agents", "Updated"]}>
+            {visible.map((team) => {
+              const mode = teamMode(team);
+              return (
+                <ListRow
+                  key={team.id}
+                  checkbox={
+                    <Checkbox
+                      aria-label={`Select ${team.name}`}
+                      checked={selected.has(team.id)}
+                      onChange={(event) => setSelected((current) => toggleId(current, team.id, event.target.checked))}
+                    />
+                  }
+                  name={
+                    <>
+                      <p className="flex items-center gap-2">
+                        <Link href={`/agent-teams/${team.id}`} className={ROW_LINK}>
+                          {team.name}
+                        </Link>
+                        <span className="tabular shrink-0 text-xs text-muted-foreground">
+                          {team.definition.steps?.length ?? 0} agent{team.definition.steps?.length === 1 ? "" : "s"}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 line-clamp-1 text-[13px] text-muted-foreground">
+                        {team.description || team.definition.instructions || "No description"}
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                        <LineupText team={team} agentName={agentName} />
+                        <span>{MODE_LABEL[mode]}</span>
+                        <span>{relativeTime(team.updatedAt)}</span>
+                      </div>
+                    </>
+                  }
+                  status={<Status meta={teamStatus(team)} />}
+                  details={
+                    <>
+                      <LineupText team={team} agentName={agentName} />
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {MODE_LABEL[mode]}
+                        {team.definition.repository ? <span className="font-mono"> · {team.definition.repository}</span> : null}
+                      </p>
+                    </>
+                  }
+                  updated={relativeTime(team.updatedAt)}
+                />
+              );
+            })}
+          </ListCard>
+          <ListCount shown={visible.length} total={counts[filter]} singular="agent team" plural="agent teams" />
+        </>
+      ) : (
+        <EmptyState
+          icon={<Users />}
+          title={
+            search
+              ? `No agent teams match “${search}”`
+              : all.length === 0
+                ? "No agent teams yet"
+                : `No teams that ${filter === "source" ? "pick up issues" : "run on demand"}`
+          }
+          description={
+            search
+              ? "Try a shorter term, or clear the filter to see every team."
+              : all.length === 0
+                ? "A team pairs a primary agent with helpers, such as a builder, a tester and a reviewer, that take over in turn or work as its subagents."
+                : "Teams that get work the other way are one tap away in the filter."
+          }
+          action={
+            search ? (
+              <Button variant="outline" onClick={() => setSearch("")}>
+                Clear filter
+              </Button>
+            ) : all.length === 0 ? (
+              <Button asChild variant="outline">
+                <Link href="/agent-teams/new">
+                  <Plus /> New agent team
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => setFilter("all")}>
+                Show all agent teams
+              </Button>
+            )
+          }
+        />
+      )}
     </div>
   );
 }

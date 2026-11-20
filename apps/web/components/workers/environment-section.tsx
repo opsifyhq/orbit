@@ -62,7 +62,7 @@ export function EnvironmentFields({
                       value={mapping.envVar}
                       onChange={(e) => patchMapping(index, { envVar: e.target.value })}
                       placeholder="ENV_VAR_NAME"
-                      className="font-mono text-[13px]"
+                      className="font-mono text-base md:text-[13px]"
                     />
                   </Field>
                   <Field label="Connection" htmlFor={`wp-env-${index}-conn`}>
