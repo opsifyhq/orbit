@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -34,16 +35,14 @@ export default function EditAgentPage() {
     );
   }
 
-  if (agent.isError || !agent.data) {
+  if (!agent.data) {
     return (
-      <EmptyState
-        title="Agent not found"
-        description={agent.error ? errorMessage(agent.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/agents">Back to agents</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent"
+        error={agent.error}
+        back={{ href: "/agents", label: "Back to agents" }}
+        onRetry={() => void agent.refetch()}
+        retrying={agent.isFetching}
       />
     );
   }

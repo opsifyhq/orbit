@@ -462,6 +462,7 @@ function formatClock(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    // `hour12: false` renders midnight as 24:xx in some locales.
+    hourCycle: "h23",
   });
 }

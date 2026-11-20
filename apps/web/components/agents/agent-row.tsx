@@ -3,7 +3,7 @@ import { Cable, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
-import { relativeTime, titleCase } from "@/lib/utils";
+import { relativeTime } from "@/lib/utils";
 import { brandName, autonomyName } from "@/lib/presentation";
 import type { AgentSummary } from "@/lib/types";
 

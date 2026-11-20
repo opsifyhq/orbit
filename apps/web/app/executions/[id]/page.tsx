@@ -3,11 +3,12 @@
 export const dynamic = "force-dynamic";
 export const dynamicParams = true;
 
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Bot, Check, CloudOff, Copy, RefreshCw, RotateCw, ShieldX, X } from "lucide-react";
+import { Ban, Bot, Check, Copy, RotateCw, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { executionTask, executionTitle } from "@/components/executions/execution-row";
@@ -17,7 +18,6 @@ import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useConfirm } from "@/components/ui/confirm";
 import { DescriptionList } from "@/components/ui/description-list";
-import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -159,48 +159,15 @@ function ExecutionDetail() {
   if (executionQuery.isLoading && !execution) return <DetailSkeleton />;
 
   if (!execution) {
-    const failureStatus = errorStatus(executionQuery.error) ?? live.fatal?.status;
-    const failureMessage = executionQuery.error
-      ? errorMessage(executionQuery.error)
-      : live.fatal?.message;
-    const back = (
-      <Button asChild variant="outline">
-        <Link href="/executions">Back to executions</Link>
-      </Button>
-    );
-    if (failureStatus === 403) {
-      return (
-        <EmptyState
-          icon={<ShieldX />}
-          title="You don't have access to this execution"
-          description="It belongs to an agent you can't view."
-          action={back}
-        />
-      );
-    }
-    if (failureStatus === undefined || failureStatus === 404) {
-      return (
-        <EmptyState
-          title="Execution not found"
-          description="It may have been deleted, or the link is wrong."
-          action={back}
-        />
-      );
-    }
-    // 401 is being redirected to sign-in; 5xx and network errors are worth another try.
     return (
-      <EmptyState
-        icon={<CloudOff />}
-        title="Couldn't load this execution"
-        description={failureMessage}
-        action={
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button onClick={() => void executionQuery.refetch()} loading={executionQuery.isFetching}>
-              <RefreshCw /> Retry
-            </Button>
-            {back}
-          </div>
-        }
+      <LoadFailure
+        noun="execution"
+        error={executionQuery.error}
+        status={errorStatus(executionQuery.error) ?? live.fatal?.status}
+        message={executionQuery.error ? errorMessage(executionQuery.error) : live.fatal?.message}
+        back={{ href: "/executions", label: "Back to executions" }}
+        onRetry={() => void executionQuery.refetch()}
+        retrying={executionQuery.isFetching}
       />
     );
   }

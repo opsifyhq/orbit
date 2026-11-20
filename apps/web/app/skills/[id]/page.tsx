@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -21,7 +22,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { EmptyState } from "@/components/ui/empty-state";
 import { Markdown } from "@/components/ui/markdown";
 import { PageHeader } from "@/components/ui/page-header";
 import { Segmented } from "@/components/ui/segmented";
@@ -83,16 +83,14 @@ export default function SkillPage() {
       </div>
     );
   }
-  if (skill.isError || !skill.data || !doc) {
+  if (!skill.data || !doc) {
     return (
-      <EmptyState
-        title="Skill not found"
-        description={skill.error ? errorMessage(skill.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/skills">Back to skills</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="skill"
+        error={skill.error}
+        back={{ href: "/skills", label: "Back to skills" }}
+        onRetry={() => void skill.refetch()}
+        retrying={skill.isFetching}
       />
     );
   }

@@ -1,34 +1,10 @@
 "use client";
 
 import { API_BASE_URL, getAccessToken, setAccessToken } from "./api.ts";
+import { ApiError, networkError } from "./api-error.ts";
+
+export { ApiError };
 import { currentLocationPath, loginPathFor } from "./safe-redirect.ts";
-
-/**
- * Error thrown for any failed API call (HTTP error, unreadable body or network failure).
- *
- * `status` is the HTTP status, or `0` when the request never reached the server. Callers
- * that need to distinguish "your session is invalid" (401), "you may not use ORBIT" (403)
- * from "the API is having a moment" (5xx, network) must look at `status`, never at the message.
- */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code?: string;
-  readonly details?: Array<{ path: string; message: string }>;
-  readonly requestId?: string;
-
-  constructor(
-    status: number,
-    message: string,
-    extra: { code?: string; details?: ApiError["details"]; requestId?: string } = {},
-  ) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = extra.code;
-    this.details = extra.details;
-    this.requestId = extra.requestId;
-  }
-}
 
 /** HTTP status of an error, or undefined when it is not an `ApiError`. */
 export function errorStatus(error: unknown): number | undefined {
@@ -144,9 +120,7 @@ export async function requestRaw(
     response = await fetch(`${sameOrigin ? "" : API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
   } catch (error) {
     if ((error as { name?: string })?.name === "AbortError") throw error;
-    throw new ApiError(0, "Could not reach the ORBIT API. Check your connection and try again.", {
-      code: "network_error",
-    });
+    throw networkError();
   }
   if (!response.ok) {
     if (response.status === 401) handleUnauthorized();

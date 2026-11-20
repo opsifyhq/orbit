@@ -51,7 +51,8 @@ export function Segmented<T extends string>({
       className={cn(
         "no-scrollbar inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border bg-muted/60 p-0.5",
         // A clipped option fades out, so the row reads as scrollable on a phone.
-        "max-sm:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]",
+        // The trailing padding keeps the last option clear of the fade when nothing overflows.
+        "max-sm:pr-6 max-sm:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]",
         className,
       )}
     >
@@ -70,10 +71,11 @@ export function Segmented<T extends string>({
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => onKeyDown(event, index)}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[7px] font-medium transition-colors",
+              // The track scrolls, so it clips: draw the focus ring inside the segment.
+              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[7px] font-medium transition-colors focus-visible:-outline-offset-2",
               size === "sm" ? "h-7 px-2.5 text-[13px]" : "h-8 px-3 text-[13px]",
               active
-                ? "bg-card text-foreground shadow-[0_0_0_1px_hsl(var(--border-strong)/0.7)]"
+                ? "bg-card text-foreground ring-1 ring-border-strong/70"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >

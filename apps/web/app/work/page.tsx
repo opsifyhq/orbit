@@ -4,16 +4,22 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, CalendarClock, ChevronLeft, ChevronRight, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
+import { Bot, CalendarClock, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { ScheduleEditor, type ScheduleValue } from "@/components/schedule-editor";
 import { Badge } from "@/components/ui/badge";
+import {
+  SectionCard,
+  SectionPills,
+  SectionRail,
+  sectionNeighbours,
+  type NavSection,
+} from "@/components/ui/section-nav";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
@@ -79,36 +85,17 @@ function FormSection({
   go: (id: SectionId) => void;
   children: ReactNode;
 }) {
-  if (active !== id) return null;
-  const index = SECTION_ORDER.indexOf(id);
-  const previous = SECTION_ORDER[index - 1];
-  const next = SECTION_ORDER[index + 1];
   return (
-    <Card id={`section-${id}`} className="scroll-mt-20" aria-labelledby={`section-${id}-title`}>
-      <CardHeader>
-        <h2 id={`section-${id}-title`} className="text-[15px] font-semibold leading-6">
-          {SECTION_TITLES[id]}
-        </h2>
-        <p className="text-[13px] text-muted-foreground">{SECTION_QUESTIONS[id]}</p>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {children}
-        <div className="flex items-center justify-between gap-3 border-t pt-4">
-          {previous ? (
-            <Button type="button" variant="ghost" onClick={() => go(previous)}>
-              <ChevronLeft /> {SECTION_TITLES[previous]}
-            </Button>
-          ) : (
-            <span />
-          )}
-          {next ? (
-            <Button type="button" variant="outline" onClick={() => go(next)}>
-              {SECTION_TITLES[next]} <ChevronRight />
-            </Button>
-          ) : null}
-        </div>
-      </CardContent>
-    </Card>
+    <SectionCard
+      id={id}
+      active={active}
+      title={SECTION_TITLES[id]}
+      description={SECTION_QUESTIONS[id]}
+      onGo={go}
+      {...sectionNeighbours(SECTION_ORDER, SECTION_TITLES, id)}
+    >
+      {children}
+    </SectionCard>
   );
 }
 
@@ -354,16 +341,6 @@ export default function WorkPage() {
       ?.querySelector<HTMLElement>("[role=radio][aria-checked=true], input:not([type=hidden]), textarea, select")
       ?.focus({ preventScroll: true });
   }, [focusRequest, active]);
-  const pillNavRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const nav = pillNavRef.current;
-    const pill = nav?.querySelector<HTMLElement>(`[data-section="${active}"]`);
-    if (!nav || !pill) return;
-    const left = pill.offsetLeft - nav.offsetLeft;
-    if (left < nav.scrollLeft || left + pill.offsetWidth > nav.scrollLeft + nav.clientWidth) {
-      nav.scrollTo({ left: Math.max(0, left - 16) });
-    }
-  }, [active]);
   function go(id: SectionId) {
     setActive(id);
     setFocusRequest((count) => count + 1);
@@ -408,52 +385,15 @@ export default function WorkPage() {
     ? "Adds the schedule to the agent as a new version. Nothing runs until it next fires."
     : "Starts an execution and opens its live timeline.";
 
+  const navSections: NavSection<SectionId>[] = SECTION_ORDER.map((id) => ({
+    id,
+    title: SECTION_TITLES[id],
+    value: summary[id].value,
+    missing: summary[id].missing,
+    problems: issueCount(id),
+  }));
   const sectionNav = (
-    <nav aria-label="Work sections">
-      <ol className="space-y-0.5">
-        {SECTION_ORDER.map((id, index) => {
-          const current = id === active;
-          const problems = issueCount(id);
-          return (
-            <li key={id}>
-              <button
-                type="button"
-                onClick={() => go(id)}
-                aria-current={current ? "step" : undefined}
-                className={cn(
-                  "flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
-                  current ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
-                )}
-              >
-                <span
-                  className={cn(
-                    "tabular mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium",
-                    problems
-                      ? "bg-destructive/15 text-destructive"
-                      : current
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {problems ? "!" : index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium">{SECTION_TITLES[id]}</span>
-                  <span
-                    className={cn(
-                      "block line-clamp-2 text-xs",
-                      problems ? "text-destructive" : summary[id].missing ? "text-warning" : "text-muted-foreground",
-                    )}
-                  >
-                    {problems ? `${problems} to fix` : summary[id].value}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
+    <SectionRail label="Work sections" sections={navSections} active={active} onGo={go} wrapValues />
   );
 
   return (
@@ -464,38 +404,7 @@ export default function WorkPage() {
       />
 
       {/* Phones and tablets: the sections as a scrollable row of steps. */}
-      <nav
-        ref={pillNavRef}
-        aria-label="Work sections"
-        className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] lg:hidden [&::-webkit-scrollbar]:hidden"
-      >
-        <ol className="flex w-max gap-1.5">
-          {SECTION_ORDER.map((id, index) => {
-            const current = id === active;
-            const problems = issueCount(id);
-            return (
-              <li key={id}>
-                <button
-                  type="button"
-                  onClick={() => go(id)}
-                  aria-current={current ? "step" : undefined}
-                  data-section={id}
-                  className={cn(
-                    "inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
-                    current
-                      ? "border-primary/40 bg-accent text-accent-foreground"
-                      : "bg-card text-muted-foreground hover:text-foreground",
-                    problems && "border-destructive/40 text-destructive",
-                  )}
-                >
-                  <span className="tabular text-xs opacity-70">{problems ? "!" : index + 1}</span>
-                  {SECTION_TITLES[id]}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
+      <SectionPills label="Work sections" sections={navSections} active={active} onGo={go} />
 
       <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
         <aside className="hidden lg:sticky lg:top-6 lg:block">

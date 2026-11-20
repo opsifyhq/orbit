@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ExternalLink } from "lucide-react";
@@ -10,13 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DescriptionList } from "@/components/ui/description-list";
-import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
 import { useAgentTeam, useAllAgents, useTeamRun } from "@/lib/queries";
 import { formatDateTime, relativeTime } from "@/lib/utils";
-import { errorMessage } from "@orbit/api-client";
 
 const DONE_STEP = new Set(["succeeded", "completed"]);
 
@@ -46,16 +45,14 @@ export default function TeamRunPage() {
       </div>
     );
   }
-  if (run.isError || !run.data) {
+  if (!run.data) {
     return (
-      <EmptyState
-        title="Run not found"
-        description={run.error ? errorMessage(run.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/agent-teams#runs">Back to runs</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="run"
+        error={run.error}
+        back={{ href: "/agent-teams#runs", label: "Back to runs" }}
+        onRetry={() => void run.refetch()}
+        retrying={run.isFetching}
       />
     );
   }

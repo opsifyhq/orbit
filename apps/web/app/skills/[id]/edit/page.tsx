@@ -1,14 +1,12 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import { useState } from "react";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { SkillForm, type SkillInput } from "@/components/skills/skill-form";
-import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { queryKeys, useSkill } from "@/lib/queries";
@@ -32,16 +30,14 @@ export default function EditSkillPage() {
       </div>
     );
   }
-  if (skill.isError || !skill.data) {
+  if (!skill.data) {
     return (
-      <EmptyState
-        title="Skill not found"
-        description={skill.error ? errorMessage(skill.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/skills">Back to skills</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="skill"
+        error={skill.error}
+        back={{ href: "/skills", label: "Back to skills" }}
+        onRetry={() => void skill.refetch()}
+        retrying={skill.isFetching}
       />
     );
   }

@@ -401,7 +401,8 @@ export function WorkerEditor({
             <ResourceFields form={form} />
           </SectionCard>
 
-          <SectionCard id="sharing" active={active} onGo={goToSection}>
+          {/* Kept mounted while hidden: Save reads the pending access edits from it. */}
+          <SectionCard id="sharing" active={active} onGo={goToSection} keepMounted>
             <ResourceAccessFields ref={accessRef} resource="worker_profiles" resourceId={editing?.id} />
           </SectionCard>
         </div>

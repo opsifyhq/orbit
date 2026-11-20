@@ -2,6 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -153,16 +154,14 @@ export default function AgentDetailPage() {
     );
   }
 
-  if (agent.isError || !agent.data) {
+  if (!agent.data) {
     return (
-      <EmptyState
-        title="Agent not found"
-        description={agent.error ? errorMessage(agent.error) : "This agent does not exist."}
-        action={
-          <Button asChild>
-            <Link href="/agents">Back to agents</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent"
+        error={agent.error}
+        back={{ href: "/agents", label: "Back to agents" }}
+        onRetry={() => void agent.refetch()}
+        retrying={agent.isFetching}
       />
     );
   }

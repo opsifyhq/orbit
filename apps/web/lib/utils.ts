@@ -70,18 +70,34 @@ export function formatDuration(start?: string | null, end?: string | null): stri
   if (!start) return "—";
   const startMs = new Date(start).getTime();
   const endMs = end ? new Date(end).getTime() : Date.now();
-  const ms = Math.max(0, endMs - startMs);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return "—";
+  return formatElapsed(endMs - startMs);
+}
+
+/** A span of milliseconds as the two most significant units: `850ms`, `4.2s`, `2m 5s`, `3h 12m`. */
+export function formatElapsed(elapsedMs: number): string {
+  const ms = Math.max(0, Math.round(elapsedMs));
   if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  // Round once, then split: rounding the remainder alone produced "1m 60s".
+  if (ms < 59_950) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 3600) {
+    return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+  }
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 24 * 60) {
+    return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
+  }
+  const totalHours = Math.round(totalMinutes / 60);
+  return `${Math.floor(totalHours / 24)}d ${totalHours % 24}h`;
 }
 
 export function formatTokens(value?: number | null): string {
   if (value === null || value === undefined) return "—";
   if (value < 1000) return String(value);
-  return `${(value / 1000).toFixed(1)}k`;
+  // 999,960 must read "1.0M", not "1000.0k".
+  if (value < 999_950) return `${(value / 1000).toFixed(1)}k`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
 export const EXECUTION_STATUS_TONE: Record<

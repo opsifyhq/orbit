@@ -2,6 +2,8 @@
 
 import { createOrbitClient } from "@orbit/api-client";
 
+import { networkError } from "./api-error.ts";
+
 /**
  * Same-origin by default: the Next.js API proxy route forwards `/api/*` to the control
  * plane using `ORBIT_API_INTERNAL_URL` at runtime. Set NEXT_PUBLIC_ORBIT_API_URL only
@@ -30,6 +32,15 @@ export function setAccessToken(token: string | null) {
 export const api = createOrbitClient({
   baseUrl: API_BASE_URL,
   token: () => getAccessToken(),
+});
+
+// `fetch` rejects with a bare TypeError when the server is unreachable. Give it the
+// same shape as every other failure (status 0), so pages can tell "offline" from "404".
+api.use({
+  onError({ error }) {
+    if ((error as { name?: string })?.name === "AbortError") return;
+    return networkError();
+  },
 });
 
 /**

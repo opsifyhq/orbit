@@ -70,7 +70,10 @@ function effectVariant(effect: string | null | undefined) {
 }
 
 function connectionStatus(connection: ConnectionView): StatusMeta {
-  if (connection.status === "connected") return { label: "Connected", tone: "success", shape: "solid" };
+  // "active" is the usable state; a recorded check is what earns "Connected".
+  if (connection.status === "active" && connection.lastCheckedAt) {
+    return { label: "Connected", tone: "success", shape: "solid" };
+  }
   if (connection.status === "error") return { label: "Last check failed", tone: "danger", shape: "cross" };
   return { label: titleCase(connection.status), tone: "neutral", shape: "ring" };
 }
@@ -282,11 +285,16 @@ export default function ConnectionsPage() {
 
   const test = useMutation({
     mutationFn: (id: string) =>
-      request<{ ok: boolean; latencyMs: number; message: string }>(
+      request<{ supported: boolean; ok: boolean; latencyMs: number; message: string }>(
         `/api/v1/connections/${id}/test`,
         { method: "POST" },
       ),
     onSuccess: (result) => {
+      if (!result.supported) {
+        // Nothing was contacted and nothing changed: not a failure.
+        toast.info(result.message);
+        return;
+      }
       if (result.ok) {
         toast.success(`${result.message} (${result.latencyMs} ms)`);
       } else {
@@ -294,14 +302,7 @@ export default function ConnectionsPage() {
       }
       void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
     },
-    onError: (error) => {
-      const message = errorMessage(error);
-      toast.error(
-        /^HTTP 404$/.test(message)
-          ? "This connector has no connection test yet."
-          : `Test failed: ${message}`,
-      );
-    },
+    onError: (error) => toast.error(`Test failed: ${errorMessage(error)}`),
   });
 
   async function saveConnection() {

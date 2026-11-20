@@ -182,6 +182,12 @@
   input[type="checkbox"]:not([data-unstyled]) {
     @apply relative h-4 w-4 shrink-0 cursor-pointer appearance-none rounded-[4px] border border-input bg-card align-middle transition-colors;
   }
+  /* A 16px box is too small a target on its own: extend the hit area to 32px. */
+  input[type="checkbox"]:not([data-unstyled])::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
   input[type="checkbox"]:not([data-unstyled]):hover {
     border-color: hsl(var(--border-strong));
   }
