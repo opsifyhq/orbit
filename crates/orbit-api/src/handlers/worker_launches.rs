@@ -398,7 +398,13 @@ pub(crate) async fn launch_profile_internal(
             .store
             .set_worker_launch_single_execution(launch.id, execution_id)
             .await?;
-        let claimed = state.store.claim_execution(execution_id, &worker_id).await;
+        // Claim and token binding are one statement: a failure between them would leave a
+        // dispatched execution with a NULL token, which `ensure_execution` treats as a
+        // legacy claim that any profile-scoped token can access.
+        let claimed = state
+            .store
+            .claim_execution_for_launch(execution_id, &worker_id, issued.token_id)
+            .await;
         let claimed = match claimed {
             Ok(Some(claimed)) => claimed,
             other => {
@@ -427,11 +433,6 @@ pub(crate) async fn launch_profile_internal(
             }
         };
         timeout_seconds = Some(claimed.timeout_seconds.max(1) as u64);
-        // The launched worker authenticates with this launch's token; bind the claim to it.
-        state
-            .store
-            .bind_execution_worker_token(execution_id, issued.token_id)
-            .await?;
     }
     let request = LauncherRequest {
         launch_id: launch.id,

@@ -1163,7 +1163,7 @@ const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
 /// next one exists, the next tick sees "last step succeeded, run still running" and
 /// continues from there; a run is never stranded in that state.
 pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
-    let Some(run) = state
+    let Some((run, lease)) = state
         .store
         .claim_team_run_advance(run.id, ADVANCE_LEASE_SECS)
         .await?
@@ -1171,7 +1171,7 @@ pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
         return Ok(());
     };
     let result = advance_claimed(state, run.clone()).await;
-    if let Err(error) = state.store.release_team_run_advance(run.id).await {
+    if let Err(error) = state.store.release_team_run_advance(run.id, lease).await {
         tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
     }
     result

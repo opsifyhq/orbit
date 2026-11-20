@@ -30,6 +30,19 @@ pub async fn dispatch_tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Take the per-team dispatch lock for the lifetime of the returned transaction.
+async fn try_team_lock(
+    pool: &sqlx::PgPool,
+    team_id: Uuid,
+) -> anyhow::Result<Option<sqlx::Transaction<'static, sqlx::Postgres>>> {
+    let mut tx = pool.begin().await?;
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(advisory_lock_id(team_id))
+        .fetch_one(&mut *tx)
+        .await?;
+    Ok(locked.then_some(tx))
+}
+
 async fn dispatch_team(state: &AppState, team: AgentTeam) -> anyhow::Result<()> {
     let definition = parse_definition(&team).map_err(|error| anyhow::anyhow!(error.message))?;
     let Some(source) = definition.work_source.clone() else {
@@ -42,16 +55,13 @@ async fn dispatch_team(state: &AppState, team: AgentTeam) -> anyhow::Result<()> 
         return Ok(());
     }
 
-    let lock_id = advisory_lock_id(team.id);
-    let mut conn = state.store.pool().acquire().await?;
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-        .bind(lock_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    if !locked {
+    // Transaction-scoped advisory lock: released on commit, rollback or when the
+    // transaction is dropped (including a panic or cancelled task), so a failure can never
+    // return a pooled connection that still holds the lock.
+    let Some(lock) = try_team_lock(state.store.pool(), team.id).await? else {
         tracing::debug!(team_id = %team.id, "work source dispatch skipped: lock held by another replica");
         return Ok(());
-    }
+    };
 
     let result = dispatch_team_locked(state, &team, &definition, &source).await;
     if let Err(error) = &result {
@@ -62,14 +72,7 @@ async fn dispatch_team(state: &AppState, team: AgentTeam) -> anyhow::Result<()> 
             .set_team_poll_status(team.org_id, team.id, Some(&error.to_string()))
             .await;
     }
-    let unlock: Result<bool, _> = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
-        .bind(lock_id)
-        .fetch_one(&mut *conn)
-        .await;
-    if let Err(error) = unlock {
-        let _ = conn.close().await;
-        tracing::warn!(error = %error, team_id = %team.id, "failed to release advisory lock; closed connection");
-    }
+    drop(lock);
     result
 }
 
@@ -385,6 +388,40 @@ fn poll_due(team: &AgentTeam, source: &WorkSourceDefinition) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panic while the lock is held must not leave it behind on a pooled connection.
+    #[tokio::test]
+    async fn team_lock_is_released_when_the_holder_panics() {
+        let Ok(url) = std::env::var("ORBIT_TEST_DATABASE_URL") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&url)
+            .await
+            .unwrap();
+        let team_id = Uuid::now_v7();
+        let held = try_team_lock(&pool, team_id).await.unwrap();
+        assert!(held.is_some());
+        assert!(
+            try_team_lock(&pool, team_id).await.unwrap().is_none(),
+            "second taker must see the lock held"
+        );
+        drop(held);
+        // Holder task panics with the lock taken.
+        let task_pool = pool.clone();
+        let panicked = tokio::spawn(async move {
+            let _lock = try_team_lock(&task_pool, team_id).await.unwrap().unwrap();
+            panic!("boom");
+        })
+        .await;
+        assert!(panicked.is_err());
+        // Every pooled connection must be able to take the lock again.
+        for _ in 0..3 {
+            let lock = try_team_lock(&pool, team_id).await.unwrap();
+            assert!(lock.is_some(), "lock leaked after panic");
+        }
+    }
 
     #[test]
     fn lock_id_is_stable() {
