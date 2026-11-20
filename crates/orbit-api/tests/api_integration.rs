@@ -424,6 +424,39 @@ async fn agent_crud_validation_and_export() {
 }
 
 #[tokio::test]
+async fn run_task_is_stored_as_the_single_run_instruction() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let task = "AURORA-259-API-UNIQUE-RUN-INSTRUCTION";
+    let configured = "AURORA-259-API-CONFIGURED-SYSTEM-INSTRUCTIONS";
+    let path = format!("/api/v1/agents/{}/executions", app.agent_id);
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "task": task }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let execution_id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    let input = execution.input;
+    assert_eq!(input["task"], task);
+    assert_eq!(input["task"].as_str().unwrap().matches(task).count(), 1);
+    // Configured system instructions live in the agent spec, never in run input.
+    assert!(input.get("instructions").is_none());
+    assert!(!input.to_string().contains(configured));
+}
+
+#[tokio::test]
 async fn execution_creation_is_idempotent_and_streams_events() {
     let Some(app) = test_app(true).await else {
         return;
@@ -3752,6 +3785,38 @@ async fn start_run(app: &TestApp, team_id: Uuid) -> Uuid {
     body["run"]["id"].as_str().unwrap().parse().unwrap()
 }
 
+#[tokio::test]
+async fn team_run_task_is_not_mixed_with_configured_goal() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let task = "AURORA-259-TEAM-API-UNIQUE-RUN-INSTRUCTION";
+    let goal = "AURORA-259-TEAM-API-CONFIGURED-GOAL";
+    let team_id = make_team(&app, vec![app.agent_id], json!({ "instructions": goal })).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": task }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run_id: Uuid = body["run"]["id"].as_str().unwrap().parse().unwrap();
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    let execution = app
+        .store
+        .get_execution(app.org_id, step.execution_id.unwrap())
+        .await
+        .unwrap();
+    let input = execution.input;
+    assert_eq!(input["task"], task);
+    assert_eq!(input["task"].as_str().unwrap().matches(task).count(), 1);
+    assert!(!input["task"].as_str().unwrap().contains(goal));
+    // The configured goal is carried as system context, not as another task.
+    assert_eq!(input["team"]["goal"], goal);
+}
+
 async fn succeed_current_step(app: &TestApp, run_id: Uuid) {
     let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
     // Since #139 the store refuses queued -> succeeded, so walk the real lifecycle first.
@@ -5479,6 +5544,62 @@ async fn agent_specs_require_use_of_referenced_connections_and_providers() {
 }
 
 #[tokio::test]
+async fn agent_writes_reject_connector_bindings_without_connections() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user = operator(&app, "connector-required@test.local").await;
+    let token = token_for(&app.store, app.org_id, user.id, "connector-required").await;
+    webhook_connection(&app, "Connector required hook", user.id).await;
+
+    let mut invalid = definition();
+    invalid["spec"]["connectors"] =
+        json!([{ "connector": "webhook", "capabilities": ["messages.send"] }]);
+
+    let assert_envelope = |body: &Value| {
+        assert_eq!(body["error"]["code"], "validation_error");
+        assert!(body["error"]["requestId"].is_string());
+        let details = body["error"]["details"].as_array().unwrap();
+        assert!(
+            details.iter().any(|issue| {
+                issue["path"] == "spec.connectors[0].connectionId"
+                    && issue["message"].as_str().unwrap().contains("connectionId")
+            }),
+            "{body}"
+        );
+    };
+
+    let (status, body) = send(
+        &app.router,
+        auth_post("/api/v1/agents", &token, invalid.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_envelope(&body);
+
+    let agent = bound_agent(&app, user.id, None, None).await;
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/agents/{agent}"),
+            &token,
+            json!({ "definition": invalid }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_envelope(&body);
+
+    // A disabled connector (absent from the spec) and an empty connector list stay valid.
+    let (status, body) = send(
+        &app.router,
+        auth_post("/api/v1/agents", &token, definition()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
 async fn rerun_applies_the_execute_preflight() {
     let Some(app) = test_app(true).await else {
         return;
@@ -6780,4 +6901,614 @@ async fn agent_update_can_return_to_an_earlier_configuration() {
     let (status, body) = send(&app.router, patch(original)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["currentVersion"], 3);
+}
+
+#[tokio::test]
+async fn execution_event_list_accepts_kind_tool_and_q_filters() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, execution) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{}/executions", app.agent_id),
+            json!({ "task": "event filters" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{execution}");
+    let execution_id = execution["id"].as_str().unwrap();
+    for (kind, message, data) in [
+        (
+            "tool_call",
+            "github.issues_list executed",
+            json!({ "tool": "github_issues_list", "connector": "github" }),
+        ),
+        ("output", "the answer", json!({})),
+        (
+            "error",
+            "issues.comment failed",
+            json!({ "capability": "issues.comment" }),
+        ),
+    ] {
+        app.store
+            .append_execution_event(
+                app.org_id,
+                Uuid::parse_str(execution_id).unwrap(),
+                kind,
+                orbit_domain::LogLevel::Info,
+                message,
+                &data,
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(execution_events(&app, execution_id, "").await.len(), 4); // includes the queued status event
+    assert_eq!(
+        execution_events(&app, execution_id, "&kind=tool_call,error")
+            .await
+            .len(),
+        2
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&tool=GITHUB")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&q=answer")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&kind=error&tool=issues.comment")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        execution_events(&app, execution_id, "&afterSeq=3")
+            .await
+            .len(),
+        1
+    );
+
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/executions/{execution_id}/events?kind=bogus"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "bad_request");
+}
+
+async fn execution_events(app: &TestApp, execution_id: &str, query: &str) -> Vec<Value> {
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/executions/{execution_id}/events?limit=100{query}"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["items"].as_array().unwrap().clone()
+}
+
+// ---------------------------------------------------------------------------
+// #249: bulk archive/delete for agents and bulk delete for skills
+// ---------------------------------------------------------------------------
+
+async fn bulk_team_agent(app: &TestApp, team_id: Uuid, owner_id: Uuid) -> Uuid {
+    let agent = create_demo_agent(&app.store, app.org_id, owner_id).await;
+    app.store
+        .set_resource_visibility(app.org_id, "agents", agent, "team", Some(team_id))
+        .await
+        .unwrap();
+    agent
+}
+
+async fn bulk_team_skill(app: &TestApp, slug: &str, team_id: Uuid) -> Uuid {
+    let skill = app
+        .store
+        .create_skill(app.org_id, slug, slug, "", "content", &json!({}))
+        .await
+        .unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "skills", skill.id, "team", Some(team_id))
+        .await
+        .unwrap();
+    skill.id
+}
+
+fn bulk_failed_ids(body: &Value) -> Vec<Uuid> {
+    body["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().parse().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-owner@test.local",
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let admin = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-admin@test.local",
+            "Admin",
+            UserRole::Admin,
+        )
+        .await
+        .unwrap();
+    let lead = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-lead@test.local",
+            "Lead",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let member = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-member@test.local",
+            "Member",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let outsider = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-outsider@test.local",
+            "Outsider",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let team = app
+        .store
+        .create_access_team(app.org_id, "Bulk ops", "bulk-ops", None)
+        .await
+        .unwrap();
+    app.store
+        .upsert_team_member(team.id, lead.id, "lead")
+        .await
+        .unwrap();
+    app.store
+        .upsert_team_member(team.id, member.id, "member")
+        .await
+        .unwrap();
+
+    let tokens = (
+        token_for(&app.store, app.org_id, owner.id, "bulk-owner").await,
+        token_for(&app.store, app.org_id, admin.id, "bulk-admin").await,
+        token_for(&app.store, app.org_id, lead.id, "bulk-lead").await,
+        token_for(&app.store, app.org_id, member.id, "bulk-member").await,
+        token_for(&app.store, app.org_id, outsider.id, "bulk-outsider").await,
+    );
+    let (owner_token, admin_token, lead_token, member_token, outsider_token) = tokens;
+
+    let a1 = bulk_team_agent(&app, team.id, owner.id).await;
+    let a2 = bulk_team_agent(&app, team.id, owner.id).await;
+    let blocked = bulk_team_agent(&app, team.id, owner.id).await;
+    let archived = bulk_team_agent(&app, team.id, owner.id).await;
+    app.store
+        .set_agent_status(app.org_id, archived, orbit_domain::AgentStatus::Archived)
+        .await
+        .unwrap();
+    let private = create_demo_agent(&app.store, app.org_id, outsider.id).await;
+    make_private(&app.store, app.org_id, "agents", private, outsider.id).await;
+
+    // An agent used by a team step is exactly what single DELETE refuses (FK RESTRICT).
+    let workflow = app
+        .store
+        .create_agent_team(
+            app.org_id,
+            "Bulk workflow",
+            "",
+            &json!({ "steps": [] }),
+            Some(owner.id),
+        )
+        .await
+        .unwrap();
+    let run = app
+        .store
+        .create_team_run(app.org_id, workflow.id, &json!({}), Some(owner.id))
+        .await
+        .unwrap();
+    let agent_row = app.store.get_agent(app.org_id, blocked).await.unwrap();
+    let version = app
+        .store
+        .get_current_version(app.org_id, &agent_row)
+        .await
+        .unwrap();
+    app.store
+        .create_team_step(
+            run.id,
+            app.org_id,
+            0,
+            "blocked",
+            blocked,
+            version.id,
+            &[],
+            &json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Preview reports mixed states and changes nothing.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/archive",
+            &lead_token,
+            json!({ "ids": [a1, a2, archived, private, a1], "dryRun": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["updated"].as_array().unwrap().len(), 2);
+    assert_eq!(body["unchanged"].as_array().unwrap().len(), 1);
+    assert_eq!(bulk_failed_ids(&body), vec![private]);
+    assert_eq!(body["failed"][0]["code"], "not_found");
+    assert_eq!(
+        app.store.get_agent(app.org_id, a1).await.unwrap().status,
+        "active"
+    );
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/delete",
+            &lead_token,
+            json!({ "ids": [blocked, a1, archived], "dryRun": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
+    assert_eq!(bulk_failed_ids(&body), vec![blocked]);
+    assert_eq!(body["failed"][0]["code"], "conflict");
+    assert!(app.store.get_agent(app.org_id, a1).await.is_ok());
+
+    // Actual archive: lead can manage, outsider's private agent cannot be seen.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/archive",
+            &lead_token,
+            json!({ "ids": [a1, a2, archived, private] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["updated"].as_array().unwrap().len(), 2);
+    assert_eq!(body["unchanged"].as_array().unwrap().len(), 1);
+    assert_eq!(bulk_failed_ids(&body), vec![private]);
+    for id in [a1, a2, archived] {
+        assert_eq!(
+            app.store.get_agent(app.org_id, id).await.unwrap().status,
+            "archived"
+        );
+    }
+    let (rows, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("agent.bulk_archived"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metadata["updated"], 2);
+    assert_eq!(rows[0].metadata["unchanged"], 1);
+    assert_eq!(rows[0].metadata["failed"], 1);
+
+    // Archived agents disappear from the normal list but keep versions and can return.
+    let (status, body) = send(
+        &app.router,
+        auth_get("/api/v1/agents?status=current", &lead_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let visible = body["items"].as_array().unwrap();
+    assert!(visible
+        .iter()
+        .all(|item| item["id"].as_str().unwrap().parse::<Uuid>().unwrap() != a1));
+    assert!(!app
+        .store
+        .list_agent_versions(app.org_id, a1)
+        .await
+        .unwrap()
+        .is_empty());
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{a1}/activate"),
+            &lead_token,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Member cannot manage, outsider cannot view, admin can.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/archive",
+            &member_token,
+            json!({ "ids": [a1, a2] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(bulk_failed_ids(&body), vec![a1, a2]);
+    assert!(body["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| f["code"] == "forbidden"));
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/archive",
+            &outsider_token,
+            json!({ "ids": [a1, a2] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(bulk_failed_ids(&body), vec![a1, a2]);
+    assert!(body["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| f["code"] == "not_found"));
+
+    // Bulk delete uses the same FK rule as single delete.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/delete",
+            &admin_token,
+            json!({ "ids": [a1, blocked, archived] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
+    assert_eq!(bulk_failed_ids(&body), vec![blocked]);
+    assert_eq!(body["failed"][0]["code"], "conflict");
+    assert!(app.store.get_agent(app.org_id, a1).await.is_err());
+    assert!(app.store.get_agent(app.org_id, archived).await.is_err());
+    assert!(app.store.get_agent(app.org_id, blocked).await.is_ok());
+    let (status, single) = send(
+        &app.router,
+        auth_delete(&format!("/api/v1/agents/{blocked}?hard=true"), &owner_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{single}");
+    let (rows, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("agent.bulk_deleted"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metadata["deleted"], 2);
+    assert_eq!(rows[0].metadata["failed"], 1);
+}
+
+#[tokio::test]
+async fn bulk_skills_are_delete_only_with_manage_access_and_id_bounds() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-owner@test.local",
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let admin = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-admin@test.local",
+            "Admin",
+            UserRole::Admin,
+        )
+        .await
+        .unwrap();
+    let lead = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-lead@test.local",
+            "Lead",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let member = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-member@test.local",
+            "Member",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let outsider = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-outsider@test.local",
+            "Outsider",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let team = app
+        .store
+        .create_access_team(app.org_id, "Skill ops", "skill-ops", None)
+        .await
+        .unwrap();
+    app.store
+        .upsert_team_member(team.id, lead.id, "lead")
+        .await
+        .unwrap();
+    app.store
+        .upsert_team_member(team.id, member.id, "member")
+        .await
+        .unwrap();
+
+    let owner_token = token_for(&app.store, app.org_id, owner.id, "skill-owner").await;
+    let admin_token = token_for(&app.store, app.org_id, admin.id, "skill-admin").await;
+    let lead_token = token_for(&app.store, app.org_id, lead.id, "skill-lead").await;
+    let member_token = token_for(&app.store, app.org_id, member.id, "skill-member").await;
+    let outsider_token = token_for(&app.store, app.org_id, outsider.id, "skill-outsider").await;
+
+    let s1 = bulk_team_skill(&app, "bulk-s1", team.id).await;
+    let s2 = bulk_team_skill(&app, "bulk-s2", team.id).await;
+    let s3 = bulk_team_skill(&app, "bulk-s3", team.id).await;
+    let s4 = bulk_team_skill(&app, "bulk-s4", team.id).await;
+    let s5 = bulk_team_skill(&app, "bulk-s5", team.id).await;
+
+    // Preview is read-only; skills have no archive state at all.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &lead_token,
+            json!({ "ids": [s1, s2], "dryRun": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
+    assert!(app.store.get_skill(app.org_id, s1).await.is_ok());
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/archive",
+            &lead_token,
+            json!({ "ids": [s1] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Duplicate ids are removed; the result contains each id once.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &lead_token,
+            json!({ "ids": [s1, s1, s2] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
+    assert!(app.store.get_skill(app.org_id, s1).await.is_err());
+    let (rows, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("skill.bulk_deleted"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metadata["deleted"], 2);
+    assert_eq!(rows[0].metadata["failed"], 0);
+
+    // Member is forbidden, non-member gets not_found, admin may delete.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &member_token,
+            json!({ "ids": [s3] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["failed"][0]["code"], "forbidden");
+    assert!(app.store.get_skill(app.org_id, s3).await.is_ok());
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &outsider_token,
+            json!({ "ids": [s3] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["failed"][0]["code"], "not_found");
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &admin_token,
+            json!({ "ids": [s3] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 1);
+    assert!(app.store.get_skill(app.org_id, s3).await.is_err());
+
+    // Bounds apply after dedupe: 500 unique ids are allowed, 501 are rejected.
+    let ids: Vec<Uuid> = (0..501).map(|_| Uuid::now_v7()).collect();
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &owner_token,
+            json!({ "ids": ids }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills/bulk/delete",
+            &owner_token,
+            json!({ "ids": [s4, s4, s5] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
 }

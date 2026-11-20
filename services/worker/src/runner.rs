@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use orbit_contracts::{
     ExecutionOutcome, ExecutionRequest, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessEventKind, InstructionsBlock, SessionRequest,
+    HarnessEventKind, InstructionsBlock, PromptInputKind, SessionRequest,
 };
 use orbit_domain::{
     AutonomyLevel, ExecutionEventKind, ExecutionStatus, HarnessKind, LogLevel, ResourceLimits,
@@ -387,6 +387,22 @@ async fn run_execution_inner(
             }
         };
 
+    // #259: record the provenance of prompt inputs without copying instruction text
+    // into user-visible events. The task is the single explicit run instruction.
+    append_harness_event(
+        &state,
+        &execution,
+        HarnessEvent::input_with_data(
+            PromptInputKind::RunInstruction,
+            "run instruction received",
+            serde_json::json!({
+                "source": input.provenance.source,
+                "characters": input.task.chars().count(),
+            }),
+        ),
+    )
+    .await;
+
     // Read-only connector hydration (MVP: X recent search). External content is added
     // as untrusted payload; trusted instructions remain separate.
     match crate::connectors::hydrate(
@@ -516,13 +532,14 @@ async fn run_execution_inner(
         .await
     {
         Ok(names) if !names.is_empty() => {
-            append_event(
+            append_harness_event(
                 &state,
                 &execution,
-                ExecutionEventKind::Status,
-                LogLevel::Info,
-                &format!("materialized {} native subagent(s)", names.len()),
-                serde_json::json!({ "subagents": names }),
+                HarnessEvent::input_with_data(
+                    PromptInputKind::Delegation,
+                    format!("materialized {} native subagent(s)", names.len()),
+                    serde_json::json!({ "subagents": names }),
+                ),
             )
             .await;
         }
@@ -663,8 +680,7 @@ async fn run_execution_inner(
     let event_execution = execution.clone();
     let event_task = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            let (kind, level, message, data) = map_harness_event(event);
-            append_event(&event_state, &event_execution, kind, level, &message, data).await;
+            append_harness_event(&event_state, &event_execution, event).await;
         }
     });
 
@@ -723,13 +739,20 @@ async fn run_execution_inner(
     }
 
     let autonomy = AutonomyLevel::from_level(spec.autonomy.level).unwrap_or(AutonomyLevel::OBSERVE);
-    let mut system_instructions = spec.instructions.system.clone();
-    if let Some(extra) = crate::subagents::system_instruction(&execution.input) {
-        if !system_instructions.is_empty() {
-            system_instructions.push_str("\n\n");
-        }
-        system_instructions.push_str(&extra);
-    }
+    // #259: configured agent/team instructions and delegation guidance are system
+    // context. The run instruction stays in `input.task` and is never copied here.
+    let system_instructions =
+        crate::prompt::system_instructions(&spec.instructions.system, &execution.input);
+    append_harness_event(
+        &state,
+        &execution,
+        HarnessEvent::input_with_data(
+            PromptInputKind::SystemInstructions,
+            "system instructions configured",
+            serde_json::json!({ "characters": system_instructions.chars().count() }),
+        ),
+    )
+    .await;
     let mut extra_env = (*state.extra_env).clone();
     for item in &context.env {
         extra_env.insert(item.env_var.clone(), item.value.clone());
@@ -977,6 +1000,17 @@ async fn append_event(
     {
         tracing::error!(%error, "failed to persist execution event");
     }
+}
+
+/// Persist a harness event using the same mapping as the adapter event stream. This is
+/// also the single path for prompt-provenance events built by the contracts helper.
+async fn append_harness_event(
+    state: &WorkerState,
+    execution: &ExecutionRecord,
+    event: HarnessEvent,
+) {
+    let (kind, level, message, data) = map_harness_event(event);
+    append_event(state, execution, kind, level, &message, data).await;
 }
 
 fn map_harness_event(

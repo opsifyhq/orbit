@@ -53,6 +53,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/me` | current user, organization, role, permissions |
 | `GET/POST /api/v1/agents` | list (filter/search) / create agent + version 1 |
 | `GET/PATCH/DELETE /api/v1/agents/{id}` | read / new version or metadata / archive |
+| `POST /api/v1/agents/bulk/{archive,delete}` | bulk archive / permanent delete (1–500 deduped ids, `dryRun`, per-id failures) |
 | `POST /api/v1/agents/{id}/activate` | draft/paused → active |
 | `POST /api/v1/agents/{id}/pause` | active → paused |
 | `GET /api/v1/agents/{id}/versions` | immutable version history |
@@ -61,7 +62,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/agents/{id}/executions` | executions for agent |
 | `GET /api/v1/executions` | all executions (status, agent, cursor) |
 | `GET /api/v1/executions/{id}` | execution detail with output/error/usage |
-| `GET /api/v1/executions/{id}/events` | stored events (paginated, `after_seq`) |
+| `GET /api/v1/executions/{id}/events` | stored events (`afterSeq`, `limit`, optional `kind`, `tool`, `q`) |
 | `GET /api/v1/executions/{id}/events/stream` | SSE stream (replay + tail) |
 | `POST /api/v1/executions/{id}/cancel` | request cancellation |
 | `GET /api/v1/harnesses` | harness registry + capabilities + health |
@@ -76,6 +77,7 @@ validated with field-level `details` and recorded in the audit log.
 | `PATCH/DELETE /api/v1/triggers/{id}` | update / delete trigger |
 | `GET/POST /api/v1/skills` | list / create skill |
 | `GET/PATCH/DELETE /api/v1/skills/{id}` | read / update / delete skill |
+| `POST /api/v1/skills/bulk/delete` | bulk permanent delete (1–500 deduped ids, `dryRun`, per-id failures); skills have no archive state (ADR 0013) |
 | `GET/POST /api/v1/agent-teams` | list / create Agent Team |
 | `GET/PATCH/DELETE /api/v1/agent-teams/{id}` | read / update / delete team |
 | `POST /api/v1/agent-teams/{id}/runs` | start a team run |
@@ -105,6 +107,12 @@ validated with field-level `details` and recorded in the audit log.
 
 Every execution and team-run list accepts `?archived=true|false|all`; the default view
 hides archived terminal records.
+
+Execution events can be narrowed in SQL before `limit` with comma-separated `kind`
+(`status`, `log`, `tool_call`, `output`, `error`, `metric`) and literal case-insensitive
+substrings `tool` (tool/capability/connector/connection identifiers) and `q` (message or
+identifiers). These are read-only presentation filters: they never rewrite events or the
+SSE stream. Unknown kinds and terms longer than 200 characters return 400.
 
 ### Worker API (token-authenticated, `/api/v1/worker/*`)
 

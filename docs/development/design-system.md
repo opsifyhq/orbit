@@ -154,7 +154,14 @@ URL (`?status=failed`) so views can be linked and survive the back button.
 **Execution events.** `lib/execution-events.ts` turns raw harness events into timeline
 lines (`describeEvent`) and decides what belongs in the default "Story" view (`isKeyEvent`).
 Teach it a new harness's event shapes there, not in the page; unknown shapes fall back to
-the server's message.
+the server's message. `components/executions/execution-timeline.tsx` is the shared view;
+`lib/execution-event-filters.ts` holds its presentation-only filters. **Story / Everything**
+is the baseline (key events vs every event); the type chips, tool/action text and effect
+filter narrow that baseline further — "All" means all *types*, not "ignore Story".
+Filters live in the URL (`?events=tools&tool=github_issues_list`), keep applying to events
+that arrive on a live stream, and show a hidden count with a one-click clear. Repeated
+same-tool calls fold into an expandable `tool × N` row; errors and approvals never fold.
+Never put argument values or secrets in filter labels or URLs.
 
 **Vocabulary.** One name per concept, taken from the shared source where one exists:
 autonomy levels from `AUTONOMY_LEVELS` in `@orbit/contracts` via `autonomyName()`; product

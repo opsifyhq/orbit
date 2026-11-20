@@ -235,7 +235,7 @@ approvals UI is still being finished.
 | `/settings` → OIDC / SSO | Save issuer/client/scopes; reload shows stored values; restart applies them |
 | Theme (account menu at the bottom of the sidebar, or `⌘K` → “theme”) | Light / Dark / System; switches instantly; persists across reloads; no flash on load |
 | `/settings` tabs | Account, API tokens, Single sign-on, Members and roles, Platform, Audit log; the open tab is in the URL hash |
-| Execution detail | Timeline with **Key events / Everything** and **Follow**; Details rail with trigger, harness, duration, tokens and IDs; Input and Output each switch between Text and JSON and can be copied |
+| Execution detail | Timeline with **Story / Everything** and **Follow**; type chips, tool/action text and effect filters with URL state (`?events=tools&tool=github_issues_list`), hidden count and clear, expandable `tool × N` groups (errors/approvals expanded); filters keep applying to live events and do not reorder them; Details rail with trigger, harness, duration, tokens and IDs; Input and Output each switch between Text and JSON and can be copied |
 
 ## Negative and security checks
 

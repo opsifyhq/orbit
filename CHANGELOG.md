@@ -13,6 +13,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - Skill pages (`/skills/<id>`) with formatted instructions, bundled file contents, and the
   agents, teams and worker profiles that use the skill. Agent summaries now list their
   skill slugs (`skills`) so usage needs no extra requests.
+- Bulk lifecycle actions for agents and skills: agents can be archived or permanently
+  deleted, skills can be deleted (archive is out of scope — see ADR 0013). A dry-run
+  preview explains mixed selections before confirmation, partial failures keep their ids
+  selected, and one audit event records each bulk operation (#249).
 
 ### Changed
 
@@ -37,6 +41,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   saved as the next version instead of being refused ("identical to an existing version"),
   so undoing a change or removing a just-added skill works. Saving without changes still
   creates no version. Migration `0049_agent_version_revert` drops the unique checksum rule.
+- Run instructions are no longer mixed with configured agent/team instructions in harness
+  prompts or execution events. Team goals travel as trusted system context, native subagent
+  materialization keeps primary instructions out of subagent files, and prompt provenance
+  events are tagged as run instruction, system instructions or delegation (#259).
 
 ## [0.25.0] - 2026-11-20
 

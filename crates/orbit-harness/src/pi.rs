@@ -316,7 +316,7 @@ fn build_prompt(request: &ExecutionRequest) -> String {
         request.input.payload.clone()
     };
     format!(
-        "# Task\n\n{}\n\n# Input data (untrusted)\n\nSource: {}\nTrusted: {}\n\n```json\n{}\n```\n",
+        "# Run instruction\n\n{}\n\n# Input data (untrusted)\n\nSource: {}\nTrusted: {}\n\n```json\n{}\n```\n",
         request.input.task.trim(),
         request.input.provenance.source,
         request.input.provenance.trusted,
@@ -1123,6 +1123,49 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot be passed safely as a CLI argument"));
+    }
+
+    #[test]
+    fn prompt_has_one_run_instruction_and_no_configured_instructions() {
+        use orbit_contracts::{ExecutionInput, InputProvenance, InstructionsBlock, SessionRequest};
+        let task = "AURORA-259-UNIQUE-RUN-INSTRUCTION";
+        let system = "AURORA-259-CONFIGURED-SYSTEM-INSTRUCTIONS";
+        let request = ExecutionRequest {
+            execution_id: uuid::Uuid::now_v7(),
+            agent_id: uuid::Uuid::now_v7(),
+            agent_version_id: uuid::Uuid::now_v7(),
+            agent_name: "x-monitor".into(),
+            instructions: InstructionsBlock {
+                system: system.into(),
+                constraints: vec!["AURORA-259-CONSTRAINT".into()],
+            },
+            input: ExecutionInput {
+                task: task.into(),
+                payload: json!({"artifact": "a.txt"}),
+                provenance: InputProvenance::manual("test@example.com"),
+            },
+            model: None,
+            subagent_models: Vec::new(),
+            grants: vec![],
+            autonomy: AutonomyLevel::OBSERVE,
+            resources: orbit_domain::ResourceLimits::default(),
+            harness_config: Value::Null,
+            extra_env: Default::default(),
+            session: SessionRequest::default(),
+            workspace: Default::default(),
+            events: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            pause: Default::default(),
+        };
+        let prompt = build_prompt(&request);
+        assert!(prompt.starts_with(&format!("# Run instruction\n\n{task}\n")));
+        assert_eq!(prompt.matches(task).count(), 1);
+        assert!(!prompt.contains(system));
+        assert!(!prompt.contains("AURORA-259-CONSTRAINT"));
+
+        let append = build_system_append(&request);
+        assert!(append.contains(system));
+        assert!(!append.contains(task));
     }
 
     #[tokio::test]
