@@ -13,6 +13,7 @@ orbit-contracts.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

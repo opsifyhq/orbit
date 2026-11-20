@@ -153,7 +153,7 @@ impl PiSettings {
 /// The API key is referenced through the environment; no secret is written to disk.
 fn write_platform_models(
     model: &orbit_contracts::ResolvedModel,
-) -> std::io::Result<std::path::PathBuf> {
+) -> std::io::Result<tempfile::TempDir> {
     let endpoint = match (&model.selection, &model.endpoint) {
         (orbit_contracts::ModelSelection::Platform { .. }, Some(endpoint)) => endpoint,
         _ => {
@@ -163,8 +163,9 @@ fn write_platform_models(
             ))
         }
     };
-    let dir = std::env::temp_dir().join(format!("orbit-pi-platform-{}", uuid::Uuid::now_v7()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = tempfile::Builder::new()
+        .prefix("orbit-pi-platform-")
+        .tempdir()?;
     let config = serde_json::json!({
         "$schema": "https://pi.dev/schemas/models.schema.json",
         "providers": {
@@ -181,7 +182,7 @@ fn write_platform_models(
         }
     });
     std::fs::write(
-        dir.join("models.json"),
+        dir.path().join("models.json"),
         serde_json::to_string_pretty(&config)?,
     )?;
     Ok(dir)
@@ -633,7 +634,7 @@ impl PiHarnessAdapter {
         // airgapped execution. Provider requests still go to the configured endpoint.
         command.env("PI_OFFLINE", "1");
         if let Some(dir) = &platform_agent_dir {
-            command.env("PI_CODING_AGENT_DIR", dir);
+            command.env("PI_CODING_AGENT_DIR", dir.path());
         }
         // Platform-managed providers: inject endpoint + credential via env vars.
         // Pi's built-in OpenAI provider reads OPENAI_API_KEY and OPENAI_BASE_URL.
@@ -1050,15 +1051,20 @@ mod platform_model_tests {
             credential: None,
         };
         let dir = write_platform_models(&model).unwrap();
+        let dir_path = dir.path().to_path_buf();
         let config: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("models.json")).unwrap())
                 .unwrap();
         let provider = &config["providers"]["orbit-platform"];
         assert_eq!(provider["baseUrl"], "http://llm.internal/v1");
         assert_eq!(provider["api"], "openai-completions");
         assert_eq!(provider["models"][0]["id"], "internal-model");
         assert_eq!(provider["apiKey"], "$OPENAI_API_KEY");
-        let _ = std::fs::remove_dir_all(dir);
+        drop(dir);
+        assert!(
+            !dir_path.exists(),
+            "platform model directory should be removed"
+        );
     }
 }
 
@@ -1111,13 +1117,18 @@ mod mcp_config_tests {
             credential: None,
         };
         let dir = write_platform_models(&model).unwrap();
+        let dir_path = dir.path().to_path_buf();
         let config: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("models.json")).unwrap())
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("models.json")).unwrap())
                 .unwrap();
         assert_eq!(
             config["providers"]["orbit-platform"]["api"],
             "anthropic-messages"
         );
-        let _ = std::fs::remove_dir_all(dir);
+        drop(dir);
+        assert!(
+            !dir_path.exists(),
+            "platform model directory should be removed"
+        );
     }
 }

@@ -21,6 +21,7 @@ orbit-security.workspace = true
 orbit-store.workspace = true
 orbit-api.workspace = true
 tokio-util.workspace = true
+tempfile.workspace = true
 croner.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -317,6 +317,37 @@ pub async fn run_execution(
     context: crate::client::WorkerExecutionContext,
     cancel: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
+    let execution_id = context.execution.id;
+    let workspace = state.workspace_root.join(execution_id.to_string());
+    let result = run_execution_inner(state, context, workspace.clone(), cancel).await;
+    finish_execution_workspace(&workspace, execution_id, result).await
+}
+
+async fn finish_execution_workspace(
+    workspace: &std::path::Path,
+    execution_id: Uuid,
+    result: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Err(error) = cleanup_execution_workspace(workspace).await {
+        tracing::error!(%error, %execution_id, workspace = %workspace.display(), "could not clean execution workspace");
+    }
+    result
+}
+
+async fn cleanup_execution_workspace(path: &std::path::Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn run_execution_inner(
+    state: WorkerState,
+    context: crate::client::WorkerExecutionContext,
+    workspace: std::path::PathBuf,
+    cancel: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
     let execution = context.execution.clone();
     let execution_id = execution.id;
     let mut spec = context.spec;
@@ -407,9 +438,16 @@ pub async fn run_execution(
         }
     }
 
-    let workspace = state.workspace_root.join(execution_id.to_string());
     if let Err(err) = tokio::fs::create_dir_all(&workspace).await {
-        tracing::warn!(error = %err, workspace = %workspace.display(), "could not create workspace");
+        return fail_execution(
+            &state,
+            &execution,
+            HarnessError::new(
+                HarnessErrorKind::Internal,
+                format!("could not create workspace {}: {err}", workspace.display()),
+            ),
+        )
+        .await;
     }
     let checkout_connection = spec
         .connectors
@@ -422,15 +460,18 @@ pub async fn run_execution(
                     .any(|capability| capability == "repo.checkout")
         })
         .and_then(|binding| binding.connection_id);
-    match crate::git::checkout_workspace(
-        &state.client,
-        execution_id,
-        checkout_connection,
-        &execution.input,
-        &workspace,
-    )
-    .await
-    {
+    let checkout = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("repository checkout cancelled")),
+        result = crate::git::checkout_workspace(
+            &state.client,
+            execution_id,
+            checkout_connection,
+            &execution.input,
+            &workspace,
+            &cancel,
+        ) => result,
+    };
+    match checkout {
         Ok(notes) => {
             for note in notes {
                 append_event(
@@ -445,15 +486,23 @@ pub async fn run_execution(
             }
         }
         Err(error) => {
-            return fail_execution(
-                &state,
-                &execution,
+            let message = error.to_string();
+            let error = if cancel.is_cancelled() || message.contains("cancelled") {
+                HarnessError::cancelled()
+            } else if let Some(seconds) = message
+                .split("git clone timed out after ")
+                .nth(1)
+                .and_then(|value| value.split(" seconds").next())
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                HarnessError::timeout(seconds)
+            } else {
                 HarnessError::new(
-                    HarnessErrorKind::InvalidConfig,
-                    format!("repository checkout failed: {error}"),
-                ),
-            )
-            .await
+                    HarnessErrorKind::ExecutionFailed,
+                    format!("repository checkout failed: {message}"),
+                )
+            };
+            return fail_execution(&state, &execution, error).await;
         }
     }
 
@@ -534,14 +583,28 @@ pub async fn run_execution(
         )
         .await;
     }
-    let materialized_skills = crate::skills::materialize(
+    let materialized_skills = match crate::skills::materialize(
         &spec,
         &execution.skills,
         &state.profile_skill_slugs,
         &context.skills,
         &workspace,
     )
-    .await;
+    .await
+    {
+        Ok(skills) => skills,
+        Err(error) => {
+            return fail_execution(
+                &state,
+                &execution,
+                HarnessError::new(
+                    HarnessErrorKind::Internal,
+                    format!("skill materialization failed: {error:#}"),
+                ),
+            )
+            .await;
+        }
+    };
     if !materialized_skills.is_empty() {
         append_event(
             &state,
@@ -555,7 +618,6 @@ pub async fn run_execution(
     }
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
-
     let running = state
         .retry
         .run("report running", || {
@@ -820,10 +882,13 @@ pub async fn run_execution(
             // The API caps memory entries at 64 KiB; keep the head within that bound.
             let content = truncate_utf8(&content, 60 * 1024);
             if !content.is_empty() {
-                let _ = state
+                if let Err(error) = state
                     .client
                     .store_memory(execution_id, execution.agent_id, kind, content)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(%error, %execution_id, "could not store execution memory");
+                }
             }
         }
     }
@@ -1148,5 +1213,168 @@ mod tests {
         assert_eq!(completes[0]["status"], "failed");
         assert_eq!(completes[0]["error"]["code"], "worker_shutdown");
         drop(guard);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::{finish_execution_workspace, run_execution, WorkerState};
+    use crate::client::{WorkerClient, WorkerExecutionContext};
+    use axum::{http::Uri, routing::any, Json, Router};
+    use orbit_harness::HarnessRegistry;
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use uuid::Uuid;
+
+    async fn mock_worker_api(uri: Uri) -> Json<serde_json::Value> {
+        let response = if uri.path().ends_with("/cancel") {
+            serde_json::json!({ "cancelRequested": false })
+        } else if uri.path().ends_with("/complete") {
+            serde_json::json!({ "updated": true })
+        } else {
+            serde_json::json!({})
+        };
+        Json(response)
+    }
+
+    fn execution_context(task: &str) -> WorkerExecutionContext {
+        let now = chrono::Utc::now();
+        let execution_id = Uuid::now_v7();
+        let execution = serde_json::from_value(serde_json::json!({
+            "id": execution_id,
+            "orgId": Uuid::now_v7(),
+            "agentId": Uuid::now_v7(),
+            "agentVersionId": Uuid::now_v7(),
+            "agentName": "cleanup test",
+            "harnessKind": "mock",
+            "triggerId": null,
+            "triggerSource": "manual",
+            "placement": "local",
+            "status": "dispatched",
+            "sessionRef": null,
+            "input": {
+                "task": task,
+                "payload": {},
+                "provenance": {
+                    "source": "test",
+                    "trusted": false,
+                    "receivedAt": now
+                }
+            },
+            "skills": [],
+            "output": null,
+            "error": null,
+            "usage": {},
+            "timeoutSeconds": 10,
+            "idempotencyKey": null,
+            "requestedBy": null,
+            "workerId": "cleanup-test",
+            "teamRunId": null,
+            "teamStepIndex": null,
+            "createdAt": now,
+            "startedAt": null,
+            "finishedAt": null,
+            "updatedAt": now,
+            "archivedAt": null
+        }))
+        .unwrap();
+        let spec = serde_json::from_value(serde_json::json!({
+            "instructions": { "system": "test" }
+        }))
+        .unwrap();
+
+        WorkerExecutionContext {
+            execution,
+            spec,
+            model: None,
+            grants: Vec::new(),
+            skills: Vec::new(),
+            tool_policies: Vec::new(),
+            env: Vec::new(),
+            subagent_models: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn execution_workspace_is_removed_after_success_or_failure() {
+        for failed in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("execution");
+            tokio::fs::create_dir_all(workspace.join("nested"))
+                .await
+                .unwrap();
+            tokio::fs::write(workspace.join("nested/output.txt"), "output")
+                .await
+                .unwrap();
+
+            let result = if failed {
+                Err(anyhow::anyhow!("execution failed"))
+            } else {
+                Ok(())
+            };
+            let final_result = finish_execution_workspace(&workspace, Uuid::now_v7(), result).await;
+
+            assert_eq!(final_result.is_err(), failed);
+            assert!(!workspace.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn run_execution_cleans_workspace_after_success_and_harness_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = root.path().join("workspaces");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(any(mock_worker_api)))
+                .await
+                .unwrap();
+        });
+        let state = WorkerState {
+            worker_id: "cleanup-test".into(),
+            client: WorkerClient::new(format!("http://{address}"), "test-token").unwrap(),
+            registry: Arc::new(HarnessRegistry::builtin()),
+            workspace_root: workspace_root.clone(),
+            harnesses: vec!["mock".into()],
+            execution_driver: "process".into(),
+            target: "local".into(),
+            profile_agent_ids: Vec::new(),
+            profile_skill_slugs: Vec::new(),
+            allow_web_search: false,
+            allow_web_fetch: false,
+            native_tool_permissions: serde_json::json!({}),
+            extra_env: Arc::new(BTreeMap::new()),
+            active: Default::default(),
+            shutdown: tokio_util::sync::CancellationToken::new(),
+            retry: crate::retry::RetryPolicy {
+                attempts: 4,
+                base: Duration::from_millis(5),
+                max_delay: Duration::from_millis(20),
+            },
+        };
+
+        for index in 0..10 {
+            let task = if index % 2 == 0 {
+                "complete normally"
+            } else {
+                "please fail"
+            };
+            let context = execution_context(task);
+            let execution_id = context.execution.id;
+            run_execution(
+                state.clone(),
+                context,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                !workspace_root.join(execution_id.to_string()).exists(),
+                "workspace for {task:?} should be removed"
+            );
+        }
+
+        assert!(state.active.lock().unwrap().is_empty());
+        server.abort();
+        let _ = server.await;
     }
 }
