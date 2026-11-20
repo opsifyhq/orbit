@@ -804,8 +804,10 @@ impl AgentStatus {
         })
     }
 
+    /// Activation also restores an archived agent: archiving hides an agent and stops
+    /// its triggers but keeps its versions and history, so it is reversible (ADR 0013).
     pub fn can_activate(&self) -> bool {
-        matches!(self, Self::Draft | Self::Paused)
+        matches!(self, Self::Draft | Self::Paused | Self::Archived)
     }
 
     pub fn can_pause(&self) -> bool {

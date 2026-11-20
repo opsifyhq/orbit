@@ -370,19 +370,37 @@ pub async fn claim(
         .as_ref()
         .map(profile_agent_ids)
         .unwrap_or(body.agent_ids);
-    let execution = match state
-        .store
-        .claim_next_queued(
-            auth.org_id,
-            &body.worker_id,
-            &harnesses,
-            &body.target,
-            &agent_ids,
-            profile.as_ref().and_then(|profile| profile.owner_team_id),
-            Some(auth.token_id),
-        )
-        .await?
-    {
+    let claimed = match &profile {
+        Some(profile) => {
+            state
+                .store
+                .claim_next_queued_for_profile(
+                    auth.org_id,
+                    &body.worker_id,
+                    &harnesses,
+                    &body.target,
+                    &agent_ids,
+                    profile.owner_team_id,
+                    Some(auth.token_id),
+                )
+                .await?
+        }
+        None => {
+            state
+                .store
+                .claim_next_queued(
+                    auth.org_id,
+                    &body.worker_id,
+                    &harnesses,
+                    &body.target,
+                    &agent_ids,
+                    None,
+                    Some(auth.token_id),
+                )
+                .await?
+        }
+    };
+    let execution = match claimed {
         Some(execution) => execution,
         None => return Ok(Json(ClaimResponse { execution: None })),
     };
@@ -1308,6 +1326,7 @@ pub struct ListMemoryRequest {
     /// Accepted for backward compatibility; must match the execution's agent if sent.
     #[serde(default)]
     pub agent_id: Option<uuid::Uuid>,
+    /// Ignored: retention comes from the execution's agent version, not the caller.
     #[serde(default)]
     pub retention_days: Option<u32>,
 }
@@ -1326,19 +1345,30 @@ pub struct StoreMemoryRequest {
 }
 
 /// Memory is always the claimed execution's own agent memory, never a caller-chosen one.
+/// Returns the agent and the retention window (`spec.memory.retentionDays`) of the
+/// version the execution runs, so retention is platform-enforced rather than worker-sent.
 async fn memory_agent(
     state: &AppState,
     auth: &WorkerAuth,
     execution_id: Uuid,
     claimed_agent: Option<Uuid>,
-) -> Result<Uuid, ApiError> {
+) -> Result<(Uuid, Option<i64>), ApiError> {
     let execution = ensure_execution(state, auth, execution_id).await?;
     if claimed_agent.is_some_and(|agent_id| agent_id != execution.agent_id) {
         return Err(ApiError::forbidden(
             "agentId does not match the execution's agent",
         ));
     }
-    Ok(execution.agent_id)
+    let version = state
+        .store
+        .get_agent_version_by_id(auth.org_id, execution.agent_version_id)
+        .await?;
+    let retention_days = version
+        .spec
+        .pointer("/memory/retentionDays")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|days| *days > 0);
+    Ok((execution.agent_id, retention_days))
 }
 
 pub async fn list_memory(
@@ -1346,14 +1376,18 @@ pub async fn list_memory(
     auth: WorkerAuth,
     crate::extract::ApiJson(body): crate::extract::ApiJson<ListMemoryRequest>,
 ) -> Result<Json<Vec<MemoryEntry>>, ApiError> {
-    let agent_id = memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let (agent_id, retention_days) =
+        memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
     let entries = state
         .store
         .list_memory(auth.org_id, agent_id, None, 20)
         .await?;
+    // Entries are newest first, so filtering after the limit drops exactly the stale tail.
+    let cutoff = retention_days.map(|days| Utc::now() - chrono::Duration::days(days));
     Ok(Json(
         entries
             .into_iter()
+            .filter(|e| cutoff.is_none_or(|cutoff| e.created_at >= cutoff))
             .map(|e| MemoryEntry {
                 id: e.id,
                 kind: e.kind,
@@ -1376,7 +1410,9 @@ pub async fn store_memory(
             format!("memory content exceeds {MAX_MEMORY_CONTENT_BYTES} bytes"),
         ));
     }
-    let agent_id = memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let (agent_id, retention_days) =
+        memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let expires_at = retention_days.map(|days| Utc::now() + chrono::Duration::days(days));
     state
         .store
         .store_memory(
@@ -1385,7 +1421,7 @@ pub async fn store_memory(
             &body.kind,
             &body.content,
             &body.metadata,
-            None,
+            expires_at,
         )
         .await?;
     Ok(Json(serde_json::json!({ "stored": true })))

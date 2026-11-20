@@ -56,3 +56,11 @@ test("invalid expressions explain themselves", () => {
   assert.match(cronError("61 9 * * *") ?? "", /minute/);
   assert.equal(cronError("0 9 31 2 *"), "This schedule never runs.");
 });
+
+test("a step that does not divide the period is not an even interval", () => {
+  // */45 fires at :00 and :45; */7 hours restarts at midnight.
+  assert.equal(parseCron("*/45 * * * *").frequency, "custom");
+  assert.equal(parseCron("0 */7 * * *").frequency, "custom");
+  assert.equal(parseCron("*/20 * * * *").frequency, "minutes");
+  assert.equal(parseCron("0 */6 * * *").frequency, "hourly");
+});

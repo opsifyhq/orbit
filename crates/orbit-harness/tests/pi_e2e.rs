@@ -1,4 +1,4 @@
-//! Real Pi integration test (tested with Pi 1.5.0).
+//! Real Pi integration test (tested with Pi 1.5.2).
 //!
 //!   ORBIT_PI_E2E=1 \
 //!   ORBIT_PI_TEST_MODEL=opencode-go/deepseek-v4-pro \

@@ -73,7 +73,9 @@ pub async fn unusable_skill_issues(
     let mut issues = Vec::new();
     for (idx, slug) in slugs.iter().enumerate() {
         let usable = match state.store.get_skill_by_slug(org_id, slug).await? {
-            Some(skill) => access.can_use(skill.owner_user_id, skill.owner_team_id, &skill.visibility),
+            Some(skill) => {
+                access.can_use(skill.owner_user_id, skill.owner_team_id, &skill.visibility)
+            }
             None => false,
         };
         if !usable {
@@ -82,7 +84,10 @@ pub async fn unusable_skill_issues(
             } else {
                 path.to_string()
             };
-            issues.push(ValidationIssue::new(field, format!("unknown skill '{slug}'")));
+            issues.push(ValidationIssue::new(
+                field,
+                format!("unknown skill '{slug}'"),
+            ));
         }
     }
     Ok(issues)

@@ -12,6 +12,7 @@ use orbit_domain::{HarnessKind, ValidationReport};
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// Any endpoint implementing the OpenAI chat-completions shape.
+    #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
     /// Anthropic's native Messages API.
     Anthropic,

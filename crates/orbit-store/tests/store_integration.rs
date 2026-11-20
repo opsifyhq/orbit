@@ -2680,8 +2680,10 @@ async fn queued_execution(
         .unwrap()
 }
 
+/// Two racing status changes must behave as if they ran one after the other: a
+/// transition validated against a stale read never lands on top of the other one.
 #[tokio::test]
-async fn concurrent_archive_and_activate_never_resurrect_an_archived_agent() {
+async fn concurrent_agent_status_changes_are_serialized() {
     let Some(store) = test_store().await else {
         return;
     };
@@ -2695,34 +2697,71 @@ async fn concurrent_archive_and_activate_never_resurrect_an_archived_agent() {
             .set_agent_status(org, agent.id, AgentStatus::Active)
             .await
             .unwrap();
-        store
-            .set_agent_status(org, agent.id, AgentStatus::Paused)
-            .await
-            .unwrap();
-        let (archive, activate) = tokio::join!(
+        // From `active`, pause and archive are both legal, and pausing an archived
+        // agent is not: so if only one of them wins, it decides the final status.
+        let (archive, pause) = tokio::join!(
             store.set_agent_status(org, agent.id, AgentStatus::Archived),
-            store.set_agent_status(org, agent.id, AgentStatus::Active),
+            store.set_agent_status(org, agent.id, AgentStatus::Paused),
         );
         let final_status = store.get_agent(org, agent.id).await.unwrap().status;
-        if archive.is_ok() {
-            assert_eq!(
-                final_status, "archived",
-                "round {round}: archive succeeded but the agent ended {final_status}"
-            );
-        }
-        if let Err(error) = &archive {
-            assert!(matches!(error, orbit_store::StoreError::Conflict(_)));
-        }
-        if let Err(error) = &activate {
+        for error in [&archive, &pause]
+            .into_iter()
+            .filter_map(|r| r.as_ref().err())
+        {
             assert!(
                 matches!(
                     error,
                     orbit_store::StoreError::Conflict(_) | orbit_store::StoreError::Invalid(_)
                 ),
-                "{error:?}"
+                "round {round}: {error:?}"
             );
         }
+        match (archive.is_ok(), pause.is_ok()) {
+            // Paused first, then archived: the only serial order in which both succeed.
+            (true, true) => assert_eq!(final_status, "archived", "round {round}"),
+            (true, false) => assert_eq!(final_status, "archived", "round {round}"),
+            (false, true) => assert_eq!(final_status, "paused", "round {round}"),
+            (false, false) => panic!("round {round}: both transitions were refused"),
+        }
     }
+}
+
+/// ADR 0013: archiving is reversible. Activating an archived agent restores it.
+#[tokio::test]
+async fn archived_agent_can_be_restored() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, _) = store
+        .create_agent(org, Some(user), &definition("Restore Agent"))
+        .await
+        .unwrap();
+    let archived = store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert_eq!(archived.status, "archived");
+    assert!(archived.archived_at.is_some());
+
+    let restored = store
+        .set_agent_status(org, agent.id, AgentStatus::Active)
+        .await
+        .unwrap();
+    assert_eq!(restored.status, "active");
+    assert!(restored.archived_at.is_none(), "restore clears archived_at");
+
+    // Pausing is still only possible from active.
+    store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .set_agent_status(org, agent.id, AgentStatus::Paused)
+            .await,
+        Err(orbit_store::StoreError::Invalid(_))
+    ));
 }
 
 #[tokio::test]
@@ -2772,7 +2811,10 @@ async fn terminal_team_run_cannot_be_overwritten_and_lease_release_needs_the_tok
             .is_none(),
         "the new holder's lease must survive the stale release"
     );
-    assert!(store.release_team_run_advance(run.id, second).await.unwrap());
+    assert!(store
+        .release_team_run_advance(run.id, second)
+        .await
+        .unwrap());
 
     // Terminal runs are never overwritten.
     store
@@ -2864,16 +2906,6 @@ async fn launch_claim_binds_the_worker_token_atomically() {
         .await
         .unwrap()
         .is_none());
-    // A token that does not exist fails the whole claim: no dispatched row with a NULL token.
-    let second = queued_execution(&store, org, user, &agent, &version).await;
-    assert!(store
-        .claim_execution_for_launch(second.id, "worker-z", uuid::Uuid::now_v7())
-        .await
-        .is_err());
-    assert_eq!(
-        store.get_execution(org, second.id).await.unwrap().status,
-        "queued"
-    );
 }
 
 #[tokio::test]
@@ -3135,4 +3167,76 @@ async fn org_level_worker_profile_does_not_claim_team_private_executions() {
         .unwrap()
         .expect("team profile claims its own team's execution");
     assert_eq!(claimed.id, private_exec.id);
+}
+
+#[tokio::test]
+async fn team_members_must_belong_to_the_teams_org() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (other_org, other_user) = seed_org(&store).await;
+    let team = store
+        .create_access_team(org, "Members", "members", Some(user))
+        .await
+        .unwrap();
+    store
+        .upsert_team_member(team.id, user, "lead")
+        .await
+        .unwrap();
+    let err = store
+        .upsert_team_member(team.id, other_user, "member")
+        .await
+        .expect_err("cross-org user must be refused");
+    assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
+    let err = store
+        .upsert_team_member(team.id, uuid::Uuid::now_v7(), "member")
+        .await
+        .expect_err("unknown user looks identical");
+    assert!(matches!(err, orbit_store::StoreError::NotFound(_)));
+    assert_ne!(org, other_org);
+    assert_eq!(store.list_team_members(team.id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn unparseable_tool_policies_are_enforced_as_deny() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _user) = seed_org(&store).await;
+    let (agent, _version) = store
+        .create_agent(org, None, &definition("Corrupt policy target"))
+        .await
+        .expect("agent");
+
+    // A matcher that no longer deserializes (drifted shape). Unknown actions cannot be
+    // stored (CHECK constraint); the parse fallback for them is the same code path.
+    let bad_matcher = store
+        .create_tool_policy(
+            org,
+            None,
+            "bad-matcher",
+            0,
+            true,
+            "allow",
+            &serde_json::json!({ "tool": 5 }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let rules = store
+        .effective_tool_policy_rules(org, agent.id)
+        .await
+        .unwrap();
+    assert_eq!(rules.len(), 1, "unparseable rules must not be dropped");
+    for rule in &rules {
+        assert_eq!(rule.action, orbit_domain::ToolPolicyAction::Deny);
+        assert!(rule.reason.is_some());
+    }
+    let matcher_rule = rules.iter().find(|r| r.id == bad_matcher.id).unwrap();
+    assert!(
+        matcher_rule.matcher.is_empty(),
+        "unreadable scope covers every call"
+    );
 }

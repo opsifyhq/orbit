@@ -1423,6 +1423,22 @@ fn truncate_json(value: &Value, limit: usize) -> Value {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn connector_http_client_refuses_loopback_and_metadata_targets() {
+        let client = orbit_security::guarded_client_with_policy(
+            Duration::from_secs(5),
+            orbit_security::OutboundPolicy::default(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for url in [
+            format!("http://localhost:{port}/"),
+            "http://metadata.invalid/".to_string(),
+        ] {
+            assert!(client.get(&url).send().await.is_err(), "{url}");
+        }
+    }
+
     #[test]
     fn approval_wait_is_capped_by_the_remaining_budget() {
         // No budget: the per-request window applies.

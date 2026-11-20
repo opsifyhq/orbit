@@ -1,8 +1,9 @@
 "use client";
 
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { createContext, useContext, useMemo, useRef, useState, type ReactNode, useEffect } from "react";
 import Link from "next/link";
-import { Check, ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { Check, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -11,8 +12,14 @@ import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/re
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
+import {
+  SectionCard,
+  SectionPills,
+  SectionRail,
+  sectionNeighbours,
+  type NavSection,
+} from "@/components/ui/section-nav";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -135,6 +142,7 @@ function FormSection({
   id,
   title,
   description,
+  keepMounted,
   children,
 }: {
   id: SectionId;
@@ -142,39 +150,23 @@ function FormSection({
   step?: number;
   title: string;
   description: string;
+  /** Hide instead of unmounting, for a section whose own state Save still reads. */
+  keepMounted?: boolean;
   children: ReactNode;
 }) {
   const { active, go } = useContext(SectionContext);
-  if (active !== id) return null;
-  const index = SECTION_ORDER.indexOf(id);
-  const previous = SECTION_ORDER[index - 1];
-  const next = SECTION_ORDER[index + 1];
   return (
-    <Card id={`section-${id}`} className="scroll-mt-20" aria-labelledby={`section-${id}-title`}>
-      <CardHeader>
-        <h2 id={`section-${id}-title`} className="text-[15px] font-semibold leading-6">
-          {title}
-        </h2>
-        <p className="text-[13px] text-muted-foreground">{description}</p>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {children}
-        <div className="flex items-center justify-between gap-3 border-t pt-4">
-          {previous ? (
-            <Button type="button" variant="ghost" onClick={() => go(previous)}>
-              <ChevronLeft /> {SECTION_TITLES[previous]}
-            </Button>
-          ) : (
-            <span />
-          )}
-          {next ? (
-            <Button type="button" variant="outline" onClick={() => go(next)}>
-              {SECTION_TITLES[next]} <ChevronRight />
-            </Button>
-          ) : null}
-        </div>
-      </CardContent>
-    </Card>
+    <SectionCard
+      id={id}
+      active={active}
+      title={title}
+      description={description}
+      onGo={go}
+      keepMounted={keepMounted}
+      {...sectionNeighbours(SECTION_ORDER, SECTION_TITLES, id)}
+    >
+      {children}
+    </SectionCard>
   );
 }
 
@@ -185,6 +177,7 @@ export function AgentForm({
   onSubmit,
   cancelHref = "/agents",
   resourceId,
+  serverIssues,
 }: {
   initial?: AgentDefinition;
   submitLabel: string;
@@ -193,6 +186,8 @@ export function AgentForm({
   cancelHref?: string;
   /** The saved agent, so its access can be set; omitted while creating. */
   resourceId?: string;
+  /** Field errors the API returned for the last save; shown like the form's own. */
+  serverIssues?: Array<{ path: string; message: string }>;
 }) {
   const providers = useProviders();
   const harnesses = useHarnesses();
@@ -203,6 +198,8 @@ export function AgentForm({
   const [definition, setDefinition] = useState<AgentDefinition>(() =>
     initial ? structuredClone(initial) : emptyAgentDefinition(),
   );
+  // A definition takes a while to write: do not let a stray click on the sidebar lose it.
+  useUnsavedChanges(definition);
   const [issues, setIssues] = useState<Array<{ path: string; message: string }>>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const meta = useMeta();
@@ -328,6 +325,12 @@ export function AgentForm({
     setFailedSubmits((count) => count + 1);
   }
 
+  // What the server refused is placed exactly like what the form itself caught.
+  useEffect(() => {
+    if (serverIssues?.length) revealIssues(serverIssues);
+    // Deliberately keyed on the server answer alone: only a new one re-opens the summary.
+  }, [serverIssues]);
+
   // One section is on screen at a time. The URL hash remembers which, so a reload or a
   // shared link opens the same section.
   const [active, setActive] = useState<SectionId>("identity");
@@ -349,18 +352,6 @@ export function AgentForm({
       ?.querySelector<HTMLElement>("input:not([type=hidden]), textarea, select")
       ?.focus({ preventScroll: true });
   }, [focusRequest, active]);
-
-  // Keep the current step visible in the phone pill row (sideways only, never the page).
-  const pillNavRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const nav = pillNavRef.current;
-    const pill = nav?.querySelector<HTMLElement>(`[data-section="${active}"]`);
-    if (!nav || !pill) return;
-    const left = pill.offsetLeft - nav.offsetLeft;
-    if (left < nav.scrollLeft || left + pill.offsetWidth > nav.scrollLeft + nav.clientWidth) {
-      nav.scrollTo({ left: Math.max(0, left - 16) });
-    }
-  }, [active]);
 
   function goToSection(id: SectionId) {
     setActive(id);
@@ -481,91 +472,28 @@ export function AgentForm({
     </Button>
   );
 
+  const navSections: NavSection<SectionId>[] = SECTION_ORDER.map((id) => ({
+    id,
+    title: SECTION_TITLES[id],
+    value: sectionSummary[id].value,
+    missing: sectionSummary[id].missing,
+    problems: issueCount(id),
+  }));
   const sectionNav = (
-    <nav aria-label="Agent sections">
-      <ol className="space-y-0.5">
-        {SECTION_ORDER.map((id, index) => {
-          const current = id === active;
-          const problems = issueCount(id);
-          const summary = sectionSummary[id];
-          return (
-            <li key={id}>
-              <button
-                type="button"
-                onClick={() => goToSection(id)}
-                aria-current={current ? "step" : undefined}
-                className={cn(
-                  "flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
-                  current ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
-                )}
-              >
-                <span
-                  className={cn(
-                    "tabular mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium",
-                    problems
-                      ? "bg-destructive/15 text-destructive"
-                      : current
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {problems ? "!" : index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium">{SECTION_TITLES[id]}</span>
-                  <span
-                    className={cn(
-                      "block truncate text-xs",
-                      problems
-                        ? "text-destructive"
-                        : summary.missing
-                          ? "text-warning"
-                          : "text-muted-foreground",
-                    )}
-                  >
-                    {problems ? `${problems} to fix` : summary.value}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
+    <SectionRail label="Agent sections" sections={navSections} active={active} onGo={goToSection} />
   );
 
   return (
     <SectionContext.Provider value={{ active, go: goToSection }}>
     <div className="pb-24 lg:pb-0">
       {/* Phone and tablet: the sections as a scrollable row of steps. */}
-      <nav ref={pillNavRef} aria-label="Agent sections" className="-mx-4 mb-4 overflow-x-auto px-4 [scrollbar-width:none] lg:hidden [&::-webkit-scrollbar]:hidden">
-        <ol className="flex w-max gap-1.5">
-          {SECTION_ORDER.map((id, index) => {
-            const current = id === active;
-            const problems = issueCount(id);
-            return (
-              <li key={id}>
-                <button
-                  type="button"
-                  onClick={() => goToSection(id)}
-                  aria-current={current ? "step" : undefined}
-                  data-section={id}
-                  className={cn(
-                    "inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
-                    current
-                      ? "border-primary/40 bg-accent text-accent-foreground"
-                      : "bg-card text-muted-foreground hover:text-foreground",
-                    problems && "border-destructive/40 text-destructive",
-                  )}
-                >
-                  <span className="tabular text-xs opacity-70">{problems ? "!" : index + 1}</span>
-                  {SECTION_TITLES[id]}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
+      <SectionPills
+        label="Agent sections"
+        sections={navSections}
+        active={active}
+        onGo={goToSection}
+        className="mb-4"
+      />
 
       <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
         {/* Desktop: section nav with the live summary, and the save button in view. */}
@@ -844,6 +772,18 @@ export function AgentForm({
                     }}
                   >
                     <option value="">Select a provider</option>
+                    {spec.model.provider &&
+                    !(providers.data ?? []).some((p) => {
+                      const config = (p.config ?? {}) as Record<string, unknown>;
+                      return (
+                        p.name === spec.model.provider ||
+                        String(config.provider ?? p.name) === spec.model.provider
+                      );
+                    }) ? (
+                      // Renamed or deleted since it was saved: show what is stored instead
+                      // of displaying "Select a provider" over a value that still saves.
+                      <option value={spec.model.provider}>{spec.model.provider} (no longer configured)</option>
+                    ) : null}
                     <optgroup label="Signed in through the harness">
                       {harnessProviders.map((provider) => {
                         const config = (provider.config ?? {}) as Record<string, unknown>;
@@ -1431,8 +1371,10 @@ export function AgentForm({
             </Disclosure>
           </FormSection>
 
+          {/* Kept mounted while hidden: Save reads the pending access edits from it. */}
           <FormSection
             id="sharing"
+            keepMounted
             title="Access control (RBAC)"
             description="Who can see and use this agent. Saved together with the agent."
           >

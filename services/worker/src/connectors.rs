@@ -117,8 +117,15 @@ pub async fn hydrate(
             .trim_end_matches('/')
             .to_string();
         let url = format!("{base_url}{X_SEARCH_PATH}");
+        orbit_security::check_outbound_url(&url, &orbit_security::OutboundPolicy::from_env())
+            .await
+            .map_err(|error| {
+                HarnessError::new(
+                    HarnessErrorKind::InvalidConfig,
+                    format!("X base URL refused ({})", error.category()),
+                )
+            })?;
 
-        // Guarded: the base URL is tenant-supplied and the request carries a credential.
         let client = orbit_security::guarded_client(std::time::Duration::from_secs(20));
         let response = client
             .get(&url)
@@ -133,10 +140,7 @@ pub async fn hydrate(
             .map_err(|e| {
                 HarnessError::new(
                     HarnessErrorKind::Unavailable,
-                    format!(
-                        "X API request failed: {}",
-                        orbit_security::describe_request_error(&e)
-                    ),
+                    format!("X API request failed: {e}"),
                 )
             })?;
 

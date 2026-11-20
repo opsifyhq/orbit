@@ -3,13 +3,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
+use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChild};
 use crate::process_env::child_environment;
-use crate::stream::{self, MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
+use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
     HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
@@ -339,6 +339,23 @@ fn merge_native_permissions(
     merged
 }
 
+/// The workspace's `opencode.json` (never read through a symlink that leaves the
+/// workspace), or an empty object.
+fn read_open_code_config(workspace: &Path) -> serde_json::Value {
+    crate::paths::read_workspace_file(workspace, "opencode.json")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_open_code_config(workspace: &Path, config: &serde_json::Value) -> std::io::Result<()> {
+    crate::paths::write_workspace_file(
+        workspace,
+        "opencode.json",
+        serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".into()),
+    )
+}
+
 /// Write OpenCode tool permissions. Web Search/WebFetch default to deny because
 /// `opencode run` is non-interactive and aborts when they ask for input.
 fn write_open_code_tool_permissions(
@@ -349,18 +366,7 @@ fn write_open_code_tool_permissions(
     autonomy: AutonomyLevel,
 ) -> std::io::Result<()> {
     let native = merge_native_permissions(autonomy_native_baseline(autonomy), native);
-    let path = workspace.join("opencode.json");
-    let mut config: serde_json::Value = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-    if !config.is_object() {
-        config = serde_json::json!({});
-    }
+    let mut config = read_open_code_config(workspace);
     let root = config.as_object_mut().unwrap();
     // OpenCode's websearch plugin reads a root `websearch` setting; `false` removes the
     // provider prompt/tool entirely. `tools`/`permission` alone still advertised it.
@@ -398,18 +404,14 @@ fn write_open_code_tool_permissions(
             }
         }
     }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )
+    write_open_code_config(workspace, &config)
 }
 
 /// Write a local OpenCode plugin that checks the ORBIT broker before native tools.
 fn write_open_code_policy_plugin(workspace: &Path) -> std::io::Result<()> {
-    let dir = workspace.join(".opencode/plugins");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        dir.join("orbit-policy.ts"),
+    crate::paths::write_workspace_file(
+        workspace,
+        ".opencode/plugins/orbit-policy.ts",
         r#"import { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
 
@@ -487,18 +489,7 @@ fn write_open_code_mcp_config(workspace: &Path, bridge: &OrbitMcpBridge) -> std:
     if bridge.command.is_empty() {
         return Ok(());
     }
-    let path = workspace.join("opencode.json");
-    let mut config: serde_json::Value = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-    if !config.is_object() {
-        config = serde_json::json!({});
-    }
+    let mut config = read_open_code_config(workspace);
     let root = config.as_object_mut().unwrap();
     root.entry("$schema")
         .or_insert_with(|| json!("https://opencode.ai/config.json"));
@@ -519,10 +510,7 @@ fn write_open_code_mcp_config(workspace: &Path, bridge: &OrbitMcpBridge) -> std:
             }
         }),
     );
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )
+    write_open_code_config(workspace, &config)
 }
 
 fn open_code_environment_reference(name: &str) -> String {
@@ -547,18 +535,7 @@ fn write_open_code_provider_config(
     let mut environment = Vec::new();
 
     // Read existing config or start fresh.
-    let path = workspace.join("opencode.json");
-    let mut config: serde_json::Value = if path.exists() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-    if !config.is_object() {
-        config = serde_json::json!({});
-    }
+    let mut config = read_open_code_config(workspace);
 
     let mut provider = serde_json::Map::new();
     provider.insert(
@@ -611,17 +588,13 @@ fn write_open_code_provider_config(
         map.insert(provider_name, serde_json::Value::Object(provider));
     }
 
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )?;
+    write_open_code_config(workspace, &config)?;
     Ok(environment)
 }
 
 fn write_agent_instructions(workspace: &Path, request: &ExecutionRequest) -> std::io::Result<()> {
     let instructions: &InstructionsBlock = &request.instructions;
-    let path = workspace.join("AGENTS.md");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = crate::paths::read_workspace_file(workspace, "AGENTS.md").unwrap_or_default();
     let mut content = String::new();
     if !existing.trim().is_empty() {
         // Do not discard repository-local agent guidance when an execution runs in a
@@ -660,7 +633,7 @@ fn write_agent_instructions(workspace: &Path, request: &ExecutionRequest) -> std
          retry the same write.
 ",
     );
-    std::fs::write(path, content)
+    crate::paths::write_workspace_file(workspace, "AGENTS.md", content)
 }
 
 /// Separates assistant text written before a tool call from what follows it.
@@ -674,29 +647,6 @@ fn final_answer(text: &str) -> String {
         .find(|segment| !segment.is_empty())
         .unwrap_or_default()
         .to_string()
-}
-
-fn truncate(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        value.to_string()
-    } else {
-        let mut end = limit;
-        while end > 0 && !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}… [truncated]", &value[..end])
-    }
-}
-
-fn truncate_json(value: &Value, limit: usize) -> Value {
-    let Ok(serialized) = serde_json::to_string(value) else {
-        return json!("[unserializable JSON]");
-    };
-    if serialized.len() <= limit {
-        value.clone()
-    } else {
-        json!(truncate(&serialized, limit))
-    }
 }
 
 fn map_open_code_event(
@@ -805,34 +755,6 @@ fn map_open_code_event(
             ))
         }
         _ => None,
-    }
-}
-
-async fn emit(sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>, event: HarnessEvent) {
-    if let Some(sender) = sender {
-        let _ = sender.send(event).await;
-    }
-}
-
-fn terminate(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            // Kill the whole process group (OpenCode may spawn helpers).
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
-        }
-    }
-    let _ = child.start_kill();
-}
-
-async fn wait_or_kill(child: &mut tokio::process::Child, grace: Duration) {
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = child.kill().await;
-        }
     }
 }
 
@@ -963,192 +885,129 @@ impl OpenCodeHarnessAdapter {
         // worker's PWD points at the ORBIT repository, so explicitly set it to the
         // per-execution workspace. This also keeps shell tools inside the sandbox.
         command.env("PWD", &workspace);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        command.kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.as_std_mut().process_group(0);
-        }
-
-        let mut child = command.spawn().map_err(|e| {
-            HarnessError::new(
-                HarnessErrorKind::Unavailable,
-                format!(
-                    "could not start OpenCode binary '{}': {e}. The worker image must include the OpenCode CLI.",
-                    settings.binary()
-                ),
-            )
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "opencode stdout unavailable")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "opencode stderr unavailable")
-        })?;
-
         let debug_logs = settings.debug_logs.unwrap_or(false);
-        let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_events = request.events.clone();
-        let stderr_task = {
-            let buffer = stderr_buffer.clone();
-            tokio::spawn(async move {
-                let lines = stream::lines(stderr);
-                tokio::pin!(lines);
-                while let Some(line) = lines.next().await {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(error) => {
-                            let mut buffer = buffer.lock().expect("stderr lock");
-                            if buffer.len() < 16_000 {
-                                buffer.push_str(&format!(
-                                    "[skipped oversized stderr line: {error}]\n"
-                                ));
-                            }
-                            continue;
-                        }
-                    };
-                    {
-                        let mut buffer = buffer.lock().expect("stderr lock");
-                        if buffer.len() < 16_000 {
-                            buffer.push_str(&line);
-                            buffer.push('\n');
-                        }
-                    }
-                    let lower = line.to_ascii_lowercase();
-                    if debug_logs && (lower.contains("mcp") || lower.contains("error")) {
-                        if let Some(sender) = &stderr_events {
-                            let _ = sender
-                                .send(HarnessEvent::log(
-                                    LogLevel::Warn,
-                                    format!("opencode: {}", truncate(&line, 1500)),
-                                ))
-                                .await;
-                        }
-                    }
-                }
-            })
-        };
-
         let started = Instant::now();
         let timeout = Duration::from_secs(request.resources.timeout_seconds.max(1));
-        let cancel = request.cancel.clone();
         let sender = request.events.clone();
+        // Active time only: waiting for a human approval does not use up the timeout.
+        let pause = request.pause.clone();
+        let mut run = SupervisedChild::spawn(
+            command,
+            "OpenCode",
+            request.cancel.clone(),
+            async move { pause.deadline(timeout).await },
+            request.events.clone(),
+            move |line| {
+                let lower = line.to_ascii_lowercase();
+                (debug_logs && (lower.contains("mcp") || lower.contains("error"))).then(|| {
+                    HarnessEvent::log(
+                        LogLevel::Warn,
+                        format!("opencode: {}", truncate(line, 1500)),
+                    )
+                })
+            },
+        )?;
+
         let mut usage = Usage::default();
         let mut text = String::new();
         let mut session = session_ref.clone();
-        let lines = stream::lines(stdout);
-        tokio::pin!(lines);
-        let mut timed_out = false;
-        let mut cancelled = false;
-        // Active time only: waiting for a human approval does not use up the timeout.
-        let pause = request.pause.clone();
-        let deadline = pause.deadline(timeout);
-        tokio::pin!(deadline);
-
+        // Last `error` event. A later answer supersedes it (OpenCode retries recoverable
+        // provider errors and then continues), mirroring how the Pi adapter treats errors.
+        let mut error: Option<String> = None;
         loop {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    cancelled = true;
-                    terminate(&mut child);
-                    wait_or_kill(&mut child, Duration::from_secs(3)).await;
-                    break;
-                }
-                _ = &mut deadline => {
-                    timed_out = true;
-                    terminate(&mut child);
-                    wait_or_kill(&mut child, Duration::from_secs(3)).await;
-                    break;
-                }
-                line = lines.next() => {
-                    match line {
-                        Some(Ok(line)) => {
-                            if line.trim().is_empty() { continue; }
-                            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                                emit(&sender, HarnessEvent::log(LogLevel::Debug, format!("opencode: {line}"))).await;
-                                continue;
-                            };
-                            if let Some(found) = value.get("sessionID").and_then(Value::as_str) {
-                                session = Some(found.to_string());
-                            }
-                            if let Some(event) = map_open_code_event(&value, &mut usage, &mut text) {
-                                emit(&sender, event).await;
-                            }
+            match run.next().await {
+                Next::Line(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                        emit(
+                            &sender,
+                            HarnessEvent::log(LogLevel::Debug, format!("opencode: {line}")),
+                        )
+                        .await;
+                        continue;
+                    };
+                    if let Some(found) = value.get("sessionID").and_then(Value::as_str) {
+                        session = Some(found.to_string());
+                    }
+                    if let Some(event) = map_open_code_event(&value, &mut usage, &mut text) {
+                        if event.kind == HarnessEventKind::Error {
+                            error = Some(event.message.clone());
+                        } else if event.kind == HarnessEventKind::OutputDelta {
+                            error = None;
                         }
-                        Some(Err(err)) => {
-                            emit(&sender, HarnessEvent::log(
-                                LogLevel::Warn,
-                                format!("opencode output line skipped: {err}"),
-                            )).await;
-                        }
-                        None => break,
+                        emit(&sender, event).await;
                     }
                 }
+                Next::Line(Err(err)) => {
+                    emit(
+                        &sender,
+                        HarnessEvent::log(
+                            LogLevel::Warn,
+                            format!("opencode output line skipped: {err}"),
+                        ),
+                    )
+                    .await;
+                }
+                Next::Eof | Next::Cancelled | Next::TimedOut => break,
             }
         }
-
-        let status = if cancelled || timed_out {
-            let _ = child.wait().await;
-            None
-        } else {
-            Some(child.wait().await.map_err(|e| {
-                HarnessError::new(
-                    HarnessErrorKind::Internal,
-                    format!("opencode wait failed: {e}"),
-                )
-            })?)
-        };
-        let _ = tokio::time::timeout(Duration::from_secs(2), stderr_task).await;
+        let finished = run.finish().await?;
 
         usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
         usage.cpu_millis = None;
 
-        if cancelled {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
-            outcome.status = ExecutionStatus::Cancelled;
+        let with_run = |mut outcome: ExecutionOutcome, status| {
+            outcome.status = status;
             outcome.session_ref = session.clone();
             outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-        if timed_out {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs()));
-            outcome.status = ExecutionStatus::TimedOut;
-            outcome.session_ref = session.clone();
-            outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-
-        let exit = status.expect("status present unless cancelled/timed out");
-        if !exit.success() {
-            let stderr = stderr_buffer.lock().expect("stderr lock").clone();
-            let error = HarnessError::new(
-                HarnessErrorKind::ExecutionFailed,
-                format!(
-                    "opencode exited with {}: {}",
-                    exit.code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into()),
-                    truncate(stderr.trim(), 4_000)
+            outcome
+        };
+        let outcome = match finished.ending {
+            Ending::Cancelled => with_run(
+                ExecutionOutcome::failed(HarnessError::cancelled()),
+                ExecutionStatus::Cancelled,
+            ),
+            Ending::TimedOut => with_run(
+                ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs())),
+                ExecutionStatus::TimedOut,
+            ),
+            Ending::Exited(exit) if !exit.success() => with_run(
+                ExecutionOutcome::failed(HarnessError::new(
+                    HarnessErrorKind::ExecutionFailed,
+                    format!(
+                        "opencode exited with {}: {}",
+                        exit.code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".into()),
+                        truncate(finished.stderr.trim(), 4_000)
+                    ),
+                )),
+                ExecutionStatus::Failed,
+            ),
+            // OpenCode can exit 0 after reporting a fatal error (bad credentials, unknown
+            // model). Without a later answer that is a failed run, not an empty success.
+            Ending::Exited(_) if error.is_some() => with_run(
+                ExecutionOutcome::failed(HarnessError::new(
+                    HarnessErrorKind::ExecutionFailed,
+                    error.clone().unwrap_or_default(),
+                )),
+                ExecutionStatus::Failed,
+            ),
+            Ending::Exited(_) => with_run(
+                ExecutionOutcome::succeeded(
+                    json!({
+                        "text": final_answer(&text),
+                        "sessionRef": session,
+                        "harness": "opencode",
+                        "wallTimeMs": usage.wall_time_ms,
+                    }),
+                    session.clone(),
                 ),
-            );
-            let mut outcome = ExecutionOutcome::failed(error);
-            outcome.status = ExecutionStatus::Failed;
-            outcome.session_ref = session.clone();
-            outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-
-        let output = json!({
-            "text": final_answer(&text),
-            "sessionRef": session,
-            "harness": "opencode",
-            "wallTimeMs": usage.wall_time_ms,
-        });
-        let mut outcome = ExecutionOutcome::succeeded(output, session.clone());
-        outcome.usage = usage.clone();
+                ExecutionStatus::Succeeded,
+            ),
+        };
         Ok((outcome, session, usage))
     }
 }

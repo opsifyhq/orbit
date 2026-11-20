@@ -3,22 +3,27 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bot, Plus, Search, X } from "lucide-react";
+import { Bot, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { Callout } from "@/components/ui/callout";
-import { Card } from "@/components/ui/card";
 import { useConfirm } from "@/components/ui/confirm";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { ImportOpenCodeButton } from "@/components/import-opencode-button";
 import { Segmented } from "@/components/ui/segmented";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  ListCard,
+  ListCount,
+  ListSkeleton,
+  ListToolbar,
+  SearchField,
+  toggleId,
+} from "@/components/ui/resource-list";
 import { AgentRow } from "@/components/agents/agent-row";
 import { api } from "@/lib/api";
 import { queryKeys, unwrap, useAllAgents } from "@/lib/queries";
@@ -67,6 +72,20 @@ export default function AgentsPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
 
+  const restore = useMutation({
+    mutationFn: async (agentId: string) =>
+      unwrap(
+        await api.POST("/api/v1/agents/{agent_id}/activate", {
+          params: { path: { agent_id: agentId } },
+        }),
+      ),
+    onSuccess: () => {
+      toast.success("Agent restored");
+      void invalidateAgents();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
   const all = agents.data?.items ?? [];
   const counts = useMemo(() => {
     const result: Record<Filter, number> = { current: 0, active: 0, draft: 0, paused: 0, archived: 0 };
@@ -90,6 +109,14 @@ export default function AgentsPage() {
 
   const truncated = agents.data ? agents.data.total > all.length : false;
 
+  // Bulk actions only ever touch rows that are on screen: a selection made under
+  // another filter or search must not be archived or deleted unseen.
+  const selectedVisible = useMemo(
+    () => visible.filter((agent) => selected.has(agent.id)),
+    [visible, selected],
+  );
+  const selectedIds = useMemo(() => selectedVisible.map((agent) => agent.id), [selectedVisible]);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -108,28 +135,13 @@ export default function AgentsPage() {
         }
       />
 
-      <div className="flex flex-col gap-3 md:flex-row md:items-center">
-        <div className="relative md:w-80">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            className="pl-9 pr-9 [&::-webkit-search-cancel-button]:hidden"
-            placeholder="Filter by name, description or harness"
-            aria-label="Filter agents"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          {search ? (
-            <button
-              type="button"
-              aria-label="Clear filter"
-              onClick={() => setSearch("")}
-              className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-        </div>
+      <ListToolbar>
+        <SearchField
+          value={search}
+          onChange={setSearch}
+          placeholder="Filter by name, description or harness"
+          label="Filter agents"
+        />
         <Segmented
           label="Agent status"
           value={filter}
@@ -140,13 +152,13 @@ export default function AgentsPage() {
             count: agents.data ? counts[value] : undefined,
           }))}
         />
-      </div>
+      </ListToolbar>
 
-      {selected.size ? (
+      {selectedIds.length ? (
         <BulkActionsBar
           resource="agents"
-          selectedIds={[...selected]}
-          allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
+          selectedIds={selectedIds}
+          allShownSelected={selectedIds.length === visible.length}
           onToggleAllShown={(checked) =>
             setSelected(
               checked
@@ -155,8 +167,8 @@ export default function AgentsPage() {
             )
           }
           onChangeAccess={() => setBulkOpen(true)}
-          archivedIds={all
-            .filter((agent) => selected.has(agent.id) && agent.status === "archived")
+          archivedIds={selectedVisible
+            .filter((agent) => agent.status === "archived")
             .map((agent) => agent.id)}
           onSucceeded={(ids) => {
             setSelected((current) => {
@@ -174,7 +186,7 @@ export default function AgentsPage() {
         open={bulkOpen}
         onOpenChange={setBulkOpen}
         resource="agents"
-        ids={[...selected]}
+        ids={selectedIds}
         onDone={() => {
           setSelected(new Set());
           void invalidateAgents();
@@ -182,43 +194,21 @@ export default function AgentsPage() {
       />
 
       {agents.isLoading ? (
-        <Card className="overflow-hidden">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="border-b px-5 py-4 last:border-b-0">
-              <Skeleton className="h-10" />
-            </div>
-          ))}
-        </Card>
+        <ListSkeleton />
       ) : agents.isError ? (
         <Callout tone="danger" title="Agents could not be loaded">
           {errorMessage(agents.error)}
         </Callout>
       ) : visible.length ? (
         <>
-          <Card className="overflow-hidden">
-            <div
-              aria-hidden
-              className="hidden grid-cols-[minmax(0,1fr)_7rem_11rem_6.5rem] gap-x-4 border-b bg-subtle px-5 py-2 text-xs font-medium text-muted-foreground md:grid"
-            >
-              <span>Agent</span>
-              <span>Status</span>
-              <span>Harness and autonomy</span>
-              <span className="text-right">Updated</span>
-            </div>
-            <ul>
+          <ListCard columns={["Agent", "Status", "Harness and autonomy", "Updated"]}>
               {visible.map((agent) => (
                 <AgentRow
                   key={agent.id}
                   agent={agent}
                   selected={selected.has(agent.id)}
-                  onSelect={(checked) =>
-                    setSelected((current) => {
-                      const next = new Set(current);
-                      if (checked) next.add(agent.id);
-                      else next.delete(agent.id);
-                      return next;
-                    })
-                  }
+                  onSelect={(checked) => setSelected((current) => toggleId(current, agent.id, checked))}
+                  onRestore={(target) => restore.mutate(target.id)}
                   onDelete={async (target) => {
                     const confirmed = await confirm({
                       title: `Delete ${target.name} permanently?`,
@@ -231,14 +221,14 @@ export default function AgentsPage() {
                   }}
                 />
               ))}
-            </ul>
-          </Card>
-          <p className="tabular text-[13px] text-muted-foreground">
-            {visible.length === counts[filter]
-              ? `${visible.length} agent${visible.length === 1 ? "" : "s"}.`
-              : `${visible.length} of ${counts[filter]} agents match.`}
-            {truncated ? ` Only the first ${all.length} of ${agents.data?.total} are loaded.` : ""}
-          </p>
+          </ListCard>
+          <ListCount
+            shown={visible.length}
+            total={counts[filter]}
+            singular="agent"
+            plural="agents"
+            note={truncated ? `Only the first ${all.length} of ${agents.data?.total} are loaded.` : undefined}
+          />
         </>
       ) : (
         <EmptyState

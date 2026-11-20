@@ -29,7 +29,18 @@ export interface StreamFatalError {
  * ends. Permanent 4xx responses stop the loop and surface as `fatal` (401 additionally
  * goes through the shared sign-out path in `lib/http.ts`).
  */
-export function useExecutionStream(executionId: string | undefined) {
+export function useExecutionStream(
+  executionId: string | undefined,
+  options: {
+    /** Hold the connection until the first page of events has loaded over REST. */
+    enabled?: boolean;
+    /** Highest `seq` already loaded; the stream replays only what comes after it. */
+    afterSeq?: number;
+  } = {},
+) {
+  const enabled = options.enabled ?? true;
+  const startAfterSeq = useRef(0);
+  startAfterSeq.current = options.afterSeq ?? 0;
   const [execution, setExecution] = useState<ExecutionRecord | null>(null);
   const [events, setEvents] = useState<ExecutionEventRecord[]>([]);
   const [connected, setConnected] = useState(false);
@@ -39,9 +50,9 @@ export function useExecutionStream(executionId: string | undefined) {
   const lastSeq = useRef(0);
 
   useEffect(() => {
-    if (!executionId) return;
+    if (!executionId || !enabled) return;
     // A different execution (same mounted page) must not show the previous one's data.
-    lastSeq.current = 0;
+    lastSeq.current = startAfterSeq.current;
     setExecution(null);
     setEvents([]);
     setConnected(false);
@@ -53,6 +64,28 @@ export function useExecutionStream(executionId: string | undefined) {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     let attempt = 0;
+
+    // Events arrive in bursts (a replay can be thousands). Collect them and merge once
+    // per frame: one render and one linear merge per burst instead of one per event.
+    let pending: ExecutionEventRecord[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      flushTimer = undefined;
+      const batch = pending;
+      pending = [];
+      if (!batch.length) return;
+      setEvents((current) => {
+        const last = current.length ? current[current.length - 1].seq : -Infinity;
+        // The common case: everything new is newer than everything shown.
+        if (batch[0].seq > last && batch.every((event, i) => i === 0 || event.seq > batch[i - 1].seq)) {
+          return [...current, ...batch];
+        }
+        const bySeq = new Map<number, ExecutionEventRecord>();
+        for (const event of current) bySeq.set(event.seq, event);
+        for (const event of batch) bySeq.set(event.seq, event);
+        return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+      });
+    };
 
     async function connect() {
       let failure: unknown;
@@ -90,10 +123,8 @@ export function useExecutionStream(executionId: string | undefined) {
                 lastSeq.current = Math.max(lastSeq.current, Number(event.id) || 0);
               }
               lastSeq.current = Math.max(lastSeq.current, parsed.seq);
-              setEvents((current) => {
-                if (current.some((existing) => existing.seq === parsed.seq)) return current;
-                return [...current, parsed].sort((a, b) => a.seq - b.seq);
-              });
+              pending.push(parsed);
+              if (!flushTimer) flushTimer = setTimeout(flush, 50);
             } catch {
               // ignore malformed event
             }
@@ -105,6 +136,7 @@ export function useExecutionStream(executionId: string | undefined) {
             } catch {
               // ignore
             }
+            flush();
             setDone(true);
             setConnected(false);
             stopped = true;
@@ -138,17 +170,32 @@ export function useExecutionStream(executionId: string | undefined) {
       }
       // A clean end without `done` is a dropped connection: reconnect, but with backoff.
 
-      reconnectTimer = setTimeout(connect, reconnectDelay(attempt));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
+        void connect();
+      }, reconnectDelay(attempt));
       attempt += 1;
     }
+
+    // Coming back to the tab: do not sit out the rest of a backoff delay.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || stopped || !reconnectTimer) return;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      attempt = 0;
+      void connect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     void connect();
     return () => {
       stopped = true;
       controller.abort();
+      document.removeEventListener("visibilitychange", onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (flushTimer) clearTimeout(flushTimer);
     };
-  }, [executionId]);
+  }, [executionId, enabled]);
 
   return { execution, events, connected, done, error, fatal };
 }

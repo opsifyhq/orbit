@@ -1,14 +1,12 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import { useState } from "react";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { TeamForm } from "@/components/teams/team-form";
-import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { queryKeys, useAgentTeam } from "@/lib/queries";
@@ -31,16 +29,14 @@ export default function EditAgentTeamPage() {
       </div>
     );
   }
-  if (team.isError || !team.data) {
+  if (!team.data) {
     return (
-      <EmptyState
-        title="Agent team not found"
-        description={team.error ? errorMessage(team.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/agent-teams">Back to agent teams</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent team"
+        error={team.error}
+        back={{ href: "/agent-teams", label: "Back to agent teams" }}
+        onRetry={() => void team.refetch()}
+        retrying={team.isFetching}
       />
     );
   }
