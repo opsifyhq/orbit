@@ -9,7 +9,7 @@ import { DialogOverlay, DialogPortal, useRestoreFocus } from "@/components/ui/di
 import { Kbd } from "@/components/ui/kbd";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
 import { NAV_GROUPS } from "@/components/shell/nav";
-import { useAgents } from "@/lib/queries";
+import { useAllAgents } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +49,7 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
   const listRef = React.useRef<HTMLDivElement>(null);
   const { setMode } = useTheme();
   const focus = useRestoreFocus();
-  const agents = useAgents({ limit: 100 }, { enabled: open });
+  const agents = useAllAgents({ status: "current", enabled: open });
 
   React.useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

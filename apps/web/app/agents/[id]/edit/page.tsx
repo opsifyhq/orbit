@@ -1,5 +1,6 @@
 "use client";
 
+import { validationDetails } from "@/lib/http";
 import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -25,6 +26,7 @@ export default function EditAgentPage() {
   const queryClient = useQueryClient();
   const agent = useAgent(agentId);
   const [submitting, setSubmitting] = useState(false);
+  const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
   if (agent.isLoading) {
     return (
@@ -70,6 +72,7 @@ export default function EditAgentPage() {
 
   async function handleSubmit(definition: AgentDefinition) {
     setSubmitting(true);
+    setServerIssues([]);
     try {
       const updated = unwrap(
         await api.PATCH("/api/v1/agents/{agent_id}", {
@@ -85,7 +88,9 @@ export default function EditAgentPage() {
       );
       router.push(`/agents/${agentId}`);
     } catch (error) {
-      toast.error(errorMessage(error));
+      const details = validationDetails(error);
+      setServerIssues(details);
+      toast.error(details.length > 1 ? "Fix the highlighted fields" : errorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -99,6 +104,7 @@ export default function EditAgentPage() {
         description="Saving creates a new immutable version. Past executions keep the configuration they ran with."
       />
       <AgentForm
+        serverIssues={serverIssues}
         initial={initial}
         submitLabel="Save changes"
         cancelHref={`/agents/${agentId}`}

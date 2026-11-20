@@ -1,5 +1,3 @@
-import { isOrbitApiError } from "@orbit/api-client";
-
 import type { SkillInput } from "@/components/skills/skill-form";
 import { api } from "@/lib/api";
 import { unwrap } from "@/lib/queries";
@@ -22,7 +20,4 @@ export async function deleteSkill(id: string) {
   return unwrap(await api.DELETE("/api/v1/skills/{skill_id}", { params: { path: { skill_id: id } } }));
 }
 
-/** Field-level validation details from a failed save, for the form to place per section. */
-export function validationDetails(error: unknown): Array<{ path: string; message: string }> {
-  return isOrbitApiError(error) ? (error.error.details ?? []) : [];
-}
+export { validationDetails } from "@/lib/http";

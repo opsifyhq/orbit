@@ -33,7 +33,7 @@ import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useAgents, useAgentTeams } from "@/lib/queries";
+import { useAllAgents, useAgentTeams } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import {
   createOutput,
@@ -80,7 +80,7 @@ export default function OutputsPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const outputs = useQuery({ queryKey: ["outputs"], queryFn: listOutputs, staleTime: 15_000 });
-  const agents = useAgents({ limit: 100 });
+  const agents = useAllAgents();
   const teams = useAgentTeams();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<OutputView | null>(null);

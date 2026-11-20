@@ -59,7 +59,7 @@ export default function SkillPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const skill = useSkill(skillId);
-  const { usersOf, isLoading: usageLoading } = useSkillUsage();
+  const { usersOf, isLoading: usageLoading, isKnown: usageKnown } = useSkillUsage();
   const [view, setView] = useState<"rendered" | "source">("rendered");
   const [openFile, setOpenFile] = useState<string | null>(null);
 
@@ -111,7 +111,9 @@ export default function SkillPage() {
         ? users.length === 1
           ? `${shown} uses this skill. It runs without it from now on, and its settings show the missing skill so you can remove it before saving them again. This cannot be undone.`
           : `${shown} use this skill. They run without it from now on, and their settings show the missing skill so you can remove it before saving them again. This cannot be undone.`
-        : "Nothing uses this skill. This cannot be undone.",
+        : usageKnown
+          ? "Nothing uses this skill. This cannot be undone."
+          : "ORBIT could not check which agents use this skill. Any that do will run without it from now on. This cannot be undone.",
       confirmLabel: "Delete skill",
       destructive: true,
     });

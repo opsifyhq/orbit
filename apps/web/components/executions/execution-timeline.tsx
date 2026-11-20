@@ -87,6 +87,27 @@ export function ExecutionTimeline({
     setShowAll(true);
   }
 
+  // The text field keeps its own value and writes to the URL after a pause. Bound
+  // straight to the URL it lost every trailing space (the URL value is trimmed) and
+  // navigated on each keystroke.
+  const [toolText, setToolText] = useState(filters.tool);
+  const latestFilters = useRef(filters);
+  latestFilters.current = filters;
+  useEffect(() => {
+    // The URL changed from outside the field (Clear filters, back button).
+    setToolText((current) => (current.trim() === filters.tool ? current : filters.tool));
+  }, [filters.tool]);
+  useEffect(() => {
+    const next = toolText.trim();
+    if (next === latestFilters.current.tool) return;
+    const timer = window.setTimeout(
+      () => updateFilters({ ...latestFilters.current, tool: next }),
+      250,
+    );
+    return () => window.clearTimeout(timer);
+    // `updateFilters` reads the current URL when it runs; only typing should schedule it.
+  }, [toolText]);
+
   function toggleGroup(key: string) {
     setExpandedGroups((current) => {
       const next = new Set(current);
@@ -104,6 +125,19 @@ export function ExecutionTimeline({
 
   const filtered = filters.type !== "all" || Boolean(filters.tool) || filters.effect !== "all" || !showAll;
 
+  // What a screen reader hears while the run is live: a count, at most every few seconds.
+  const [announcedCount, setAnnouncedCount] = useState(events.length);
+  const pendingCount = useRef(events.length);
+  pendingCount.current = events.length;
+  useEffect(() => {
+    if (!active) {
+      setAnnouncedCount(pendingCount.current);
+      return;
+    }
+    const timer = window.setInterval(() => setAnnouncedCount(pendingCount.current), 5000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
   return (
     <Card className="min-w-0 overflow-hidden">
       <CardHeader className="flex-col gap-3 border-b sm:flex-row sm:items-center sm:justify-between">
@@ -120,6 +154,9 @@ export function ExecutionTimeline({
             {events.length === 0
               ? "No events yet"
               : `${visible.length} of ${events.length} events, last ${relativeTime(events.at(-1)!.createdAt)}`}
+          </p>
+          <p className="sr-only" role="status">
+            {announcedCount ? `${announcedCount} timeline events${active ? " so far" : ""}` : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -170,8 +207,8 @@ export function ExecutionTimeline({
             <Input
               id="event-tool-filter"
               list="event-tool-choices"
-              value={filters.tool}
-              onChange={(event) => updateFilters({ ...filters, tool: event.target.value })}
+              value={toolText}
+              onChange={(event) => setToolText(event.target.value)}
               placeholder="Search name, capability, connector"
               autoComplete="off"
             />
@@ -224,6 +261,9 @@ export function ExecutionTimeline({
         className="max-h-[620px] min-h-[180px] overflow-y-auto px-4 py-1 sm:px-5"
         tabIndex={0}
         role="log"
+        // A live run can emit dozens of events a second and a filter change swaps the
+        // whole list: the summary line above announces progress instead.
+        aria-live="off"
         aria-label="Execution timeline"
       >
         {entries.length === 0 ? (

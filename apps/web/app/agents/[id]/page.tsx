@@ -42,7 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { request, requestRaw } from "@/lib/http";
+import { errorStatus, request, requestRaw } from "@/lib/http";
 import { copyText } from "@/lib/browser";
 import { agentSpecSchema } from "@orbit/contracts";
 import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useSkills } from "@/lib/queries";
@@ -85,8 +85,14 @@ export default function AgentDetailPage() {
         lastExecutionId?: string | null;
         lastError?: string | null;
         consecutiveFailures?: number;
-      } | null>(`/api/v1/agents/${agentId}/runtime`).catch(() => null),
-    refetchInterval: 10_000,
+      } | null>(`/api/v1/agents/${agentId}/runtime`).catch((error) => {
+        // No runtime is the normal case (404); anything else must not look like it.
+        if (errorStatus(error) === 404) return null;
+        throw error;
+      }),
+    // Only a running 24/7 agent changes on its own; an idle one is refreshed by Start.
+    refetchInterval: (query) => (query.state.data ? 10_000 : false),
+    retry: false,
   });
   const startRuntime = useMutation({
     mutationFn: () =>
@@ -259,7 +265,7 @@ export default function AgentDetailPage() {
                 agentHarness={spec.harness?.type}
               />
             ) : null}
-            {data.status === "active" ? (
+            {data.status !== "active" || runtime.isError ? null : (
               runtime.data ? (
                 <Button
                   variant="outline"
@@ -277,7 +283,7 @@ export default function AgentDetailPage() {
                   Start 24/7
                 </Button>
               )
-            ) : null}
+            )}
             {!archived ? (
               <Button asChild variant="outline">
                 <Link href={`/agents/${data.id}/edit`}>
@@ -345,6 +351,11 @@ export default function AgentDetailPage() {
         </Callout>
       ) : null}
 
+      {runtime.isError ? (
+        <Callout tone="warning" title="Could not check whether this agent is running 24/7">
+          {errorMessage(runtime.error)}
+        </Callout>
+      ) : null}
       {runtime.data ? (
         <Callout
           tone={runtime.data.status === "running" ? "info" : runtime.data.status === "stopping" ? "warning" : "neutral"}

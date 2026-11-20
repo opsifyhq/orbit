@@ -176,6 +176,7 @@ export function AgentForm({
   onSubmit,
   cancelHref = "/agents",
   resourceId,
+  serverIssues,
 }: {
   initial?: AgentDefinition;
   submitLabel: string;
@@ -184,6 +185,8 @@ export function AgentForm({
   cancelHref?: string;
   /** The saved agent, so its access can be set; omitted while creating. */
   resourceId?: string;
+  /** Field errors the API returned for the last save; shown like the form's own. */
+  serverIssues?: Array<{ path: string; message: string }>;
 }) {
   const providers = useProviders();
   const harnesses = useHarnesses();
@@ -318,6 +321,12 @@ export function AgentForm({
     }
     setFailedSubmits((count) => count + 1);
   }
+
+  // What the server refused is placed exactly like what the form itself caught.
+  useEffect(() => {
+    if (serverIssues?.length) revealIssues(serverIssues);
+    // Deliberately keyed on the server answer alone: only a new one re-opens the summary.
+  }, [serverIssues]);
 
   // One section is on screen at a time. The URL hash remembers which, so a reload or a
   // shared link opens the same section.

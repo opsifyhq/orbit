@@ -201,16 +201,19 @@ export function useAgents(
  */
 const ALL_AGENTS_MAX_PAGES = 10;
 
-export function useAllAgents() {
+export function useAllAgents(options: { status?: string; enabled?: boolean } = {}) {
+  const { status, enabled = true } = options;
   return useQuery<AgentPage>({
-    queryKey: queryKeys.agents({ all: true }),
+    // Under the "agents" prefix, so every agent mutation refreshes it too.
+    queryKey: queryKeys.agents(status ? { all: true, status } : { all: true }),
+    enabled,
     queryFn: async () => {
       const items: AgentPage["items"] = [];
       let cursor: string | undefined;
       let total = 0;
       for (let page = 0; page < ALL_AGENTS_MAX_PAGES; page += 1) {
         const result = unwrap(
-          await api.GET("/api/v1/agents", { params: { query: { limit: 100, cursor } } }),
+          await api.GET("/api/v1/agents", { params: { query: { limit: 100, cursor, status } } }),
         );
         items.push(...result.items);
         total = result.total;
@@ -515,16 +518,20 @@ export function useWorkerLaunches(includeInactive = false) {
   });
 }
 
-export function useApprovals(status?: string) {
+export function useApprovals(
+  status?: string,
+  options: { refetchInterval?: number | false; enabled?: boolean } = {},
+) {
   return useQuery<ApprovalWithExecution[]>({
     queryKey: queryKeys.approvals(status),
+    enabled: options.enabled ?? true,
     queryFn: async () =>
       unwrap(
         await api.GET("/api/v1/approvals", {
           params: { query: { status, limit: 100 } },
         }),
       ),
-    refetchInterval: 5_000,
+    refetchInterval: options.refetchInterval ?? 5_000,
   });
 }
 

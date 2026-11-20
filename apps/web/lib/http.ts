@@ -11,6 +11,11 @@ export function errorStatus(error: unknown): number | undefined {
   return error instanceof ApiError ? error.status : undefined;
 }
 
+/** Field-level validation details from a failed save, for a form to place next to its fields. */
+export function validationDetails(error: unknown): Array<{ path: string; message: string }> {
+  return error instanceof ApiError ? (error.details ?? []) : [];
+}
+
 /** The credentials are not valid (401): the session is over and the token must be replaced. */
 export function isSessionError(error: unknown): boolean {
   return errorStatus(error) === 401;

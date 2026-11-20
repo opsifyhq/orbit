@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/section-nav";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import { Skeleton } from "@/components/ui/skeleton";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
@@ -32,7 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   queryKeys,
   unwrap,
-  useAgents,
+  useAllAgents,
   useAgentTeams,
   useDefaultHarness,
   useHarnesses,
@@ -126,7 +127,7 @@ export default function WorkPage() {
   }, []);
 
   // Drafts can be run by hand, so they are offered too (marked as drafts).
-  const agents = useAgents({ limit: 100 });
+  const agents = useAllAgents({ status: "current" });
   const teams = useAgentTeams();
   const harnesses = useHarnesses();
   const workerProfiles = useWorkerProfiles();
@@ -202,7 +203,16 @@ export default function WorkPage() {
 
         // A worker for this harness is already online: it will pick the work up, and
         // starting another would only add an error about the launcher.
-        const workerOnline = (workers.data ?? []).some(
+        // Decide on loaded data only: "not fetched yet" is not "no worker", and acting
+        // on it would create a profile and launch a worker beside one that is online.
+        const liveWorkers = workers.data ?? (await workers.refetch()).data;
+        const profiles = workerProfiles.data ?? (await workerProfiles.refetch()).data;
+        if (!liveWorkers || !profiles) {
+          toast.warning("The work is queued. ORBIT could not check for workers, so none was started.");
+          router.push(`/executions/${result.id}`);
+          return;
+        }
+        const workerOnline = liveWorkers.some(
           (worker) => worker.live && worker.harnesses.includes(effectiveHarness),
         );
         if (workerOnline) {
@@ -212,7 +222,7 @@ export default function WorkPage() {
 
         // Reuse an enabled profile for this harness that covers this agent; a disabled
         // or out-of-scope profile would accept the work and then never run it.
-        let profileId = (workerProfiles.data ?? []).find(
+        let profileId = profiles.find(
           (p) =>
             p.harnessKind === effectiveHarness &&
             p.enabled &&
@@ -441,7 +451,16 @@ export default function WorkPage() {
               ]}
             />
             {whoType === "agent" ? (
-              agentOptions.length ? (
+              agents.isLoading ? (
+                <div className="grid gap-2 sm:grid-cols-2" aria-busy="true">
+                  <Skeleton className="h-16 rounded-lg" />
+                  <Skeleton className="h-16 rounded-lg" />
+                </div>
+              ) : agents.isError ? (
+                <Callout tone="danger" title="Agents could not be loaded">
+                  {errorMessage(agents.error)}
+                </Callout>
+              ) : agentOptions.length ? (
                 <div role="radiogroup" aria-label="Agent" className="grid gap-2 sm:grid-cols-2">
                   {agentOptions.map((agent) => (
                     <ChoiceCard
@@ -467,6 +486,15 @@ export default function WorkPage() {
                   .
                 </p>
               )
+            ) : teams.isLoading ? (
+              <div className="grid gap-2 sm:grid-cols-2" aria-busy="true">
+                <Skeleton className="h-16 rounded-lg" />
+                <Skeleton className="h-16 rounded-lg" />
+              </div>
+            ) : teams.isError ? (
+              <Callout tone="danger" title="Agent teams could not be loaded">
+                {errorMessage(teams.error)}
+              </Callout>
             ) : (teams.data ?? []).length ? (
               <div role="radiogroup" aria-label="Agent team" className="grid gap-2 sm:grid-cols-2">
                 {(teams.data ?? []).map((team) => (

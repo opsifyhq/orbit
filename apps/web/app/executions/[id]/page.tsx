@@ -68,10 +68,6 @@ function ExecutionDetail() {
   const eventsQuery = useExecutionEvents(executionId);
   const live = useExecutionStream(executionId);
   const workers = useWorkers();
-  const pendingApprovals = useApprovals("pending");
-  const pendingApproval = pendingApprovals.data?.find(
-    (approval) => approval.executionId === executionId,
-  );
 
   // The stream's snapshot is only sent on connect and at the end; the polled record
   // catches changes in between. Show whichever is newer.
@@ -81,6 +77,14 @@ function ExecutionDetail() {
         ? executionQuery.data
         : live.execution
       : (live.execution ?? executionQuery.data);
+  // Only a run that is waiting can have a pending approval: nothing to poll otherwise.
+  const pendingApprovals = useApprovals("pending", {
+    enabled: execution?.status === "awaiting_approval",
+  });
+  const pendingApproval =
+    execution?.status === "awaiting_approval"
+      ? pendingApprovals.data?.find((approval) => approval.executionId === executionId)
+      : undefined;
   const events = useMemo(() => {
     const merged = new Map<number, ExecutionEventRecord>();
     for (const event of eventsQuery.data?.items ?? []) merged.set(event.seq, event);

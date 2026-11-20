@@ -46,6 +46,8 @@ export function useSkillUsage() {
     usage,
     usersOf,
     isLoading: agents.isLoading || teams.isLoading || profiles.isLoading,
+    /** False while loading or after a failed load: "no users" cannot be claimed then. */
+    isKnown: agents.isSuccess && teams.isSuccess && profiles.isSuccess,
   };
 }
 
