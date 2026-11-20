@@ -2,8 +2,8 @@ apiVersion: v2
 name: orbit
 description: ORBIT — self-hosted control plane for persistent AI agents (API, worker, web).
 type: application
-version: 0.24.0
-appVersion: "0.24.0"
+version: 0.25.0
+appVersion: "0.25.0"
 keywords:
   - agents
   - ai
