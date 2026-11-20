@@ -14,6 +14,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   connections, skills and worker profiles no longer drops hidden configuration (#205).
 - Web test suite via `node --test` for HTTP classification, proxy path validation and
   login redirects.
+- Bulk lifecycle actions for agents and skills: agents can be archived or permanently
+  deleted, skills can be deleted (archive is out of scope — see ADR 0013). A dry-run
+  preview explains mixed selections before confirmation, partial failures keep their ids
+  selected, and one audit event records each bulk operation (#249).
 
 ### Changed
 

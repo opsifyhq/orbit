@@ -150,3 +150,5 @@ sections:
         title: 0011 Multi-team access
       - path: decisions/0012-decouple-agent-and-harness.md
         title: 0012 Decouple agent and harness
+      - path: decisions/0013-bulk-lifecycle.md
+        title: 0013 Bulk lifecycle

@@ -3,6 +3,7 @@ pub mod account;
 pub mod agents;
 pub mod approvals;
 pub mod auth_oidc;
+pub mod bulk_lifecycle;
 pub mod catalog;
 pub mod dashboard;
 pub mod docs;

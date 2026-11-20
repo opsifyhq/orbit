@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { useConfirm } from "@/components/ui/confirm";
 import {
@@ -285,26 +286,28 @@ export default function SkillsPage() {
           ) : null}
 
           {selected.size ? (
-            <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-subtle px-3 py-2.5">
-              <Checkbox
-                aria-label="Select all shown skills"
-                checked={shown.every((skill) => selected.has(skill.id))}
-                onChange={(event) =>
-                  setSelected(
-                    event.target.checked
-                      ? new Set([...selected, ...shown.map((skill) => skill.id)])
-                      : new Set([...selected].filter((id) => !shown.some((skill) => skill.id === id))),
-                  )
-                }
-              />
-              <span className="text-[13px] font-medium">{selected.size} selected</span>
-              <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
-                Change access
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-                Clear selection
-              </Button>
-            </div>
+            <BulkActionsBar
+              resource="skills"
+              selectedIds={[...selected]}
+              allShownSelected={shown.length > 0 && shown.every((skill) => selected.has(skill.id))}
+              onToggleAllShown={(checked) =>
+                setSelected(
+                  checked
+                    ? new Set([...selected, ...shown.map((skill) => skill.id)])
+                    : new Set([...selected].filter((id) => !shown.some((skill) => skill.id === id))),
+                )
+              }
+              onChangeAccess={() => setBulkOpen(true)}
+              onSucceeded={(ids) => {
+                setSelected((current) => {
+                  const next = new Set(current);
+                  ids.forEach((id) => next.delete(id));
+                  return next;
+                });
+                void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+              }}
+              onClear={() => setSelected(new Set())}
+            />
           ) : null}
 
           <BulkAccessDialog

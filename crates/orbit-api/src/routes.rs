@@ -45,6 +45,14 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::agents::list_agents).post(handlers::agents::create_agent),
         )
         .route(
+            "/api/v1/agents/bulk/archive",
+            post(handlers::bulk_lifecycle::bulk_archive_agents),
+        )
+        .route(
+            "/api/v1/agents/bulk/delete",
+            post(handlers::bulk_lifecycle::bulk_delete_agents),
+        )
+        .route(
             "/api/v1/agents/{agent_id}",
             get(handlers::agents::get_agent)
                 .patch(handlers::agents::update_agent)
@@ -148,6 +156,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/skills",
             get(handlers::skills::list_skills).post(handlers::skills::create_skill),
+        )
+        .route(
+            "/api/v1/skills/bulk/delete",
+            post(handlers::bulk_lifecycle::bulk_delete_skills),
         )
         .route(
             "/api/v1/skills/{skill_id}",

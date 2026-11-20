@@ -382,6 +382,23 @@ impl Store {
         Ok(())
     }
 
+    /// Check delete eligibility using the same SQL (and therefore the same FK rules) as
+    /// `delete_agent`, then roll back. Used by the bulk lifecycle preview so "cannot be
+    /// deleted" reflects the real database constraints, not a hand-maintained copy.
+    pub async fn check_delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
+        let mut tx = self.begin().await?;
+        let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
+            .bind(org_id)
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound("agent".into()));
+        }
+        tx.rollback().await?;
+        Ok(())
+    }
+
     /// Validation report combining domain rules with store-level checks (provider and
     /// connector existence, connection ownership).
     pub async fn validate_agent_references(

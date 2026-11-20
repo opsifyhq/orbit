@@ -164,6 +164,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/bulk/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bulk_archive_agents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/bulk/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bulk_delete_agents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}": {
         parameters: {
             query?: never;
@@ -1027,6 +1059,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/skills/bulk/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bulk_delete_skills"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/skills/{skill_id}": {
         parameters: {
             query?: never;
@@ -1849,6 +1897,33 @@ export interface components {
             /** Format: int32 */
             maxExecutionsPerHour?: number | null;
         };
+        BulkLifecycleFailure: {
+            /**
+             * @description Stable envelope code from the equivalent single-resource request (`forbidden`,
+             *     `not_found`, `conflict`, `bad_request`).
+             */
+            code: string;
+            /** Format: uuid */
+            id: string;
+            message: string;
+        };
+        BulkLifecycleRequest: {
+            /**
+             * @description Evaluate eligibility and report results without changing anything. Used by the web
+             *     UI to explain mixed selections before asking for confirmation.
+             */
+            dryRun?: boolean;
+            ids: string[];
+        };
+        BulkLifecycleResponse: {
+            /** @description Ids deleted by this request (empty for archive requests). */
+            deleted?: string[];
+            failed: components["schemas"]["BulkLifecycleFailure"][];
+            /** @description Ids already in the requested state; no change was made. */
+            unchanged?: string[];
+            /** @description Ids archived by this request (empty for delete requests). */
+            updated?: string[];
+        };
         /** @enum {string} */
         CapabilityEffect: "read" | "write" | "external_side_effect";
         Connection: {
@@ -2161,8 +2236,13 @@ export interface components {
             name: string;
             /** Format: uuid */
             orgId: string;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
+            /** Format: uuid */
+            ownerUserId?: string | null;
             /** Format: date-time */
             updatedAt: string;
+            visibility: string;
         };
         EnvMappingRequest: {
             description?: string;
@@ -2523,6 +2603,11 @@ export interface components {
             redirectUri?: string;
             /** @description Deny users whose groups match no role/team mapping. */
             requireMappedGroup?: boolean;
+            /**
+             * @description Link an incoming identity to an existing user by email only when the token says
+             *     `email_verified: true` (a missing claim also blocks linking). Default false.
+             */
+            requireVerifiedEmail?: boolean;
             /** @description Claim carrying IdP groups/roles (default `groups`). */
             roleClaim?: string;
             scopes?: string;
@@ -2636,7 +2721,7 @@ export interface components {
          *     modules are unaffected.
          * @enum {string}
          */
-        ProviderKind: "open_ai_compatible" | "harness_managed";
+        ProviderKind: "open_ai_compatible" | "anthropic" | "harness_managed";
         ProviderProbeResponse: {
             error?: string | null;
             /** Format: int64 */
@@ -3463,6 +3548,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentDetail"];
+                };
+            };
+        };
+    };
+    bulk_archive_agents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkLifecycleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkLifecycleResponse"];
+                };
+            };
+        };
+    };
+    bulk_delete_agents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkLifecycleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkLifecycleResponse"];
                 };
             };
         };
@@ -5139,6 +5270,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Skill"];
+                };
+            };
+        };
+    };
+    bulk_delete_skills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkLifecycleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkLifecycleResponse"];
                 };
             };
         };
