@@ -5949,6 +5949,13 @@
             ]
           },
           "payload": {},
+          "placement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where this run may execute: `auto` (any matching worker), `local`, `docker` or\n`kubernetes`. Overrides the placement stored on the agent for this run only."
+          },
           "skills": {
             "type": "array",
             "items": {

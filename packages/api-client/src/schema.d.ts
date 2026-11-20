@@ -2141,6 +2141,11 @@ export interface components {
             idempotencyKey?: string | null;
             name?: string | null;
             payload?: unknown;
+            /**
+             * @description Where this run may execute: `auto` (any matching worker), `local`, `docker` or
+             *     `kubernetes`. Overrides the placement stored on the agent for this run only.
+             */
+            placement?: string | null;
             /** @description Skills to materialize for this execution, in addition to the agent spec. */
             skills?: string[];
             /** @description The task or message for the agent. */

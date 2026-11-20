@@ -8353,3 +8353,72 @@ async fn connection_url_fields_report_config_paths_and_cover_clone_base_url() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
+
+/// Start work asks where a run should execute; the answer used to be dropped.
+#[tokio::test]
+async fn execution_placement_can_be_chosen_per_run() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let run = |body: Value| {
+        let router = app.router.clone();
+        let agent = app.agent_id;
+        async move {
+            send(
+                &router,
+                post(&format!("/api/v1/agents/{agent}/executions"), body),
+            )
+            .await
+        }
+    };
+
+    let (status, body) = run(json!({ "task": "on kubernetes", "placement": "kubernetes" })).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["placement"], "kubernetes");
+    let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+
+    // A local worker must not pick it up; a kubernetes worker does.
+    let claimed = app
+        .store
+        .claim_next_queued(
+            app.org_id,
+            "w-local",
+            &["mock".into()],
+            "local",
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(claimed.is_none(), "a local worker claimed a kubernetes run");
+    let claimed = app
+        .store
+        .claim_next_queued(
+            app.org_id,
+            "w-k8s",
+            &["mock".into()],
+            "kubernetes",
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("a kubernetes worker claims it");
+    assert_eq!(claimed.id, id);
+    sqlx::query("UPDATE executions SET status = 'succeeded', finished_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+
+    // Without a choice the agent's own placement applies (auto for the demo agent).
+    let (status, body) = run(json!({ "task": "anywhere" })).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["placement"], "auto");
+
+    let (status, body) = run(json!({ "task": "nowhere", "placement": "the moon" })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "placement");
+}

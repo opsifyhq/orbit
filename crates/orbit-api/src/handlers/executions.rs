@@ -305,11 +305,21 @@ pub async fn execute_agent(
     };
     preflight.authorize_access().await?;
     preflight.check_harness().await?;
-    let placement = spec
-        .harness
-        .as_ref()
-        .map(|harness| harness.placement.as_str())
-        .unwrap_or("auto");
+    // Placement: the run's own choice, else the agent's, else any matching worker.
+    let placement = match body.placement.as_deref().map(str::trim) {
+        None | Some("") => spec
+            .harness
+            .as_ref()
+            .map(|harness| harness.placement)
+            .unwrap_or_default(),
+        Some(value) => orbit_domain::PlacementTarget::parse(value).ok_or_else(|| {
+            ApiError::validation(vec![orbit_domain::ValidationIssue::new(
+                "placement",
+                "unknown placement; expected auto, local, docker or kubernetes",
+            )])
+        })?,
+    };
+    let placement = placement.as_str();
 
     let idempotency_key = headers
         .get("idempotency-key")

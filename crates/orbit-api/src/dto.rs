@@ -228,6 +228,10 @@ pub struct CreateExecutionRequest {
     pub harness: Option<String>,
     #[serde(default)]
     pub harness_override: Option<String>,
+    /// Where this run may execute: `auto` (any matching worker), `local`, `docker` or
+    /// `kubernetes`. Overrides the placement stored on the agent for this run only.
+    #[serde(default)]
+    pub placement: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

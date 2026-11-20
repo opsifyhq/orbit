@@ -141,7 +141,7 @@ export default function WorkPage() {
   const runKey = useRef(randomId());
   useEffect(() => {
     runKey.current = randomId();
-  }, [who, task, name, repository, harness]);
+  }, [who, task, name, repository, harness, where]);
 
   /**
    * "On a schedule" adds a schedule trigger (cron, time zone and this task) to the agent
@@ -205,6 +205,8 @@ export default function WorkPage() {
               task: task.trim(),
               payload: repository.trim() ? { repository: repository.trim() } : {},
               harnessOverride: harness || undefined,
+              // "Anywhere" leaves the agent's own placement in charge.
+              placement: where === "auto" ? undefined : where,
               name: name.trim() || undefined,
               idempotencyKey: runKey.current,
             },
@@ -227,7 +229,7 @@ export default function WorkPage() {
           return;
         }
         const workerOnline = liveWorkers.some(
-          (worker) => worker.live && worker.harnesses.includes(effectiveHarness),
+          (worker) => worker.live && worker.harnesses.includes(effectiveHarness) && canRunHere(worker.target),
         );
         if (workerOnline) {
           router.push(`/executions/${result.id}`);
@@ -308,8 +310,10 @@ export default function WorkPage() {
     return !output.teamId && (!output.agentId || output.agentId === who);
   });
   const harnessProfiles = (workerProfiles.data ?? []).filter((p) => p.harnessKind === harness);
+  // A worker only takes runs placed on its own target (or placed anywhere).
+  const canRunHere = (target: string) => where === "auto" || target === where;
   const liveForHarness = (workers.data ?? []).filter(
-    (worker) => worker.live && worker.harnesses.includes(harness),
+    (worker) => worker.live && worker.harnesses.includes(harness) && canRunHere(worker.target),
   ).length;
   const agentOptions = (agents.data?.items ?? []).filter(
     (agent) => agent.status === "active" || agent.status === "draft",
