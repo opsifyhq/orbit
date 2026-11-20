@@ -53,7 +53,7 @@ export default function TeamRunPage() {
         description={run.error ? errorMessage(run.error) : undefined}
         action={
           <Button asChild>
-            <Link href="/agent-teams#runs">Back to runs</Link>
+            <Link href="/agent-teams/runs">Back to runs</Link>
           </Button>
         }
       />
@@ -77,7 +77,7 @@ export default function TeamRunPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        back={{ href: `/agent-teams/${detail.teamId}#runs`, label: teamName }}
+        back={{ href: "/agent-teams/runs", label: "Team runs" }}
         title={<span className="line-clamp-3">{task}</span>}
         meta={
           <>

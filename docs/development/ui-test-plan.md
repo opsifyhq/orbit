@@ -195,7 +195,8 @@ approvals UI is still being finished.
 | Save a team | Card shows mode, agents (primary/subagent), skills, optional work source |
 | Run | Primary executes, then each subagent in order; steps visible in the run dialog |
 | Queue | Enqueue `owner/repo#123`, run pending, retry/requeue/cancel per item |
-| Runs list | Active/Archived/All filter works |
+| `/agent-teams` list | Same layout as Agents: search, **All / Picks up issues / On demand** filter, status column, row checkboxes with **Change access**, count under the list |
+| **Runs** (header) | `/agent-teams/runs`: search plus Active/Archived/All filter; old `/agent-teams#runs` links land here |
 
 ## Flow 12 — Skills (5 min)
 
