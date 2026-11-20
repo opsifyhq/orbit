@@ -3357,3 +3357,45 @@ async fn prune_audit_logs_deletes_in_batches() {
         .unwrap();
     assert_eq!(remaining, 1);
 }
+
+async fn unparseable_tool_policies_are_enforced_as_deny() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _user) = seed_org(&store).await;
+    let (agent, _version) = store
+        .create_agent(org, None, &definition("Corrupt policy target"))
+        .await
+        .expect("agent");
+
+    // A matcher that no longer deserializes (drifted shape). Unknown actions cannot be
+    // stored (CHECK constraint); the parse fallback for them is the same code path.
+    let bad_matcher = store
+        .create_tool_policy(
+            org,
+            None,
+            "bad-matcher",
+            0,
+            true,
+            "allow",
+            &serde_json::json!({ "tool": 5 }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let rules = store
+        .effective_tool_policy_rules(org, agent.id)
+        .await
+        .unwrap();
+    assert_eq!(rules.len(), 1, "unparseable rules must not be dropped");
+    for rule in &rules {
+        assert_eq!(rule.action, orbit_domain::ToolPolicyAction::Deny);
+        assert!(rule.reason.is_some());
+    }
+    let matcher_rule = rules.iter().find(|r| r.id == bad_matcher.id).unwrap();
+    assert!(
+        matcher_rule.matcher.is_empty(),
+        "unreadable scope covers every call"
+    );
+}

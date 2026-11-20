@@ -446,23 +446,21 @@ pub async fn create_team(
             ));
         }
     }
-    for slug in &body.skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            issues.push(ValidationIssue::new(
-                "skills",
-                format!("unknown skill '{slug}'"),
-            ));
-        }
-    }
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    issues.extend(
+        crate::preflight::unusable_skill_issues(
+            &state,
+            auth.org_id,
+            &access,
+            &body.skills,
+            "skills",
+            false,
+        )
+        .await?,
+    );
     for connection_id in &body.connection_ids {
         match state
             .store
@@ -609,23 +607,21 @@ pub async fn update_team(
             ));
         }
     }
-    for slug in &body.skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            issues.push(ValidationIssue::new(
-                "skills",
-                format!("unknown skill '{slug}'"),
-            ));
-        }
-    }
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    issues.extend(
+        crate::preflight::unusable_skill_issues(
+            &state,
+            auth.org_id,
+            &access,
+            &body.skills,
+            "skills",
+            false,
+        )
+        .await?,
+    );
     for connection_id in &body.connection_ids {
         match state
             .store

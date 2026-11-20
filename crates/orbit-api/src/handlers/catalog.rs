@@ -522,10 +522,13 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
     }
 }
 
+/// Validate URL-typed connection config fields against the outbound policy
+/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`); errors are 422s on
+/// the offending field name.
 pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
     let policy = orbit_security::OutboundPolicy::from_env();
     let mut issues = Vec::new();
-    for field in ["baseUrl", "url"] {
+    for field in ["baseUrl", "cloneBaseUrl", "url"] {
         let Some(value) = config.get(field).and_then(|v| v.as_str()) else {
             continue;
         };
@@ -679,14 +682,14 @@ pub async fn update_connection(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    if let Some(config) = &body.config {
+        validate_connection_urls(config).await?;
+    }
     let name = body
         .name
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if let Some(config) = &body.config {
-        validate_connection_urls(config).await?;
-    }
     let mut secret_ref: Option<String> = None;
     if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {

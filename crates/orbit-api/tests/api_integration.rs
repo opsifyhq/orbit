@@ -8104,3 +8104,252 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     let (_, body) = send(&app.router, get("/api/v1/team-runs?limit=3")).await;
     assert_eq!(body.as_array().unwrap().len(), 3);
 }
+
+#[tokio::test]
+async fn agent_save_rejects_unknown_capability_ids() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let connector = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("connector is seeded");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            connector.id,
+            "cap-check",
+            &json!({}),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut body = definition();
+    body["metadata"]["name"] = json!("Capability check agent");
+    body["spec"]["connectors"] = json!([{
+        "connector": "github",
+        "connectionId": connection.id,
+        "capabilities": ["issues.list", "issues.explode"]
+    }]);
+    let (status, response) = send(&app.router, post("/api/v1/agents", body.clone())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    let fields: Vec<&str> = response["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, vec!["spec.connectors[0].capabilities[1]"]);
+
+    body["spec"]["connectors"][0]["capabilities"] = json!(["issues.list"]);
+    let (status, response) = send(&app.router, post("/api/v1/agents", body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{response}");
+}
+
+#[tokio::test]
+async fn private_skills_cannot_be_attached_by_other_users() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let alice = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-use-alice@test.local",
+            "Alice",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let bob = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "skill-use-bob@test.local",
+            "Bob",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let alice_token = token_for(&app.store, app.org_id, alice.id, "alice").await;
+    let bob_token = token_for(&app.store, app.org_id, bob.id, "bob").await;
+    let (status, skill) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/skills",
+            &alice_token,
+            json!({ "name": "Secret", "slug": "alice-secret-skill", "content": "hush", "files": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{skill}");
+    app.store
+        .set_resource_visibility(
+            app.org_id,
+            "skills",
+            Uuid::parse_str(skill["id"].as_str().unwrap()).unwrap(),
+            "private",
+            None,
+        )
+        .await
+        .unwrap();
+    let bob_agent = create_demo_agent(&app.store, app.org_id, bob.id).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agents", bob_agent, bob.id)
+        .await
+        .unwrap();
+
+    // Same error for a private slug and a slug that does not exist.
+    let mut messages = Vec::new();
+    for slug in ["alice-secret-skill", "no-such-skill"] {
+        let (status, body) = send(
+            &app.router,
+            auth_post(
+                &format!("/api/v1/agents/{bob_agent}/executions"),
+                &bob_token,
+                json!({ "task": "t", "skills": [slug] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        messages.push(
+            body["error"]["details"][0]["message"]
+                .as_str()
+                .unwrap()
+                .replace(slug, "<slug>"),
+        );
+
+        let mut agent_definition = definition();
+        agent_definition["metadata"]["name"] = json!(format!("skill agent {slug}"));
+        agent_definition["spec"]["skills"] = json!([slug]);
+        let (status, body) = send(
+            &app.router,
+            auth_post("/api/v1/agents", &bob_token, agent_definition),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    assert_eq!(messages[0], messages[1]);
+
+    // The owner may use it.
+    let alice_agent = create_demo_agent(&app.store, app.org_id, alice.id).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agents", alice_agent, alice.id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{alice_agent}/executions"),
+            &alice_token,
+            json!({ "task": "t", "skills": ["alice-secret-skill"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+}
+
+#[tokio::test]
+async fn team_step_executions_cannot_be_rerun_alone() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let pool = raw_pool().await;
+    let agent = app.store.get_agent(app.org_id, app.agent_id).await.unwrap();
+    let version = app
+        .store
+        .get_current_version(app.org_id, &agent)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for (input, key) in [
+        (
+            json!({ "task": "t", "team": { "connectionIds": [Uuid::now_v7()], "envMappingIds": [] } }),
+            "team-step",
+        ),
+        (json!({ "task": "t" }), "plain"),
+    ] {
+        let key = format!("{key}-{}", Uuid::now_v7());
+        let execution = app
+            .store
+            .create_execution(orbit_store::executions::NewExecution {
+                org_id: app.org_id,
+                agent_id: agent.id,
+                agent_version_id: version.id,
+                agent_name: &agent.name,
+                harness_kind: orbit_domain::HarnessKind::Mock,
+                trigger_source: orbit_domain::TriggerSource::Manual,
+                placement: "auto",
+                trigger_id: None,
+                input,
+                session_ref: None,
+                skills: &[],
+                timeout_seconds: 30,
+                requested_by: None,
+                idempotency_key: Some(&key),
+                team_run_id: None,
+                team_step_index: None,
+            })
+            .await
+            .unwrap();
+        fail_execution(&pool, execution.id).await;
+        ids.push(execution.id);
+    }
+
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/executions/{}/rerun", ids[0]), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("re-run the team"));
+
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/executions/{}/rerun", ids[1]), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+}
+
+#[tokio::test]
+async fn connection_url_fields_report_config_paths_and_cover_clone_base_url() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for (field, url) in [
+        ("baseUrl", "http://169.254.169.254/latest"),
+        ("cloneBaseUrl", "http://127.0.0.1:8080"),
+        ("url", "ftp://example.com"),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/connections",
+                json!({ "connectorSlug": "gitlab", "name": "ssrf", "config": { field: url } }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{url}: {body}");
+        assert_eq!(body["error"]["details"][0]["path"], field);
+    }
+    // Private ranges stay allowed by default (self-hosted GitLab / GitHub Enterprise).
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({ "connectorSlug": "gitlab", "name": "onprem-c1", "config": {
+                "baseUrl": "http://10.1.2.3/api/v4", "cloneBaseUrl": "http://10.1.2.3" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}

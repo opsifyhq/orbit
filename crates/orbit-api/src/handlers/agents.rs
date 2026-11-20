@@ -91,8 +91,7 @@ pub async fn create_agent(
     }
     // The author must be able to use every connection/provider the spec binds (#140).
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    crate::preflight::require_spec_references_use(&state, auth.org_id, &access, &definition.spec)
-        .await?;
+    crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
 
     let (agent, _version) = state
         .store
@@ -145,13 +144,7 @@ pub async fn update_agent(
             return Err(ApiError::validation(report.issues));
         }
         let access = crate::access::AccessScope::load(&state, &auth).await?;
-        crate::preflight::require_spec_references_use(
-            &state,
-            auth.org_id,
-            &access,
-            &definition.spec,
-        )
-        .await?;
+        crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
         let agent = state.store.get_agent(auth.org_id, agent_id).await?;
         let current = state.store.get_current_version(auth.org_id, &agent).await?;
         let candidate_spec = serde_json::to_value(&definition.spec)

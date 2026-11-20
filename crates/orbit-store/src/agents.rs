@@ -426,17 +426,39 @@ impl Store {
             let connector = self
                 .get_connector_by_slug(org_id, &binding.connector)
                 .await?;
-            if connector.is_none() {
+            let Some(connector) = connector else {
                 report.push(
                     format!("spec.connectors[{idx}].connector"),
                     format!("unknown connector '{}'", binding.connector),
                 );
                 continue;
+            };
+            // Capability ids must exist in the connector catalog with a parseable effect:
+            // grants for anything else would be dropped at run time (fail closed).
+            for (cap_idx, capability) in binding.capabilities.iter().enumerate() {
+                let known = connector
+                    .capabilities
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|item| item.get("id").and_then(|id| id.as_str()) == Some(capability))
+                    .and_then(|item| item.get("effect").and_then(|effect| effect.as_str()))
+                    .and_then(orbit_domain::CapabilityEffect::parse)
+                    .is_some();
+                if !known {
+                    report.push(
+                        format!("spec.connectors[{idx}].capabilities[{cap_idx}]"),
+                        format!(
+                            "unknown capability '{capability}' for connector '{}'",
+                            binding.connector
+                        ),
+                    );
+                }
             }
             if let Some(connection_id) = binding.connection_id {
                 match self.get_connection(org_id, connection_id).await {
                     Ok(connection) => {
-                        if Some(connection.connector_id) != connector.map(|c| c.id) {
+                        if connection.connector_id != connector.id {
                             report.push(
                                 format!("spec.connectors[{idx}].connectionId"),
                                 "connection does not belong to this connector",
