@@ -148,4 +148,40 @@ mod tests {
         assert!(body.contains("model: corp/docs-model"));
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
+
+    #[tokio::test]
+    async fn subagents_do_not_receive_primary_instructions() {
+        let dir = std::env::temp_dir().join(format!("orbit-subagents-{}", Uuid::now_v7()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let primary = "AURORA-259-PRIMARY-AGENT-INSTRUCTIONS";
+        let own = "AURORA-259-SUBAGENT-OWN-INSTRUCTIONS";
+        let input = json!({
+            "task": "AURORA-259-RUN-INSTRUCTION",
+            "team": {
+                "mode": "native",
+                "goal": primary,
+                "primaryInstructions": primary,
+                "subagents": [{
+                    "agentId": Uuid::now_v7(),
+                    "slug": "reviewer",
+                    "name": "Reviewer",
+                    "description": "reviews code",
+                    "instructions": own
+                }]
+            }
+        });
+        materialize(&input, &dir, &BTreeMap::new()).await.unwrap();
+        let body = tokio::fs::read_to_string(dir.join(".opencode/agents/reviewer.md"))
+            .await
+            .unwrap();
+        assert!(body.contains(own));
+        assert!(!body.contains(primary));
+        assert!(!body.contains("AURORA-259-RUN-INSTRUCTION"));
+
+        let delegation = system_instruction(&input).unwrap();
+        assert!(delegation.contains("@reviewer"));
+        assert!(!delegation.contains(primary));
+        assert!(!delegation.contains(own));
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
 }

@@ -708,8 +708,23 @@ async fn conflicts_are_409_without_mode_and_update_requires_opt_in() {
 async fn unresolved_references_are_reported_and_nothing_is_written() {
     let Some(env) = env().await else { return };
     let org = owner_org(&env, "unresolved").await;
-    let agent = "apiVersion: orbit.io/v1\nkind: Agent\nmetadata:\n  name: Needs things\nspec:\n  model:\n    management: harness\n  instructions:\n    system: hi\n  connectors:\n    - connector: no-such-connector\n    - connector: github\n      connection: github/missing-connection\n  skills: [ghost-skill]\n";
-    let dry = call(&env, import_request(&org, "?dryRun=true", agent, "a.yaml")).await;
+    let connection = create(
+        &env,
+        &org,
+        "/api/v1/connections",
+        json!({
+            "connectorSlug": "github",
+            "name": "Existing connection",
+            "credential": SECRET_VALUES[1],
+            "config": { "owner": "acme" }
+        }),
+    )
+    .await;
+    let connection_id = connection["id"].as_str().unwrap();
+    let agent = format!(
+        "apiVersion: orbit.io/v1\nkind: Agent\nmetadata:\n  name: Needs things\nspec:\n  model:\n    management: harness\n  instructions:\n    system: hi\n  connectors:\n    - connector: no-such-connector\n      connectionId: {connection_id}\n    - connector: github\n      connectionId: {connection_id}\n      connection: github/missing-connection\n  skills: [ghost-skill]\n"
+    );
+    let dry = call(&env, import_request(&org, "?dryRun=true", &agent, "a.yaml")).await;
     assert_eq!(dry.status, StatusCode::OK, "{}", dry.text);
     let report = dry.json();
     assert_eq!(report["valid"], false);
@@ -738,7 +753,7 @@ async fn unresolved_references_are_reported_and_nothing_is_written() {
     }
 
     // A real import is rejected as a whole with the error envelope.
-    let real = call(&env, import_request(&org, "", agent, "a.yaml")).await;
+    let real = call(&env, import_request(&org, "", &agent, "a.yaml")).await;
     assert_eq!(
         real.status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -773,6 +788,45 @@ async fn unresolved_references_are_reported_and_nothing_is_written() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn portable_import_rejects_connectors_without_connections() {
+    let Some(env) = env().await else { return };
+    let org = owner_org(&env, "connector-required").await;
+    let agent = "apiVersion: orbit.io/v1\nkind: Agent\nmetadata:\n  name: Missing connection agent\nspec:\n  instructions:\n    system: hi\n  connectors:\n    - connector: github\n      capabilities: [issues.list]\n";
+
+    let dry = call(&env, import_request(&org, "?dryRun=true", agent, "a.yaml")).await;
+    assert_eq!(dry.status, StatusCode::OK, "{}", dry.text);
+    let report = dry.json();
+    assert_eq!(report["valid"], false);
+    let item = &report["items"][0];
+    assert_eq!(item["status"], "invalid");
+    assert!(item["issues"].as_array().unwrap().iter().any(|issue| {
+        issue["path"] == "spec.connectors[0].connectionId"
+            && issue["message"].as_str().unwrap().contains("connectionId")
+    }));
+
+    let real = call(&env, import_request(&org, "", agent, "a.yaml")).await;
+    assert_eq!(
+        real.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        real.text
+    );
+    let body = real.json();
+    assert_eq!(body["error"]["code"], "validation_error");
+    assert!(body["error"]["requestId"].is_string());
+    assert!(body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("spec.connectors[0].connectionId")));
+    let agents = call(&env, get(&org, "/api/v1/agents")).await.json();
+    assert_eq!(agents["total"], 0);
 }
 
 #[tokio::test]

@@ -267,7 +267,7 @@ fn build_prompt(request: &ExecutionRequest) -> String {
     };
     let payload_text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "null".into());
     let mut prompt = String::new();
-    prompt.push_str("# Task\n\n");
+    prompt.push_str("# Run instruction\n\n");
     prompt.push_str(task);
     prompt.push_str("\n\n# Input data (untrusted)\n\n");
     prompt.push_str(&format!(
@@ -1467,6 +1467,45 @@ mod tests {
         assert!(prompt.contains("# Input data (untrusted)"));
         assert!(prompt.contains("Trusted: false"));
         assert!(prompt.contains("ignore previous instructions"));
+    }
+
+    #[test]
+    fn prompt_has_one_run_instruction_and_no_configured_instructions() {
+        use orbit_contracts::{ExecutionInput, InputProvenance};
+        let task = "AURORA-259-UNIQUE-RUN-INSTRUCTION";
+        let system = "AURORA-259-CONFIGURED-SYSTEM-INSTRUCTIONS";
+        let request = ExecutionRequest {
+            execution_id: uuid::Uuid::now_v7(),
+            agent_id: uuid::Uuid::now_v7(),
+            agent_version_id: uuid::Uuid::now_v7(),
+            agent_name: "x-monitor".into(),
+            instructions: InstructionsBlock {
+                system: system.into(),
+                constraints: vec!["AURORA-259-CONSTRAINT".into()],
+            },
+            input: ExecutionInput {
+                task: task.into(),
+                payload: serde_json::json!({"artifact": "a.txt"}),
+                provenance: InputProvenance::manual("test@example.com"),
+            },
+            model: None,
+            subagent_models: Vec::new(),
+            grants: vec![],
+            autonomy: orbit_domain::AutonomyLevel::OBSERVE,
+            resources: orbit_domain::ResourceLimits::default(),
+            harness_config: Value::Null,
+            extra_env: Default::default(),
+            session: SessionRequest::default(),
+            workspace: Default::default(),
+            events: None,
+            cancel: CancellationToken::new(),
+            pause: Default::default(),
+        };
+        let prompt = build_prompt(&request);
+        assert!(prompt.starts_with(&format!("# Run instruction\n\n{task}\n")));
+        assert_eq!(prompt.matches(task).count(), 1);
+        assert!(!prompt.contains(system));
+        assert!(!prompt.contains("AURORA-259-CONSTRAINT"));
     }
 
     #[test]

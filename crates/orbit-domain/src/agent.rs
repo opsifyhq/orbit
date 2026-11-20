@@ -141,8 +141,9 @@ pub struct Instructions {
     pub constraints: Vec<String>,
 }
 
-/// A connector reference. The shorthand string form (`- gitlab`) is accepted on import
-/// and normalized to a binding with no explicit connection or capability allowlist.
+/// A connector reference. The shorthand string form (`- gitlab`) parses to a binding
+/// without a connection, but semantic validation rejects it: a usable connector binding
+/// must name the concrete connection that supplies its credentials and access scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(from = "ConnectorBindingRepr", into = "ConnectorBindingRepr")]
 pub struct ConnectorBinding {
@@ -483,6 +484,12 @@ impl AgentSpec {
         // Connectors
         let mut seen = std::collections::BTreeSet::new();
         for (idx, binding) in self.connectors.iter().enumerate() {
+            if binding.connection_id.is_none() {
+                report.push(
+                    format!("spec.connectors[{idx}].connectionId"),
+                    "an enabled connector requires a connectionId; remove the connector if it is not in use",
+                );
+            }
             if !is_valid_slug(&binding.connector) {
                 report.push(
                     format!("spec.connectors[{idx}].connector"),
@@ -663,8 +670,10 @@ spec:
     system: |
       Monitor the configured topics.
   connectors:
-    - telegram
-    - x
+    - connector: telegram
+      connectionId: 00000000-0000-4000-8000-000000000001
+    - connector: x
+      connectionId: 00000000-0000-4000-8000-000000000002
   triggers:
     - type: schedule
       cron: "*/30 * * * *"
@@ -723,6 +732,45 @@ spec:
         let binding: ConnectorBinding = serde_json::from_str("\"gitlab\"").unwrap();
         assert_eq!(binding.connector, "gitlab");
         assert!(binding.capabilities.is_empty());
+    }
+
+    #[test]
+    fn connector_binding_requires_a_connection() {
+        let mut spec = minimal_spec();
+        spec.connectors.push(ConnectorBinding {
+            connector: "github".into(),
+            connection_id: None,
+            capabilities: vec!["issues.list".into()],
+        });
+        let report = spec.validate();
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.path == "spec.connectors[0].connectionId")
+            .expect("missing connector connectionId issue");
+        assert_eq!(
+            issue.message,
+            "an enabled connector requires a connectionId; remove the connector if it is not in use"
+        );
+
+        // A shorthand binding parses but is not a valid, enabled connector on its own.
+        let mut spec = minimal_spec();
+        spec.connectors = vec![serde_json::from_str("\"gitlab\"").unwrap()];
+        let report = spec.validate();
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.path == "spec.connectors[0].connectionId"));
+
+        spec.connectors[0].connection_id = Some(Uuid::now_v7());
+        assert!(spec.validate().is_valid(), "{:?}", spec.validate());
+    }
+
+    #[test]
+    fn no_connectors_is_valid() {
+        let spec = minimal_spec();
+        assert!(spec.connectors.is_empty());
+        assert!(spec.validate().is_valid(), "{:?}", spec.validate());
     }
 }
 

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Plus } from "lucide-react";
 
+import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,6 @@ import {
   ListToolbar,
   ROW_LINK,
   SearchField,
-  SelectionBar,
   toggleId,
   toggleShown,
 } from "@/components/ui/resource-list";
@@ -110,17 +110,24 @@ export default function SkillsPage() {
         />
       </ListToolbar>
 
-      <SelectionBar
-        count={selected.size}
-        noun="skills"
-        allShownSelected={visible.length > 0 && visible.every((skill) => selected.has(skill.id))}
-        onSelectAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((skill) => skill.id), checked))}
-        onClear={() => setSelected(new Set())}
-      >
-        <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
-          Change access
-        </Button>
-      </SelectionBar>
+      {selected.size ? (
+        <BulkActionsBar
+          resource="skills"
+          selectedIds={[...selected]}
+          allShownSelected={visible.length > 0 && visible.every((skill) => selected.has(skill.id))}
+          onToggleAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((skill) => skill.id), checked))}
+          onChangeAccess={() => setBulkOpen(true)}
+          onSucceeded={(ids) => {
+            setSelected((current) => {
+              const next = new Set(current);
+              ids.forEach((id) => next.delete(id));
+              return next;
+            });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+          }}
+          onClear={() => setSelected(new Set())}
+        />
+      ) : null}
 
       <BulkAccessDialog
         open={bulkOpen}

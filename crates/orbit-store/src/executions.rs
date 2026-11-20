@@ -7,6 +7,15 @@ use orbit_domain::{new_id, ExecutionStatus, HarnessKind, LogLevel, TriggerSource
 use crate::models::{ExecutionEventRecord, ExecutionRecord};
 use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
+/// Optional, presentation-driven narrowing of the event list. All fields are ANDed;
+/// text fields are literal case-insensitive substrings (no SQL wildcard injection).
+#[derive(Debug, Clone, Default)]
+pub struct EventFilter {
+    pub kinds: Vec<String>,
+    pub tool: Option<String>,
+    pub q: Option<String>,
+}
+
 pub struct NewExecution<'a> {
     pub org_id: Uuid,
     pub agent_id: Uuid,
@@ -427,20 +436,73 @@ impl Store {
         after_seq: i64,
         limit: i64,
     ) -> StoreResult<Vec<ExecutionEventRecord>> {
-        Ok(sqlx::query_as::<_, ExecutionEventRecord>(
-            r#"
-            SELECT * FROM execution_events
-            WHERE org_id = $1 AND execution_id = $2 AND seq > $3
-            ORDER BY seq ASC
-            LIMIT $4
-            "#,
+        self.list_execution_events_filtered(
+            org_id,
+            execution_id,
+            after_seq,
+            limit,
+            &EventFilter::default(),
         )
-        .bind(org_id)
-        .bind(execution_id)
-        .bind(after_seq)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?)
+        .await
+    }
+
+    /// Filter in SQL, before `limit`, so a filtered timeline is not restricted to
+    /// whatever page happened to be loaded. Event rows and their order are unchanged.
+    pub async fn list_execution_events_filtered(
+        &self,
+        org_id: Uuid,
+        execution_id: Uuid,
+        after_seq: i64,
+        limit: i64,
+        filter: &EventFilter,
+    ) -> StoreResult<Vec<ExecutionEventRecord>> {
+        let mut query = sqlx::QueryBuilder::new("SELECT * FROM execution_events WHERE org_id = ");
+        query
+            .push_bind(org_id)
+            .push(" AND execution_id = ")
+            .push_bind(execution_id)
+            .push(" AND seq > ")
+            .push_bind(after_seq);
+
+        if !filter.kinds.is_empty() {
+            query
+                .push(" AND kind = ANY(")
+                .push_bind(&filter.kinds)
+                .push(")");
+        }
+        if let Some(tool) = &filter.tool {
+            query.push(" AND ");
+            push_contains(
+                &mut query,
+                tool,
+                &[
+                    "coalesce(data->>'tool', '')",
+                    "coalesce(data->>'capability', '')",
+                    "coalesce(data->>'connector', '')",
+                    "coalesce(data->>'connectorName', '')",
+                    "coalesce(data->>'connection', '')",
+                    "coalesce(data->>'connectionName', '')",
+                    "coalesce(data->'arguments'->>'connector', '')",
+                    "coalesce(data->'arguments'->>'connectionName', '')",
+                ],
+            );
+        }
+        if let Some(term) = &filter.q {
+            query.push(" AND ");
+            push_contains(
+                &mut query,
+                term,
+                &[
+                    "message",
+                    "coalesce(data->>'tool', '')",
+                    "coalesce(data->>'capability', '')",
+                    "coalesce(data->>'connector', '')",
+                    "coalesce(data->>'connectionName', '')",
+                ],
+            );
+        }
+        query.push(" ORDER BY seq ASC LIMIT ").push_bind(limit);
+        Ok(query.build_query_as().fetch_all(&self.pool).await?)
     }
 
     pub async fn count_active_executions_for_agent(
@@ -652,4 +714,22 @@ impl Store {
         .fetch_one(&self.pool)
         .await?)
     }
+}
+
+/// Adds `(position(lower(needle) in lower(column)) > 0 OR …)` to a query.
+/// `position` treats `%` and `_` literally, unlike `LIKE`.
+fn push_contains(query: &mut sqlx::QueryBuilder<sqlx::Postgres>, needle: &str, columns: &[&str]) {
+    query.push("(");
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("position(lower(")
+            .push_bind(needle)
+            .push(") in lower(")
+            .push(*column)
+            .push(")) > 0");
+    }
+    query.push(")");
 }

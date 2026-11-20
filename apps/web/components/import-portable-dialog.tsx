@@ -178,7 +178,9 @@ export function ImportPortableButton({
       setOpen(false);
       reset();
     } catch (error) {
-      // The server re-validates: show its explanation instead of a bare toast.
+      // The server re-validates: show its field errors instead of a bare toast or a stale
+      // "ready to import" report from the dry run.
+      setReport(null);
       setFailure(error instanceof Error ? error : new Error(errorMessage(error)));
     } finally {
       setBusy(null);
@@ -271,8 +273,8 @@ export function ImportPortableButton({
             {failure ? (
               <Callout tone="danger" title={failure.message}>
                 {failure instanceof PortableError && failure.details.length ? (
-                  <ul className="mt-1 space-y-0.5">
-                    {failure.details.slice(0, 8).map((detail, index) => (
+                  <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto">
+                    {failure.details.map((detail, index) => (
                       <li key={index} className="break-words">
                         <span className="font-mono">{detail.path}</span>: {detail.message}
                       </li>

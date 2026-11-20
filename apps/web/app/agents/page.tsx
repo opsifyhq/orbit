@@ -7,6 +7,7 @@ import { Bot, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { Callout } from "@/components/ui/callout";
 import { useConfirm } from "@/components/ui/confirm";
@@ -21,7 +22,6 @@ import {
   ListSkeleton,
   ListToolbar,
   SearchField,
-  SelectionBar,
   toggleId,
   toggleShown,
 } from "@/components/ui/resource-list";
@@ -133,17 +133,27 @@ export default function AgentsPage() {
         />
       </ListToolbar>
 
-      <SelectionBar
-        count={selected.size}
-        noun="agents"
-        allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
-        onSelectAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((agent) => agent.id), checked))}
-        onClear={() => setSelected(new Set())}
-      >
-        <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
-          Change access
-        </Button>
-      </SelectionBar>
+      {selected.size ? (
+        <BulkActionsBar
+          resource="agents"
+          selectedIds={[...selected]}
+          allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
+          onToggleAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((agent) => agent.id), checked))}
+          onChangeAccess={() => setBulkOpen(true)}
+          archivedIds={all
+            .filter((agent) => selected.has(agent.id) && agent.status === "archived")
+            .map((agent) => agent.id)}
+          onSucceeded={(ids) => {
+            setSelected((current) => {
+              const next = new Set(current);
+              ids.forEach((id) => next.delete(id));
+              return next;
+            });
+            void invalidateAgents();
+          }}
+          onClear={() => setSelected(new Set())}
+        />
+      ) : null}
 
       <BulkAccessDialog
         open={bulkOpen}

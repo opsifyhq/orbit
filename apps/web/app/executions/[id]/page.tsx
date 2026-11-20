@@ -5,12 +5,13 @@ export const dynamicParams = true;
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ban, Bot, Check, CloudOff, Copy, RefreshCw, RotateCw, ShieldX, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { executionTask, executionTitle } from "@/components/executions/execution-row";
+import { ExecutionTimeline } from "@/components/executions/execution-timeline";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,9 +21,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatusGlyph } from "@/components/ui/status";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
-import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/browser";
 import { errorStatus, request } from "@/lib/http";
@@ -37,7 +36,6 @@ import {
 import { useExecutionStream } from "@/lib/use-execution-stream";
 import { errorMessage } from "@orbit/api-client";
 import {
-  cn,
   formatDateTime,
   formatDuration,
   formatTokens,
@@ -46,13 +44,21 @@ import {
   titleCase,
 } from "@/lib/utils";
 import { brandName, capabilityLabel, humanizeIdentifier } from "@/lib/presentation";
-import { describeEvent, dispatchedModel, isKeyEvent, lastAgentMessage } from "@/lib/execution-events";
-import { Badge } from "@/components/ui/badge";
+import { dispatchedModel, lastAgentMessage } from "@/lib/execution-events";
 import { Markdown } from "@/components/ui/markdown";
 import { ApprovalDetails } from "@/components/approvals/approval-details";
 import type { ExecutionEventRecord, ExecutionRecord } from "@/lib/types";
 
 export default function ExecutionDetailPage() {
+  // Event filters read the URL; keep the rest of the page prerenderable.
+  return (
+    <Suspense fallback={<DetailSkeleton />}>
+      <ExecutionDetail />
+    </Suspense>
+  );
+}
+
+function ExecutionDetail() {
   const params = useParams<{ id: string }>();
   const executionId = params.id;
   const router = useRouter();
@@ -66,11 +72,6 @@ export default function ExecutionDetailPage() {
   const pendingApproval = pendingApprovals.data?.find(
     (approval) => approval.executionId === executionId,
   );
-  const [follow, setFollow] = useState(true);
-  const [showAll, setShowAll] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
-  // Follow keeps a live run pinned to its newest line; a finished run opens at the start.
-  const liveNow = useRef(false);
 
   // The stream's snapshot is only sent on connect and at the end; the polled record
   // catches changes in between. Show whichever is newer.
@@ -87,11 +88,6 @@ export default function ExecutionDetailPage() {
     return [...merged.values()].sort((a, b) => a.seq - b.seq);
   }, [eventsQuery.data, live.events]);
 
-  const visibleEvents = useMemo(
-    () => (showAll ? events : events.filter(isKeyEvent)),
-    [events, showAll],
-  );
-  const hiddenCount = events.length - visibleEvents.length;
   const lastSaid = useMemo(() => lastAgentMessage(events), [events]);
   const model = useMemo(() => dispatchedModel(events), [events]);
 
@@ -151,12 +147,6 @@ export default function ExecutionDetailPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
 
-  useEffect(() => {
-    if (follow && liveNow.current && logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [visibleEvents.length, follow]);
-
   const liveStatus = live.execution?.status;
   useEffect(() => {
     if (liveStatus && isTerminalStatus(liveStatus)) {
@@ -166,18 +156,7 @@ export default function ExecutionDetailPage() {
     }
   }, [liveStatus, executionId, queryClient]);
 
-  if (executionQuery.isLoading && !execution) {
-    return (
-      <div className="space-y-6">
-        <Skeleton className="h-5 w-24" />
-        <Skeleton className="h-10 w-80" />
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
-          <Skeleton className="h-96 rounded-xl" />
-          <Skeleton className="h-72 rounded-xl" />
-        </div>
-      </div>
-    );
-  }
+  if (executionQuery.isLoading && !execution) return <DetailSkeleton />;
 
   if (!execution) {
     const failureStatus = errorStatus(executionQuery.error) ?? live.fatal?.status;
@@ -227,7 +206,6 @@ export default function ExecutionDetailPage() {
   }
 
   const active = !isTerminalStatus(execution.status);
-  liveNow.current = active;
   const task = executionTask(execution);
   const usage = (execution.usage && typeof execution.usage === "object" ? execution.usage : {}) as {
     inputTokens?: number;
@@ -264,87 +242,13 @@ export default function ExecutionDetailPage() {
   const waitedForApproval = events.some((event) => /^approval requested/.test(event.message));
 
   const timeline = (
-    <Card className="min-w-0 overflow-hidden">
-      <CardHeader className="flex-col gap-3 border-b sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <CardTitle as="h2" className="flex items-center gap-2">
-            Timeline
-            {live.connected && active ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-info">
-                <StatusGlyph shape="orbiting" tone="info" /> Live
-              </span>
-            ) : null}
-          </CardTitle>
-          <p className="mt-0.5 text-[13px] text-muted-foreground">
-            {events.length === 0
-              ? "No events yet"
-              : `${visibleEvents.length} of ${events.length} events, last ${relativeTime(events.at(-1)!.createdAt)}`}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Segmented
-            label="Event detail"
-            size="sm"
-            value={showAll ? "all" : "key"}
-            onChange={(value) => setShowAll(value === "all")}
-            options={[
-              { value: "key", label: "Story" },
-              { value: "all", label: "Everything" },
-            ]}
-          />
-          {active ? (
-          <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground">
-            <Switch checked={follow} onCheckedChange={setFollow} aria-label="Follow new events" />
-            Follow
-          </label>
-          ) : null}
-        </div>
-      </CardHeader>
-      <div
-        ref={logRef}
-        className="max-h-[620px] min-h-[180px] overflow-y-auto px-4 py-1 sm:px-5"
-        tabIndex={0}
-        role="log"
-        aria-label="Execution timeline"
-      >
-        {visibleEvents.length === 0 ? (
-          <p className="py-12 text-center text-sm text-muted-foreground">
-            {events.length > 0
-              ? "Only background events so far. Switch to Everything to see them."
-              : active
-                ? "Waiting for the harness to report."
-                : "No events were recorded."}
-          </p>
-        ) : (
-          visibleEvents.map((event) => <EventLine key={event.seq} event={event} />)
-        )}
-      </div>
-      {active && events.length > 0 ? (
-        <div className="flex items-center gap-2 border-t bg-subtle px-4 py-2.5 text-[13px] text-muted-foreground sm:px-5">
-          <StatusGlyph shape={pendingApproval ? "paused" : "orbiting"} tone={pendingApproval ? "warning" : "info"} />
-          {pendingApproval
-            ? "Paused until someone approves or rejects the action above."
-            : execution.status === "queued"
-              ? "Waiting for a worker to pick it up."
-              : execution.status === "dispatched"
-                ? `A worker picked it up and is starting the harness. Last activity ${relativeTime(events.at(-1)!.createdAt)}.`
-                : `The agent is working. Last activity ${relativeTime(events.at(-1)!.createdAt)}.`}
-        </div>
-      ) : !showAll && hiddenCount > 0 ? (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t bg-subtle px-4 py-2.5 text-[13px] text-muted-foreground sm:px-5">
-          <span>
-            {hiddenCount} background event{hiddenCount === 1 ? "" : "s"} hidden (debug logs and tool lookups).
-          </span>
-          <button
-            type="button"
-            className="ml-auto font-medium text-primary underline-offset-4 hover:underline"
-            onClick={() => setShowAll(true)}
-          >
-            Show everything
-          </button>
-        </div>
-      ) : null}
-    </Card>
+    <ExecutionTimeline
+      events={events}
+      active={active}
+      connected={live.connected}
+      status={execution.status}
+      pendingApproval={Boolean(pendingApproval)}
+    />
   );
 
   // A run that ends without a result (timeout, cancel) still said something on the way.
@@ -612,6 +516,20 @@ export default function ExecutionDetailPage() {
   );
 }
 
+
+function DetailSkeleton() {
+  return (
+    <div className="space-y-6">
+      <Skeleton className="h-5 w-24" />
+      <Skeleton className="h-10 w-80" />
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <Skeleton className="h-96 rounded-xl" />
+        <Skeleton className="h-72 rounded-xl" />
+      </div>
+    </div>
+  );
+}
+
 /** A payload shown as readable text first, with the raw JSON one click away. */
 function DataPanel({
   title,
@@ -716,131 +634,6 @@ function queuedHint(
     .join("; ")}).`;
 }
 
-const TONE_TEXT: Record<string, string> = {
-  plain: "text-foreground",
-  muted: "text-muted-foreground",
-  agent: "text-foreground",
-  action: "text-foreground",
-  warning: "text-warning",
-  danger: "text-destructive",
-  success: "text-success",
-};
-
-const LABEL_TEXT: Record<string, string> = {
-  plain: "text-muted-foreground",
-  muted: "text-muted-foreground",
-  agent: "text-primary",
-  action: "text-info",
-  warning: "text-warning",
-  danger: "text-destructive",
-  success: "text-success",
-};
-
-/**
- * What the agent said along the way, rendered as Markdown like its final answer.
- * Long messages fold to a few lines so one report cannot push the rest of the timeline
- * out of view; the full text is one click away.
- */
-function AgentProse({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [overflows, setOverflows] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const measure = () => setOverflows(node.scrollHeight > node.clientHeight + 4);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [text]);
-
-  return (
-    <div>
-      <div
-        ref={ref}
-        className={cn(
-          "relative",
-          !expanded && "max-h-56 overflow-hidden",
-          !expanded &&
-            overflows &&
-            "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-12 after:bg-gradient-to-t after:from-card after:to-transparent",
-        )}
-      >
-        <Markdown className="text-[13px]">{text}</Markdown>
-      </div>
-      {overflows || expanded ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          className="mt-1 rounded text-xs font-medium text-primary hover:underline"
-        >
-          {expanded ? "Show less" : "Show all"}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function EventLine({ event }: { event: ExecutionEventRecord }) {
-  const view = describeEvent(event);
-  const hasData = Boolean(event.data && typeof event.data === "object" && Object.keys(event.data).length);
-
-  return (
-    <div className="grid grid-cols-[4.25rem_minmax(0,1fr)] gap-x-3 border-b border-border/70 py-2.5 text-[13px] last:border-b-0 sm:grid-cols-[4.25rem_4.75rem_minmax(0,1fr)]">
-      <time
-        className="tabular pt-px font-mono text-xs text-muted-foreground"
-        dateTime={event.createdAt}
-        title={formatDateTime(event.createdAt)}
-      >
-        {formatClock(event.createdAt)}
-      </time>
-      <span className={cn("hidden pt-px text-xs font-medium sm:block", LABEL_TEXT[view.tone])}>{view.label}</span>
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
-          {view.prose ? (
-            <div className="min-w-0 flex-1">
-              <span className={cn("text-xs font-medium sm:hidden", LABEL_TEXT[view.tone])}>{view.label}</span>
-              <AgentProse text={view.title} />
-            </div>
-          ) : (
-            <p className={cn("min-w-0 flex-1 break-words font-medium", TONE_TEXT[view.tone])}>
-              <span className={cn("font-medium sm:hidden", LABEL_TEXT[view.tone])}>{view.label}: </span>
-              {view.title}
-            </p>
-          )}
-          {view.badge ? (
-            <Badge
-              variant={
-                view.badge.tone === "success"
-                  ? "success"
-                  : view.badge.tone === "warning"
-                    ? "warning"
-                    : view.badge.tone === "danger"
-                      ? "destructive"
-                      : "secondary"
-              }
-            >
-              {view.badge.text}
-            </Badge>
-          ) : null}
-        </div>
-        {view.detail ? <p className="mt-0.5 break-words text-muted-foreground">{view.detail}</p> : null}
-        {hasData ? (
-          <details className="mt-1">
-            <summary className="w-fit cursor-pointer select-none rounded text-xs text-muted-foreground hover:text-foreground">
-              Details
-            </summary>
-            <pre className="code-block mt-1.5 max-h-64 whitespace-pre-wrap">{JSON.stringify(event.data, null, 2)}</pre>
-          </details>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function renderOutput(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -861,13 +654,4 @@ function renderOutput(value: unknown): string {
     return value.map((item) => (typeof item === "string" ? item : renderOutput(item))).join("\n\n");
   }
   return JSON.stringify(value, null, 2);
-}
-
-function formatClock(value: string): string {
-  return new Date(value).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
 }
