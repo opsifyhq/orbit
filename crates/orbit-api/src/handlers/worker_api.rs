@@ -487,7 +487,7 @@ async fn build_context(
     slugs.sort();
     slugs.dedup();
     let skills = state.store.skills_by_slugs(org_id, &slugs).await?;
-    let env = resolve_team_env(&state.store, org_id, execution, profile).await;
+    let env = resolve_team_env(&state.store, org_id, execution, &spec, profile).await;
     let tool_policies = state
         .store
         .effective_tool_policy_rules(org_id, execution.agent_id)
@@ -596,11 +596,24 @@ async fn resolve_team_env(
     store: &Store,
     org_id: Uuid,
     execution: &ExecutionRecord,
+    spec: &AgentSpec,
     profile: Option<&WorkerProfile>,
 ) -> Vec<ResolvedEnv> {
     let mut resolved = Vec::new();
     if let Some(profile) = profile {
-        for connection_id in team_ids(execution, "connectionIds") {
+        // CLI credentials come from the team's shared connections *and* the agent's own
+        // connector bindings. Gh/glab are worker tools, so without the agent bindings a
+        // normal (non-team) execution had no GH_TOKEN even though the connection was
+        // configured and `allowGh` was on.
+        let connection_ids: std::collections::BTreeSet<Uuid> = team_ids(execution, "connectionIds")
+            .into_iter()
+            .chain(
+                spec.connectors
+                    .iter()
+                    .filter_map(|binding| binding.connection_id),
+            )
+            .collect();
+        for connection_id in connection_ids {
             let Ok(row) = store
                 .get_connection_with_connector(org_id, connection_id)
                 .await
