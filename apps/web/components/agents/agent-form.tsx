@@ -772,6 +772,18 @@ export function AgentForm({
                     }}
                   >
                     <option value="">Select a provider</option>
+                    {spec.model.provider &&
+                    !(providers.data ?? []).some((p) => {
+                      const config = (p.config ?? {}) as Record<string, unknown>;
+                      return (
+                        p.name === spec.model.provider ||
+                        String(config.provider ?? p.name) === spec.model.provider
+                      );
+                    }) ? (
+                      // Renamed or deleted since it was saved: show what is stored instead
+                      // of displaying "Select a provider" over a value that still saves.
+                      <option value={spec.model.provider}>{spec.model.provider} (no longer configured)</option>
+                    ) : null}
                     <optgroup label="Signed in through the harness">
                       {harnessProviders.map((provider) => {
                         const config = (provider.config ?? {}) as Record<string, unknown>;

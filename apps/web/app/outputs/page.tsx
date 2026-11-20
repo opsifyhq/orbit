@@ -273,6 +273,8 @@ export default function OutputsPage() {
                   variant="outline"
                   onClick={() => test.mutate(output.id)}
                   loading={test.isPending && test.variables === output.id}
+                  disabled={!output.hasWebhook}
+                  title={output.hasWebhook ? undefined : "Add a webhook URL first"}
                 >
                   <Send /> Send test
                 </Button>
@@ -444,7 +446,12 @@ export default function OutputsPage() {
             <Button
               onClick={() => save.mutate()}
               loading={save.isPending}
-              disabled={!form.name.trim() || form.events.length === 0}
+              disabled={
+                !form.name.trim() ||
+                form.events.length === 0 ||
+                // A new output needs somewhere to send to; an existing one keeps its URL.
+                (!editing?.hasWebhook && !form.webhookUrl.trim())
+              }
             >
               {editing ? "Save changes" : "Create output"}
             </Button>

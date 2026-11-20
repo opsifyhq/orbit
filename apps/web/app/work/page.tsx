@@ -2,9 +2,10 @@
 
 export const dynamic = "force-dynamic";
 
+import { randomId } from "@/lib/browser";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Bot, CalendarClock, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
 import { toast } from "sonner";
@@ -136,6 +137,11 @@ export default function WorkPage() {
 
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  // Identifies this attempt to start work; renewed whenever what is being started changes.
+  const runKey = useRef(randomId());
+  useEffect(() => {
+    runKey.current = randomId();
+  }, [who, task, name, repository, harness]);
 
   /**
    * "On a schedule" adds a schedule trigger (cron, time zone and this task) to the agent
@@ -195,7 +201,15 @@ export default function WorkPage() {
         const result = unwrap(
           await api.POST("/api/v1/agents/{agent_id}/executions", {
             params: { path: { agent_id: who } },
-            body: { task: task.trim(), payload: repository.trim() ? { repository: repository.trim() } : {}, harnessOverride: harness || undefined, name: name.trim() || undefined },
+            body: {
+              task: task.trim(),
+              payload: repository.trim() ? { repository: repository.trim() } : {},
+              harnessOverride: harness || undefined,
+              name: name.trim() || undefined,
+              idempotencyKey: runKey.current,
+            },
+            // Same key on a retry or a double click: the API returns the first run.
+            headers: { "idempotency-key": runKey.current },
           }),
         );
         const effectiveHarness = harness || selectedAgent?.harness || defaultHarness || "mock";

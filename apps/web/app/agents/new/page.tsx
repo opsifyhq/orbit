@@ -3,18 +3,20 @@
 import { validationDetails } from "@/lib/http";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { AgentForm } from "@/components/agents/agent-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { api } from "@/lib/api";
 import { toAgentDefinitionBody } from "@/lib/agent-body";
-import { unwrap } from "@/lib/queries";
+import { queryKeys, unwrap } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import type { AgentDefinition } from "@orbit/contracts";
 
 export default function NewAgentPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
@@ -28,6 +30,8 @@ export default function NewAgentPage() {
         }),
       );
       toast.success("Agent created");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
       router.push(`/agents/${created.id}`);
     } catch (error) {
       const details = validationDetails(error);
