@@ -26,6 +26,8 @@ pub struct PageQuery {
 pub struct AgentListQuery {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// `draft`, `active`, `paused`, `archived`, or `current` for every agent that is
+    /// not archived.
     pub status: Option<String>,
     pub q: Option<String>,
 }

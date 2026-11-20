@@ -125,6 +125,8 @@ impl Store {
 
     /// List agents with their current spec in one query.
     #[allow(clippy::type_complexity)]
+    /// `status` is an agent status, or `current` for every agent that is not archived
+    /// (what a person means by "my agents").
     pub async fn list_agents(
         &self,
         org_id: Uuid,
@@ -148,7 +150,8 @@ impl Store {
             FROM agents a
             LEFT JOIN agent_versions av ON av.agent_id = a.id AND av.version = a.current_version
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::timestamptz IS NULL OR (a.created_at, a.id) < ($4::timestamptz, $5::uuid))
               AND ($7::bool OR a.owner_user_id = $8
@@ -177,7 +180,8 @@ impl Store {
             r#"
             SELECT COUNT(*) FROM agents a
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::bool OR a.owner_user_id = $5
                    OR CASE WHEN $7::bool AND a.owner_team_id IS NOT NULL

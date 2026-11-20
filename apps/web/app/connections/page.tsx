@@ -1,137 +1,65 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Cable,
-  Download,
-  MoreHorizontal,
-  Pencil,
-  PlugZap,
-  Plus,
-  Trash2,
-  Webhook,
-} from "lucide-react";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
+import { Cable, Plus, Webhook } from "lucide-react";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import { BulkAccessDialog } from "@/components/bulk-access-dialog";
+import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Disclosure } from "@/components/ui/disclosure";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card } from "@/components/ui/card";
-import { CheckboxField } from "@/components/ui/checkbox";
-import { useConfirm } from "@/components/ui/confirm";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Field } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  ListCard,
+  ListCount,
+  ListRow,
+  ListSkeleton,
+  ListToolbar,
+  ROW_LINK,
+  SearchField,
+  SelectionBar,
+  toggleId,
+  toggleShown,
+} from "@/components/ui/resource-list";
 import { Section } from "@/components/ui/section";
-import { Select } from "@/components/ui/select";
-import { exportResource } from "@/components/export-resource-button";
-import { ImportPortableButton } from "@/components/import-portable-dialog";
+import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Status, type StatusMeta } from "@/components/ui/status";
-import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
-import { setConfigField } from "@/lib/connection-config";
-import { request } from "@/lib/http";
-import { queryKeys, unwrap, useConnections, useConnectors } from "@/lib/queries";
-import { errorMessage } from "@orbit/api-client";
-import { formatDate, relativeTime, titleCase } from "@/lib/utils";
-import { capabilityLabel, effectLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
+import { Status } from "@/components/ui/status";
+import { connectionHealth, connectionStatus, type Capability } from "@/lib/connections";
+import { capabilityLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
+import { queryKeys, useConnections, useConnectors } from "@/lib/queries";
 import type { ConnectionView } from "@/lib/types";
+import { relativeTime } from "@/lib/utils";
+import { errorMessage } from "@orbit/api-client";
 
-type Capability = { id: string; name: string; effect: string };
+type Filter = "all" | "connected" | "error" | "unchecked";
 
-const MAX_CHIPS = 6;
-
-/** Read = quiet, write = warning, external effect = destructive: the same scale as approvals. */
-function effectVariant(effect: string | null | undefined) {
-  const tone = effectTone(effect);
-  // Red is kept for failures and irreversible actions; both risky effects are amber
-  // and the label says which one it is.
-  return tone === "safe" ? "secondary" : "warning";
-}
-
-function connectionStatus(connection: ConnectionView): StatusMeta {
-  // "active" is the usable state; a recorded check is what earns "Connected".
-  if (connection.status === "active" && connection.lastCheckedAt) {
-    return { label: "Connected", tone: "success", shape: "solid" };
-  }
-  if (connection.status === "error") return { label: "Last check failed", tone: "danger", shape: "cross" };
-  return { label: titleCase(connection.status), tone: "neutral", shape: "ring" };
-}
-
-const defaultConfig = (slug: string) => {
-  if (slug === "gitlab") {
-    return JSON.stringify(
-      {
-        baseUrl: "https://gitlab.com/api/v4",
-        cloneBaseUrl: "https://gitlab.com",
-      },
-      null,
-      2,
-    );
-  }
-  if (slug === "webhook") {
-    return JSON.stringify({ url: "" }, null, 2);
-  }
-  return "{}";
+const FILTER_LABEL: Record<Filter, string> = {
+  all: "All",
+  connected: "Connected",
+  error: "Check failed",
+  unchecked: "Not checked",
 };
 
+function inFilter(connection: ConnectionView, filter: Filter) {
+  return filter === "all" || connectionHealth(connection) === filter;
+}
+
 export default function ConnectionsPage() {
-  const accessRef = useRef<ResourceAccessHandle>(null);
   const connections = useConnections();
   const connectors = useConnectors();
   const queryClient = useQueryClient();
-  const confirm = useConfirm();
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<{ id: string; connectorSlug: string; hasCredential: boolean } | null>(null);
-  const [connectorSlug, setConnectorSlug] = useState("telegram");
-  const [name, setName] = useState("");
-  const [credential, setCredential] = useState("");
-  const [scopes, setScopes] = useState<string[]>([]);
-  const [configText, setConfigText] = useState("{}");
-  const [configError, setConfigError] = useState<string | null>(null);
-  const [connectionUrl, setConnectionUrl] = useState("");
-  const [schemaValues, setSchemaValues] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
 
-  const selected = connectors.data?.find((connector) => connector.slug === connectorSlug);
-  const capabilities = (selected?.capabilities ?? []) as Capability[];
-  const schema = (selected?.configSchema ?? {}) as {
-    properties?: Record<
-      string,
-      {
-        type?: string;
-        title?: string;
-        description?: string;
-        default?: unknown;
-        format?: string;
-      }
-    >;
-    required?: string[];
-  };
-  const schemaFields = Object.entries(schema.properties ?? {}).filter(
-    ([key]) => !["baseUrl", "cloneBaseUrl", "url"].includes(key),
-  );
-
-  // Effect of every capability, so a connection's scopes can be coloured by what they can do.
+  // The effect of every capability, so scopes can be counted by what they can do.
   const effectBySlug = useMemo(() => {
     const map = new Map<string, Map<string, string>>();
     for (const connector of connectors.data ?? []) {
@@ -141,346 +69,201 @@ export default function ConnectionsPage() {
     return map;
   }, [connectors.data]);
 
-  const connectionCount = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const connection of connections.data ?? []) {
-      counts.set(connection.connectorSlug, (counts.get(connection.connectorSlug) ?? 0) + 1);
+  const all = useMemo(() => connections.data ?? [], [connections.data]);
+  const counts = useMemo(() => {
+    const result: Record<Filter, number> = { all: 0, connected: 0, error: 0, unchecked: 0 };
+    for (const connection of all) {
+      for (const key of Object.keys(result) as Filter[]) if (inFilter(connection, key)) result[key] += 1;
     }
-    return counts;
-  }, [connections.data]);
-
-  function setSchemaField(key: string, value: string) {
-    setSchemaValues((current) => ({ ...current, [key]: value }));
-    const result = setConfigField(configText, key, value, schema.properties?.[key]);
-    if (result.error) {
-      setConfigError(result.error);
-      return;
-    }
-    setConfigError(null);
-    setConfigText(result.configText);
-  }
-
-  const save = useMutation({
-    mutationFn: async () => {
-      let config: Record<string, unknown> = {};
-      try {
-        const parsed = configText.trim() ? JSON.parse(configText) : {};
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          config = parsed as Record<string, unknown>;
-        }
-      } catch {
-        throw new Error("Connection config must be valid JSON");
-      }
-      const url = connectionUrl.trim().replace(/\/+$/, "");
-      if (url && !/^https?:\/\//.test(url)) {
-        throw new Error("URL must start with https:// or http://");
-      }
-      if (connectorSlug === "gitlab" && url) {
-        const root = url.replace(/\/api\/v4$/, "");
-        config = { ...config, baseUrl: `${root}/api/v4`, cloneBaseUrl: root };
-      }
-      if (connectorSlug === "webhook" && url) {
-        config = { ...config, url };
-      }
-      if (editing) {
-        return unwrap(
-          await api.PATCH("/api/v1/connections/{connection_id}", {
-            params: { path: { connection_id: editing.id } },
-            body: {
-              name: name.trim(),
-              scopes,
-              config,
-              ...(credential ? { credential } : {}),
-            },
-          }),
-        );
-      }
-      return unwrap(
-        await api.POST("/api/v1/connections", {
-          body: {
-            connectorSlug,
-            name: name.trim(),
-            ...(credential ? { credential } : {}),
-            scopes,
-            config,
-          },
-        }),
-      );
-    },
-    onSuccess: () => {
-      toast.success(editing ? "Connection updated" : "Connection created");
-      setOpen(false);
-      setEditing(null);
-      setName("");
-      setCredential("");
-      setScopes([]);
-      setConfigText("{}");
-      setConfigError(null);
-      setConnectionUrl("");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.connectors });
-    },
-    onError: (error) => toast.error(errorMessage(error)),
-  });
-
-  /** Picking a connector resets everything that depends on it. */
-  function chooseConnector(slug: string) {
-    setConnectorSlug(slug);
-    setScopes([]);
-    setConfigText(defaultConfig(slug));
-    setConfigError(null);
-    setSchemaValues({});
-    setConnectionUrl(slug === "gitlab" ? "https://gitlab.com" : "");
-  }
-
-  function openCreate(slug?: string) {
-    setEditing(null);
-    setName("");
-    setCredential("");
-    if (slug) {
-      chooseConnector(slug);
-    } else {
-      setConnectorSlug("telegram");
-      setScopes([]);
-      setConfigText(defaultConfig("telegram"));
-      setConfigError(null);
-      setSchemaValues({});
-      setConnectionUrl("");
-    }
-    setOpen(true);
-  }
-
-  function openEdit(connection: ConnectionView) {
-    setEditing({
-      id: connection.id,
-      connectorSlug: connection.connectorSlug,
-      hasCredential: connection.hasCredential,
+    return result;
+  }, [all]);
+  const visible = useMemo(() => {
+    const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+    return all.filter((connection) => {
+      if (!inFilter(connection, filter)) return false;
+      const haystack = `${connection.name} ${connection.connectorName} ${connection.scopes.map(capabilityLabel).join(" ")}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
     });
-    setConnectorSlug(connection.connectorSlug);
-    setName(connection.name);
-    setCredential("");
-    setScopes(connection.scopes);
-    setConfigText(JSON.stringify(connection.config ?? {}, null, 2));
-    setConfigError(null);
-    const config = (connection.config ?? {}) as Record<string, unknown>;
-    setSchemaValues(
-      Object.fromEntries(
-        Object.entries(config).map(([key, value]) => [
-          key,
-          typeof value === "object" ? JSON.stringify(value) : String(value ?? ""),
-        ]),
-      ),
-    );
-    const baseUrl = String(config.baseUrl ?? "");
-    const cloneBaseUrl = String(config.cloneBaseUrl ?? "");
-    setConnectionUrl(
-      connection.connectorSlug === "gitlab"
-        ? cloneBaseUrl || baseUrl.replace(/\/api\/v4$/, "")
-        : connection.connectorSlug === "webhook"
-          ? String(config.url ?? "")
-          : "",
-    );
-    setOpen(true);
-  }
+  }, [all, filter, search]);
 
-  const test = useMutation({
-    mutationFn: (id: string) =>
-      request<{ supported: boolean; ok: boolean; latencyMs: number; message: string }>(
-        `/api/v1/connections/${id}/test`,
-        { method: "POST" },
-      ),
-    onSuccess: (result) => {
-      if (!result.supported) {
-        // Nothing was contacted and nothing changed: not a failure.
-        toast.info(result.message);
-        return;
-      }
-      if (result.ok) {
-        toast.success(`${result.message} (${result.latencyMs} ms)`);
-      } else {
-        toast.error(`Test failed: ${result.message}`);
-      }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
-    },
-    onError: (error) => toast.error(`Test failed: ${errorMessage(error)}`),
-  });
+  const connectedCount = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const connection of all) result.set(connection.connectorSlug, (result.get(connection.connectorSlug) ?? 0) + 1);
+    return result;
+  }, [all]);
 
-  async function saveConnection() {
-    if ((await accessRef.current?.save()) === false) return;
-    save.mutate();
-  }
-
-  const remove = useMutation({
-    mutationFn: async (id: string) =>
-      unwrap(
-        await api.DELETE("/api/v1/connections/{connection_id}", {
-          params: { path: { connection_id: id } },
-        }),
-      ),
-    onSuccess: () => {
-      toast.success("Connection removed");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
-    },
-    onError: (error) => toast.error(errorMessage(error)),
-  });
-
-  async function removeConnection(connection: ConnectionView) {
-    const ok = await confirm({
-      title: `Remove connection ${connection.name}?`,
-      description:
-        "Its stored credential is deleted and agents lose access through it. This cannot be undone.",
-      confirmLabel: "Remove connection",
-      destructive: true,
-    });
-    if (ok) remove.mutate(connection.id);
-  }
-
-  const catalogue = connectors.data ?? [];
+  const scopeSummary = (connection: ConnectionView) => {
+    const effects = effectBySlug.get(connection.connectorSlug);
+    const tally = { safe: 0, write: 0, external: 0 };
+    for (const scope of connection.scopes) tally[effectTone(effects?.get(scope))] += 1;
+    return [
+      tally.safe ? `${tally.safe} read` : null,
+      tally.write ? `${tally.write} change` : null,
+      tally.external ? `${tally.external} act outside` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PageHeader
         title="Connectors"
         description="Connections are accounts you have authorised for external services. Agents use them only for the capabilities you allow, and ORBIT enforces that."
         actions={
           <div className="flex flex-wrap gap-2">
             <ImportPortableButton />
-            <Button onClick={() => openCreate()}>
-              <Plus /> New connection
+            <Button asChild>
+              <Link href="/connections/new">
+                <Plus /> New connection
+              </Link>
             </Button>
           </div>
         }
       />
 
-      <Section
-        title="Your connections"
-        count={connections.data?.length}
-        description="Each connection holds one credential and the capabilities it may be used for."
+      <ListToolbar>
+        <SearchField
+          value={search}
+          onChange={setSearch}
+          placeholder="Filter by name, service or capability"
+          label="Filter connections"
+        />
+        <Segmented
+          label="Connection status"
+          value={filter}
+          onChange={setFilter}
+          options={(Object.keys(FILTER_LABEL) as Filter[]).map((value) => ({
+            value,
+            label: FILTER_LABEL[value],
+            count: connections.data ? counts[value] : undefined,
+          }))}
+        />
+      </ListToolbar>
+
+      <SelectionBar
+        count={selected.size}
+        noun="connections"
+        allShownSelected={visible.length > 0 && visible.every((connection) => selected.has(connection.id))}
+        onSelectAllShown={(checked) =>
+          setSelected((current) => toggleShown(current, visible.map((connection) => connection.id), checked))
+        }
+        onClear={() => setSelected(new Set())}
       >
-        {connections.isLoading ? (
-          <Card className="overflow-hidden">
-            {Array.from({ length: 2 }).map((_, index) => (
-              <div key={index} className="border-b px-5 py-4 last:border-b-0">
-                <Skeleton className="h-14" />
-              </div>
-            ))}
-          </Card>
-        ) : connections.isError ? (
-          <Callout tone="danger" title="Could not load connections">
-            {errorMessage(connections.error)}
-          </Callout>
-        ) : !connections.data?.length ? (
-          <EmptyState
-            icon={<Cable />}
-            title="No connections yet"
-            description="Pick a service from the list below to connect a Telegram bot, a GitLab account or a webhook. Then you can grant agents specific capabilities."
-            action={
-              <Button variant="outline" onClick={() => openCreate()}>
-                <Plus /> New connection
-              </Button>
-            }
-          />
-        ) : (
-          <Card className="overflow-hidden">
-            {connections.data.map((connection) => {
-              const effects = effectBySlug.get(connection.connectorSlug);
-              const shown = connection.scopes.slice(0, MAX_CHIPS);
-              const hidden = connection.scopes.slice(MAX_CHIPS);
+        <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>
+          Change access
+        </Button>
+      </SelectionBar>
+
+      <BulkAccessDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        resource="connections"
+        ids={[...selected]}
+        onDone={() => {
+          setSelected(new Set());
+          void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
+        }}
+      />
+
+      {connections.isLoading ? (
+        <ListSkeleton />
+      ) : connections.isError ? (
+        <Callout tone="danger" title="Connections could not be loaded">
+          {errorMessage(connections.error)}
+        </Callout>
+      ) : visible.length ? (
+        <>
+          <ListCard columns={["Connection", "Status", "Capabilities", "Checked"]}>
+            {visible.map((connection) => {
+              const summary = scopeSummary(connection);
               return (
-                <div
+                <ListRow
                   key={connection.id}
-                  className="flex flex-col gap-3 border-b px-4 py-4 last:border-b-0 sm:px-5 lg:flex-row lg:items-start lg:justify-between"
-                >
-                  <div className="min-w-0 space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-medium">{connection.name}</p>
-                      <Badge variant="outline">{connection.connectorName}</Badge>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
-                      <Status meta={connectionStatus(connection)} />
-                      <span>
-                        {connection.hasCredential ? "Credential set" : "No credential"}
-                      </span>
-                      <span>
-                        {connection.lastCheckedAt
-                          ? `Checked ${relativeTime(connection.lastCheckedAt)}`
-                          : "Never checked"}
-                      </span>
-                      <span>Added {formatDate(connection.createdAt)}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {connection.scopes.length ? (
-                        <>
-                          {shown.map((scope) => (
-                            <Badge key={scope} variant={effectVariant(effects?.get(scope))} title={scope}>
-                              {capabilityLabel(scope)}
-                            </Badge>
-                          ))}
-                          {hidden.length ? (
-                            <Badge
-                              variant="outline"
-                              title={hidden.map((scope) => capabilityLabel(scope)).join(", ")}
-                            >
-                              +{hidden.length} more
-                            </Badge>
-                          ) : null}
-                        </>
-                      ) : (
-                        <span className="text-[13px] text-muted-foreground">
-                          No capabilities allowed yet. Edit the connection to choose some.
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      aria-label={`Test ${connection.name}`}
-                      onClick={() => test.mutate(connection.id)}
-                      loading={test.isPending && test.variables === connection.id}
-                    >
-                      <PlugZap /> Test
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`Edit ${connection.name}`}
-                      onClick={() => openEdit(connection)}
-                    >
-                      <Pencil /> Edit
-                    </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={`More actions for ${connection.name}`}
-                        >
-                          <MoreHorizontal />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => void exportResource("connections", connection.id, connection.name)}>
-                          <Download /> Export as YAML
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem destructive onSelect={() => void removeConnection(connection)}>
-                          <Trash2 /> Remove connection
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
+                  checkbox={
+                    <Checkbox
+                      aria-label={`Select ${connection.name}`}
+                      checked={selected.has(connection.id)}
+                      onChange={(event) => setSelected((current) => toggleId(current, connection.id, event.target.checked))}
+                    />
+                  }
+                  name={
+                    <>
+                      <p className="flex items-center gap-2">
+                        <Link href={`/connections/${connection.id}`} className={ROW_LINK}>
+                          {connection.name}
+                        </Link>
+                        <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">{connection.connectorName}</span>
+                      </p>
+                      <p className="mt-0.5 line-clamp-1 text-[13px] text-muted-foreground">
+                        {connection.scopes.length
+                          ? connection.scopes.map(capabilityLabel).join(", ")
+                          : "No capabilities allowed yet"}
+                      </p>
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                        <span className="sm:hidden">{connection.connectorName}</span>
+                        <span>{summary || "Nothing allowed"}</span>
+                        <span>{connection.hasCredential ? "Credential stored" : "No credential"}</span>
+                        <span>{connection.lastCheckedAt ? `Checked ${relativeTime(connection.lastCheckedAt)}` : "Never checked"}</span>
+                      </p>
+                    </>
+                  }
+                  status={<Status meta={connectionStatus(connection)} />}
+                  details={
+                    <>
+                      <p className="truncate">{summary || "Nothing allowed"}</p>
+                      <p className={connection.hasCredential ? "mt-0.5 text-xs text-muted-foreground" : "mt-0.5 text-xs text-warning"}>
+                        {connection.hasCredential ? "Credential stored" : "No credential"}
+                      </p>
+                    </>
+                  }
+                  updated={connection.lastCheckedAt ? relativeTime(connection.lastCheckedAt) : "Never"}
+                />
               );
             })}
-          </Card>
-        )}
-      </Section>
+          </ListCard>
+          <ListCount shown={visible.length} total={counts[filter]} singular="connection" plural="connections" />
+        </>
+      ) : (
+        <EmptyState
+          icon={<Cable />}
+          title={
+            search
+              ? `No connections match “${search}”`
+              : all.length === 0
+                ? "No connections yet"
+                : `No connections with status “${FILTER_LABEL[filter].toLowerCase()}”`
+          }
+          description={
+            search
+              ? "Try a shorter term, or clear the filter to see every connection."
+              : all.length === 0
+                ? "Connect a service below, such as a GitHub or GitLab account, a Telegram bot or a webhook. Then allow agents specific capabilities."
+                : "Connections with another status are one tap away in the filter."
+          }
+          action={
+            search ? (
+              <Button variant="outline" onClick={() => setSearch("")}>
+                Clear filter
+              </Button>
+            ) : all.length === 0 ? (
+              <Button asChild variant="outline">
+                <Link href="/connections/new">
+                  <Plus /> New connection
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => setFilter("all")}>
+                Show all connections
+              </Button>
+            )
+          }
+        />
+      )}
 
       <Section
         title="Connect a service"
-        description="The services ORBIT can connect to. Capabilities are colour-coded by what they can do: read only, change data, or act outside ORBIT."
+        description="The services ORBIT can connect to. Capabilities are counted by what they can do: read only, change data, or act outside ORBIT."
       >
         {connectors.isLoading ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -489,17 +272,17 @@ export default function ConnectionsPage() {
             ))}
           </div>
         ) : connectors.isError ? (
-          <Callout tone="danger" title="Could not load the connector catalogue">
+          <Callout tone="danger" title="The connector catalogue could not be loaded">
             {errorMessage(connectors.error)}
           </Callout>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {catalogue.map((connector) => {
+            {(connectors.data ?? []).map((connector) => {
               const caps = (connector.capabilities ?? []) as Capability[];
               const auth = (connector.auth ?? []) as string[];
-              const counts = { safe: 0, write: 0, external: 0 };
-              for (const cap of caps) counts[effectTone(cap.effect)] += 1;
-              const existing = connectionCount.get(connector.slug) ?? 0;
+              const tally = { safe: 0, write: 0, external: 0 };
+              for (const cap of caps) tally[effectTone(cap.effect)] += 1;
+              const existing = connectedCount.get(connector.slug) ?? 0;
               return (
                 <Card key={connector.id} className="flex flex-col gap-3 p-4">
                   <div className="space-y-1">
@@ -514,11 +297,9 @@ export default function ConnectionsPage() {
                     <p className="text-[13px] text-muted-foreground">{connector.description}</p>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {counts.safe ? <Badge variant="secondary">{counts.safe} read only</Badge> : null}
-                    {counts.write ? <Badge variant="warning">{counts.write} change data</Badge> : null}
-                    {counts.external ? (
-                      <Badge variant="warning">{counts.external} act outside ORBIT</Badge>
-                    ) : null}
+                    {tally.safe ? <Badge variant="secondary">{tally.safe} read only</Badge> : null}
+                    {tally.write ? <Badge variant="warning">{tally.write} change data</Badge> : null}
+                    {tally.external ? <Badge variant="warning">{tally.external} act outside ORBIT</Badge> : null}
                     {auth.map((method) => (
                       <Badge key={method} variant="outline">
                         {humanizeIdentifier(method)}
@@ -529,13 +310,10 @@ export default function ConnectionsPage() {
                     <span className="text-[13px] text-muted-foreground">
                       {existing ? `${existing} connected` : "Not connected"}
                     </span>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openCreate(connector.slug)}
-                      aria-label={`Connect ${connector.name}`}
-                    >
-                      <Plus /> Connect
+                    <Button asChild size="sm" variant="outline" aria-label={`Connect ${connector.name}`}>
+                      <Link href={`/connections/new?connector=${connector.slug}`}>
+                        <Plus /> Connect
+                      </Link>
                     </Button>
                   </div>
                 </Card>
@@ -544,199 +322,6 @@ export default function ConnectionsPage() {
           </div>
         )}
       </Section>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${name || "connection"}` : "New connection"}</DialogTitle>
-            <DialogDescription>
-              Credentials are encrypted at rest and never shown again.
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (name.trim() && !configError && !save.isPending) void saveConnection();
-            }}
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Connector" htmlFor="connection-connector">
-                <Select
-                  id="connection-connector"
-                  value={connectorSlug}
-                  disabled={Boolean(editing)}
-                  onChange={(event) => chooseConnector(event.target.value)}
-                >
-                  {catalogue.map((connector) => (
-                    <option key={connector.slug} value={connector.slug}>
-                      {connector.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="Name" htmlFor="connection-name">
-                <Input
-                  id="connection-name"
-                  value={name}
-                  placeholder="Team GitLab"
-                  onChange={(event) => setName(event.target.value)}
-                />
-              </Field>
-            </div>
-
-            {connectorSlug === "gitlab" || connectorSlug === "webhook" ? (
-              <Field
-                label={connectorSlug === "gitlab" ? "GitLab URL" : "Webhook URL"}
-                htmlFor="connection-url"
-                hint={
-                  connectorSlug === "gitlab"
-                    ? "The base URL. ORBIT adds /api/v4 for API calls and uses the same host for git clone and push."
-                    : "The endpoint ORBIT sends signed JSON to."
-                }
-              >
-                <Input
-                  id="connection-url"
-                  className="font-mono"
-                  value={connectionUrl}
-                  placeholder={
-                    connectorSlug === "gitlab"
-                      ? "https://gitlab.internal"
-                      : "https://example.com/hooks/orbit"
-                  }
-                  onChange={(event) => setConnectionUrl(event.target.value)}
-                />
-              </Field>
-            ) : null}
-
-            <Field
-              label="Credential"
-              htmlFor="connection-credential"
-              hint={
-                editing
-                  ? editing.hasCredential
-                    ? "A credential is stored. Leave blank to keep the current secret, or enter a new one to replace it."
-                    : "No credential is stored yet. Enter one to add it."
-                  : "A token or bot token. Stored encrypted, and you will not see it again."
-              }
-            >
-              <Input
-                id="connection-credential"
-                type="password"
-                value={credential}
-                autoComplete="new-password"
-                onChange={(event) => setCredential(event.target.value)}
-              />
-            </Field>
-
-            {schemaFields.length > 0 && connectorSlug !== "gitlab" && connectorSlug !== "webhook" ? (
-              <div className="space-y-4 rounded-lg border p-3">
-                {schemaFields.map(([key, property]) => (
-                  <Field
-                    key={key}
-                    htmlFor={`connection-config-${key}`}
-                    label={
-                      <>
-                        {property.title || humanizeIdentifier(key)}
-                        {schema.required?.includes(key) ? (
-                          <span className="ml-1.5 font-normal text-muted-foreground">Required</span>
-                        ) : null}
-                      </>
-                    }
-                    hint={property.description}
-                  >
-                    {property.type === "boolean" ? (
-                      <Select
-                        id={`connection-config-${key}`}
-                        value={schemaValues[key] ?? String(property.default ?? "false")}
-                        onChange={(event) => setSchemaField(key, event.target.value)}
-                      >
-                        <option value="false">No</option>
-                        <option value="true">Yes</option>
-                      </Select>
-                    ) : (
-                      <Input
-                        id={`connection-config-${key}`}
-                        type={
-                          property.type === "integer" || property.type === "number"
-                            ? "number"
-                            : property.format === "password"
-                              ? "password"
-                              : "text"
-                        }
-                        value={schemaValues[key] ?? String(property.default ?? "")}
-                        placeholder={String(property.default ?? "")}
-                        onChange={(event) => setSchemaField(key, event.target.value)}
-                      />
-                    )}
-                  </Field>
-                ))}
-              </div>
-            ) : null}
-
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Allowed capabilities</legend>
-              <p className="text-[13px] text-muted-foreground">
-                Agents can only use the capabilities you tick here.
-              </p>
-              {capabilities.length ? (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {capabilities.map((capability) => (
-                    <CheckboxField
-                      key={capability.id}
-                      checked={scopes.includes(capability.id)}
-                      onChange={(event) =>
-                        setScopes((current) =>
-                          event.target.checked
-                            ? [...current, capability.id]
-                            : current.filter((id) => id !== capability.id),
-                        )
-                      }
-                      title={capability.name}
-                      description={
-                        <Badge variant={effectVariant(capability.effect)} className="mt-1">
-                          {effectLabel(capability.effect)}
-                        </Badge>
-                      }
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[13px] text-muted-foreground">This connector has no capabilities to choose.</p>
-              )}
-            </fieldset>
-
-            <Disclosure title="Advanced configuration" summary="Raw JSON">
-                <Field
-                  label="Config"
-                  htmlFor="connection-config-json"
-                  hint="Must be a JSON object."
-                  error={configError ?? undefined}
-                >
-                  <Textarea
-                    id="connection-config-json"
-                    className="min-h-28 font-mono text-xs"
-                    value={configText}
-                    onChange={(event) => {
-                      setConfigText(event.target.value);
-                      setConfigError(null);
-                    }}
-                  />
-                </Field>
-              </Disclosure>
-
-            <ResourceAccessFields ref={accessRef} resource="connections" resourceId={editing?.id} />
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" loading={save.isPending} disabled={!name.trim() || Boolean(configError)}>
-                {editing ? "Save changes" : "Create connection"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

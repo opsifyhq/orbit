@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
@@ -240,32 +241,96 @@ export function useAgentVersions(id: string | undefined) {
   });
 }
 
-export function useExecutions(params: {
+type ExecutionListParams = {
   status?: string;
   agentId?: string;
   limit?: number;
   cursor?: string;
   archived?: boolean;
-} = {}) {
+};
+
+async function fetchExecutions(params: ExecutionListParams): Promise<ExecutionPage> {
+  return unwrap(
+    await api.GET("/api/v1/executions", {
+      params: {
+        query: {
+          limit: params.limit,
+          cursor: params.cursor,
+          status: params.status,
+          agentId: params.agentId,
+          archived: params.archived,
+        },
+      },
+    }),
+  );
+}
+
+export function useExecutions(params: ExecutionListParams = {}) {
   return useQuery<ExecutionPage>({
     queryKey: queryKeys.executions(params),
-    queryFn: async () =>
-      unwrap(
-        await api.GET("/api/v1/executions", {
-          params: {
-            query: {
-              limit: params.limit,
-              cursor: params.cursor,
-              status: params.status,
-              agentId: params.agentId,
-              archived: params.archived,
-            },
-          },
-        }),
-      ),
+    queryFn: () => fetchExecutions(params),
     refetchInterval: 10_000,
     placeholderData: (previous) => previous,
   });
+}
+
+/**
+ * The newest page of executions, kept live, plus older pages loaded on request.
+ *
+ * Only the first page polls: history does not change, so re-fetching every loaded
+ * page every ten seconds would be wasted work. Rows are de-duplicated because new
+ * runs push older ones across the page boundary between fetches.
+ */
+export function usePagedExecutions(params: Omit<ExecutionListParams, "cursor">) {
+  const first = useExecutions(params);
+  const key = JSON.stringify(params);
+  const [older, setOlder] = useState<{ key: string; pages: ExecutionPage[] }>({ key, pages: [] });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  // Pages loaded under other filters belong to another list.
+  const pages = older.key === key ? older.pages : [];
+
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: ExecutionPage["items"] = [];
+    for (const page of [first.data, ...pages]) {
+      for (const item of page?.items ?? []) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }, [first.data, pages]);
+
+  const nextCursor = pages.length ? pages[pages.length - 1].nextCursor : first.data?.nextCursor;
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setLoadError(null);
+    try {
+      const page = await fetchExecutions({ ...params, cursor: nextCursor });
+      setOlder((current) => ({
+        key,
+        pages: [...(current.key === key ? current.pages : []), page],
+      }));
+    } catch (error) {
+      setLoadError(error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  return {
+    first,
+    items,
+    total: first.data?.total ?? 0,
+    hasMore: Boolean(nextCursor),
+    loadMore,
+    loadingMore,
+    loadError,
+  };
 }
 
 export function useExecution(id: string | undefined) {

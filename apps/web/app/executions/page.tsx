@@ -16,7 +16,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionListHeader, ExecutionRow } from "@/components/executions/execution-row";
-import { useExecutions } from "@/lib/queries";
+import { usePagedExecutions } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 
 const STATUSES = [
@@ -76,14 +76,15 @@ function Executions() {
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
-  const executions = useExecutions({
+  const paged = usePagedExecutions({
     status: status === "all" ? undefined : status,
     limit: 50,
     archived: archived === "all" ? undefined : archived === "archived",
   });
+  const executions = paged.first;
 
   const groups = useMemo(() => {
-    const items = executions.data?.items ?? [];
+    const items = paged.items;
     const grouped = new Map<string, typeof items>();
     for (const execution of items) {
       const teamRunId = (execution as typeof execution & { teamRunId?: string | null }).teamRunId;
@@ -93,11 +94,11 @@ function Executions() {
       grouped.set(key, current);
     }
     return Array.from(grouped.entries());
-  }, [executions.data?.items]);
+  }, [paged.items]);
 
   const filtered = status !== "all" || archived !== "active";
-  const shown = executions.data?.items.length ?? 0;
-  const total = executions.data?.total ?? 0;
+  const shown = paged.items.length;
+  const total = paged.total;
 
   return (
     <div className="space-y-6">
@@ -169,9 +170,23 @@ function Executions() {
               ),
             )}
           </Card>
-          <p className="tabular text-[13px] text-muted-foreground">
-            {shown < total ? `Showing the latest ${shown} of ${total}.` : `${total} execution${total === 1 ? "" : "s"}.`}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <p className="tabular text-[13px] text-muted-foreground" role="status">
+              {paged.hasMore
+                ? `Showing the latest ${shown} of ${total}.`
+                : `${total} execution${total === 1 ? "" : "s"}.`}
+            </p>
+            {paged.hasMore ? (
+              <Button variant="outline" size="sm" onClick={() => void paged.loadMore()} loading={paged.loadingMore}>
+                Load older
+              </Button>
+            ) : null}
+          </div>
+          {paged.loadError ? (
+            <Callout tone="danger" title="Older executions could not be loaded">
+              {errorMessage(paged.loadError)}
+            </Callout>
+          ) : null}
         </>
       ) : (
         <EmptyState

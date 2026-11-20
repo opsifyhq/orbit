@@ -50,7 +50,7 @@ export default function TeamRunPage() {
       <LoadFailure
         noun="run"
         error={run.error}
-        back={{ href: "/agent-teams#runs", label: "Back to runs" }}
+        back={{ href: "/agent-teams/runs", label: "Back to runs" }}
         onRetry={() => void run.refetch()}
         retrying={run.isFetching}
       />
@@ -74,7 +74,7 @@ export default function TeamRunPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        back={{ href: `/agent-teams/${detail.teamId}#runs`, label: teamName }}
+        back={{ href: "/agent-teams/runs", label: "Team runs" }}
         title={<span className="line-clamp-3">{task}</span>}
         meta={
           <>
