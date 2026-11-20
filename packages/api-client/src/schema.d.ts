@@ -4314,6 +4314,12 @@ export interface operations {
             query?: {
                 afterSeq?: number;
                 limit?: number;
+                /** @description Comma-separated event kinds (`status`, `log`, `tool_call`, `output`, `error`, `metric`). */
+                kind?: string;
+                /** @description Case-insensitive substring of a tool, capability, connector or connection identifier. */
+                tool?: string;
+                /** @description Case-insensitive substring of the event message or tool/action identifiers. */
+                q?: string;
             };
             header?: never;
             path: {

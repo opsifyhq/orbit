@@ -12,6 +12,7 @@ use uuid::Uuid;
 use orbit_contracts::{subjects, OrbitEvent};
 use orbit_domain::{ExecutionStatus, TriggerSource};
 use orbit_security::{AuthContext, Permission};
+use orbit_store::executions::EventFilter;
 use orbit_store::ExecutionRecord;
 
 use crate::audit;
@@ -61,6 +62,48 @@ async fn require_execution_use(
         &agent.visibility,
     )?;
     Ok(execution)
+}
+
+const EVENT_KINDS: &[&str] = &["status", "log", "tool_call", "output", "error", "metric"];
+
+fn bounded_event_term(value: Option<&str>, field: &str) -> Result<Option<String>, ApiError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.chars().count() > 200 {
+        return Err(ApiError::bad_request(format!(
+            "{field} must be <= 200 characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// Query parameters are validated here so bad filters fail loudly instead of
+/// quietly returning an empty timeline. The store applies them before `limit`.
+fn event_filter(query: &EventListQuery) -> Result<EventFilter, ApiError> {
+    let mut kinds = Vec::new();
+    if let Some(raw) = &query.kind {
+        for kind in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+        {
+            if !EVENT_KINDS.contains(&kind) {
+                return Err(ApiError::bad_request(format!(
+                    "unknown event kind '{kind}'"
+                )));
+            }
+            let kind = kind.to_string();
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+    Ok(EventFilter {
+        kinds,
+        tool: bounded_event_term(query.tool.as_deref(), "tool")?,
+        q: bounded_event_term(query.q.as_deref(), "q")?,
+    })
 }
 
 #[utoipa::path(get, path = "/api/v1/executions", tag = "executions", params(ExecutionListQuery), responses((status = 200, body = ExecutionPage)))]
@@ -119,11 +162,12 @@ pub async fn list_execution_events(
     require_execution_view(&state, &auth, execution_id).await?;
     let items = state
         .store
-        .list_execution_events(
+        .list_execution_events_filtered(
             auth.org_id,
             execution_id,
             query.after_seq.unwrap_or(0),
             query.limit.unwrap_or(200).clamp(1, 1000) as i64,
+            &event_filter(&query)?,
         )
         .await?;
     Ok(Json(ExecutionEventPage { items }))
