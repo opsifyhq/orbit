@@ -6351,6 +6351,7 @@ async fn runtime_backs_off_then_continues_after_failed_execution() {
     let Some(app) = test_app(false).await else {
         return;
     };
+    let _serial = RUNTIME_TICK_LOCK.lock().await;
     let user = app
         .store
         .ensure_user(app.org_id, "api@test.local", "API Test", UserRole::Owner)
