@@ -634,6 +634,9 @@ export default function WorkPage() {
                 description={whoType === "team" ? "Schedules are set per agent, not per team" : "Repeats, for example every weekday morning"}
                 icon={<CalendarClock />}
               />
+              {/* Shown so the options are known; events and connector messages cannot start work yet. */}
+              <ChoiceCard selected={false} onSelect={() => undefined} disabled title="On an event" description="Not available yet" icon={<Zap />} />
+              <ChoiceCard selected={false} onSelect={() => undefined} disabled title="From a connector" description="Not available yet, for example a Telegram message" icon={<Plug />} />
             </div>
             {scheduled ? (
               <>
@@ -648,11 +651,6 @@ export default function WorkPage() {
                 </Callout>
               </>
             ) : null}
-            <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <Zap className="h-3.5 w-3.5" aria-hidden />
-              <Plug className="h-3.5 w-3.5" aria-hidden />
-              Starting on an event or a connector message is not available yet.
-            </p>
           </FormSection>
 
           <FormSection id="where" active={active} go={go}>

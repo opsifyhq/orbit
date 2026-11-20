@@ -177,6 +177,7 @@ approvals UI is still being finished.
 | What | Task, plus optional name and repository (hidden for a schedule: a schedule only carries its task) |
 | When → Now | Default; **Start work** queues one execution |
 | When → On a schedule | Schedule picker: Minutes, Hourly, Daily, Weekly, Monthly or Custom, with only the controls that frequency needs, a time zone (yours by default), a plain-English summary, the next three runs and the cron it stores. The button reads **Create schedule**; saving adds a schedule trigger with this task and time zone to the agent (new version) and opens the agent, where it reads e.g. “Every weekday at 09:00 Amsterdam time”. Disabled for an agent team |
+| When → On an event / From a connector | Shown, disabled and marked “Not available yet” |
 | When → Custom | Invalid cron shows why (for example “Invalid value for minute: 61”); **Edit as cron** from any other frequency opens it with the current expression |
 | Where | Placement and harness cards, including **Agent default**; harnesses other than the agent's own are disabled. For a schedule, a notice that runs go to any free worker instead |
 | Where → pick a harness | Matching worker profiles are shown, or a create link |
