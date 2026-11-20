@@ -638,7 +638,7 @@ pub async fn start(
         tools,
         tool_policies: tool_policies.to_vec(),
         token: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()),
-        http: orbit_security::client_with_custom_ca(Duration::from_secs(30)),
+        http: orbit_security::guarded_client(Duration::from_secs(30)),
         repo_specs: crate::git::repo_specs(&execution.input),
         pause,
         rejected: Default::default(),

@@ -522,6 +522,31 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
     }
 }
 
+pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
+    let policy = orbit_security::OutboundPolicy::from_env();
+    let mut issues = Vec::new();
+    for field in ["baseUrl", "url"] {
+        let Some(value) = config.get(field).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if let Err(error) = orbit_security::check_outbound_url(value, &policy).await {
+            issues.push(orbit_domain::ValidationIssue::new(
+                field,
+                error.to_string(),
+            ));
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::validation(issues))
+    }
+}
+
 // ------------------------------------------------------------------ connectors
 
 #[utoipa::path(get, path = "/api/v1/connectors", tag = "connectors", responses((status = 200, body = [ConnectorView])))]
@@ -570,6 +595,7 @@ pub async fn create_connection(
         .get_connector_by_slug(auth.org_id, &body.connector_slug)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("connector '{}'", body.connector_slug)))?;
+    validate_connection_urls(&body.config).await?;
 
     let secret_ref = if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
@@ -661,6 +687,9 @@ pub async fn update_connection(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if let Some(config) = &body.config {
+        validate_connection_urls(config).await?;
+    }
     let mut secret_ref: Option<String> = None;
     if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
