@@ -93,17 +93,21 @@ export function ExecutionTimeline({
   const [toolText, setToolText] = useState(filters.tool);
   const latestFilters = useRef(filters);
   latestFilters.current = filters;
+  const lastWrittenTool = useRef(filters.tool);
   useEffect(() => {
-    // The URL changed from outside the field (Clear filters, back button).
-    setToolText((current) => (current.trim() === filters.tool ? current : filters.tool));
+    // Our own write arriving back (after more was typed) must not undo the typing; only
+    // a change from outside the field (Clear filters, back button) replaces the text.
+    if (filters.tool === lastWrittenTool.current) return;
+    lastWrittenTool.current = filters.tool;
+    setToolText(filters.tool);
   }, [filters.tool]);
   useEffect(() => {
     const next = toolText.trim();
     if (next === latestFilters.current.tool) return;
-    const timer = window.setTimeout(
-      () => updateFilters({ ...latestFilters.current, tool: next }),
-      250,
-    );
+    const timer = window.setTimeout(() => {
+      lastWrittenTool.current = next;
+      updateFilters({ ...latestFilters.current, tool: next });
+    }, 250);
     return () => window.clearTimeout(timer);
     // `updateFilters` reads the current URL when it runs; only typing should schedule it.
   }, [toolText]);

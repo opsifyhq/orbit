@@ -3,11 +3,19 @@ import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
 
 const NATIVE_CONTROLS = new Set(["input", "select", "textarea"]);
+/** Our primitives that render one native control and pass every prop on to it. */
+const FORWARDING_CONTROLS = new Set(["Input", "Select", "Textarea"]);
 
-/** A single control (native, or one of ours that forwards props) can be wired; a layout wrapper cannot. */
+/**
+ * A single text-like control can be wired. A layout wrapper, a fragment, or a composite
+ * (a picker, a segmented group) cannot: it would drop `id` and the label and hint would
+ * point at nothing. Those keep whatever `htmlFor` the caller passes.
+ */
 function isControl(node: React.ReactNode): node is React.ReactElement<Record<string, unknown>> {
   if (!React.isValidElement(node)) return false;
-  return typeof node.type === "string" ? NATIVE_CONTROLS.has(node.type) : true;
+  if (typeof node.type === "string") return NATIVE_CONTROLS.has(node.type);
+  const name = (node.type as { displayName?: string }).displayName;
+  return name !== undefined && FORWARDING_CONTROLS.has(name);
 }
 
 /**

@@ -306,7 +306,14 @@ export function usePagedExecutions(params: Omit<ExecutionListParams, "cursor">) 
     return merged;
   }, [first.data, pages]);
 
-  const nextCursor = pages.length ? pages[pages.length - 1].nextCursor : first.data?.nextCursor;
+  // While a filter change is loading, `first.data` is still the previous filter's page
+  // (kept on screen as a placeholder): its cursor belongs to another result set.
+  const settled = !first.isPlaceholderData;
+  const nextCursor = !settled
+    ? undefined
+    : pages.length
+      ? pages[pages.length - 1].nextCursor
+      : first.data?.nextCursor;
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;

@@ -15,7 +15,13 @@ import { errorMessage } from "@orbit/api-client";
 
 export default function EditAgentTeamPage() {
   const params = useParams<{ id: string }>();
-  const teamId = params.id;
+  // Keyed by id: moving from one edit page to another (the command palette does this
+  // without a full navigation) must start a fresh editor, never carry the previous
+  // object's form state or starting version into a save on this one.
+  return <EditAgentTeamEditor key={params.id} teamId={params.id} />;
+}
+
+function EditAgentTeamEditor({ teamId }: { teamId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const team = useAgentTeam(teamId);

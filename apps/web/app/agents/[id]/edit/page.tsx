@@ -22,7 +22,13 @@ import { useQueryClient } from "@tanstack/react-query";
 
 export default function EditAgentPage() {
   const params = useParams<{ id: string }>();
-  const agentId = params.id;
+  // Keyed by id: moving from one edit page to another (the command palette does this
+  // without a full navigation) must start a fresh editor, never carry the previous
+  // object's form state or starting version into a save on this one.
+  return <EditAgentEditor key={params.id} agentId={params.id} />;
+}
+
+function EditAgentEditor({ agentId }: { agentId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const agent = useAgent(agentId);

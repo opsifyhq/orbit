@@ -54,7 +54,9 @@ export function LoadFailure({
       />
     );
   }
-  if (status === 404 || (status === undefined && !error)) {
+  // Only the server can say "not found". No data and no error means the request has not
+  // completed (offline, paused), which is a reason to retry, not a missing object.
+  if (status === 404) {
     return (
       <EmptyState
         title={`${title} not found`}
@@ -68,7 +70,9 @@ export function LoadFailure({
     <EmptyState
       icon={<CloudOff />}
       title={`Couldn't load this ${noun}`}
-      description={message ?? (error ? errorMessage(error) : undefined)}
+      description={
+        message ?? (error ? errorMessage(error) : "The request did not complete. Check your connection and try again.")
+      }
       action={
         <div className="flex flex-wrap justify-center gap-2">
           {onRetry ? (

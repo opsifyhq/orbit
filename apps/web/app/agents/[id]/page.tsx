@@ -346,7 +346,7 @@ export default function AgentDetailPage() {
 
       {archived ? (
         <Callout tone="neutral" title="This agent is archived">
-          It cannot run, be edited or be reactivated. Its execution history is still available, and its
+          It cannot run or be edited until you restore it. Its execution history is still available, and its
           definition can be exported and used to create a new agent.
         </Callout>
       ) : null}

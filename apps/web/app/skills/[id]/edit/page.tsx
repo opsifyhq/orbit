@@ -15,7 +15,13 @@ import { errorMessage } from "@orbit/api-client";
 
 export default function EditSkillPage() {
   const params = useParams<{ id: string }>();
-  const skillId = params.id;
+  // Keyed by id: moving from one edit page to another (the command palette does this
+  // without a full navigation) must start a fresh editor, never carry the previous
+  // object's form state or starting version into a save on this one.
+  return <EditSkillEditor key={params.id} skillId={params.id} />;
+}
+
+function EditSkillEditor({ skillId }: { skillId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const skill = useSkill(skillId);
