@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 # Optional worker launcher: Docker socket or namespaced Kubernetes workload RBAC.
-FROM rust:1.100-bookworm AS builder
+FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY services ./services
 RUN cargo build --release --locked -p orbit-launcher
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ARG DOCKER_VERSION=27.3.1
 ARG KUBECTL_VERSION=v1.31.4
 RUN apt-get update \
