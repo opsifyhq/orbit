@@ -708,7 +708,7 @@ function queuedHint(
       (!execution.placement || execution.placement === "auto" || worker.target === execution.placement),
   );
   if (matching.length > 0) {
-    return `${need} ${matching.length} matching worker${matching.length === 1 ? " is" : "s are"} online and busy; it starts when a slot frees up.`;
+    return `${need} ${matching.length} matching worker${matching.length === 1 ? " is" : "s are"} online but ${matching.length === 1 ? "has" : "have"} not claimed this run. Check the worker profile's agent/team scope, harness and placement.`;
   }
   if (liveWorkers.length === 0) return `${need} No workers are online. Launch one from Workers.`;
   return `${need} None of the ${liveWorkers.length} online worker${liveWorkers.length === 1 ? "" : "s"} can run it (${liveWorkers
