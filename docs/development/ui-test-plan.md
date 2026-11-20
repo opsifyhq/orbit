@@ -75,8 +75,8 @@ Then:
 1. **Edit** the agent → change instructions and autonomy to **L3 Prepare**.
 2. **Save new version** → detail shows version 2.
 3. **Versions** tab: v2 current, v1 preserved with checksum/timestamps.
-4. Edit again and save the **same** configuration → expected conflict toast
-   (“identical to an existing version”), no duplicate version.
+4. Edit again and save without changes → saved, no new version. Set autonomy back to the
+   version 1 level and save → version 3, with the same checksum as version 1.
 5. **Configuration** tab: YAML matches the current version; **YAML** export downloads.
 
 ---
