@@ -1,5 +1,7 @@
 import { type NextRequest } from "next/server";
 
+import { buildUpstreamPath } from "@/lib/proxy-path";
+
 /**
  * Same-origin API proxy used by the web container and local development.
  *
@@ -34,9 +36,41 @@ function upstreamBase(): string {
   );
 }
 
-async function proxy(request: NextRequest, path: string[]): Promise<Response> {
+function requestIdFor(request: NextRequest): string {
+  const incoming = request.headers.get("x-request-id");
+  // Never reflect control characters into a response header.
+  return incoming && /^[\x20-\x7e]{1,200}$/.test(incoming)
+    ? incoming
+    : crypto.randomUUID();
+}
+
+function errorResponse(
+  status: number,
+  code: string,
+  message: string,
+  requestId: string,
+): Response {
+  return Response.json(
+    { error: { code, message, details: [], requestId } },
+    {
+      status,
+      headers: {
+        "x-request-id": requestId,
+        "cache-control": "no-store",
+      },
+    },
+  );
+}
+
+async function proxy(request: NextRequest, segments: string[]): Promise<Response> {
+  const requestId = requestIdFor(request);
+  const validated = buildUpstreamPath(segments);
+  if (!validated.ok) {
+    return errorResponse(400, "bad_request", "Invalid API path.", requestId);
+  }
+
   const incoming = new URL(request.url);
-  const target = `${upstreamBase()}/api/${path.join("/")}${incoming.search}`;
+  const target = `${upstreamBase()}/api/${validated.path}${incoming.search}`;
 
   const headers = new Headers();
   for (const [key, value] of request.headers.entries()) {
@@ -66,11 +100,26 @@ async function proxy(request: NextRequest, path: string[]): Promise<Response> {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(target, init);
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, init);
+  } catch (error) {
+    // A client abort is intentional; let Next handle it instead of masking it as a 502.
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    return errorResponse(
+      502,
+      "bad_gateway",
+      "Could not reach the ORBIT API. Please try again.",
+      requestId,
+    );
+  }
 
   const responseHeaders = new Headers();
   for (const [key, value] of upstream.headers.entries()) {
-    if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+    const lower = key.toLowerCase();
+    // HOP_BY_HOP is transport metadata. The CSP belongs to the web app (set in proxy.ts),
+    // never to the control plane, otherwise the two policies would intersect.
+    if (HOP_BY_HOP.has(lower) || lower.startsWith("content-security-policy")) continue;
     responseHeaders.set(key, value);
   }
   responseHeaders.set("cache-control", "no-store");
