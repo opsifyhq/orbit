@@ -503,6 +503,56 @@ pub struct WorkerLaunch {
     pub archived_at: Option<DateTime<Utc>>,
 }
 
+/// What a response says about a stored profile variable: never the value.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvVarState {
+    pub has_value: bool,
+}
+
+/// Keys an inline env mapping may carry: references to secrets/connections, no values.
+pub const INLINE_ENV_MAPPING_KEYS: [&str; 4] = ["envVar", "connectionId", "secretKey", "secretRef"];
+
+fn serialize_env_redacted<S: serde::Serializer>(
+    env: &serde_json::Value,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let empty = serde_json::Map::new();
+    let map = env.as_object().unwrap_or(&empty);
+    let mut out = serializer.serialize_map(Some(map.len()))?;
+    for (name, value) in map {
+        let has_value = value.as_str().is_some_and(|text| !text.is_empty());
+        out.serialize_entry(name, &EnvVarState { has_value })?;
+    }
+    out.end()
+}
+
+fn serialize_env_mappings_refs<S: serde::Serializer>(
+    mappings: &serde_json::Value,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    let cleaned = match mappings {
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| match item {
+                    serde_json::Value::Object(map) => serde_json::Value::Object(
+                        map.iter()
+                            .filter(|(key, _)| INLINE_ENV_MAPPING_KEYS.contains(&key.as_str()))
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    };
+    cleaned.serialize(serializer)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerProfile {
@@ -527,8 +577,20 @@ pub struct WorkerProfile {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub auth_secret_name: Option<String>,
+    /// Stored variable values. Never serialized: responses carry only names and a
+    /// `hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher
+    /// payload and for update merging.
+    #[serde(serialize_with = "serialize_env_redacted", default, skip_deserializing)]
+    #[schema(value_type = std::collections::BTreeMap<String, EnvVarState>)]
     pub env: serde_json::Value,
+    /// References only (`envVar` plus `connectionId` / `secretKey` / `secretRef`); any
+    /// other key stored by an older version is dropped from responses.
     #[sqlx(default)]
+    #[serde(
+        serialize_with = "serialize_env_mappings_refs",
+        default,
+        skip_deserializing
+    )]
     pub env_mappings: serde_json::Value,
     pub resources: serde_json::Value,
     #[sqlx(default)]
@@ -589,6 +651,7 @@ pub struct EnvMapping {
     pub org_id: Uuid,
     pub name: String,
     pub description: String,
+    #[serde(serialize_with = "serialize_env_mappings_refs")]
     pub mappings: serde_json::Value,
     pub owner_user_id: Option<Uuid>,
     pub owner_team_id: Option<Uuid>,
@@ -644,4 +707,62 @@ pub struct TeamMember {
     pub user_id: Uuid,
     pub role: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn profile(env: serde_json::Value, mappings: serde_json::Value) -> WorkerProfile {
+        WorkerProfile {
+            id: Uuid::nil(),
+            org_id: Uuid::nil(),
+            owner_user_id: None,
+            owner_team_id: None,
+            visibility: "org".into(),
+            name: "p".into(),
+            harness_kind: "mock".into(),
+            target: "docker".into(),
+            execution_driver: "process".into(),
+            image: "i".into(),
+            image_tag: "".into(),
+            agent_scope: "all".into(),
+            agent_ids: vec![],
+            skill_slugs: vec![],
+            provider: None,
+            model: None,
+            auth_secret_name: None,
+            env,
+            env_mappings: mappings,
+            resources: serde_json::json!({}),
+            allow_web_search: false,
+            allow_web_fetch: false,
+            allow_glab: false,
+            allow_gh: false,
+            native_tool_permissions: serde_json::json!({}),
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn serialized_profiles_carry_names_and_flags_never_values() {
+        let profile = profile(
+            serde_json::json!({ "KEY": "sk-secret", "EMPTY": "" }),
+            serde_json::json!([{ "envVar": "A", "secretKey": "k", "value": "sk-stray" }]),
+        );
+        let json = serde_json::to_value(&profile).unwrap();
+        assert_eq!(
+            json["env"],
+            serde_json::json!({ "KEY": { "hasValue": true }, "EMPTY": { "hasValue": false } })
+        );
+        assert_eq!(
+            json["envMappings"],
+            serde_json::json!([{ "envVar": "A", "secretKey": "k" }])
+        );
+        assert!(!json.to_string().contains("sk-"));
+        // The raw field is untouched for the launcher payload.
+        assert_eq!(profile.env["KEY"], "sk-secret");
+    }
 }

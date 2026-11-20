@@ -185,6 +185,7 @@ use crate::handlers;
         handlers::worker_profiles::WorkerBootstrap,
         orbit_store::Skill,
         orbit_store::WorkerProfile,
+        orbit_store::EnvVarState,
         HarnessHealthView,
         CreateProviderRequest,
         UpdateProviderRequest,

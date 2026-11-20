@@ -190,6 +190,7 @@ single executions). The settings below only apply to fixed Deployments.
 |---|---|---|
 | `launcher.enabled` | `true` | Launch/Stop/Logs in the UI; default worker path |
 | `launcher.token` | `""` | internal API↔launcher token; generated and reused from the release Secret when empty |
+| `launcher.authSecrets` | `orbit-opencode-auth*,orbit-pi-auth*` | harness auth Secrets a worker profile may mount (`authSecretName`): exact names or `prefix*`, comma-separated; enforced by the API and the launcher |
 | `launcher.imagePullSecret` | `""` | registry secret for launched pods; defaults to the first `imagePullSecrets` entry |
 
 The launcher gets namespaced RBAC for Pods/Jobs only; the API never receives cluster
