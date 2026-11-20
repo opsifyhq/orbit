@@ -37,7 +37,7 @@ async fn registry_exposes_all_harness_families() {
     assert_eq!(
         opencode.implementation_status.as_str(),
         "available",
-        "OpenCode execution is covered by tests/opencode_e2e.rs against v2.2.5"
+        "OpenCode execution is covered by tests/opencode_e2e.rs against v2.3.0"
     );
 }
 
