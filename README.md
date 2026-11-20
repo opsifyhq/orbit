@@ -122,7 +122,8 @@ helm upgrade --install orbit deploy/helm/orbit \
   --namespace orbit --create-namespace \
   -f deploy/helm/orbit/values.yaml \
   --set imageRegistry=registry.example.com:5000 \
-  --set ingress.host=orbit.example.com
+  --set ingress.host=orbit.example.com \
+  --set auth.acknowledgeInsecureDev=true
 ```
 
 No worker token is needed: the launcher is enabled by default, a launchable mock worker
@@ -133,7 +134,9 @@ flow.
 
 `values.yaml` bundles PostgreSQL and NATS for test clusters and uses dev auth. For
 production, start from `deploy/helm/orbit/values-prod.example.yaml` (external DB/NATS,
-OIDC, TLS, externally managed secrets, pinned tags).
+OIDC, TLS, externally managed secrets, pinned tags). The `auth.acknowledgeInsecureDev=true`
+flag above is only for throwaway local/test clusters; use OIDC for anything reachable
+beyond your LAN.
 
 Ingress routes: `/docs`, `/healthz`, `/readyz` → API; `/api` → web (same-origin proxy
 that injects the dev token server-side or forwards OIDC/API bearer headers); `/` → web.
@@ -162,7 +165,7 @@ cargo test --workspace
 ORBIT_TEST_DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit cargo test --workspace
 pnpm --filter @orbit/web typecheck && pnpm --filter @orbit/web build
 helm lint deploy/helm/orbit
-helm template orbit deploy/helm/orbit -n orbit >/dev/null
+helm template orbit deploy/helm/orbit -n orbit --set auth.acknowledgeInsecureDev=true >/dev/null
 API_URL=http://localhost:8080 ./scripts/smoke-k8s.sh
 ```
 

@@ -57,7 +57,7 @@ pnpm --filter @orbit/web typecheck
 pnpm --filter @orbit/web build
 
 helm lint deploy/helm/orbit
-helm template orbit deploy/helm/orbit -n orbit >/dev/null
+helm template orbit deploy/helm/orbit -n orbit --set auth.acknowledgeInsecureDev=true >/dev/null
 ```
 
 For the harness images, `scripts/build-images.sh` builds every image; the harness images
@@ -101,7 +101,8 @@ Install the chart against a scratch namespace and confirm it renders the release
 
 ```bash
 helm template orbit deploy/helm/orbit -n orbit \
-  --set imageRegistry=ghcr.io/opsifyhq/orbit | grep 'image:'
+  --set imageRegistry=ghcr.io/opsifyhq/orbit \
+  --set auth.acknowledgeInsecureDev=true | grep 'image:'
 ```
 
 ## 5. Deploy a private registry (optional)
