@@ -136,11 +136,14 @@ export function headingIdsByLine(markdown: string): Map<number, string> {
   return ids;
 }
 
-/** Fetch an embedded asset with the session's bearer token (an `<img>` cannot send one). */
+/**
+ * Fetch an embedded asset same-origin (through the web proxy) with the session's bearer
+ * token; an `<img>` cannot send one. `NEXT_PUBLIC_ORBIT_API_URL` may be server-only.
+ */
 export async function fetchDocAsset(href: string): Promise<Blob> {
-  const { API_BASE_URL, getAccessToken } = await import("./api");
+  const { getAccessToken } = await import("./api");
   const token = getAccessToken();
-  const response = await fetch(`${API_BASE_URL}${href}`, {
+  const response = await fetch(href, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);

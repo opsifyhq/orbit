@@ -26,6 +26,10 @@ const nextConfig: NextConfig = {
         headers: [
           { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
           { key: "Pragma", value: "no-cache" },
+          // CSP lives in proxy.ts only; adding one here would intersect with it.
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
         ],
       },
     ];

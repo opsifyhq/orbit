@@ -1,6 +1,6 @@
 //! Real OpenCode integration test.
 //!
-//! Requires the OpenCode CLI (tested with v2.2.5) and a working provider auth store:
+//! Requires the OpenCode CLI (tested with v2.3.0) and a working provider auth store:
 //!
 //!   ORBIT_OPENCODE_E2E=1 \
 //!   ORBIT_OPENCODE_TEST_MODEL=opencode-go/deepseek-v4-pro \

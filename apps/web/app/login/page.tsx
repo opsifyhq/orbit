@@ -8,10 +8,18 @@ import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAccessToken, setAccessToken } from "@/lib/api";
-import { isSessionError } from "@/lib/http";
+import { isNoAccessError, isSessionError } from "@/lib/http";
+import { rememberNoAccessReason } from "@/lib/no-access";
 import { beginOidcLogin } from "@/lib/oidc";
 import { safeNextPath } from "@/lib/safe-redirect";
 import { useMe, useMeta } from "@/lib/queries";
+import { errorMessage } from "@orbit/api-client";
+
+/** Read `?next=` on the client; SSR has no window, so fall back to "/". */
+function requestedNextPath(): string {
+  if (typeof window === "undefined") return "/";
+  return safeNextPath(new URLSearchParams(window.location.search).get("next"));
+}
 
 export default function LoginPage() {
   const meta = useMeta();
@@ -25,10 +33,16 @@ export default function LoginPage() {
   useEffect(() => {
     if (!getAccessToken()) return;
     if (me.isSuccess) {
-      router.replace("/");
+      router.replace(requestedNextPath());
+    } else if (isNoAccessError(me.error)) {
+      // A 403 is a valid identity with no ORBIT role, not a bad token. Send it to the
+      // explanation page instead of silently clearing and looping back here.
+      rememberNoAccessReason(errorMessage(me.error));
+      router.replace("/no-access");
     } else if (isSessionError(me.error)) {
-      // Expired or foreign token: clear it instead of treating it as a session.
-      // Transient errors (5xx, network) keep it so a blip does not force a new sign-in.
+      // 401 only: expired or foreign token. Clear it instead of treating it as a
+      // session. Transient errors (5xx, network) keep it so a blip does not force a
+      // new sign-in.
       setAccessToken(null);
     }
   }, [me.isSuccess, me.error, router]);
@@ -36,7 +50,7 @@ export default function LoginPage() {
   function startSignIn() {
     setError(null);
     setStarting(true);
-    void beginOidcLogin(safeNextPath(new URLSearchParams(window.location.search).get("next"))).catch(
+    void beginOidcLogin(requestedNextPath()).catch(
       (reason) => {
         setStarting(false);
         setError(reason instanceof Error ? reason.message : String(reason));

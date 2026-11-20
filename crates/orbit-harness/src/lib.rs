@@ -11,6 +11,7 @@ pub mod pi;
 pub mod planned;
 mod process_env;
 pub mod registry;
+mod stream;
 pub mod testing;
 
 pub use mock::MockHarnessAdapter;

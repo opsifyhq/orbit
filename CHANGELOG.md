@@ -8,8 +8,27 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- Web edit forms preserve fields they do not render, so saving teams, providers,
+  connections, skills and worker profiles no longer drops hidden configuration (#205).
+- Web test suite via `node --test` for HTTP classification, proxy path validation and
+  login redirects.
+
 ### Changed
 
+- API proxy validates and re-encodes path segments, adds a nonce CSP plus frame/referrer/
+  no-sniff headers, preserves `next` query strings and serves docs assets/SSE same-origin
+  (#219).
+- 403 is treated as no-access instead of session expiry, `/no-access` is reachable, failed
+  worker starts surface an error instead of a false success, and `/meta` failures show the
+  retry state (#206).
+- Harness I/O is bounded: oversized OpenCode/Pi lines are skipped, prompts over 100 KiB are
+  rejected, tool-event data is truncated, Pi deltas are batched and CPU usage is unset when
+  not measured (#118).
+- Image builds verify downloaded Docker/kubectl/gh/glab/OpenCode binaries with checksums,
+  keep secrets out of `deploy.sh` output, and limit the web build context (#220).
+- Helm quick-start docs acknowledge the dev-auth ingress guard where required (#214).
 - Schedules no longer need cron: one schedule picker in Start work and Agent Studio offers
   minutes, hourly, daily, weekly and monthly patterns, a time zone (yours by default, daylight
   saving included), a plain-English summary and the next three runs; Custom keeps raw cron with

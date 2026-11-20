@@ -12,15 +12,19 @@ RUN apt-get update \
 
 # Opt-in CLI escape hatches (worker-profile allowGlab/allowGh). Pinned for reproducibility.
 ARG GH_VERSION=2.105.0
+ARG GH_SHA256=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
 ARG GLAB_VERSION=1.131.0
+ARG GLAB_SHA256=580dbca43835b47267e512476a442f6b2e8785a82b26ccacee22bd7010662b2d
 RUN curl -fsSL --retry 3 \
        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
        -o /tmp/gh.tar.gz \
+    && printf '%s  /tmp/gh.tar.gz\n' "${GH_SHA256}" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
     && curl -fsSL --retry 3 \
        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_amd64.tar.gz" \
        -o /tmp/glab.tar.gz \
+    && printf '%s  /tmp/glab.tar.gz\n' "${GLAB_SHA256}" | sha256sum -c - \
     && tar -xzf /tmp/glab.tar.gz -C /tmp \
     && install -m 0755 /tmp/bin/glab /usr/local/bin/glab \
     && rm -f /tmp/gh.tar.gz /tmp/glab.tar.gz \
