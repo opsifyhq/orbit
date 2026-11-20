@@ -99,6 +99,8 @@ spec:
               value: "0.0.0.0:8090"
             - name: ORBIT_LAUNCHER_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            - name: ORBIT_WORKER_AUTH_SECRETS
+              value: {{ .Values.launcher.authSecrets | quote }}
             - name: ORBIT_MAX_APPROVAL_WAIT_SECONDS
               value: {{ .Values.maxApprovalWaitSeconds | quote }}
             - name: ORBIT_LAUNCHER_TOKEN

@@ -39,8 +39,13 @@ pub struct CreateWorkerProfileRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub auth_secret_name: Option<String>,
+    /// Variable name -> value. A string sets or replaces the value; `null` keeps the
+    /// stored value (422 when none is stored); a name left out is removed. Responses never
+    /// contain values, only `{ "NAME": { "hasValue": bool } }`.
     #[serde(default)]
+    #[schema(value_type = std::collections::BTreeMap<String, Option<String>>)]
     pub env: serde_json::Value,
+    /// Inline references only: `envVar` plus `connectionId`, `secretKey` or `secretRef`.
     #[serde(default)]
     pub env_mappings: serde_json::Value,
     /// Reusable environment mapping IDs attached to this profile.
@@ -79,6 +84,131 @@ async fn require_profile_manage(
         profile.owner_team_id,
         &profile.visibility,
     )
+}
+
+/// Merge the requested `env` onto what is stored. Strings replace, `null` keeps the stored
+/// value, names that are not sent are dropped. Errors name the variable, never a value.
+pub(crate) fn merge_profile_env(
+    existing: Option<&serde_json::Value>,
+    requested: &serde_json::Value,
+) -> Result<serde_json::Value, ApiError> {
+    let empty = serde_json::Map::new();
+    let requested = match requested {
+        serde_json::Value::Null => &empty,
+        serde_json::Value::Object(map) => map,
+        _ => {
+            return Err(ApiError::validation(vec![ValidationIssue::new(
+                "env",
+                "must be an object of variable name -> value (or null to keep the stored value)",
+            )]))
+        }
+    };
+    let stored = existing.and_then(|value| value.as_object());
+    let mut merged = serde_json::Map::new();
+    let mut issues = Vec::new();
+    for (name, value) in requested {
+        let field = format!("env.{name}");
+        if name.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                "env",
+                "variable names must not be empty",
+            ));
+            continue;
+        }
+        match value {
+            serde_json::Value::String(text) => {
+                merged.insert(name.clone(), serde_json::Value::String(text.clone()));
+            }
+            serde_json::Value::Null => match stored.and_then(|map| map.get(name)) {
+                Some(kept) => {
+                    merged.insert(name.clone(), kept.clone());
+                }
+                None => issues.push(ValidationIssue::new(
+                    field,
+                    "no stored value to keep; send a string value",
+                )),
+            },
+            _ => issues.push(ValidationIssue::new(
+                field,
+                "must be a string, or null to keep the stored value",
+            )),
+        }
+    }
+    if issues.is_empty() {
+        Ok(serde_json::Value::Object(merged))
+    } else {
+        Err(ApiError::validation(issues))
+    }
+}
+
+/// Inline mappings carry references, never values: unknown keys are rejected so a value
+/// cannot be stored (and later returned) under an extra key.
+pub(crate) fn validate_inline_env_mappings(value: &serde_json::Value) -> Result<(), ApiError> {
+    let items = match value {
+        serde_json::Value::Null => return Ok(()),
+        // Older installs stored `{}` for "none".
+        serde_json::Value::Object(map) if map.is_empty() => return Ok(()),
+        serde_json::Value::Array(items) => items,
+        _ => {
+            return Err(ApiError::validation(vec![ValidationIssue::new(
+                "envMappings",
+                "must be a list of mappings",
+            )]))
+        }
+    };
+    let mut issues = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let Some(map) = item.as_object() else {
+            issues.push(ValidationIssue::new(
+                "envMappings",
+                format!("mapping {index} must be an object"),
+            ));
+            continue;
+        };
+        for (key, field) in map {
+            if !orbit_store::INLINE_ENV_MAPPING_KEYS.contains(&key.as_str()) {
+                issues.push(ValidationIssue::new(
+                    "envMappings",
+                    format!(
+                        "mapping {index}: unknown field '{key}'; mappings reference a connection or secret and cannot hold a value"
+                    ),
+                ));
+            } else if !(field.is_null() || field.is_string()) {
+                issues.push(ValidationIssue::new(
+                    "envMappings",
+                    format!("mapping {index}: '{key}' must be a string"),
+                ));
+            }
+        }
+        if map
+            .get("envVar")
+            .and_then(|v| v.as_str())
+            .is_none_or(|v| v.trim().is_empty())
+        {
+            issues.push(ValidationIssue::new(
+                "envMappings",
+                format!("mapping {index} is missing envVar"),
+            ));
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::validation(issues))
+    }
+}
+
+/// `authSecretName` must be a valid name allowed by the installer's list
+/// (`ORBIT_WORKER_AUTH_SECRETS`); the launcher enforces the same rule at launch.
+pub(crate) fn validate_auth_secret_name(name: Option<&str>) -> Result<(), ApiError> {
+    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(());
+    };
+    orbit_domain::AuthSecretPolicy::from_env()
+        .check(name)
+        .map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("authSecretName", message)])
+        })
 }
 
 fn default_target() -> String {
@@ -373,6 +503,9 @@ pub async fn create_profile(
 ) -> Result<(StatusCode, Json<WorkerProfile>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
     validate_native_tool_permissions(&body.native_tool_permissions)?;
+    validate_auth_secret_name(body.auth_secret_name.as_deref())?;
+    validate_inline_env_mappings(&body.env_mappings)?;
+    let env = merge_profile_env(None, &body.env)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     crate::handlers::env_mappings::validate_profile_mapping_ids(
         &state,
@@ -462,7 +595,7 @@ pub async fn create_profile(
             body.provider.as_deref(),
             body.model.as_deref(),
             body.auth_secret_name.as_deref(),
-            &body.env,
+            &env,
             &body.env_mappings,
             &resources,
             body.allow_web_search,
@@ -501,6 +634,8 @@ pub async fn update_profile(
 ) -> Result<Json<WorkerProfile>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     validate_native_tool_permissions(&body.native_tool_permissions)?;
+    validate_auth_secret_name(body.auth_secret_name.as_deref())?;
+    validate_inline_env_mappings(&body.env_mappings)?;
     let existing = state
         .store
         .get_worker_profile(auth.org_id, profile_id)
@@ -512,6 +647,7 @@ pub async fn update_profile(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    let env = merge_profile_env(Some(&existing.env), &body.env)?;
     crate::handlers::env_mappings::validate_profile_mapping_ids(
         &state,
         &auth,
@@ -609,7 +745,7 @@ pub async fn update_profile(
             body.provider.as_deref(),
             body.model.as_deref(),
             body.auth_secret_name.as_deref(),
-            &body.env,
+            &env,
             &body.env_mappings,
             &resources,
             body.allow_web_search,

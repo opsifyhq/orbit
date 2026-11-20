@@ -2238,9 +2238,17 @@ export interface components {
             /** @description Allow OpenCode's built-in Web Search tool. Default false for headless runs. */
             allowWebSearch?: boolean;
             authSecretName?: string | null;
-            env?: unknown;
+            /**
+             * @description Variable name -> value. A string sets or replaces the value; `null` keeps the
+             *     stored value (422 when none is stored); a name left out is removed. Responses never
+             *     contain values, only `{ "NAME": { "hasValue": bool } }`.
+             */
+            env?: {
+                [key: string]: string | null;
+            };
             /** @description Reusable environment mapping IDs attached to this profile. */
             envMappingIds?: string[];
+            /** @description Inline references only: `envVar` plus `connectionId`, `secretKey` or `secretRef`. */
             envMappings?: unknown;
             executionDriver?: string;
             harnessKind: string;
@@ -2375,6 +2383,10 @@ export interface components {
             description?: string;
             mappings?: unknown;
             name: string;
+        };
+        /** @description What a response says about a stored profile variable: never the value. */
+        EnvVarState: {
+            hasValue: boolean;
         };
         ErrorBody: {
             code: string;
@@ -3337,8 +3349,14 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             enabled: boolean;
-            env: unknown;
-            envMappings: unknown;
+            /**
+             * @description Stored variable values. Never serialized: responses carry only names and a
+             *     `hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher
+             *     payload and for update merging.
+             */
+            env?: {
+                [key: string]: components["schemas"]["EnvVarState"];
+            };
             executionDriver: string;
             harnessKind: string;
             /** Format: uuid */

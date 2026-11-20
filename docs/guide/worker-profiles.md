@@ -15,11 +15,25 @@ in-cluster launcher; the API mints a scoped token per launch and revokes it on s
 | `agentIds` | Allowlist when scope is `selected` |
 | `skillSlugs`, `agentIds` | What the worker may run |
 | `provider` / `model` | Optional model selection for the worker |
-| `authSecretName` | Existing Secret with harness auth (OpenCode/Pi) |
-| `env`, `envMappings` | Static env and connection/secret → env mappings (inline) |
+| `authSecretName` | Existing Secret with harness auth (OpenCode/Pi). Must be allowed by the installer (`launcher.authSecrets`, default `orbit-opencode-auth*,orbit-pi-auth*`); see [Kubernetes launcher](../development/kubernetes-launcher.md) |
+| `env` | Static env. Values are write-only: responses list names as `{ "NAME": { "hasValue": true } }` and never return a value |
+| `envMappings` | Connection/secret → env mappings (inline). References only (`envVar` plus `connectionId`, `secretKey` or `secretRef`); other keys are rejected |
 | `envMappingIds` | Reusable environment mappings shared across profiles |
 | `resources` | CPU/memory requests + limits and workspace size |
 | `enabled` | Only enabled profiles launch |
+
+## Updating `env`
+
+Send `env` as a map of name to value on create and update:
+
+- a string sets or replaces the value (an empty string stores an empty value);
+- `null` keeps the stored value (a `null` for a name with no stored value is a 422 on
+  `env.<NAME>`);
+- a name you leave out is removed.
+
+Values are stored unencrypted in the `worker_profiles.env` column (they are not in the
+encrypted secret store); the API only keeps them from being read back. Prefer an env
+mapping to a secret or connection for real credentials.
 
 ## Resources
 

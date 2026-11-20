@@ -6234,7 +6234,19 @@
               "null"
             ]
           },
-          "env": {},
+          "env": {
+            "type": "object",
+            "description": "Variable name -> value. A string sets or replaces the value; `null` keeps the\nstored value (422 when none is stored); a name left out is removed. Responses never\ncontain values, only `{ \"NAME\": { \"hasValue\": bool } }`.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "envMappingIds": {
             "type": "array",
             "items": {
@@ -6243,7 +6255,9 @@
             },
             "description": "Reusable environment mapping IDs attached to this profile."
           },
-          "envMappings": {},
+          "envMappings": {
+            "description": "Inline references only: `envVar` plus `connectionId`, `secretKey` or `secretRef`."
+          },
           "executionDriver": {
             "type": "string"
           },
@@ -6667,6 +6681,18 @@
           "mappings": {},
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "EnvVarState": {
+        "type": "object",
+        "description": "What a response says about a stored profile variable: never the value.",
+        "required": [
+          "hasValue"
+        ],
+        "properties": {
+          "hasValue": {
+            "type": "boolean"
           }
         }
       },
@@ -9755,8 +9781,6 @@
           "agentScope",
           "agentIds",
           "skillSlugs",
-          "env",
-          "envMappings",
           "resources",
           "allowWebSearch",
           "allowWebFetch",
@@ -9803,8 +9827,16 @@
           "enabled": {
             "type": "boolean"
           },
-          "env": {},
-          "envMappings": {},
+          "env": {
+            "type": "object",
+            "description": "Stored variable values. Never serialized: responses carry only names and a\n`hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher\npayload and for update merging.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/EnvVarState"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "executionDriver": {
             "type": "string"
           },

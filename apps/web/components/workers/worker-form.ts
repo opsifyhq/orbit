@@ -153,7 +153,9 @@ export function buildProfileBody(values: WorkerFormValues, editing: WorkerProfil
     provider: values.provider || undefined,
     model: values.model || undefined,
     authSecretName: values.authSecret || undefined,
-    env: editing?.env ?? {},
+    // Stored values are never sent back by the API. `null` keeps each one as it is; this
+    // form does not edit them (they are set through the API or an import).
+    env: Object.fromEntries(Object.keys(editing?.env ?? {}).map((name) => [name, null])),
     envMappings: values.envMappings.map((m) => ({
       envVar: m.envVar,
       connectionId: m.connectionId || null,

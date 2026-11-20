@@ -24,7 +24,7 @@ const SECRET_VALUES: [&str; 6] = [
     "supersecretenvvalue",
     "whsec_leaked_in_config",
     "hunter2-webhook-secret",
-    "k8s-auth-secret-name",
+    "orbit-pi-auth-canary-k8s",
 ];
 
 struct Env {

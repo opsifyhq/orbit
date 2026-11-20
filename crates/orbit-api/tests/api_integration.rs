@@ -8475,3 +8475,388 @@ async fn agent_update_refuses_an_edit_based_on_an_older_version() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["currentVersion"], 4);
 }
+
+// ---------------------------------------------------------------------------
+// Worker profiles: env values are write-only; auth Secret names are allowlisted (#203)
+// ---------------------------------------------------------------------------
+
+fn patch_json(path: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn profile_body(name: &str, env: Value) -> Value {
+    json!({ "name": name, "harnessKind": "mock", "env": env })
+}
+
+#[tokio::test]
+async fn worker_profile_env_values_are_never_returned_and_updates_keep_them() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let name = format!("env-redact-{}", Uuid::now_v7());
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-profiles",
+            profile_body(
+                &name,
+                json!({ "API_KEY": "sk-canary-one", "OTHER": "sk-canary-two", "EMPTY": "" }),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        created["env"],
+        json!({
+            "API_KEY": { "hasValue": true },
+            "OTHER": { "hasValue": true },
+            "EMPTY": { "hasValue": false },
+        })
+    );
+
+    // Update: keep API_KEY (null), replace OTHER, add NEW, drop EMPTY by leaving it out.
+    let (status, updated) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/worker-profiles/{id}"),
+            profile_body(
+                &name,
+                json!({ "API_KEY": null, "OTHER": "sk-canary-three", "NEW": "sk-canary-four" }),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(
+        updated["env"],
+        json!({
+            "API_KEY": { "hasValue": true },
+            "NEW": { "hasValue": true },
+            "OTHER": { "hasValue": true },
+        })
+    );
+
+    // Nothing that can be read back contains a value: get, list, enable, disable.
+    let mut bodies = vec![created.to_string(), updated.to_string()];
+    let (_, got) = send(&app.router, get(&format!("/api/v1/worker-profiles/{id}"))).await;
+    bodies.push(got.to_string());
+    let (_, listed) = send(&app.router, get("/api/v1/worker-profiles")).await;
+    bodies.push(listed.to_string());
+    for action in ["disable", "enable"] {
+        let (status, body) = send(
+            &app.router,
+            post(&format!("/api/v1/worker-profiles/{id}/{action}"), json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        bodies.push(body.to_string());
+    }
+    for body in &bodies {
+        assert!(!body.contains("sk-canary"), "value leaked: {body}");
+    }
+
+    // Stored values are what the update said (kept, replaced, added, removed).
+    let stored = app
+        .store
+        .get_worker_profile(app.org_id, id.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        stored.env,
+        json!({ "API_KEY": "sk-canary-one", "OTHER": "sk-canary-three", "NEW": "sk-canary-four" })
+    );
+
+    // Audit entries never carry values.
+    let pool = raw_pool().await;
+    let audit: Vec<String> = sqlx::query_scalar(
+        "SELECT metadata::text FROM audit_logs WHERE org_id = $1 AND action LIKE 'worker_profile.%'",
+    )
+    .bind(app.org_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(!audit.is_empty());
+    assert!(audit.iter().all(|entry| !entry.contains("sk-canary")));
+}
+
+#[tokio::test]
+async fn worker_profile_env_update_validates_keep_and_value_types() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let name = format!("env-validate-{}", Uuid::now_v7());
+    // Keeping a variable that has no stored value is a field error on create...
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-profiles",
+            profile_body(&name, json!({ "MISSING": null })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "env.MISSING");
+
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-profiles",
+            profile_body(&name, json!({ "A": "sk-canary-a" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap();
+    // ...and on update; non-string values (including the old response shape) are refused.
+    for (env, path) in [
+        (json!({ "A": null, "B": null }), "env.B"),
+        (json!({ "A": { "hasValue": true } }), "env.A"),
+        (json!({ "A": 5 }), "env.A"),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            patch_json(
+                &format!("/api/v1/worker-profiles/{id}"),
+                profile_body(&name, env),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["details"][0]["path"], path);
+        assert!(!body.to_string().contains("sk-canary"));
+    }
+    // A refused update changed nothing.
+    let stored = app
+        .store
+        .get_worker_profile(app.org_id, id.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stored.env, json!({ "A": "sk-canary-a" }));
+}
+
+#[tokio::test]
+async fn worker_facing_paths_still_receive_env_values_and_resolved_secrets() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // Launcher payload: a mock launcher records the request the API sends it.
+    let captured: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let sink = captured.clone();
+    let mock = axum::Router::new().route(
+        "/launches",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+            let sink = sink.clone();
+            async move {
+                sink.lock().unwrap().push(body);
+                axum::Json(json!({ "status": "running", "runtimeId": "pod-1", "workerId": "w-1" }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let mut state = app.state.clone();
+    state.launcher_url = Some(format!("http://{addr}"));
+    state.launcher_token = Some("launcher-token".into());
+    let router = build_router(state);
+
+    let secret_ref = format!("test/env-{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &secret_ref,
+            &orbit_security::SecretValue::new("resolved-secret-value"),
+            "t",
+        )
+        .await
+        .unwrap();
+    let (status, created) = send(
+        &router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("worker-facing-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "target": "kubernetes",
+                "authSecretName": "orbit-pi-auth",
+                "env": { "PROFILE_VAR": "plain-profile-value" },
+                "envMappings": [{ "envVar": "MAPPED", "secretKey": secret_ref }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["envMappings"][0]["envVar"], "MAPPED");
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = send(
+        &router,
+        post(&format!("/api/v1/worker-profiles/{id}/enable"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, token) = send(
+        &router,
+        post(&format!("/api/v1/worker-profiles/{id}/token"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+
+    // Worker env resolution resolves the referenced secret for the worker.
+    let (status, resolved) = send(
+        &router,
+        worker_request(
+            "GET",
+            "/api/v1/worker/env",
+            token["token"].as_str().unwrap(),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert!(resolved
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["envVar"] == "MAPPED" && item["value"] == "resolved-secret-value"));
+
+    // The launcher payload still carries the stored profile env, un-redacted.
+    let (status, launch) = send(
+        &router,
+        post(&format!("/api/v1/worker-profiles/{id}/launch"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{launch}");
+    assert!(!launch.to_string().contains("plain-profile-value"));
+    let sent = captured.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["env"]["PROFILE_VAR"], "plain-profile-value");
+    assert_eq!(sent[0]["authSecretName"], "orbit-pi-auth");
+}
+
+#[tokio::test]
+async fn env_mappings_hold_references_only() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // Inline mappings on a profile: an extra key is refused, nothing is stored.
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("inline-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "envMappings": [{ "envVar": "X", "secretKey": "k", "value": "sk-canary-inline" }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "envMappings");
+    assert!(!body.to_string().contains("sk-canary"));
+
+    // Reusable mappings: same rule.
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/env-mappings",
+            json!({
+                "name": format!("reusable-{}", Uuid::now_v7()),
+                "mappings": [{ "envVar": "X", "secretKey": "k", "value": "sk-canary-reusable" }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(!body.to_string().contains("sk-canary"));
+
+    // Rows stored by an older version with a stray `value` key are not echoed back.
+    let legacy = app
+        .store
+        .create_env_mapping(
+            app.org_id,
+            &format!("legacy-{}", Uuid::now_v7()),
+            "",
+            &json!([{ "envVar": "X", "secretKey": "k", "value": "sk-canary-legacy" }]),
+        )
+        .await
+        .unwrap();
+    let (_, listed) = send(&app.router, get("/api/v1/env-mappings")).await;
+    assert!(listed.to_string().contains(&legacy.id.to_string()));
+    assert!(!listed.to_string().contains("sk-canary"));
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap()["mappings"],
+        json!([{ "envVar": "X", "secretKey": "k" }])
+    );
+}
+
+#[tokio::test]
+async fn worker_profile_auth_secret_name_must_be_allowed() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for bad in [
+        "orbit-orbit",
+        "orbit-secrets",
+        "postgres",
+        "Bad_Name",
+        "../x",
+        "orbit-pi-auth-",
+    ] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/worker-profiles",
+                json!({
+                    "name": format!("auth-bad-{}", Uuid::now_v7()),
+                    "harnessKind": "mock",
+                    "authSecretName": bad,
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+        assert_eq!(
+            body["error"]["details"][0]["path"], "authSecretName",
+            "{bad}"
+        );
+    }
+    let mut ids = Vec::new();
+    for ok in [
+        "orbit-opencode-auth",
+        "orbit-pi-auth",
+        "orbit-pi-auth-team-a",
+    ] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/worker-profiles",
+                json!({
+                    "name": format!("auth-ok-{}", Uuid::now_v7()),
+                    "harnessKind": "mock",
+                    "authSecretName": ok,
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{ok}: {body}");
+        ids.push(body["id"].as_str().unwrap().to_string());
+    }
+    // Update applies the same rule.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/worker-profiles/{}", ids[0]),
+            json!({ "name": "renamed-auth", "harnessKind": "mock", "authSecretName": "orbit-orbit" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
