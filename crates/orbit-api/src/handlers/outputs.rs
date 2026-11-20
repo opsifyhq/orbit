@@ -144,17 +144,12 @@ pub async fn create(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            ApiError::validation(vec![ValidationIssue::new(
+            ApiError::validation(vec![orbit_domain::ValidationIssue::new(
                 "webhookUrl",
                 "webhookUrl is required",
             )])
         })?;
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "webhookUrl",
-            "webhookUrl must be http(s)",
-        )]));
-    }
+    guard_webhook_url(url).await?;
     let secret_ref = new_secret_ref("output");
     state
         .store
@@ -209,12 +204,7 @@ pub async fn update(
     let (name, events) = validated(&body)?;
     let secret_ref = match body.webhook_url.as_deref().map(str::trim) {
         Some(url) if !url.is_empty() => {
-            if !url.starts_with("https://") && !url.starts_with("http://") {
-                return Err(ApiError::validation(vec![ValidationIssue::new(
-                    "webhookUrl",
-                    "webhookUrl must be http(s)",
-                )]));
-            }
+            guard_webhook_url(url).await?;
             let reference = new_secret_ref("output");
             state
                 .store

@@ -412,11 +412,19 @@ async fn translate(
             if nonempty(&name).is_none() {
                 found.issue("metadata.name", "connection name is required");
             }
+            if config.is_null() {
+                config = json!({});
+            }
+            if let Err(error) = crate::handlers::catalog::validate_connection_urls(&config).await {
+                for issue in &error.details {
+                    found.issue(issue.path.clone(), issue.message.clone());
+                }
+            }
             Some(Translated::Connection(CreateConnectionRequest {
                 connector_slug: spec.connector,
                 name,
                 credential: None,
-                config: if config.is_null() { json!({}) } else { config },
+                config,
                 scopes: spec.scopes,
             }))
         }

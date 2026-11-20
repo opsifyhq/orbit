@@ -147,8 +147,26 @@ pub fn write_workspace_file(
     rel: impl AsRef<Path>,
     contents: impl AsRef<[u8]>,
 ) -> std::io::Result<()> {
+    write_file(workspace, rel.as_ref(), contents.as_ref(), false)
+}
+
+/// [`write_workspace_file`] for a file the harness must be able to run (skill scripts).
+pub fn write_workspace_executable(
+    workspace: &Path,
+    rel: impl AsRef<Path>,
+    contents: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
+    write_file(workspace, rel.as_ref(), contents.as_ref(), true)
+}
+
+fn write_file(
+    workspace: &Path,
+    rel: &Path,
+    contents: &[u8],
+    executable: bool,
+) -> std::io::Result<()> {
     use std::io::Write;
-    let path = create_parents_no_follow(workspace, rel.as_ref())?;
+    let path = create_parents_no_follow(workspace, rel)?;
     if let Ok(meta) = std::fs::symlink_metadata(&path) {
         if meta.file_type().is_symlink() {
             std::fs::remove_file(&path)?;
@@ -162,7 +180,17 @@ pub fn write_workspace_file(
         // Closes the check/use race: a link planted meanwhile makes open() fail.
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    options.open(&path)?.write_all(contents.as_ref())
+    let mut file = options.open(&path)?;
+    file.write_all(contents)?;
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        // On the open handle, so the mode lands on the file just written and nothing else.
+        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(())
 }
 
 /// Create a directory chain under `workspace`, refusing symlinked components.
