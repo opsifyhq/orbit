@@ -228,10 +228,19 @@ impl Store {
         Ok(result.rows_affected())
     }
 
-    pub async fn list_running_team_runs(&self) -> StoreResult<Vec<TeamRun>> {
+    /// One page of running team runs with `id > after`, ordered by id. Callers page with
+    /// the last id until a page comes back empty, so every running run is visited and
+    /// none is starved by older ones.
+    pub async fn list_running_team_runs(
+        &self,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> StoreResult<Vec<TeamRun>> {
         Ok(sqlx::query_as::<_, TeamRun>(
-            "SELECT * FROM team_runs WHERE status = 'running' ORDER BY created_at ASC LIMIT 50",
+            "SELECT * FROM team_runs WHERE status = 'running' AND ($1::uuid IS NULL OR id > $1) ORDER BY id ASC LIMIT $2",
         )
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?)
     }
