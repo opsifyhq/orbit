@@ -66,7 +66,13 @@ function ExecutionDetail() {
   const confirm = useConfirm();
   const executionQuery = useExecution(executionId);
   const eventsQuery = useExecutionEvents(executionId);
-  const live = useExecutionStream(executionId);
+  // The stream continues where the fetched page ends instead of replaying all of it.
+  // If that fetch fails the stream still starts, from the beginning.
+  const fetchedThrough = eventsQuery.data?.items.at(-1)?.seq ?? 0;
+  const live = useExecutionStream(executionId, {
+    enabled: !eventsQuery.isLoading,
+    afterSeq: fetchedThrough,
+  });
   const workers = useWorkers();
 
   // The stream's snapshot is only sent on connect and at the end; the polled record
