@@ -41,7 +41,6 @@ fi
 
 # Local microk8s only: dev auth behind the ingress is acknowledged explicitly
 # (auth.acknowledgeInsecureDev, see the chart guard in templates/_helpers.tpl).
-set -x
 helm --kube-context "${KUBE_CONTEXT}" upgrade --install "${RELEASE}" deploy/helm/orbit \
   --namespace "${NAMESPACE}" \
   -f "${VALUES}" \
@@ -63,7 +62,6 @@ helm --kube-context "${KUBE_CONTEXT}" upgrade --install "${RELEASE}" deploy/helm
   ${OP_TOKEN:+--set opencodeWorker.enabled=true} \
   ${LAUNCHER_TOKEN:+--set launcher.token="${LAUNCHER_TOKEN}"} \
   "$@"
-set +x
 
 echo
 kubectl --context "${KUBE_CONTEXT}" -n "${NAMESPACE}" get pods,svc,ingress
