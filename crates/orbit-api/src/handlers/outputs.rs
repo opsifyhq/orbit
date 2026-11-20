@@ -165,7 +165,7 @@ pub async fn create(
             &format!("output:{name}"),
         )
         .await?;
-    let output = state
+    let output = match state
         .store
         .create_output(
             auth.org_id,
@@ -177,7 +177,15 @@ pub async fn create(
             &secret_ref,
             body.template.as_deref(),
         )
-        .await?;
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            // The secret was written first; do not leave it behind when the row is refused.
+            let _ = state.store.delete_secret(&secret_ref).await;
+            return Err(error.into());
+        }
+    };
     audit::record(
         &state,
         &auth,
@@ -221,7 +229,7 @@ pub async fn update(
         }
         _ => None,
     };
-    let output = state
+    let output = match state
         .store
         .update_output(
             auth.org_id,
@@ -235,7 +243,16 @@ pub async fn update(
             body.template.as_deref(),
             body.enabled,
         )
-        .await?;
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(reference) = secret_ref.as_deref() {
+                let _ = state.store.delete_secret(reference).await;
+            }
+            return Err(error.into());
+        }
+    };
     audit::record(
         &state,
         &auth,

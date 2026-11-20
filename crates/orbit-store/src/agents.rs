@@ -361,7 +361,7 @@ impl Store {
             r#"
             UPDATE agents
             SET status = $3, archived_at = COALESCE($4, archived_at), updated_at = now()
-            WHERE org_id = $1 AND id = $2
+            WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,
         )
@@ -369,17 +369,22 @@ impl Store {
         .bind(agent_id)
         .bind(target.as_str())
         .bind(archived_at)
+        .bind(current_status.as_str())
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| StoreError::NotFound("agent".into()))
+        .ok_or_else(|| StoreError::Conflict("agent status changed concurrently; retry".into()))
     }
 
+    /// Permanently delete an agent together with its versions, executions and other
+    /// agent-owned history. Refused with a `Conflict` while team run steps still reference
+    /// the agent: that history belongs to the team, not to the agent.
     pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
         let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(agent_id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -395,7 +400,8 @@ impl Store {
             .bind(org_id)
             .bind(agent_id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -505,5 +511,23 @@ impl Store {
         .bind(org_id)
         .fetch_one(&self.pool)
         .await?)
+    }
+}
+
+/// Translate the FK violation raised by an agent delete into an actionable conflict.
+fn agent_delete_error(error: sqlx::Error) -> StoreError {
+    let constraint = error
+        .as_database_error()
+        .filter(|db| db.is_foreign_key_violation())
+        .and_then(|db| db.constraint().map(str::to_owned));
+    match constraint.as_deref() {
+        Some(name) if name.starts_with("team_steps_") => StoreError::Conflict(
+            "agent is used by agent team runs; delete those runs or archive the agent instead"
+                .into(),
+        ),
+        Some(_) => StoreError::Conflict(
+            "agent is still referenced by other records; archive it instead".into(),
+        ),
+        None => error.into(),
     }
 }
