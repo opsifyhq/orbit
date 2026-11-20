@@ -29,8 +29,12 @@ issues, so a coding agent could not complete a repository loop.
   agent; the agent's own name/instructions define its role.
 - Skills belong to the team, not to individual steps, and are materialized for every
   step. There are no separate role records.
-- A team has an `instructions` goal. The first step receives it with the run task;
-  later steps receive it with the original task and the previous step output.
+- A team has an `instructions` goal. It is configured system context for every step,
+  never part of the explicit run instruction (task). The task is the single run
+  instruction; later steps receive the previous step output as delegated context in the
+  payload, not in the task. Native-team subagent instructions are their own configuration
+  and never contain the primary agent's instructions unless a delegation explicitly
+  includes them.
 - Team definitions are editable; a run snapshots its definition so edits affect future
   runs only.
 - A `TeamRun` creates one normal execution per step, sequentially. Executions carry

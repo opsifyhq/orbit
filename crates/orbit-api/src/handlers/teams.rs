@@ -18,6 +18,23 @@ use crate::work_sources::{
     validate_repositories, validate_work_source, RepositorySpec, WorkSourceDefinition,
 };
 
+/// The explicit run instruction is the only text presented as the task to the harness.
+fn run_instruction(run_input: &serde_json::Value) -> &str {
+    run_input
+        .get("task")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Team run")
+}
+
+/// Team goal/instructions are configuration. They travel as trusted system context,
+/// never as part of the run instruction.
+fn configured_goal(run_input: &serde_json::Value) -> &str {
+    run_input
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamStepInput {
@@ -36,8 +53,8 @@ pub struct CreateTeamRequest {
     /// and materializes the remaining agents as harness-native subagents.
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// Shared goal/instruction for the team. The first step receives it as its task;
-    /// later steps receive it together with the previous step output.
+    /// Shared goal/instruction for the team. Passed to every step as configured system
+    /// context, never mixed into the run instruction shown as the task.
     #[serde(default)]
     pub instructions: String,
     /// Structured workspace repository (owner/repo). Instructions alone cannot drive
@@ -793,59 +810,14 @@ pub(crate) async fn start_step(
             };
         }
     }
-    let task = run
-        .input
-        .get("task")
-        .and_then(|value| value.as_str())
-        .unwrap_or("Team run");
-    let instructions = run
-        .input
-        .get("instructions")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
+    // #259: the run instruction is the single task for every step. The team goal is
+    // configured system context and the previous step output is delegated context;
+    // neither is copied into the task the harness presents as user input.
+    let task = run_instruction(&run.input).to_string();
+    let instructions = configured_goal(&run.input);
     let previous = previous_output
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".into());
-    let task_text = if previous_output.is_none() {
-        if instructions.trim().is_empty() {
-            task.to_string()
-        } else {
-            format!("{task}\n\nTeam context: {instructions}")
-        }
-    } else {
-        if instructions.trim().is_empty() {
-            format!(
-                "Role: {}\n\nOriginal task: {task}\n\nPrevious step output:\n{previous}",
-                agent.name
-            )
-        } else {
-            format!(
-                "Role: {}\n\nOriginal task: {task}\n\nTeam context: {instructions}\n\nPrevious step output:\n{previous}",
-                agent.name
-            )
-        }
-    };
-    let task_text = if definition.repositories.len() > 1 {
-        let manifest = definition
-            .repositories
-            .iter()
-            .map(|repository| {
-                format!(
-                    "- {} (workspace path: {})",
-                    repository.repository,
-                    if repository.path.is_empty() {
-                        "."
-                    } else {
-                        &repository.path
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("{task_text}\n\nWorkspace repositories:\n{manifest}")
-    } else {
-        task_text
-    };
     let requested_harness = run
         .input
         .get("payload")
@@ -910,18 +882,40 @@ pub(crate) async fn start_step(
     let mut team_payload = serde_json::json!({
         "runId": run.id,
         "mode": definition.mode,
+        // Configured team instructions, consumed by the worker as system context.
         "goal": instructions,
         "agent": agent.name,
+        "stepIndex": step_index,
+        // Delegated context for later steps; never part of the run instruction.
         "previous": previous,
         "connectionIds": definition.connection_ids,
         "envMappingIds": definition.env_mapping_ids,
     });
+    if definition.repositories.len() > 1 {
+        let manifest = definition
+            .repositories
+            .iter()
+            .map(|repository| {
+                format!(
+                    "- {} (workspace path: {})",
+                    repository.repository,
+                    if repository.path.is_empty() {
+                        "."
+                    } else {
+                        &repository.path
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        team_payload["workspaceRepositories"] = serde_json::json!(manifest);
+    }
     if native {
         team_payload["subagents"] =
             serde_json::Value::Array(native_subagents(state, run.org_id, definition).await?);
     }
     let mut input = serde_json::json!({
-        "task": task_text,
+        "task": task,
         "payload": {
             "teamRunId": run.id,
             "stepIndex": step_index,
@@ -1039,17 +1033,21 @@ pub async fn create_run(
     )
     .await?;
     validate_requested_repositories(&definition, &body.payload)?;
-    let task = if body.task.trim().is_empty() {
-        definition.instructions.trim()
-    } else {
-        body.task.trim()
-    };
-    if task.is_empty() {
+    let requested_task = body.task.trim();
+    let configured_instructions = definition.instructions.trim();
+    if requested_task.is_empty() && configured_instructions.is_empty() {
         return Err(ApiError::validation(vec![ValidationIssue::new(
             "task",
             "task or team instructions are required",
         )]));
     }
+    // If the caller supplied no task, the configured goal becomes the run instruction
+    // and is not duplicated as system context.
+    let (task, instructions) = if requested_task.is_empty() {
+        (configured_instructions.to_string(), String::new())
+    } else {
+        (requested_task.to_string(), definition.instructions.clone())
+    };
     let mut payload = body.payload.clone();
     if !payload.is_object() {
         payload = serde_json::json!({});
@@ -1080,7 +1078,7 @@ pub async fn create_run(
     }
     let input = serde_json::json!({
         "task": task,
-        "instructions": definition.instructions,
+        "instructions": instructions,
         "payload": payload,
         "definition": definition,
         "autoApprove": body.auto_approve,
@@ -1358,4 +1356,31 @@ pub async fn reconcile_team_outcomes(state: &AppState) -> anyhow::Result<()> {
         tracing::warn!(released, "released stale team queue claims");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prompt_separation_tests {
+    use super::{configured_goal, run_instruction};
+    use serde_json::json;
+
+    #[test]
+    fn run_instruction_is_only_the_explicit_task() {
+        let unique = "AURORA-259-TEAM-UNIQUE-RUN-INSTRUCTION";
+        let configured = "AURORA-259-TEAM-CONFIGURED-GOAL";
+        let input = json!({
+            "task": unique,
+            "instructions": configured,
+            "definition": { "instructions": configured },
+        });
+        assert_eq!(run_instruction(&input), unique);
+        assert_eq!(configured_goal(&input), configured);
+        assert!(!run_instruction(&input).contains(configured));
+    }
+
+    #[test]
+    fn missing_task_does_not_default_to_configured_goal_text() {
+        let input = json!({ "instructions": "goal" });
+        assert_eq!(run_instruction(&input), "Team run");
+        assert_eq!(configured_goal(&input), "goal");
+    }
 }

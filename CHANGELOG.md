@@ -32,6 +32,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   saved as the next version instead of being refused ("identical to an existing version"),
   so undoing a change or removing a just-added skill works. Saving without changes still
   creates no version. Migration `0049_agent_version_revert` drops the unique checksum rule.
+- Run instructions are no longer mixed with configured agent/team instructions in harness
+  prompts or execution events. Team goals travel as trusted system context, native subagent
+  materialization keeps primary instructions out of subagent files, and prompt provenance
+  events are tagged as run instruction, system instructions or delegation (#259).
 
 ## [0.25.0] - 2026-11-20
 

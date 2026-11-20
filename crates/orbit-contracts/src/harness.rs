@@ -231,11 +231,39 @@ impl InputProvenance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInput {
-    /// The task or message.
+    /// The single explicit run instruction for this execution (user task or delegated
+    /// task). Configured agent/team system instructions are NEVER copied here: they are
+    /// transported in [`ExecutionRequest::instructions`] and rendered as trusted system
+    /// context by the adapter. This is the only text the adapter presents as the task.
     pub task: String,
     #[serde(default)]
     pub payload: serde_json::Value,
     pub provenance: InputProvenance,
+}
+
+/// Provenance of prompt-related execution events.
+///
+/// Events carry this tag in `data.promptInputKind` so the timeline can distinguish the
+/// user's run instruction from configured system instructions and subagent delegation.
+/// The full instruction text is not included in these events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptInputKind {
+    RunInstruction,
+    SystemInstructions,
+    Delegation,
+}
+
+impl PromptInputKind {
+    pub const DATA_KEY: &'static str = "promptInputKind";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunInstruction => "run_instruction",
+            Self::SystemInstructions => "system_instructions",
+            Self::Delegation => "delegation",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -522,6 +550,32 @@ impl HarnessEvent {
         )
     }
 
+    /// Metadata event describing where a prompt input came from. Never include the full
+    /// instruction text: system instructions are configuration, not user-visible output.
+    pub fn input(kind: PromptInputKind, message: impl Into<String>) -> Self {
+        Self::input_with_data(kind, message, serde_json::Value::Null)
+    }
+
+    /// Same as [`Self::input`], with additional non-sensitive metadata (counts, sources).
+    pub fn input_with_data(
+        kind: PromptInputKind,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        let mut data = if data.is_object() {
+            data
+        } else {
+            serde_json::json!({})
+        };
+        data[PromptInputKind::DATA_KEY] = serde_json::json!(kind.as_str());
+        Self::new(
+            HarnessEventKind::Log,
+            orbit_domain::LogLevel::Debug,
+            message,
+        )
+        .with_data(data)
+    }
+
     pub fn with_data(mut self, data: serde_json::Value) -> Self {
         self.data = data;
         self
@@ -755,5 +809,45 @@ mod pause_clock_tests {
             elapsed >= std::time::Duration::from_millis(120)
                 && elapsed < std::time::Duration::from_millis(600)
         );
+    }
+}
+
+#[cfg(test)]
+mod prompt_input_event_tests {
+    use super::{HarnessEvent, PromptInputKind};
+
+    #[test]
+    fn input_events_are_tagged_without_embedding_instruction_text() {
+        let configured = "AURORA-259-CONFIGURED-INSTRUCTIONS";
+        let event = HarnessEvent::input(
+            PromptInputKind::SystemInstructions,
+            "system instructions configured (33 characters)",
+        );
+        assert_eq!(event.kind, super::HarnessEventKind::Log);
+        assert_eq!(event.data[PromptInputKind::DATA_KEY], "system_instructions");
+        assert!(!event.message.contains(configured));
+        assert!(!event.data.to_string().contains(configured));
+
+        let tagged = HarnessEvent::input_with_data(
+            PromptInputKind::Delegation,
+            "delegated",
+            serde_json::json!({ "subagents": ["reviewer"] }),
+        );
+        assert_eq!(
+            tagged.data[PromptInputKind::DATA_KEY],
+            PromptInputKind::Delegation.as_str()
+        );
+        assert_eq!(tagged.data["subagents"][0], "reviewer");
+
+        for kind in [
+            PromptInputKind::RunInstruction,
+            PromptInputKind::SystemInstructions,
+            PromptInputKind::Delegation,
+        ] {
+            assert_eq!(
+                HarnessEvent::input(kind, "metadata").data[PromptInputKind::DATA_KEY],
+                kind.as_str()
+            );
+        }
     }
 }

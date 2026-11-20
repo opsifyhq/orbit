@@ -424,6 +424,39 @@ async fn agent_crud_validation_and_export() {
 }
 
 #[tokio::test]
+async fn run_task_is_stored_as_the_single_run_instruction() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let task = "AURORA-259-API-UNIQUE-RUN-INSTRUCTION";
+    let configured = "AURORA-259-API-CONFIGURED-SYSTEM-INSTRUCTIONS";
+    let path = format!("/api/v1/agents/{}/executions", app.agent_id);
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "task": task }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let execution_id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    let input = execution.input;
+    assert_eq!(input["task"], task);
+    assert_eq!(input["task"].as_str().unwrap().matches(task).count(), 1);
+    // Configured system instructions live in the agent spec, never in run input.
+    assert!(input.get("instructions").is_none());
+    assert!(!input.to_string().contains(configured));
+}
+
+#[tokio::test]
 async fn execution_creation_is_idempotent_and_streams_events() {
     let Some(app) = test_app(true).await else {
         return;
@@ -3750,6 +3783,38 @@ async fn start_run(app: &TestApp, team_id: Uuid) -> Uuid {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     body["run"]["id"].as_str().unwrap().parse().unwrap()
+}
+
+#[tokio::test]
+async fn team_run_task_is_not_mixed_with_configured_goal() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let task = "AURORA-259-TEAM-API-UNIQUE-RUN-INSTRUCTION";
+    let goal = "AURORA-259-TEAM-API-CONFIGURED-GOAL";
+    let team_id = make_team(&app, vec![app.agent_id], json!({ "instructions": goal })).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": task }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run_id: Uuid = body["run"]["id"].as_str().unwrap().parse().unwrap();
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    let execution = app
+        .store
+        .get_execution(app.org_id, step.execution_id.unwrap())
+        .await
+        .unwrap();
+    let input = execution.input;
+    assert_eq!(input["task"], task);
+    assert_eq!(input["task"].as_str().unwrap().matches(task).count(), 1);
+    assert!(!input["task"].as_str().unwrap().contains(goal));
+    // The configured goal is carried as system context, not as another task.
+    assert_eq!(input["team"]["goal"], goal);
 }
 
 async fn succeed_current_step(app: &TestApp, run_id: Uuid) {

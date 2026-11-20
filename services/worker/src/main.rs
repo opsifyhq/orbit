@@ -7,6 +7,7 @@ mod github;
 mod gitlab;
 mod liveness;
 mod mcp_broker;
+mod prompt;
 mod retry;
 mod runner;
 mod skills;
