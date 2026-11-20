@@ -20,13 +20,18 @@ path.
 ```bash
 helm upgrade --install orbit deploy/helm/orbit \
   --namespace orbit --create-namespace \
-  --set ingress.host=orbit.example.com
+  --set ingress.host=orbit.example.com \
+  --set auth.acknowledgeInsecureDev=true
 ```
 
 This installs the API, web, launcher and (by default) bundled PostgreSQL and NATS with
 dev auth. On first start the API seeds one launchable mock profile
 (`Platform worker (mock)`); start it from **Workers → Launch** and the demo agents can
 run. Point `ingress.host` at your ingress address (or add an `/etc/hosts` entry).
+
+`auth.acknowledgeInsecureDev=true` acknowledges the anonymous Owner UI exposed by dev
+auth plus ingress; use it only on throwaway local/test clusters. For anything reachable
+beyond your LAN, switch to `auth.mode=oidc` as in the Production section below.
 
 Verify:
 
@@ -208,6 +213,7 @@ Mount at `/etc/orbit-license.jwt`; the API hot-reloads it (~60s) and exposes the
 | Key | Default | Notes |
 |---|---|---|
 | `auth.mode` | `dev` | `dev` or `oidc` |
+| `auth.acknowledgeInsecureDev` | `false` | allow dev + anonymous + ingress; throwaway clusters only |
 | `auth.dev.allowAnonymous` | `true` | omit tokens (dev only) |
 | `auth.dev.token` | `orbit-dev-token` | injected server-side by the web proxy |
 | `auth.dev.userEmail` / `.userName` / `.orgSlug` / `.orgName` | dev values | seeded identity |
