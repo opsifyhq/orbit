@@ -50,6 +50,7 @@ import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Status, type StatusMeta } from "@/components/ui/status";
 import { api } from "@/lib/api";
+import { mergeProviderConfig } from "@/lib/provider-config";
 import { request } from "@/lib/http";
 import { queryKeys, unwrap, useProviders } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
@@ -200,42 +201,47 @@ export default function ModelsPage() {
   const save = useMutation({
     mutationFn: async () => {
       const catalog = parseModels(form.models);
-      const config =
+      const limits = {
+        ...(form.contextWindow ? { contextWindow: Number(form.contextWindow) } : {}),
+        ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}),
+      };
+      // Only these fields are on the form. Everything else in a stored config is kept
+      // as-is so editing one setting cannot erase headers, flags or other settings.
+      const compatFlags = {
+        tools: form.tools,
+        streaming: form.streaming,
+        jsonMode: form.jsonMode,
+        vision: form.vision,
+        modelsEndpoint: form.modelsEndpoint,
+      };
+      const rendered =
         form.kind === "anthropic"
           ? {
               baseUrl: form.baseUrl.trim().replace(/\/$/, "") || ANTHROPIC_BASE_URL,
               model: form.model.trim(),
-              ...(form.contextWindow ? { contextWindow: Number(form.contextWindow) } : {}),
-              ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}),
+              ...limits,
             }
           : form.kind === "openai_compatible"
           ? {
               baseUrl: form.baseUrl.trim().replace(/\/$/, ""),
               model: form.model.trim(),
-              ...(form.contextWindow ? { contextWindow: Number(form.contextWindow) } : {}),
-              ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}),
-              headers: {},
-              requestParams: {},
-              compat: {
-                chatCompletions: true,
-                responsesApi: false,
-                tools: form.tools,
-                streaming: form.streaming,
-                jsonMode: form.jsonMode,
-                vision: form.vision,
-                embeddings: false,
-                modelsEndpoint: form.modelsEndpoint,
-              },
+              ...limits,
+              // On create these empty maps are part of the existing request shape; on
+              // edit they would overwrite stored values, so leave them to the merge.
+              ...(editing ? {} : { headers: {}, requestParams: {} }),
+              compat: editing
+                ? compatFlags
+                : { chatCompletions: true, responsesApi: false, embeddings: false, ...compatFlags },
               // No `settings` here: the API rejects unknown fields for this kind.
             }
           : {
               harness: form.harnessKind,
               provider: form.harnessProvider.trim() || undefined,
               model: form.model.trim() || undefined,
-              settings: {
-                ...(catalog.length ? { models: catalog } : {}),
-              },
+              ...(catalog.length ? { settings: { models: catalog } } : {}),
             };
+      const existing = editing ? (editing.config as Record<string, unknown> | undefined) : null;
+      const config = mergeProviderConfig(existing, rendered);
 
       if (editing) {
         return unwrap(

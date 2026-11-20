@@ -99,8 +99,13 @@ export default function SkillsPage() {
   function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = event.target.files;
     if (!files) return;
-    let current: Record<string, string> = {};
-    try { current = JSON.parse(filesText); } catch { current = {}; }
+    // If the text is invalid, start from the stored files rather than silently
+    // replacing them with `{}` as soon as a new file is picked.
+    const stored = editing?.files;
+    const fallback = stored && typeof stored === "object" && !Array.isArray(stored)
+      ? (stored as Record<string, string>)
+      : {};
+    const current: Record<string, string> = { ...(parseFiles(filesText) ?? fallback) };
     Array.from(files).forEach((file) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -147,13 +152,13 @@ export default function SkillsPage() {
         return unwrap(
           await api.PATCH("/api/v1/skills/{skill_id}", {
             params: { path: { skill_id: editing.id } },
-            body: { name, description, content, files: (() => { try { return JSON.parse(filesText); } catch { return undefined; } })() },
+            body: { name, description, content, files: parseFiles(filesText) ?? {} },
           }),
         );
       }
       return unwrap(
         await api.POST("/api/v1/skills", {
-          body: { name, slug, description, content, files: (() => { try { return JSON.parse(filesText); } catch { return {}; } })() },
+          body: { name, slug, description, content, files: parseFiles(filesText) ?? {} },
         }),
       );
     },
@@ -167,6 +172,10 @@ export default function SkillsPage() {
   });
 
   async function saveSkill() {
+    if (filesInvalid) {
+      toast.error("Fix the bundled files JSON before saving.");
+      return;
+    }
     if ((await accessRef.current?.save()) === false) return;
     save.mutate();
   }
@@ -556,7 +565,7 @@ export default function SkillsPage() {
                   <Field
                     label="Files as JSON"
                     htmlFor="skill-files"
-                    error={filesInvalid ? "This is not valid JSON, so the bundled files will not be saved." : undefined}
+                    error={filesInvalid ? "This is not valid JSON. Fix it before saving." : undefined}
                   >
                     <Textarea
                       id="skill-files"
@@ -571,6 +580,11 @@ export default function SkillsPage() {
               ) : null}
             </div>
           </div>
+          {filesInvalid ? (
+            <Callout tone="danger" title="Fix the bundled files JSON before saving">
+              The Files as JSON field is not valid JSON. Correct it, then try saving again.
+            </Callout>
+          ) : null}
           <ResourceAccessFields ref={accessRef} resource="skills" resourceId={editing?.id} />
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
@@ -579,7 +593,7 @@ export default function SkillsPage() {
             <Button
               onClick={() => void saveSkill()}
               loading={save.isPending}
-              disabled={!name.trim() || !slug.trim() || !content.trim()}
+              disabled={!name.trim() || !slug.trim() || !content.trim() || filesInvalid}
             >
               {editing ? "Save skill" : "Create skill"}
             </Button>
