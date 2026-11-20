@@ -29,6 +29,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   access for teams too, and a count under the list, built on shared list components. Team
   runs moved from a tab to their own page (`/agent-teams/runs`), and list headers now line up
   with their columns.
+- Connectors follow the Agents pattern: the connections list uses the shared registry list
+  (search, status filter with counts, status column, bulk access, count), each connection has
+  a page (`/connections/<id>`) with Test, Edit, export and remove, and Connection Studio
+  (`/connections/new`, `/connections/<id>/edit`) replaces the dialog with the Agent Studio
+  section layout and capabilities grouped by effect.
 
 ### Fixed
 
