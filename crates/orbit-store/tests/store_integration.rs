@@ -2116,11 +2116,17 @@ async fn expired_approvals_cannot_be_decided() {
     assert_eq!(decided.status, "approved");
 }
 
+/// Pruning takes a database-wide advisory lock and gives up when another caller holds
+/// it (that is how replicas avoid working on the same rows). Tests that prune must
+/// therefore not overlap, or one of them deletes nothing.
+static AUDIT_PRUNE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn prune_audit_logs_removes_only_rows_older_than_cutoff() {
     let Some(store) = test_store().await else {
         return;
     };
+    let _serial = AUDIT_PRUNE_TESTS.lock().await;
     let (org, _) = seed_org(&store).await;
     let append = |action: &'static str| {
         store.append_audit_log(
@@ -3329,6 +3335,7 @@ async fn prune_audit_logs_deletes_in_batches() {
     let Some(store) = test_store().await else {
         return;
     };
+    let _serial = AUDIT_PRUNE_TESTS.lock().await;
     let (org, _) = seed_org(&store).await;
     // More than one batch (5000) of old rows plus one recent row.
     sqlx::query(
@@ -3358,6 +3365,7 @@ async fn prune_audit_logs_deletes_in_batches() {
     assert_eq!(remaining, 1);
 }
 
+#[tokio::test]
 async fn unparseable_tool_policies_are_enforced_as_deny() {
     let Some(store) = test_store().await else {
         return;
