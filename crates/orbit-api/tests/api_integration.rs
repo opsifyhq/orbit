@@ -6781,3 +6781,50 @@ async fn agent_update_can_return_to_an_earlier_configuration() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["currentVersion"], 3);
 }
+
+#[tokio::test]
+async fn connection_test_route_returns_connection_test_response() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user = owner_user(&app).await;
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            "Missing base URL",
+            &json!({ "baseUrl": "" }),
+            &[],
+            None,
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{}/test", connection.id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], false);
+    assert!(body["status"].is_null(), "{body}");
+    assert!(body["latencyMs"].as_u64().is_some(), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("missing baseUrl"),
+        "{body}"
+    );
+}
