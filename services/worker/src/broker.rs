@@ -54,6 +54,8 @@ struct BrokerState {
     repo_specs: Vec<crate::git::RepoSpec>,
     /// The run's clock; paused while a person decides on an approval.
     pause: orbit_contracts::PauseClock,
+    /// The execution's cancellation token: aborts in-flight git commit/push.
+    cancel: tokio_util::sync::CancellationToken,
     /// Actions a person rejected in this run (capability + arguments). The same
     /// action is refused without asking again.
     rejected: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -546,6 +548,7 @@ pub async fn start(
     workspace: &std::path::Path,
     tool_policies: &[ToolPolicyRule],
     pause: orbit_contracts::PauseClock,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<Option<BrokerHandle>> {
     let binding = spec.connectors.iter().find(|b| {
         matches!(b.connector.as_str(), "github" | "gitlab" | "kubernetes")
@@ -641,6 +644,7 @@ pub async fn start(
         http: orbit_security::guarded_client(Duration::from_secs(30)),
         repo_specs: crate::git::repo_specs(&execution.input),
         pause,
+        cancel,
         rejected: Default::default(),
     });
 
@@ -805,6 +809,7 @@ async fn call_tool(
                         connection_id,
                         &workspace,
                         message,
+                        &state.cancel,
                     )
                     .await
                 }
@@ -820,6 +825,7 @@ async fn call_tool(
                         connection_id,
                         &workspace,
                         branch,
+                        &state.cancel,
                     )
                     .await
                 }

@@ -55,6 +55,16 @@ impl RetryPolicy {
         }
     }
 
+    /// Event posts: a short bounded retry (at most 4 attempts, delays capped at 2 s) that
+    /// rides out an API blip without letting one dead endpoint stall the event stream.
+    pub fn for_events(&self) -> Self {
+        Self {
+            attempts: self.attempts.min(4),
+            base: self.base,
+            max_delay: self.max_delay.min(Duration::from_secs(2)),
+        }
+    }
+
     /// Delay before retry number `retry` (1-based): base * 2^(retry-1), capped, with
     /// +/-25% jitter so a fleet of workers does not retry in lockstep.
     fn delay(&self, retry: u32) -> Duration {

@@ -458,25 +458,14 @@ impl WorkerClient {
 }
 
 impl WorkerClient {
-    /// Fetch resolved environment variables from the API.
+    /// Fetch the worker profile's resolved environment variables. Transport failures,
+    /// non-2xx answers and malformed bodies are errors: an empty list means "no mappings",
+    /// never "the lookup failed".
     pub async fn resolve_env(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let response = self
-            .http
-            .get(format!("{}/api/v1/worker/env", self.base_url))
-            .bearer_auth(&self.token)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Ok(vec![]);
-        }
-        let entries: Vec<serde_json::Value> = response.json().await.unwrap_or_default();
+        let entries: Vec<WorkerEnv> = self.get_json("/api/v1/worker/env").await?;
         Ok(entries
-            .iter()
-            .filter_map(|e| {
-                let key = e.get("envVar")?.as_str()?.to_string();
-                let val = e.get("value")?.as_str()?.to_string();
-                Some((key, val))
-            })
+            .into_iter()
+            .map(|entry| (entry.env_var, entry.value))
             .collect())
     }
 }

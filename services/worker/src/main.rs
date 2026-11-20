@@ -104,21 +104,8 @@ async fn main() -> anyhow::Result<()> {
     let client = WorkerClient::new(&config.api_url, &config.worker_token)
         .context("invalid worker API configuration")?;
 
-    // Resolve worker-profile connection mappings once. They are passed to each harness
-    // process (never written into the worker's global environment).
-    let extra_env: std::collections::BTreeMap<String, String> = client
-        .resolve_env()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    if !extra_env.is_empty() {
-        tracing::info!(
-            count = extra_env.len(),
-            "loaded mapped environment variables"
-        );
-    }
-    let extra_env = Arc::new(extra_env);
+    // Worker-profile connection mappings are resolved per execution (with retry) so a
+    // rotated value is picked up and an API outage never yields a silently empty env.
     let registry = Arc::new(HarnessRegistry::builtin());
 
     // The API may still be migrating/seeding while a worker starts. Retry session
@@ -166,7 +153,6 @@ async fn main() -> anyhow::Result<()> {
         allow_web_search: session.allow_web_search,
         allow_web_fetch: session.allow_web_fetch,
         native_tool_permissions: session.native_tool_permissions,
-        extra_env,
         active: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
         shutdown: tokio_util::sync::CancellationToken::new(),
         retry: retry::RetryPolicy::lifecycle(),
@@ -194,7 +180,15 @@ async fn main() -> anyhow::Result<()> {
                 hostname: std::env::var("HOSTNAME").ok().as_deref(),
             })
             .await;
-        let result = runner::run_single(state.clone(), execution_id).await;
+        // This process is PID 1 in its container, which ignores an unhandled SIGTERM:
+        // handle it like the long-running path (cancel, let the adapter stop, report).
+        let result = runner::run_single_until(
+            state.clone(),
+            execution_id,
+            shutdown_signal(),
+            shutdown_grace(),
+        )
+        .await;
         let _ = state.client.offline(&state.worker_id).await;
         result?;
         tracing::info!(%execution_id, "single-execution worker finished");
@@ -226,18 +220,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Interrupt in-flight executions, wait a bounded grace period for them to report,
     // then report whatever is left as failed ("worker shutdown").
-    let grace = Duration::from_secs(
-        std::env::var("ORBIT_WORKER_SHUTDOWN_GRACE_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(15),
-    );
-    runner::shutdown(&state, grace).await;
+    runner::shutdown(&state, shutdown_grace()).await;
     if let Err(error) = state.client.offline(&state.worker_id).await {
         tracing::warn!(%error, "failed to remove worker heartbeat");
     }
     tracing::info!("ORBIT worker stopped");
     Ok(())
+}
+
+fn shutdown_grace() -> Duration {
+    Duration::from_secs(
+        std::env::var("ORBIT_WORKER_SHUTDOWN_GRACE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(15),
+    )
 }
 
 async fn shutdown_signal() {
