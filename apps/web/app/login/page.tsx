@@ -13,6 +13,12 @@ import { beginOidcLogin } from "@/lib/oidc";
 import { safeNextPath } from "@/lib/safe-redirect";
 import { useMe, useMeta } from "@/lib/queries";
 
+/** Read `?next=` on the client; SSR has no window, so fall back to "/". */
+function requestedNextPath(): string {
+  if (typeof window === "undefined") return "/";
+  return safeNextPath(new URLSearchParams(window.location.search).get("next"));
+}
+
 export default function LoginPage() {
   const meta = useMeta();
   const router = useRouter();
@@ -25,7 +31,7 @@ export default function LoginPage() {
   useEffect(() => {
     if (!getAccessToken()) return;
     if (me.isSuccess) {
-      router.replace("/");
+      router.replace(requestedNextPath());
     } else if (isSessionError(me.error)) {
       // Expired or foreign token: clear it instead of treating it as a session.
       // Transient errors (5xx, network) keep it so a blip does not force a new sign-in.
@@ -36,7 +42,7 @@ export default function LoginPage() {
   function startSignIn() {
     setError(null);
     setStarting(true);
-    void beginOidcLogin(safeNextPath(new URLSearchParams(window.location.search).get("next"))).catch(
+    void beginOidcLogin(requestedNextPath()).catch(
       (reason) => {
         setStarting(false);
         setError(reason instanceof Error ? reason.message : String(reason));

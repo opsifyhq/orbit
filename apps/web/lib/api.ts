@@ -5,7 +5,8 @@ import { createOrbitClient } from "@orbit/api-client";
 /**
  * Same-origin by default: the Next.js API proxy route forwards `/api/*` to the control
  * plane using `ORBIT_API_INTERNAL_URL` at runtime. Set NEXT_PUBLIC_ORBIT_API_URL only
- * when the API is served from a different origin (e.g. native apps or split domains).
+ * for browser-reachable direct API setups (e.g. split domains); never point it at a
+ * server-only internal host.
  */
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_ORBIT_API_URL?.replace(/\/$/, "") ?? "";
@@ -31,6 +32,10 @@ export const api = createOrbitClient({
   token: () => getAccessToken(),
 });
 
+/**
+ * Same-origin, like downloads: the Next proxy forwards SSE and works even when
+ * NEXT_PUBLIC_ORBIT_API_URL is unset or points at a server-only internal host.
+ */
 export function eventStreamUrl(executionId: string): string {
-  return `${API_BASE_URL}/api/v1/executions/${executionId}/events/stream`;
+  return `/api/v1/executions/${encodeURIComponent(executionId)}/events/stream`;
 }

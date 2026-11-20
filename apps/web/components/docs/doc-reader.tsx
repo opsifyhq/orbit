@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } fro
 import Link from "next/link";
 import type { Components } from "react-markdown";
 
+import { toast } from "sonner";
+
 import { Markdown } from "@/components/ui/markdown";
 import { fetchDocAsset, headingIdsByLine, resolveDocLink } from "@/lib/docs";
 import { cn } from "@/lib/utils";
@@ -71,7 +73,26 @@ function DocLink({ href, children }: ComponentProps<"a">) {
         className={LINK_CLASS}
         onClick={(event) => {
           event.preventDefault();
-          void fetchDocAsset(target.href).then((blob) => window.open(URL.createObjectURL(blob), "_blank", "noopener"));
+          // Popup blockers only allow a window opened synchronously in the click handler.
+          // Do not pass "noopener" in features: some browsers then return a null handle.
+          const win = window.open("", "_blank");
+          if (!win) {
+            toast.error("Your browser blocked the pop-up. Allow pop-ups for this site and try again.");
+            return;
+          }
+          win.opener = null;
+          void fetchDocAsset(target.href)
+            .then((blob) => {
+              if (win.closed) return;
+              const objectUrl = URL.createObjectURL(blob);
+              win.location.href = objectUrl;
+              // Give the new document time to load before releasing the blob.
+              window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+            })
+            .catch(() => {
+              if (!win.closed) win.close();
+              toast.error("Could not open the document asset.");
+            });
         }}
       >
         {children}

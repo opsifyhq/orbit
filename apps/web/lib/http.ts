@@ -1,6 +1,7 @@
 "use client";
 
 import { API_BASE_URL, getAccessToken, setAccessToken } from "./api";
+import { currentLocationPath, loginPathFor } from "./safe-redirect";
 
 /**
  * Error thrown for any failed API call (HTTP error, unreadable body or network failure).
@@ -106,8 +107,9 @@ export async function apiErrorFromResponse(response: Response): Promise<ApiError
 export function handleUnauthorized() {
   if (!getAccessToken()) return;
   setAccessToken(null);
-  if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+  const current = currentLocationPath();
+  if (typeof window !== "undefined" && !current.split(/[?#]/, 1)[0].startsWith("/login")) {
+    window.location.assign(loginPathFor(current));
   }
 }
 

@@ -16,6 +16,7 @@ import { pageLabel } from "@/components/shell/nav";
 import { Sidebar } from "@/components/shell/sidebar";
 import { getAccessToken, setAccessToken } from "@/lib/api";
 import { useDashboard, useMe, useMeta } from "@/lib/queries";
+import { currentLocationPath, loginPathFor } from "@/lib/safe-redirect";
 
 function isPublicPath(pathname: string) {
   return pathname.startsWith("/login") || pathname.startsWith("/auth/");
@@ -33,7 +34,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const auth = (meta.data?.auth ?? {}) as { mode?: string };
     if (auth.mode !== "oidc" || publicPath) return;
-    const login = `/login?next=${encodeURIComponent(pathname)}`;
+    const login = loginPathFor(currentLocationPath());
     if (!getAccessToken()) {
       router.replace(login);
     } else if (isSessionError(me.error)) {
