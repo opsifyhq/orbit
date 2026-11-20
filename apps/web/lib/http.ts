@@ -1,14 +1,14 @@
 "use client";
 
-import { API_BASE_URL, getAccessToken, setAccessToken } from "./api";
-import { currentLocationPath, loginPathFor } from "./safe-redirect";
+import { API_BASE_URL, getAccessToken, setAccessToken } from "./api.ts";
+import { currentLocationPath, loginPathFor } from "./safe-redirect.ts";
 
 /**
  * Error thrown for any failed API call (HTTP error, unreadable body or network failure).
  *
  * `status` is the HTTP status, or `0` when the request never reached the server. Callers
- * that need to distinguish "your session is invalid" (401/403) from "the API is having a
- * moment" (5xx, network) must look at `status`, never at the message.
+ * that need to distinguish "your session is invalid" (401), "you may not use ORBIT" (403)
+ * from "the API is having a moment" (5xx, network) must look at `status`, never at the message.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -35,10 +35,14 @@ export function errorStatus(error: unknown): number | undefined {
   return error instanceof ApiError ? error.status : undefined;
 }
 
-/** The credentials are not valid (401) or the user may not use ORBIT at all (403 on `/me`). */
+/** The credentials are not valid (401): the session is over and the token must be replaced. */
 export function isSessionError(error: unknown): boolean {
-  const status = errorStatus(error);
-  return status === 401 || status === 403;
+  return errorStatus(error) === 401;
+}
+
+/** The identity is valid but the user may not use ORBIT (403 from `/me`). */
+export function isNoAccessError(error: unknown): boolean {
+  return errorStatus(error) === 403;
 }
 
 /** 4xx other than "slow down / try again" will fail the same way on every retry. */
