@@ -49,7 +49,85 @@ fn oidc(state: &AppState) -> Result<&orbit_security::OidcConfig, ApiError> {
         .ok_or_else(|| ApiError::not_found("OIDC authentication"))
 }
 
+/// How long a discovery document is served from memory.
+const DISCOVERY_TTL: Duration = Duration::from_secs(600);
+/// Minimum time between two fetches from the identity provider, including after a failure.
+/// These endpoints are unauthenticated, so this bounds the traffic they can cause.
+const DISCOVERY_MIN_REFRESH: Duration = Duration::from_secs(15);
+
+#[derive(Default)]
+struct DiscoveryCache {
+    document: Option<Value>,
+    fetched: Option<std::time::Instant>,
+    last_attempt: Option<std::time::Instant>,
+}
+
+static DISCOVERY_CACHE: tokio::sync::Mutex<DiscoveryCache> =
+    tokio::sync::Mutex::const_new(DiscoveryCache {
+        document: None,
+        fetched: None,
+        last_attempt: None,
+    });
+
+/// Cached discovery document. The lock is held across a refresh so concurrent callers
+/// share one fetch; a failed refresh keeps serving the previous document.
+async fn cached_discovery<F, Fut>(
+    cache: &tokio::sync::Mutex<DiscoveryCache>,
+    ttl: Duration,
+    min_refresh: Duration,
+    fetch: F,
+) -> Result<Value, ApiError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Value, ApiError>>,
+{
+    let mut guard = cache.lock().await;
+    if let (Some(document), Some(fetched)) = (&guard.document, guard.fetched) {
+        if fetched.elapsed() < ttl {
+            return Ok(document.clone());
+        }
+    }
+    let may_refresh = guard
+        .last_attempt
+        .is_none_or(|at| at.elapsed() >= min_refresh);
+    if may_refresh {
+        guard.last_attempt = Some(std::time::Instant::now());
+        match fetch().await {
+            Ok(document) => {
+                guard.document = Some(document.clone());
+                guard.fetched = Some(std::time::Instant::now());
+                return Ok(document);
+            }
+            Err(error) => {
+                if let Some(stale) = &guard.document {
+                    tracing::warn!(error = %error.message, "OIDC discovery refresh failed; serving cached document");
+                    return Ok(stale.clone());
+                }
+                return Err(error);
+            }
+        }
+    }
+    match &guard.document {
+        Some(stale) => Ok(stale.clone()),
+        None => Err(ApiError::new(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "oidc_discovery_failed",
+            "OIDC discovery is unavailable; retry shortly",
+        )),
+    }
+}
+
 async fn discovery(issuer: &str) -> Result<Value, ApiError> {
+    cached_discovery(
+        &DISCOVERY_CACHE,
+        DISCOVERY_TTL,
+        DISCOVERY_MIN_REFRESH,
+        || fetch_discovery(issuer),
+    )
+    .await
+}
+
+async fn fetch_discovery(issuer: &str) -> Result<Value, ApiError> {
     let url = format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
@@ -195,4 +273,68 @@ pub async fn token(
             .and_then(Value::as_str)
             .map(str::to_string),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn failing() -> ApiError {
+        ApiError::new(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "oidc_discovery_failed",
+            "down",
+        )
+    }
+
+    #[tokio::test]
+    async fn discovery_is_cached_and_survives_a_failed_refresh() {
+        let cache = tokio::sync::Mutex::new(DiscoveryCache::default());
+        let calls = AtomicUsize::new(0);
+        let doc = serde_json::json!({ "token_endpoint": "https://idp/token" });
+        for _ in 0..50 {
+            let result = cached_discovery(&cache, Duration::from_secs(60), Duration::ZERO, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let doc = doc.clone();
+                async move { Ok(doc) }
+            })
+            .await
+            .unwrap();
+            assert_eq!(result, doc);
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "fresh cache must not refetch"
+        );
+
+        // Expired (ttl zero): refresh fails, the cached copy is still served.
+        let served = cached_discovery(&cache, Duration::ZERO, Duration::ZERO, || async {
+            Err(failing())
+        })
+        .await
+        .unwrap();
+        assert_eq!(served, doc);
+    }
+
+    #[tokio::test]
+    async fn failed_discovery_is_not_retried_within_the_refresh_interval() {
+        let cache = tokio::sync::Mutex::new(DiscoveryCache::default());
+        let calls = AtomicUsize::new(0);
+        for _ in 0..20 {
+            let result = cached_discovery(
+                &cache,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async { Err(failing()) }
+                },
+            )
+            .await;
+            assert!(result.is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

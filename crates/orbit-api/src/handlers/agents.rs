@@ -371,7 +371,11 @@ pub async fn list_agent_instances(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<AgentInstancePage>, ApiError> {
     auth.require(Permission::AgentsRead)?;
-    let instances = state.store.list_agent_instances(auth.org_id).await?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let instances = state
+        .store
+        .list_agent_instances(auth.org_id, Some(&access.store_access()))
+        .await?;
     let total = instances.len() as i64;
     Ok(Json(AgentInstancePage {
         items: instances
