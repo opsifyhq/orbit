@@ -5479,6 +5479,62 @@ async fn agent_specs_require_use_of_referenced_connections_and_providers() {
 }
 
 #[tokio::test]
+async fn agent_writes_reject_connector_bindings_without_connections() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user = operator(&app, "connector-required@test.local").await;
+    let token = token_for(&app.store, app.org_id, user.id, "connector-required").await;
+    webhook_connection(&app, "Connector required hook", user.id).await;
+
+    let mut invalid = definition();
+    invalid["spec"]["connectors"] =
+        json!([{ "connector": "webhook", "capabilities": ["messages.send"] }]);
+
+    let assert_envelope = |body: &Value| {
+        assert_eq!(body["error"]["code"], "validation_error");
+        assert!(body["error"]["requestId"].is_string());
+        let details = body["error"]["details"].as_array().unwrap();
+        assert!(
+            details.iter().any(|issue| {
+                issue["path"] == "spec.connectors[0].connectionId"
+                    && issue["message"].as_str().unwrap().contains("connectionId")
+            }),
+            "{body}"
+        );
+    };
+
+    let (status, body) = send(
+        &app.router,
+        auth_post("/api/v1/agents", &token, invalid.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_envelope(&body);
+
+    let agent = bound_agent(&app, user.id, None, None).await;
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/agents/{agent}"),
+            &token,
+            json!({ "definition": invalid }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_envelope(&body);
+
+    // A disabled connector (absent from the spec) and an empty connector list stay valid.
+    let (status, body) = send(
+        &app.router,
+        auth_post("/api/v1/agents", &token, definition()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
 async fn rerun_applies_the_execute_preflight() {
     let Some(app) = test_app(true).await else {
         return;
