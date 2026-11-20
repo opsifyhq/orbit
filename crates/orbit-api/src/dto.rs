@@ -528,6 +528,6 @@ pub struct CreatedApiToken {
 /// Helper used by handlers to build the effective provider kind.
 pub fn parse_provider_kind(value: &str) -> Result<ProviderKind, String> {
     ProviderKind::parse(value).ok_or_else(|| {
-        format!("unknown provider kind '{value}'; expected openai_compatible or harness_managed")
+        format!("unknown provider kind '{value}'; expected openai_compatible, anthropic or harness_managed")
     })
 }

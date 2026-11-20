@@ -258,6 +258,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(handlers::catalog::delete_connection),
         )
         .route(
+            "/api/v1/connections/{connection_id}/test",
+            post(handlers::catalog::test_connection),
+        )
+        .route(
             "/api/v1/triggers",
             get(handlers::triggers::list_triggers).post(handlers::triggers::create_trigger),
         )
@@ -468,6 +472,7 @@ fn build_cors(state: &AppState) -> CorsLayer {
                 Method::GET,
                 Method::POST,
                 Method::PATCH,
+                Method::PUT,
                 Method::DELETE,
                 Method::OPTIONS,
             ])
@@ -483,6 +488,7 @@ fn build_cors(state: &AppState) -> CorsLayer {
             Method::GET,
             Method::POST,
             Method::PATCH,
+            Method::PUT,
             Method::DELETE,
             Method::OPTIONS,
         ])
@@ -496,4 +502,110 @@ fn build_cors(state: &AppState) -> CorsLayer {
             header::HeaderName::from_static("x-request-id"),
         ])
         .expose_headers([header::HeaderName::from_static("x-request-id")])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use utoipa::OpenApi;
+
+    use crate::openapi::ApiDoc;
+
+    /// The worker protocol is an internal contract between `orbit-api` and
+    /// `orbit-worker`; it is versioned with the binaries, not published.
+    const INTERNAL_PREFIX: &str = "/api/v1/worker/";
+
+    /// `(METHOD, path)` for every `.route(...)` call in this file.
+    fn routed_operations() -> BTreeSet<(String, String)> {
+        let source = include_str!("routes.rs");
+        // Only the router definition; this test module would otherwise match itself.
+        let source = &source[..source.find("#[cfg(test)]").expect("test module marker")];
+        let mut operations = BTreeSet::new();
+        let mut rest = source;
+        while let Some(start) = rest.find(".route(") {
+            rest = &rest[start + ".route(".len()..];
+            let open = rest.find('"').expect("route path");
+            let close = open + 1 + rest[open + 1..].find('"').expect("route path end");
+            let path = rest[open + 1..close].replace("{*path}", "{path}");
+            // The handler expression runs to the parenthesis that closes `.route(`.
+            let mut depth = 1usize;
+            let mut end = close + 1;
+            for (offset, character) in rest[close + 1..].char_indices() {
+                match character {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    end = close + 1 + offset;
+                    break;
+                }
+            }
+            let handlers = &rest[close + 1..end];
+            for method in ["get", "post", "patch", "put", "delete"] {
+                let call = format!("{method}(");
+                let used = handlers.match_indices(&call).any(|(index, _)| {
+                    // `get(` must be a routing call, not the tail of another identifier.
+                    !handlers[..index]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|previous| previous.is_alphanumeric() || previous == '_')
+                });
+                if used {
+                    operations.insert((method.to_uppercase(), path.clone()));
+                }
+            }
+            rest = &rest[end..];
+        }
+        operations
+    }
+
+    fn documented_operations() -> BTreeSet<(String, String)> {
+        let spec = serde_json::to_value(ApiDoc::openapi()).expect("serializable spec");
+        let mut operations = BTreeSet::new();
+        for (path, item) in spec["paths"].as_object().expect("paths") {
+            for method in item.as_object().expect("path item").keys() {
+                if ["get", "post", "patch", "put", "delete"].contains(&method.as_str()) {
+                    operations.insert((method.to_uppercase(), path.clone()));
+                }
+            }
+        }
+        operations
+    }
+
+    /// AGENTS.md: API change → regenerated OpenAPI client. That only works when the
+    /// spec describes exactly what the router serves, so drift fails the build here.
+    #[test]
+    fn openapi_document_matches_the_router() {
+        let routed: BTreeSet<_> = routed_operations()
+            .into_iter()
+            .filter(|(_, path)| !path.starts_with(INTERNAL_PREFIX))
+            .collect();
+        let documented = documented_operations();
+        assert!(routed.len() > 100, "route parser found too little");
+
+        let undocumented: Vec<_> = routed.difference(&documented).collect();
+        let unrouted: Vec<_> = documented.difference(&routed).collect();
+        assert!(
+            undocumented.is_empty() && unrouted.is_empty(),
+            "routes missing from ApiDoc (add the handler to `paths(...)` in openapi.rs): \
+             {undocumented:#?}\noperations in ApiDoc with no route (route it or drop it): \
+             {unrouted:#?}"
+        );
+    }
+
+    #[test]
+    fn provider_kind_schema_uses_the_wire_names() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).expect("serializable spec");
+        let values = &spec["components"]["schemas"]["ProviderKind"]["enum"];
+        assert_eq!(
+            values,
+            &serde_json::json!(["openai_compatible", "anthropic", "harness_managed"])
+        );
+        for kind in ["openai_compatible", "anthropic", "harness_managed"] {
+            let parsed = orbit_contracts::ProviderKind::parse(kind).expect("known kind");
+            assert_eq!(serde_json::json!(parsed), serde_json::json!(kind));
+        }
+    }
 }

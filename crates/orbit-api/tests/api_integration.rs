@@ -7512,3 +7512,115 @@ async fn bulk_skills_are_delete_only_with_manage_access_and_id_bounds() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["deleted"].as_array().unwrap().len(), 2);
 }
+
+/// #207: the Connections "Test" button called a handler that was never routed.
+#[tokio::test]
+async fn connection_test_endpoint_is_routed_and_honest_about_unsupported_connectors() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let create = |slug: &'static str, extra: Value| {
+        let router = app.router.clone();
+        async move {
+            let mut body = json!({ "connectorSlug": slug, "name": format!("{slug} test") });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (status, body) = send(&router, post("/api/v1/connections", body)).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            body
+        }
+    };
+    let status_of = |id: String| {
+        let router = app.router.clone();
+        async move {
+            let (_, list) = send(&router, get("/api/v1/connections")).await;
+            list.as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id.as_str())
+                .map(|row| row["status"].clone())
+                .unwrap()
+        }
+    };
+
+    // A connector with a probe: the result is recorded on the connection.
+    let mock = create("mock", json!({})).await;
+    let mock_id = mock["id"].as_str().unwrap().to_string();
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supported"], true);
+    assert_eq!(body["ok"], true);
+    // `active` is the only status workers accept; the check time proves it ran.
+    assert_eq!(status_of(mock_id.clone()).await, "active");
+    let (_, list) = send(&app.router, get("/api/v1/connections")).await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == mock_id.as_str())
+        .unwrap();
+    assert!(row["lastCheckedAt"].is_string(), "{row}");
+
+    // A failed check is recoverable: testing again restores `active`.
+    sqlx::query("UPDATE connections SET status = 'error' WHERE id = $1")
+        .bind(Uuid::parse_str(&mock_id).unwrap())
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (_, body) = send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(status_of(mock_id.clone()).await, "active");
+
+    // A probe never revives a revoked connection.
+    sqlx::query("UPDATE connections SET status = 'revoked' WHERE id = $1")
+        .bind(Uuid::parse_str(&mock_id).unwrap())
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    send(
+        &app.router,
+        post(&format!("/api/v1/connections/{mock_id}/test"), json!({})),
+    )
+    .await;
+    assert_eq!(status_of(mock_id).await, "revoked");
+
+    // A connector without one: say so, contact nothing, and do not mark it failed.
+    let telegram = create("telegram", json!({ "credential": "123456:bot-secret" })).await;
+    let telegram_id = telegram["id"].as_str().unwrap().to_string();
+    let before = status_of(telegram_id.clone()).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{telegram_id}/test"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supported"], false);
+    assert_eq!(body["ok"], false);
+    assert!(body["message"].as_str().unwrap().contains("Telegram"));
+    assert!(!body.to_string().contains("bot-secret"));
+    assert_eq!(status_of(telegram_id).await, before);
+
+    // Unknown connection → enveloped 404.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/connections/{}/test", Uuid::now_v7()),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
