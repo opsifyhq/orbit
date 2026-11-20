@@ -72,6 +72,20 @@ export default function AgentsPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
 
+  const restore = useMutation({
+    mutationFn: async (agentId: string) =>
+      unwrap(
+        await api.POST("/api/v1/agents/{agent_id}/activate", {
+          params: { path: { agent_id: agentId } },
+        }),
+      ),
+    onSuccess: () => {
+      toast.success("Agent restored");
+      void invalidateAgents();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
   const all = agents.data?.items ?? [];
   const counts = useMemo(() => {
     const result: Record<Filter, number> = { current: 0, active: 0, draft: 0, paused: 0, archived: 0 };
@@ -94,6 +108,14 @@ export default function AgentsPage() {
   }, [all, filter, search]);
 
   const truncated = agents.data ? agents.data.total > all.length : false;
+
+  // Bulk actions only ever touch rows that are on screen: a selection made under
+  // another filter or search must not be archived or deleted unseen.
+  const selectedVisible = useMemo(
+    () => visible.filter((agent) => selected.has(agent.id)),
+    [visible, selected],
+  );
+  const selectedIds = useMemo(() => selectedVisible.map((agent) => agent.id), [selectedVisible]);
 
   return (
     <div className="space-y-6">
@@ -132,11 +154,11 @@ export default function AgentsPage() {
         />
       </ListToolbar>
 
-      {selected.size ? (
+      {selectedIds.length ? (
         <BulkActionsBar
           resource="agents"
-          selectedIds={[...selected]}
-          allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
+          selectedIds={selectedIds}
+          allShownSelected={selectedIds.length === visible.length}
           onToggleAllShown={(checked) =>
             setSelected(
               checked
@@ -145,8 +167,8 @@ export default function AgentsPage() {
             )
           }
           onChangeAccess={() => setBulkOpen(true)}
-          archivedIds={all
-            .filter((agent) => selected.has(agent.id) && agent.status === "archived")
+          archivedIds={selectedVisible
+            .filter((agent) => agent.status === "archived")
             .map((agent) => agent.id)}
           onSucceeded={(ids) => {
             setSelected((current) => {
@@ -164,7 +186,7 @@ export default function AgentsPage() {
         open={bulkOpen}
         onOpenChange={setBulkOpen}
         resource="agents"
-        ids={[...selected]}
+        ids={selectedIds}
         onDone={() => {
           setSelected(new Set());
           void invalidateAgents();
@@ -186,6 +208,7 @@ export default function AgentsPage() {
                   agent={agent}
                   selected={selected.has(agent.id)}
                   onSelect={(checked) => setSelected((current) => toggleId(current, agent.id, checked))}
+                  onRestore={(target) => restore.mutate(target.id)}
                   onDelete={async (target) => {
                     const confirmed = await confirm({
                       title: `Delete ${target.name} permanently?`,

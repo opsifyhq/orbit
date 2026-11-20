@@ -360,11 +360,12 @@ impl Store {
                 "agent has no configuration version to activate".into(),
             ));
         }
+        // `archived_at` is set on archive and cleared when the agent is restored.
         let archived_at = (target == AgentStatus::Archived).then(Utc::now);
         sqlx::query_as::<_, Agent>(
             r#"
             UPDATE agents
-            SET status = $3, archived_at = COALESCE($4, archived_at), updated_at = now()
+            SET status = $3, archived_at = $4, updated_at = now()
             WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,

@@ -111,6 +111,12 @@ export default function AgentTeamsPage() {
     });
   }, [all, filter, search, agent]);
 
+  // Bulk actions only ever touch rows that are on screen.
+  const selectedIds = useMemo(
+    () => visible.filter((team) => selected.has(team.id)).map((team) => team.id),
+    [visible, selected],
+  );
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -153,9 +159,9 @@ export default function AgentTeamsPage() {
       </ListToolbar>
 
       <SelectionBar
-        count={selected.size}
+        count={selectedIds.length}
         noun="agent teams"
-        allShownSelected={visible.length > 0 && visible.every((team) => selected.has(team.id))}
+        allShownSelected={visible.length > 0 && selectedIds.length === visible.length}
         onSelectAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((team) => team.id), checked))}
         onClear={() => setSelected(new Set())}
       >
@@ -168,7 +174,7 @@ export default function AgentTeamsPage() {
         open={bulkOpen}
         onOpenChange={setBulkOpen}
         resource="agent_teams"
-        ids={[...selected]}
+        ids={selectedIds}
         onDone={() => {
           setSelected(new Set());
           void queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams });

@@ -2680,8 +2680,10 @@ async fn queued_execution(
         .unwrap()
 }
 
+/// Two racing status changes must behave as if they ran one after the other: a
+/// transition validated against a stale read never lands on top of the other one.
 #[tokio::test]
-async fn concurrent_archive_and_activate_never_resurrect_an_archived_agent() {
+async fn concurrent_agent_status_changes_are_serialized() {
     let Some(store) = test_store().await else {
         return;
     };
@@ -2695,34 +2697,71 @@ async fn concurrent_archive_and_activate_never_resurrect_an_archived_agent() {
             .set_agent_status(org, agent.id, AgentStatus::Active)
             .await
             .unwrap();
-        store
-            .set_agent_status(org, agent.id, AgentStatus::Paused)
-            .await
-            .unwrap();
-        let (archive, activate) = tokio::join!(
+        // From `active`, pause and archive are both legal, and pausing an archived
+        // agent is not: so if only one of them wins, it decides the final status.
+        let (archive, pause) = tokio::join!(
             store.set_agent_status(org, agent.id, AgentStatus::Archived),
-            store.set_agent_status(org, agent.id, AgentStatus::Active),
+            store.set_agent_status(org, agent.id, AgentStatus::Paused),
         );
         let final_status = store.get_agent(org, agent.id).await.unwrap().status;
-        if archive.is_ok() {
-            assert_eq!(
-                final_status, "archived",
-                "round {round}: archive succeeded but the agent ended {final_status}"
-            );
-        }
-        if let Err(error) = &archive {
-            assert!(matches!(error, orbit_store::StoreError::Conflict(_)));
-        }
-        if let Err(error) = &activate {
+        for error in [&archive, &pause]
+            .into_iter()
+            .filter_map(|r| r.as_ref().err())
+        {
             assert!(
                 matches!(
                     error,
                     orbit_store::StoreError::Conflict(_) | orbit_store::StoreError::Invalid(_)
                 ),
-                "{error:?}"
+                "round {round}: {error:?}"
             );
         }
+        match (archive.is_ok(), pause.is_ok()) {
+            // Paused first, then archived: the only serial order in which both succeed.
+            (true, true) => assert_eq!(final_status, "archived", "round {round}"),
+            (true, false) => assert_eq!(final_status, "archived", "round {round}"),
+            (false, true) => assert_eq!(final_status, "paused", "round {round}"),
+            (false, false) => panic!("round {round}: both transitions were refused"),
+        }
     }
+}
+
+/// ADR 0013: archiving is reversible. Activating an archived agent restores it.
+#[tokio::test]
+async fn archived_agent_can_be_restored() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, _) = store
+        .create_agent(org, Some(user), &definition("Restore Agent"))
+        .await
+        .unwrap();
+    let archived = store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert_eq!(archived.status, "archived");
+    assert!(archived.archived_at.is_some());
+
+    let restored = store
+        .set_agent_status(org, agent.id, AgentStatus::Active)
+        .await
+        .unwrap();
+    assert_eq!(restored.status, "active");
+    assert!(restored.archived_at.is_none(), "restore clears archived_at");
+
+    // Pausing is still only possible from active.
+    store
+        .set_agent_status(org, agent.id, AgentStatus::Archived)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .set_agent_status(org, agent.id, AgentStatus::Paused)
+            .await,
+        Err(orbit_store::StoreError::Invalid(_))
+    ));
 }
 
 #[tokio::test]

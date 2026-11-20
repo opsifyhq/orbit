@@ -15,6 +15,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -110,17 +111,20 @@ export default function AgentDetailPage() {
   });
 
   const lifecycle = useMutation({
-    mutationFn: async (action: "activate" | "pause") =>
+    // Restoring an archived agent is an activation; it keeps its own name in the UI.
+    mutationFn: async (action: "activate" | "pause" | "restore") =>
       unwrap(
         await api.POST(
-          action === "activate"
-            ? "/api/v1/agents/{agent_id}/activate"
-            : "/api/v1/agents/{agent_id}/pause",
+          action === "pause"
+            ? "/api/v1/agents/{agent_id}/pause"
+            : "/api/v1/agents/{agent_id}/activate",
           { params: { path: { agent_id: agentId } } },
         ),
       ),
     onSuccess: (_, action) => {
-      toast.success(action === "activate" ? "Agent activated" : "Agent paused");
+      toast.success(
+        action === "pause" ? "Agent paused" : action === "restore" ? "Agent restored" : "Agent activated",
+      );
       void queryClient.invalidateQueries({ queryKey: queryKeys.agent(agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
@@ -214,7 +218,7 @@ export default function AgentDetailPage() {
     const confirmed = await confirm({
       title: `Archive ${data.name}?`,
       description:
-        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its execution history is kept. Archiving cannot be undone.",
+        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its versions and execution history are kept, and you can restore it later.",
       confirmLabel: "Archive agent",
       destructive: true,
     });
@@ -288,6 +292,10 @@ export default function AgentDetailPage() {
             ) : data.status === "paused" ? (
               <Button variant="outline" onClick={() => lifecycle.mutate("activate")} loading={lifecycle.isPending}>
                 <Zap /> Resume
+              </Button>
+            ) : archived ? (
+              <Button onClick={() => lifecycle.mutate("restore")} loading={lifecycle.isPending}>
+                <RotateCcw /> Restore agent
               </Button>
             ) : null}
             <DropdownMenu>
