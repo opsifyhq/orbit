@@ -524,7 +524,6 @@ function OidcSettingsEditor({ loaded }: { loaded: OidcSettings }) {
   const [autoProvision, setAutoProvision] = useState(loaded.autoProvision ?? true);
   const [defaultRole, setDefaultRole] = useState(loaded.defaultRole || "viewer");
   const [emailClaim, setEmailClaim] = useState(loaded.emailClaim || "email");
-  const [requireMappedGroup, setRequireMappedGroup] = useState(loaded.requireMappedGroup ?? false);
 
   const saveSettings = useMutation({
     mutationFn: async (edited: Partial<OidcSettings>) =>
@@ -556,7 +555,8 @@ function OidcSettingsEditor({ loaded }: { loaded: OidcSettings }) {
       autoProvision,
       defaultRole,
       emailClaim,
-      requireMappedGroup,
+      // `requireMappedGroup` and the other unrendered fields ride along from the loaded
+      // object (see saveSettings); this form has no control for them.
     });
   }
 

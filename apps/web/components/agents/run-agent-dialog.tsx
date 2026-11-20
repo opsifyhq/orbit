@@ -170,7 +170,7 @@ export function RunAgentDialog({
               >
                 <Textarea
                   id="run-payload"
-                  className="min-h-[80px] font-mono text-xs"
+                  className="min-h-[80px] font-mono text-base md:text-xs"
                   value={payloadText}
                   onChange={(event) => setPayloadText(event.target.value)}
                   placeholder='{"query":"#ORBIT"}'

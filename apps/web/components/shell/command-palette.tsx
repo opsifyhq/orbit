@@ -171,17 +171,29 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder="Search pages, agents and actions"
-                className="h-12 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
+                // 16px on phones: iOS zooms the page when a focused field is smaller.
+                className="h-12 w-full bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-[15px]"
                 role="combobox"
+                aria-label="Search pages, agents and actions"
+                aria-autocomplete="list"
                 aria-expanded
                 aria-controls="command-results"
                 aria-activedescendant={results[cursor] ? `command-${results[cursor].id}` : undefined}
               />
               <Kbd className="hidden sm:inline-flex">Esc</Kbd>
             </div>
-            <div ref={listRef} id="command-results" role="listbox" className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            <p className="sr-only" role="status">
+              {results.length === 0 ? `Nothing matches ${query}` : `${results.length} results`}
+            </p>
+            <div
+              ref={listRef}
+              id="command-results"
+              role="listbox"
+              aria-label="Results"
+              className="min-h-0 flex-1 overflow-y-auto p-1.5"
+            >
               {results.length === 0 ? (
-                <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+                <p role="presentation" className="px-3 py-8 text-center text-sm text-muted-foreground">
                   Nothing matches “{query}”.
                 </p>
               ) : (
@@ -192,7 +204,11 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
                   return (
                     <React.Fragment key={command.id}>
                       {heading ? (
-                        <p className="px-2.5 pb-1 pt-2.5 text-xs font-medium text-muted-foreground first:pt-1">
+                        // A visual divider only: a listbox may contain nothing but options.
+                        <p
+                          role="presentation"
+                          className="px-2.5 pb-1 pt-2.5 text-xs font-medium text-muted-foreground first:pt-1"
+                        >
                           {heading}
                         </p>
                       ) : null}
@@ -201,6 +217,9 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
                         id={`command-${command.id}`}
                         role="option"
                         aria-selected={active}
+                        // The input keeps focus and points at the active option; the
+                        // options themselves are not tab stops.
+                        tabIndex={-1}
                         data-index={index}
                         onMouseMove={() => setCursor(index)}
                         onClick={() => run(command)}

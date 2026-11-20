@@ -451,7 +451,7 @@ export function SkillForm({
               <Textarea
                 id="skill-body"
                 aria-label="Instructions"
-                className="min-h-[320px] font-mono text-xs leading-relaxed"
+                className="min-h-[320px] font-mono text-base md:text-xs leading-relaxed"
                 spellCheck={false}
                 value={draft.body}
                 onChange={(event) => set("body", event.target.value)}
@@ -472,7 +472,7 @@ export function SkillForm({
               >
                 <Textarea
                   id="skill-extra"
-                  className="min-h-[80px] font-mono text-xs"
+                  className="min-h-[80px] font-mono text-base md:text-xs"
                   spellCheck={false}
                   value={draft.extra}
                   onChange={(event) => set("extra", event.target.value)}
@@ -525,7 +525,7 @@ export function SkillForm({
                           <span className={cn("min-w-0 flex-1 truncate font-mono text-xs", error && "text-destructive")}>
                             {file.path || "untitled"}
                           </span>
-                          <span className="tabular shrink-0 text-[11px] text-muted-foreground">{sizeLabel(file.content)}</span>
+                          <span className="tabular shrink-0 text-xs text-muted-foreground">{sizeLabel(file.content)}</span>
                         </button>
                       </li>
                     );
@@ -558,7 +558,7 @@ export function SkillForm({
                     </div>
                     <Textarea
                       aria-label={`Contents of ${current.path || "this file"}`}
-                      className="min-h-[240px] font-mono text-xs"
+                      className="min-h-[240px] font-mono text-base md:text-xs"
                       spellCheck={false}
                       value={current.content}
                       onChange={(event) => setFile(selectedFile, { content: event.target.value })}

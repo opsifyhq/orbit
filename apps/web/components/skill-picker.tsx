@@ -149,6 +149,21 @@ export function SkillPicker({
         {visible.length === 0 ? (
           <li className="px-3 py-6 text-center text-[13px] text-muted-foreground">
             {show === "selected" && !query ? "No skills selected yet." : "No skills match."}
+            {query || show === "selected" ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery("");
+                    setShow("all");
+                  }}
+                  className="rounded font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  {query ? "Clear filters" : "Show all skills"}
+                </button>
+              </>
+            ) : null}
           </li>
         ) : null}
         {visible.map((skill) => {

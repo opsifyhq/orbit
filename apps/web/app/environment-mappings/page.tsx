@@ -483,7 +483,7 @@ export default function EnvironmentMappingsPage() {
                               placeholder="GITLAB_TOKEN"
                               autoCapitalize="characters"
                               spellCheck={false}
-                              className="font-mono text-[13px]"
+                              className="font-mono text-base md:text-[13px]"
                               aria-invalid={nameError ? true : undefined}
                               onChange={(event) =>
                                 updateRow(index, {
@@ -526,7 +526,7 @@ export default function EnvironmentMappingsPage() {
                               ) : (
                                 <Input
                                   aria-labelledby={`em-${index}-source`}
-                                  className="font-mono text-[13px]"
+                                  className="font-mono text-base md:text-[13px]"
                                   value={row.secretKey}
                                   placeholder="Key of the stored secret"
                                   spellCheck={false}

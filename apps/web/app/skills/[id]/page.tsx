@@ -235,7 +235,7 @@ export default function SkillPage() {
                           <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
                           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-                          <span className="tabular shrink-0 text-[11px] text-muted-foreground">
+                          <span className="tabular shrink-0 text-xs text-muted-foreground">
                             {file.content.split("\n").length} lines
                           </span>
                         </button>

@@ -239,7 +239,7 @@ export function TeamQueue({ team }: { team: AgentTeam }) {
           <Field label="Items" htmlFor="queue-items" hint="One per line: a key, or key|repository. Items with the same key are added once.">
             <Textarea
               id="queue-items"
-              className="min-h-28 font-mono text-xs"
+              className="min-h-28 font-mono text-base md:text-xs"
               spellCheck={false}
               value={text}
               onChange={(event) => setText(event.target.value)}

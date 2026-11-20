@@ -141,7 +141,7 @@ export function DocReader({ markdown, slug }: { markdown: string; slug: string }
       ),
       th: ({ node: _node, ...props }) => (
         <th
-          className="whitespace-nowrap border-b bg-subtle px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          className="whitespace-nowrap border-b bg-subtle px-3 py-2 text-left text-xs font-semibold text-muted-foreground"
           {...props}
         />
       ),
