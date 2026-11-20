@@ -6492,6 +6492,139 @@ async fn changing_provider_base_url_requires_reentering_the_credential() {
 }
 
 #[tokio::test]
+async fn output_webhook_urls_are_validated_on_create_and_update() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/outputs",
+            json!({
+                "name": "Bad hook",
+                "kind": "webhook",
+                "webhookUrl": "http://169.254.169.254/latest/meta-data"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "webhookUrl")));
+
+    let secret_ref = format!("secret://output/{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &secret_ref,
+            &orbit_security::SecretValue::new("http://93.184.216.34/hook"),
+            "test hook",
+        )
+        .await
+        .unwrap();
+    let output = app
+        .store
+        .create_output(
+            app.org_id,
+            "Patchable hook",
+            "webhook",
+            None,
+            None,
+            &["succeeded".to_string()],
+            &secret_ref,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/outputs/{}", output.id))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "name": "Patchable hook",
+                    "kind": "webhook",
+                    "events": ["succeeded"],
+                    "enabled": true,
+                    "webhookUrl": "http://169.254.169.254/latest/meta-data"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "webhookUrl")));
+}
+
+#[tokio::test]
+async fn connection_base_urls_are_validated_on_create_and_update() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Bad base URL",
+                "config": { "baseUrl": "http://169.254.169.254" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Good base URL",
+                "config": { "baseUrl": "https://api.github.com" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/connections/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "config": { "baseUrl": "http://169.254.169.254" } }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
+}
+
+#[tokio::test]
 async fn provider_probe_requires_manage_and_refuses_metadata_addresses() {
     let Some(app) = test_app(true).await else {
         return;
