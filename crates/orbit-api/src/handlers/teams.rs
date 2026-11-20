@@ -268,10 +268,13 @@ async fn validate_work_source_connection(
                         connection.connector_slug, source.provider
                     ),
                 ));
-            } else if connection.connection.status != "active" {
+            } else if !connection.connection.is_usable() {
                 issues.push(ValidationIssue::new(
                     "workSource.connectionId",
-                    format!("connection '{}' is not active", connection.connection.name),
+                    format!(
+                        "connection '{}' is {}",
+                        connection.connection.name, connection.connection.status
+                    ),
                 ));
             }
         }

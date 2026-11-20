@@ -570,8 +570,8 @@ pub async fn start(
         let worker_connection = client.connection(execution.id, connection_id).await?;
         let connector = worker_connection.connector;
         let conn = worker_connection.connection;
-        if conn.status != "active" {
-            anyhow::bail!("{connector_slug} connection is not active");
+        if !conn.is_usable() {
+            anyhow::bail!("{connector_slug} connection is {}", conn.status);
         }
 
         let mut effects = std::collections::BTreeMap::new();

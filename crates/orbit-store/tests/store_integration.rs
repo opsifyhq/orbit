@@ -2198,11 +2198,18 @@ async fn claimed_schedule_trigger_always_has_next_run() {
         .unwrap();
     backdate_next_run(&store, trigger.id).await;
 
-    // Simulate a crash: claim, then never fire or reschedule. (The claim is global, so
-    // another test's claim may have taken the row; the invariant holds either way.)
-    let _ = store.claim_due_triggers(1000).await.unwrap();
-
-    let after = store.get_trigger(org, trigger.id).await.unwrap();
+    // Simulate a crash: claim, then never fire or reschedule. The claim is global and
+    // skips rows another transaction has locked, so a parallel test may be the one that
+    // claims this row, and its commit may land a moment later: wait for either outcome.
+    let mut after = store.get_trigger(org, trigger.id).await.unwrap();
+    for _ in 0..40 {
+        let _ = store.claim_due_triggers(1000).await.unwrap();
+        after = store.get_trigger(org, trigger.id).await.unwrap();
+        if after.last_fired_at.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(after.enabled);
     assert!(after.last_fired_at.is_some(), "trigger was not claimed");
     let next = after.next_run_at.expect("next_run_at must never be NULL");

@@ -70,12 +70,12 @@ pub async fn hydrate(
                 ),
             ));
         }
-        if connection.connection.status != "active" {
+        if !connection.connection.is_usable() {
             return Err(HarnessError::new(
                 HarnessErrorKind::InvalidConfig,
                 format!(
-                    "X connection '{}' is not active",
-                    connection.connection.name
+                    "X connection '{}' is {}",
+                    connection.connection.name, connection.connection.status
                 ),
             ));
         }

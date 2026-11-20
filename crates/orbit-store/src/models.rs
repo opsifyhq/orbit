@@ -204,6 +204,19 @@ pub struct Connection {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Connection {
+    /// Whether agents may use this connection.
+    ///
+    /// `expired` and `revoked` are refusals. `error` only records that the last
+    /// connection test failed: the test runs from the control plane, which may not reach
+    /// what the workers reach (an internal GitLab, say), and a single failed check must
+    /// not take every agent that depends on the connection offline. A credential that is
+    /// really wrong still fails, with the service's own error, when it is used.
+    pub fn is_usable(&self) -> bool {
+        matches!(self.status.as_str(), "active" | "error")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Trigger {

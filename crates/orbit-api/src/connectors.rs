@@ -196,7 +196,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             slug: "x".into(),
             name: "X".into(),
             version: "0.1.0".into(),
-            description: "X/Twitter monitoring and posting (Phase 2).".into(),
+            description: "X/Twitter monitoring: search recent posts.".into(),
             auth: vec![AuthMethod::OAuth2, AuthMethod::ApiToken],
             webhooks: false,
             capabilities: vec![
@@ -206,12 +206,9 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     "Searches recent posts.",
                     CapabilityEffect::Read,
                 ),
-                capability(
-                    "posts.create",
-                    "Post",
-                    "Publishes a post.",
-                    CapabilityEffect::ExternalSideEffect,
-                ),
+                // Posting is not advertised: the worker has no X write client, and it
+                // needs a user-context token the connection model does not hold (#265).
+                // AGENTS.md rule 6: a capability is listed once it works.
             ],
             config_schema: serde_json::json!({ "type": "object" }),
             docs_url: Some("https://developer.x.com/en/docs".into()),
