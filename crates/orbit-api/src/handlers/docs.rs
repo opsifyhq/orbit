@@ -91,6 +91,19 @@ pub async fn index(
 /// A single route serves both so that a page slug such as `assets/brand` and the
 /// asset tree cannot shadow each other: an exact asset match wins, otherwise the path
 /// is looked up as a page slug.
+#[utoipa::path(
+    get,
+    path = "/api/v1/docs/{path}",
+    tag = "docs",
+    params(
+        ("path" = String, Path, description = "Page slug (e.g. `architecture/overview`) or asset path under `assets/...`"),
+        DocsQuery
+    ),
+    responses(
+        (status = 200, description = "Page content (JSON/Markdown/HTML) or asset bytes"),
+        (status = 404, description = "Unknown page or asset")
+    )
+)]
 pub async fn get_doc(
     Extension(_auth): Extension<AuthContext>,
     Path(tail): Path<String>,
