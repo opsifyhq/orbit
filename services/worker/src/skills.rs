@@ -29,14 +29,17 @@ pub async fn materialize(
         .iter()
         .filter(|skill| slugs.contains(&skill.slug))
         .collect();
+    let root = orbit_harness::paths::canonical_root(workspace)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     let mut materialized = Vec::new();
     for skill in skills {
         for base in [".pi/skills", ".opencode/skills"] {
-            let dir = workspace.join(base).join(&skill.slug);
-            tokio::fs::create_dir_all(&dir)
+            let dir = root.join(base).join(&skill.slug);
+            orbit_harness::paths::safe_create_dir_all(&root, &dir)
                 .await
                 .with_context(|| format!("could not create skill directory {}", dir.display()))?;
-            tokio::fs::write(dir.join("SKILL.md"), &skill.content)
+            orbit_harness::paths::safe_write(&root, &dir.join("SKILL.md"), &skill.content)
                 .await
                 .with_context(|| format!("could not write {}", dir.join("SKILL.md").display()))?;
             if let Some(files) = skill.files.as_object() {
@@ -46,15 +49,7 @@ pub async fn materialize(
                     }
                     if let Some(content) = content.as_str() {
                         let target = dir.join(path);
-                        if let Some(parent) = target.parent() {
-                            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                                format!(
-                                    "could not create skill file directory {}",
-                                    parent.display()
-                                )
-                            })?;
-                        }
-                        tokio::fs::write(&target, content)
+                        orbit_harness::paths::safe_write(&root, &target, content)
                             .await
                             .with_context(|| format!("could not write {}", target.display()))?;
                         // Make scripts executable.
@@ -62,10 +57,14 @@ pub async fn materialize(
                         if is_script {
                             #[cfg(unix)]
                             {
-                                use std::os::unix::fs::PermissionsExt;
-                                let mut perms = tokio::fs::metadata(&target).await?.permissions();
-                                perms.set_mode(0o755);
-                                tokio::fs::set_permissions(&target, perms).await?;
+                                orbit_harness::paths::safe_set_executable(&root, &target)
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "could not set script executable {}",
+                                            target.display()
+                                        )
+                                    })?;
                             }
                             tracing::info!(skill = %skill.slug, path = %path, "materialized executable script");
                         }
@@ -165,5 +164,34 @@ mod tests {
             .unwrap(),
             "Write-Output ok"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn leaves_symlinked_opencode_skills_target_untouched() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(workspace.path().join(".opencode"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join(".opencode/skills"))
+            .unwrap();
+
+        let error = materialize(&spec(), &[], &[], &[skill()], workspace.path())
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink") || error.to_string().contains("escape"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!outside.path().join("example").exists());
+        assert!(workspace
+            .path()
+            .join(".opencode/skills")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }
