@@ -360,10 +360,17 @@ async fn run_execution_inner(
             .get(orbit_domain::APPROVAL_OVERRIDE_KEY)
             .and_then(|value| value.as_str()),
     );
-    let harness_kind = execution
-        .harness_kind
-        .parse::<orbit_domain::HarnessKind>()
-        .unwrap_or(HarnessKind::Mock);
+    let harness_kind = match execution.harness_kind.parse::<orbit_domain::HarnessKind>() {
+        Ok(kind) => kind,
+        Err(_) => {
+            return fail_execution(
+                &state,
+                &execution,
+                anyhow::anyhow!("invalid harness kind '{}'", execution.harness_kind),
+            )
+            .await;
+        }
+    };
 
     let adapter = match state.registry.require(harness_kind) {
         Ok(adapter) => adapter,
@@ -1213,6 +1220,83 @@ mod tests {
         assert_eq!(completes[0]["status"], "failed");
         assert_eq!(completes[0]["error"]["code"], "worker_shutdown");
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn unknown_harness_kind_fails_with_invalid_config() {
+        let api = FakeApi::default();
+        let state = serve(api.clone()).await;
+        let workspace_root = tempfile::tempdir().unwrap();
+        let mut state = state;
+        state.workspace_root = workspace_root.path().to_path_buf();
+
+        let now = chrono::Utc::now();
+        let execution_id = Uuid::now_v7();
+        let execution = serde_json::from_value(serde_json::json!({
+            "id": execution_id,
+            "orgId": Uuid::now_v7(),
+            "agentId": Uuid::now_v7(),
+            "agentVersionId": Uuid::now_v7(),
+            "agentName": "invalid harness",
+            "harnessKind": "opencod",
+            "triggerId": null,
+            "triggerSource": "manual",
+            "placement": "local",
+            "status": "dispatched",
+            "sessionRef": null,
+            "input": {
+                "task": "hello",
+                "payload": {},
+                "provenance": {
+                    "source": "test",
+                    "trusted": false,
+                    "receivedAt": now
+                }
+            },
+            "skills": [],
+            "output": null,
+            "error": null,
+            "usage": {},
+            "timeoutSeconds": 10,
+            "idempotencyKey": null,
+            "requestedBy": null,
+            "workerId": "test-worker",
+            "teamRunId": null,
+            "teamStepIndex": null,
+            "createdAt": now,
+            "startedAt": null,
+            "finishedAt": null,
+            "updatedAt": now,
+            "archivedAt": null
+        }))
+        .unwrap();
+        let spec = serde_json::from_value(serde_json::json!({
+            "instructions": { "system": "test" }
+        }))
+        .unwrap();
+        let context = crate::client::WorkerExecutionContext {
+            execution,
+            spec,
+            model: None,
+            grants: Vec::new(),
+            skills: Vec::new(),
+            tool_policies: Vec::new(),
+            env: Vec::new(),
+            subagent_models: Vec::new(),
+        };
+
+        run_execution(state, context, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+
+        let completes = api.completes.lock().unwrap();
+        assert_eq!(completes.len(), 1);
+        assert_eq!(completes[0]["status"], "failed");
+        assert_eq!(completes[0]["error"]["kind"], "invalid_config");
+        assert!(completes[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid harness kind 'opencod'"));
     }
 }
 

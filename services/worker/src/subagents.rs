@@ -70,8 +70,13 @@ pub async fn materialize(
     if subagents.is_empty() {
         return Ok(Vec::new());
     }
-    let directory = workspace.join(".opencode/agents");
-    tokio::fs::create_dir_all(&directory).await?;
+    let root = orbit_harness::paths::canonical_root(workspace)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let directory = root.join(".opencode/agents");
+    orbit_harness::paths::safe_create_dir_all(&root, &directory)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     let mut names = Vec::new();
     for subagent in subagents {
         let name = subagent
@@ -113,7 +118,9 @@ pub async fn materialize(
         document.push_str("---\n\n");
         document.push_str(instructions);
         document.push('\n');
-        tokio::fs::write(directory.join(format!("{file}.md")), document).await?;
+        orbit_harness::paths::safe_write(&root, &directory.join(format!("{file}.md")), document)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
         names.push(file);
     }
     Ok(names)
