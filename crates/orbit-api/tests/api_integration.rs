@@ -252,10 +252,10 @@ async fn readyz_depends_on_database_only() {
     assert_eq!(body["status"], "ready");
     assert_eq!(body["checks"]["database"], "ok");
     assert_eq!(body["checks"]["eventBus"], "unavailable");
-    assert!(body["checks"]["eventBusError"]
-        .as_str()
-        .unwrap()
-        .contains("simulated outage"));
+    // Dependency error text is logged, never returned to unauthenticated callers.
+    assert!(body["checks"].get("eventBusError").is_none(), "{body}");
+    assert!(body["checks"].get("databaseError").is_none(), "{body}");
+    assert!(!body.to_string().contains("simulated outage"), "{body}");
     assert_eq!(body["degraded"], json!(["eventBus"]));
 }
 
@@ -8352,4 +8352,646 @@ async fn connection_url_fields_report_config_paths_and_cover_clone_base_url() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+// ---- #202 / #218: object-level checks behind settings:write, scoped lists ----
+
+struct D2Fixture {
+    mallory: orbit_store::User,
+    mallory_token: String,
+    team_a: Uuid,
+    profile_id: Uuid,
+}
+
+async fn d2_profile(app: &TestApp, name: &str) -> Uuid {
+    app.store
+        .create_worker_profile(
+            app.org_id,
+            name,
+            "mock",
+            "local",
+            "process",
+            "orbit-worker",
+            "test",
+            "all",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            &json!({}),
+            &json!({}),
+            &json!({}),
+            false,
+            false,
+            false,
+            false,
+            &json!({}),
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+/// A custom role with settings:write that is neither an Owner nor in team A, plus a worker
+/// profile owned by team A.
+async fn d2_fixture(app: &TestApp) -> D2Fixture {
+    let role = format!("TeamAdmin-{}", Uuid::now_v7());
+    app.store
+        .create_custom_role(
+            app.org_id,
+            &role,
+            &[
+                "agents:read".into(),
+                "agents:write".into(),
+                "executions:read".into(),
+                "harnesses:read".into(),
+                "providers:read".into(),
+                "connections:read".into(),
+                "settings:read".into(),
+                "settings:write".into(),
+                "members:read".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let mallory = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("mallory-{}@test.local", Uuid::now_v7()),
+            "Mallory",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_user_role_name(app.org_id, mallory.id, &role)
+        .await
+        .unwrap();
+    let mallory_token = token_for(&app.store, app.org_id, mallory.id, "mallory").await;
+    let team_a = app
+        .store
+        .create_access_team(
+            app.org_id,
+            "Team A",
+            &format!("team-a-{}", Uuid::now_v7()),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let profile_id = d2_profile(app, "Team A worker").await;
+    app.store
+        .set_resource_visibility(
+            app.org_id,
+            "worker_profiles",
+            profile_id,
+            "team",
+            Some(team_a),
+        )
+        .await
+        .unwrap();
+    D2Fixture {
+        mallory,
+        mallory_token,
+        team_a,
+        profile_id,
+    }
+}
+
+#[tokio::test]
+async fn settings_write_holder_cannot_touch_other_teams_worker_objects() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+
+    // Worker tokens: rotate, create (for the profile, and org-wide), revoke.
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/worker-profiles/{}/token", fx.profile_id),
+            m,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/worker-tokens",
+            m,
+            json!({ "name": "steal", "profileId": fx.profile_id }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/worker-tokens",
+            m,
+            json!({ "name": "any", "harnesses": ["mock"] }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "org-wide tokens are privileged-only"
+    );
+    let profile_token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            Some(fx.profile_id),
+            "a",
+            &format!("pfx{}", Uuid::now_v7()),
+            &format!("h{}", Uuid::now_v7()),
+            &["mock".into()],
+        )
+        .await
+        .unwrap();
+    let org_token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            None,
+            "org",
+            &format!("pfx{}", Uuid::now_v7()),
+            &format!("h{}", Uuid::now_v7()),
+            &["mock".into()],
+        )
+        .await
+        .unwrap();
+    for id in [profile_token.id, org_token.id] {
+        let (status, _) = send(
+            &app.router,
+            auth_delete(&format!("/api/v1/worker-tokens/{id}"), m),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    let (status, listed) = send(&app.router, auth_get("/api/v1/worker-tokens", m)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["id"] != json!(profile_token.id) && t["id"] != json!(org_token.id)));
+
+    // Profile delete, launch stop/delete/archive.
+    let (status, _) = send(
+        &app.router,
+        auth_delete(&format!("/api/v1/worker-profiles/{}", fx.profile_id), m),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            fx.profile_id,
+            "launch",
+            "local",
+            "orbit-worker:test",
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    for (method, suffix) in [("POST", "/stop"), ("POST", "/archive"), ("DELETE", "")] {
+        let (status, _) = send(
+            &app.router,
+            auth_json(
+                method,
+                &format!("/api/v1/worker-launches/{}{suffix}", launch.id),
+                m,
+                json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {suffix}");
+    }
+    // Nothing was changed: the owner can still see the launch.
+    let (status, _) = send(
+        &app.router,
+        auth_get(
+            &format!("/api/v1/worker-launches/{}", launch.id),
+            "test-token",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A privileged caller (Owner) still manages them, including org-wide tokens.
+    let (status, _) = send(
+        &app.router,
+        auth_delete(
+            &format!("/api/v1/worker-tokens/{}", profile_token.id),
+            "test-token",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/worker-tokens",
+            "test-token",
+            json!({ "name": "org", "harnesses": ["mock"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A team lead can manage their own team's profile token.
+    app.store
+        .upsert_team_member(fx.team_a, fx.mallory.id, "lead")
+        .await
+        .unwrap();
+    let (status, _) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/worker-profiles/{}/token", fx.profile_id),
+            m,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn settings_write_holder_cannot_attach_other_teams_mappings_or_profiles() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+    let mapping = app
+        .store
+        .create_env_mapping(
+            app.org_id,
+            "team a env",
+            "",
+            &json!([{ "envVar": "TOKEN", "secretKey": "x" }]),
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_resource_visibility(
+            app.org_id,
+            "env_mappings",
+            mapping.id,
+            "team",
+            Some(fx.team_a),
+        )
+        .await
+        .unwrap();
+    let body = json!({
+        "name": "m", "mappings": [{ "envVar": "TOKEN", "secretKey": "x" }]
+    });
+    let (status, _) = send(
+        &app.router,
+        auth_json(
+            "PATCH",
+            &format!("/api/v1/env-mappings/{}", mapping.id),
+            m,
+            body,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &app.router,
+        auth_delete(&format!("/api/v1/env-mappings/{}", mapping.id), m),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, listed) = send(&app.router, auth_get("/api/v1/env-mappings", m)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["id"] != json!(mapping.id)));
+    let (status, _) = send(
+        &app.router,
+        auth_get(
+            &format!("/api/v1/worker-profiles/{}/env-mappings", fx.profile_id),
+            m,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Agent teams: step agents, worker profile and env mappings must be visible.
+    let hidden_agent = create_demo_agent(&app.store, app.org_id, fx.mallory.id).await;
+    app.store
+        .set_resource_visibility(app.org_id, "agents", hidden_agent, "team", Some(fx.team_a))
+        .await
+        .unwrap();
+    for (field, value) in [
+        ("steps", json!([{ "agentId": hidden_agent }])),
+        ("workerProfileId", json!(fx.profile_id)),
+        ("envMappingIds", json!([mapping.id])),
+    ] {
+        let mut request = json!({
+            "name": "t", "mode": "pipeline",
+            "steps": [{ "agentId": app.agent_id }],
+        });
+        request[field] = value;
+        let (status, body) = send(
+            &app.router,
+            auth_post("/api/v1/agent-teams", m, request.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn outputs_require_manage_on_their_target() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+    // Agent owned by team A (mallory is not a member), and one mallory owns.
+    let owner_id = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let team_agent = create_demo_agent(&app.store, app.org_id, owner_id).await;
+    app.store
+        .set_resource_visibility(app.org_id, "agents", team_agent, "team", Some(fx.team_a))
+        .await
+        .unwrap();
+    let own_agent = create_demo_agent(&app.store, app.org_id, fx.mallory.id).await;
+    make_private(&app.store, app.org_id, "agents", own_agent, fx.mallory.id).await;
+    let team = app
+        .store
+        .create_agent_team(
+            app.org_id,
+            "team a pipeline",
+            "",
+            &json!({ "mode": "pipeline", "steps": [{ "agentId": team_agent }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "agent_teams", team.id, "team", Some(fx.team_a))
+        .await
+        .unwrap();
+    let hook = "http://10.0.0.5/hook";
+    let create = |agent: Option<Uuid>, team: Option<Uuid>| json!({ "name": format!("o-{}", Uuid::now_v7()), "kind": "webhook", "agentId": agent, "teamId": team, "webhookUrl": hook });
+
+    let (status, _) = send(
+        &app.router,
+        auth_post("/api/v1/outputs", m, create(Some(team_agent), None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "other team's agent");
+    let (status, _) = send(
+        &app.router,
+        auth_post("/api/v1/outputs", m, create(None, Some(team.id))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "other team's agent team");
+    let (status, _) = send(
+        &app.router,
+        auth_post("/api/v1/outputs", m, create(None, None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "org-wide output");
+    let (status, own) = send(
+        &app.router,
+        auth_post("/api/v1/outputs", m, create(Some(own_agent), None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{own}");
+    let own_id = own["id"].as_str().unwrap().to_string();
+
+    // Retargeting my output to someone else's agent, or org-wide, is refused.
+    for target in [create(Some(team_agent), None), create(None, None)] {
+        let (status, _) = send(
+            &app.router,
+            auth_json("PATCH", &format!("/api/v1/outputs/{own_id}"), m, target),
+        )
+        .await;
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::FORBIDDEN,
+            "{status}"
+        );
+    }
+
+    // Existing outputs of other teams / org-wide: no update, delete or test, hidden in list.
+    let (status, owner_made) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/outputs",
+            "test-token",
+            create(Some(team_agent), None),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{owner_made}");
+    let (status, org_wide) = send(
+        &app.router,
+        auth_post("/api/v1/outputs", "test-token", create(None, None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{org_wide}");
+    for id in [
+        owner_made["id"].as_str().unwrap(),
+        org_wide["id"].as_str().unwrap(),
+    ] {
+        let path = format!("/api/v1/outputs/{id}");
+        let (status, _) = send(
+            &app.router,
+            auth_json("PATCH", &path, m, create(Some(own_agent), None)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "update {id}");
+        let (status, _) = send(&app.router, auth_delete(&path, m)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "delete {id}");
+        let (status, _) = send(
+            &app.router,
+            auth_post(&format!("{path}/test"), m, json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "test {id}");
+    }
+    let (status, listed) = send(&app.router, auth_get("/api/v1/outputs", m)).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&own_id.as_str()));
+    assert!(
+        !ids.contains(&owner_made["id"].as_str().unwrap()),
+        "{ids:?}"
+    );
+    let (_, owner_list) = send(&app.router, auth_get("/api/v1/outputs", "test-token")).await;
+    assert!(owner_list.as_array().unwrap().len() >= 3);
+}
+
+#[tokio::test]
+async fn settings_write_holder_cannot_escalate_roles_or_revoke_foreign_tokens() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+    let owner_id = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let victim = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("victim-{}@test.local", Uuid::now_v7()),
+            "Victim",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let patch_role = |user: Uuid, role: &str| {
+        auth_patch(&format!("/api/v1/users/{user}"), m, json!({ "role": role }))
+    };
+    // Cannot promote anyone to Owner/Admin (permissions above the caller's own).
+    for role in ["owner", "admin", "operator"] {
+        let (status, body) = send(&app.router, patch_role(victim.id, role)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{role}: {body}");
+    }
+    // Cannot demote an Owner.
+    let (status, _) = send(&app.router, patch_role(owner_id, "viewer")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // The victim (an Operator today) holds more than the caller, so even a demotion to a
+    // role the caller holds is refused.
+    let (status, _) = send(&app.router, patch_role(victim.id, "viewer")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // A viewer can be moved to another role the caller fully holds.
+    let viewer = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("viewer-{}@test.local", Uuid::now_v7()),
+            "Viewer",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(&app.router, patch_role(viewer.id, "viewer")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The Owner may assign Owner.
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/users/{}", victim.id),
+            "test-token",
+            json!({ "role": "owner" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // API tokens: own only, unless privileged.
+    token_for(&app.store, app.org_id, victim.id, "victim").await;
+    let (status, listed) = send(&app.router, auth_get("/api/v1/api-tokens", m)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    let (_, all) = send(&app.router, auth_get("/api/v1/api-tokens", "test-token")).await;
+    let victim_token_id = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "victim")
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .expect("owner sees every token");
+    let (status, _) = send(
+        &app.router,
+        auth_delete(&format!("/api/v1/api-tokens/{victim_token_id}"), m),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        &app.router,
+        auth_delete(
+            &format!("/api/v1/api-tokens/{victim_token_id}"),
+            "test-token",
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "privileged callers may revoke any token"
+    );
+}
+
+#[tokio::test]
+async fn user_list_hides_other_users_oidc_identity_from_non_privileged_callers() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let issuer = format!("https://idp.test/{}", Uuid::now_v7());
+    let linked = app
+        .store
+        .upsert_oidc_user(
+            app.org_id,
+            &issuer,
+            "subject-123",
+            Some(&format!("linked-{}@test.local", Uuid::now_v7())),
+            Some("Linked"),
+            UserRole::Viewer,
+            true,
+        )
+        .await
+        .unwrap();
+    let find = |list: &Value| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == json!(linked.id))
+            .cloned()
+            .expect("user listed")
+    };
+    let (status, list) = send(&app.router, auth_get("/api/v1/users", &fx.mallory_token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = find(&list);
+    assert!(
+        seen["oidcSubject"].is_null() && seen["oidcIssuer"].is_null(),
+        "{seen}"
+    );
+    let (_, list) = send(&app.router, auth_get("/api/v1/users", "test-token")).await;
+    assert_eq!(find(&list)["oidcSubject"], "subject-123");
+}
+
+#[tokio::test]
+async fn agent_instances_listing_is_scoped_like_agents() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let (status, body) = send(
+        &app.router,
+        auth_get("/api/v1/agent-instances", &fx.mallory_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0);
+    // The scoped query itself (the table is never written by the product today).
+    let access = orbit_store::access::ResourceAccess::new(fx.mallory.id, false, vec![]);
+    assert!(app
+        .store
+        .list_agent_instances(app.org_id, Some(&access))
+        .await
+        .unwrap()
+        .is_empty());
 }

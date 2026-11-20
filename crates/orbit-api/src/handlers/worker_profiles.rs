@@ -67,7 +67,7 @@ async fn require_profile_manage(
     state: &AppState,
     auth: &AuthContext,
     profile_id: Uuid,
-) -> Result<(), ApiError> {
+) -> Result<WorkerProfile, ApiError> {
     let profile = state
         .store
         .get_worker_profile(auth.org_id, profile_id)
@@ -78,7 +78,8 @@ async fn require_profile_manage(
         profile.owner_user_id,
         profile.owner_team_id,
         &profile.visibility,
-    )
+    )?;
+    Ok(profile)
 }
 
 fn default_target() -> String {
@@ -240,10 +241,7 @@ pub async fn rotate_token(
     Path(profile_id): Path<Uuid>,
 ) -> Result<Json<IssuedWorkerToken>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let profile = state
-        .store
-        .get_worker_profile(auth.org_id, profile_id)
-        .await?;
+    let profile = require_profile_manage(&state, &auth, profile_id).await?;
     Ok(Json(
         issue_profile_token(&state, auth.org_id, &profile, true).await?,
     ))
@@ -257,13 +255,19 @@ pub async fn create_token(
 ) -> Result<(StatusCode, Json<IssuedWorkerToken>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let profile = match body.profile_id {
-        Some(profile_id) => Some(
-            state
-                .store
-                .get_worker_profile(auth.org_id, profile_id)
-                .await?,
-        ),
-        None => None,
+        Some(profile_id) => Some(require_profile_manage(&state, &auth, profile_id).await?),
+        None => {
+            // An org-wide token (no profile) can claim any team's executions.
+            if !crate::access::AccessScope::load(&state, &auth)
+                .await?
+                .is_privileged()
+            {
+                return Err(ApiError::forbidden(
+                    "only an owner or admin can create an organisation-wide worker token",
+                ));
+            }
+            None
+        }
     };
     let mut harnesses = body.harnesses;
     if let Some(profile) = &profile {
@@ -316,12 +320,25 @@ pub async fn list_tokens(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<WorkerTokenView>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    // Tokens follow the visibility of their profile; org-wide tokens are privileged-only.
+    let visible_profiles: std::collections::HashSet<Uuid> = state
+        .store
+        .list_worker_profiles(auth.org_id, Some(&access.store_access()))
+        .await?
+        .into_iter()
+        .map(|profile| profile.id)
+        .collect();
     Ok(Json(
         state
             .store
             .list_worker_tokens(auth.org_id)
             .await?
             .into_iter()
+            .filter(|record| match record.profile_id {
+                Some(id) => visible_profiles.contains(&id),
+                None => access.is_privileged(),
+            })
             .map(|record| WorkerTokenView {
                 id: record.id,
                 name: record.name,
@@ -343,6 +360,26 @@ pub async fn revoke_token(
     Path(token_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    let token = state
+        .store
+        .list_worker_tokens(auth.org_id)
+        .await?
+        .into_iter()
+        .find(|token| token.id == token_id)
+        .ok_or_else(|| ApiError::not_found("worker token"))?;
+    match token.profile_id {
+        Some(profile_id) => {
+            require_profile_manage(&state, &auth, profile_id).await?;
+        }
+        None => {
+            if !crate::access::AccessScope::load(&state, &auth)
+                .await?
+                .is_privileged()
+            {
+                return Err(ApiError::not_found("worker token"));
+            }
+        }
+    }
     state
         .store
         .revoke_worker_token(auth.org_id, token_id)
@@ -735,10 +772,7 @@ pub async fn delete_profile(
     Path(profile_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let profile = state
-        .store
-        .get_worker_profile(auth.org_id, profile_id)
-        .await?;
+    let profile = require_profile_manage(&state, &auth, profile_id).await?;
     if profile.enabled {
         return Err(ApiError::conflict(
             "disable the worker profile before deleting it",

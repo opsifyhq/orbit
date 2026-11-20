@@ -264,6 +264,33 @@ async fn load_visible_launch(
     Ok(launch)
 }
 
+/// Like [`load_visible_launch`], but the caller must also be allowed to manage the
+/// launch's worker profile (stop, delete, archive).
+async fn load_managed_launch(
+    state: &AppState,
+    auth: &AuthContext,
+    launch_id: Uuid,
+) -> Result<WorkerLaunch, ApiError> {
+    let launch = load_visible_launch(state, auth, launch_id).await?;
+    let access = crate::access::AccessScope::load(state, auth).await?;
+    if access.is_privileged() {
+        return Ok(launch);
+    }
+    // `load_visible_launch` already hid launches whose profile is gone from non-privileged
+    // callers, so the profile exists here.
+    let profile = state
+        .store
+        .get_worker_profile(auth.org_id, launch.profile_id)
+        .await?;
+    access.require_manage(
+        "worker launch",
+        profile.owner_user_id,
+        profile.owner_team_id,
+        &profile.visibility,
+    )?;
+    Ok(launch)
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerLaunchesQuery {
@@ -536,10 +563,7 @@ pub async fn stop_launch(
     Path(launch_id): Path<Uuid>,
 ) -> Result<Json<WorkerLaunch>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let launch = state
-        .store
-        .get_worker_launch(auth.org_id, launch_id)
-        .await?;
+    let launch = load_managed_launch(&state, &auth, launch_id).await?;
     Ok(Json(stop_launch_internal(&state, &auth, launch).await?))
 }
 
@@ -598,6 +622,7 @@ pub async fn delete_launch(
     Path(launch_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    load_managed_launch(&state, &auth, launch_id).await?;
     state
         .store
         .delete_worker_launch(auth.org_id, launch_id)
@@ -612,6 +637,7 @@ pub async fn archive_launch(
     Path(launch_id): Path<Uuid>,
 ) -> Result<Json<WorkerLaunch>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    load_managed_launch(&state, &auth, launch_id).await?;
     Ok(Json(
         state
             .store

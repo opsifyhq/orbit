@@ -23,6 +23,27 @@ pub struct ShareRequest {
     pub owner_team_id: Option<Uuid>,
 }
 
+fn may_target_team(access: &crate::access::AccessScope, team_id: Uuid) -> bool {
+    access.is_privileged() || access.teams.contains_key(&team_id)
+}
+
+/// A resource may only be handed to an access team the caller belongs to (owners and
+/// admins, who bypass access checks, may pick any team). A team the caller is not in is
+/// reported exactly like a missing one.
+async fn require_target_team(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    team_id: Uuid,
+) -> Result<(), ApiError> {
+    state.store.get_access_team(auth.org_id, team_id).await?;
+    if may_target_team(access, team_id) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("access team"))
+    }
+}
+
 #[utoipa::path(patch, path = "/api/v1/sharing/{resource}/{resource_id}", tag = "sharing", request_body = ShareRequest, responses((status = 204)))]
 pub async fn share(
     State(state): State<AppState>,
@@ -51,7 +72,7 @@ pub async fn share(
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     access.require_manage(&resource, owner_user, owner_team, &visibility)?;
     if let Some(team_id) = body.owner_team_id {
-        state.store.get_access_team(auth.org_id, team_id).await?;
+        require_target_team(&state, &auth, &access, team_id).await?;
     }
     state
         .store
@@ -157,10 +178,10 @@ pub async fn bulk_share(
             )]));
         }
     }
-    if let Some(team_id) = body.owner_team_id {
-        state.store.get_access_team(auth.org_id, team_id).await?;
-    }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    if let Some(team_id) = body.owner_team_id {
+        require_target_team(&state, &auth, &access, team_id).await?;
+    }
     let mut updated = Vec::new();
     let mut failed = Vec::new();
     for id in ids {
@@ -216,4 +237,31 @@ pub async fn bulk_share(
     )
     .await;
     Ok(Json(BulkShareResponse { updated, failed }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::AccessScope;
+    use orbit_domain::UserRole;
+
+    fn scope(role: UserRole, teams: &[Uuid]) -> AccessScope {
+        AccessScope {
+            user_id: Uuid::now_v7(),
+            role,
+            teams: teams.iter().map(|id| (*id, "member".to_string())).collect(),
+            team_isolation: true,
+        }
+    }
+
+    #[test]
+    fn owner_team_must_be_one_the_caller_belongs_to_unless_privileged() {
+        let mine = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let member = scope(UserRole::Viewer, &[mine]);
+        assert!(may_target_team(&member, mine));
+        assert!(!may_target_team(&member, other));
+        assert!(may_target_team(&scope(UserRole::Owner, &[]), other));
+        assert!(may_target_team(&scope(UserRole::Admin, &[]), other));
+    }
 }

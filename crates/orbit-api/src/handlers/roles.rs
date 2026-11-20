@@ -26,6 +26,37 @@ fn allowed_permissions() -> std::collections::BTreeSet<&'static str> {
     Permission::all_for(UserRole::Owner).into_iter().collect()
 }
 
+/// Grant ceiling for role edits: a caller may only hand out permissions they hold, and
+/// may not edit or delete the role they hold themselves or a role above their own.
+async fn require_role_ceiling(
+    state: &AppState,
+    auth: &AuthContext,
+    requested: &[String],
+    existing: Option<&CustomRole>,
+) -> Result<(), ApiError> {
+    let held = auth.permissions();
+    let beyond = orbit_security::ungranted_permissions(&held, requested);
+    if !beyond.is_empty() {
+        return Err(ApiError::forbidden(format!(
+            "you cannot grant permissions you do not hold: {}",
+            beyond.join(", ")
+        )));
+    }
+    if let Some(role) = existing {
+        let me = state.store.get_user(auth.org_id, auth.user_id).await?;
+        if me.role == role.name {
+            return Err(ApiError::forbidden("you cannot edit your own role"));
+        }
+        let beyond = orbit_security::ungranted_permissions(&held, &role.permissions);
+        if !beyond.is_empty() {
+            return Err(ApiError::forbidden(
+                "you cannot edit a role that grants permissions you do not hold",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validated(body: &RoleRequest) -> Result<(String, Vec<String>), ApiError> {
     let name = body.name.trim().to_string();
     let mut issues = Vec::new();
@@ -94,6 +125,7 @@ pub async fn create(
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::license::FEATURE_CUSTOM_ROLES)?;
     let (name, permissions) = validated(&body)?;
+    require_role_ceiling(&state, &auth, &permissions, None).await?;
     let role = state
         .store
         .create_custom_role(auth.org_id, &name, &permissions)
@@ -120,6 +152,8 @@ pub async fn update(
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::license::FEATURE_CUSTOM_ROLES)?;
     let (name, permissions) = validated(&body)?;
+    let current = state.store.get_custom_role(auth.org_id, role_id).await?;
+    require_role_ceiling(&state, &auth, &permissions, Some(&current)).await?;
     let role = state
         .store
         .update_custom_role(auth.org_id, role_id, &name, &permissions)
@@ -145,6 +179,7 @@ pub async fn delete(
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::license::FEATURE_CUSTOM_ROLES)?;
     let role = state.store.get_custom_role(auth.org_id, role_id).await?;
+    require_role_ceiling(&state, &auth, &[], Some(&role)).await?;
     state.store.delete_custom_role(auth.org_id, role_id).await?;
     audit::record(
         &state,

@@ -113,21 +113,103 @@ fn validated(body: &OutputRequest) -> Result<(String, Vec<String>), ApiError> {
     Ok((name, events))
 }
 
+/// An output forwards each run's task and result to an external URL, so attaching one
+/// to an agent or agent team requires manage access to it (the same bar as attaching a
+/// trigger). An output with neither target applies to every execution in the
+/// organisation and may only be created or changed by an owner/admin.
+async fn require_target_manage(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    agent_id: Option<Uuid>,
+    team_id: Option<Uuid>,
+) -> Result<(), ApiError> {
+    if let Some(agent_id) = agent_id {
+        let agent = state.store.get_agent(auth.org_id, agent_id).await?;
+        access.require_manage(
+            "agent",
+            agent.owner_user_id,
+            agent.owner_team_id,
+            &agent.visibility,
+        )?;
+    }
+    if let Some(team_id) = team_id {
+        let team = state.store.get_agent_team(auth.org_id, team_id).await?;
+        access.require_manage(
+            "agent team",
+            team.owner_user_id,
+            team.owner_team_id,
+            &team.visibility,
+        )?;
+    }
+    if agent_id.is_none() && team_id.is_none() && !access.is_privileged() {
+        return Err(ApiError::forbidden(
+            "only an owner or admin can manage an organisation-wide output",
+        ));
+    }
+    Ok(())
+}
+
+/// Loads an existing output and requires manage access to the target it has today.
+async fn load_managed_output(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    output_id: Uuid,
+) -> Result<Output, ApiError> {
+    let output = state.store.get_output(auth.org_id, output_id).await?;
+    if access.is_privileged() {
+        return Ok(output);
+    }
+    // A caller who cannot even see the target gets the same 404 as for a missing output.
+    if (output.agent_id.is_none() && output.team_id.is_none())
+        || !output_target_visible(state, auth, access, &output).await
+    {
+        return Err(ApiError::not_found("output"));
+    }
+    require_target_manage(state, auth, access, output.agent_id, output.team_id).await?;
+    Ok(output)
+}
+
+async fn output_target_visible(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    output: &Output,
+) -> bool {
+    if let Some(agent_id) = output.agent_id {
+        return match state.store.get_agent(auth.org_id, agent_id).await {
+            Ok(agent) => {
+                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+            }
+            Err(_) => false,
+        };
+    }
+    if let Some(team_id) = output.team_id {
+        return match state.store.get_agent_team(auth.org_id, team_id).await {
+            Ok(team) => access.can_view(team.owner_user_id, team.owner_team_id, &team.visibility),
+            Err(_) => false,
+        };
+    }
+    // Org-wide outputs carry no secrets in the view and describe a data flow every
+    // member's runs are subject to, so they stay listed for everyone with settings:read.
+    true
+}
+
 #[utoipa::path(get, path = "/api/v1/outputs", tag = "outputs", responses((status = 200, body = [OutputView])))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<OutputView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
-    Ok(Json(
-        state
-            .store
-            .list_outputs(auth.org_id)
-            .await?
-            .into_iter()
-            .map(OutputView::from)
-            .collect(),
-    ))
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let mut visible = Vec::new();
+    for output in state.store.list_outputs(auth.org_id).await? {
+        if access.is_privileged() || output_target_visible(&state, &auth, &access, &output).await {
+            visible.push(OutputView::from(output));
+        }
+    }
+    Ok(Json(visible))
 }
 
 #[utoipa::path(post, path = "/api/v1/outputs", tag = "outputs", request_body = OutputRequest, responses((status = 201, body = OutputView)))]
@@ -138,6 +220,8 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<OutputView>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let (name, events) = validated(&body)?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
     let url = body
         .webhook_url
         .as_deref()
@@ -202,6 +286,9 @@ pub async fn update(
 ) -> Result<Json<OutputView>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let (name, events) = validated(&body)?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    load_managed_output(&state, &auth, &access, output_id).await?;
+    require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
     let secret_ref = match body.webhook_url.as_deref().map(str::trim) {
         Some(url) if !url.is_empty() => {
             guard_webhook_url(url).await?;
@@ -262,6 +349,8 @@ pub async fn delete(
     Path(output_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    load_managed_output(&state, &auth, &access, output_id).await?;
     state.store.delete_output(auth.org_id, output_id).await?;
     audit::record(
         &state,
@@ -282,7 +371,8 @@ pub async fn test_output(
     Path(output_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let output = state.store.get_output(auth.org_id, output_id).await?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let output = load_managed_output(&state, &auth, &access, output_id).await?;
     let text = "ORBIT test notification — your output is configured correctly.";
     deliver(&state, &output, text, None, None).await?;
     Ok(StatusCode::NO_CONTENT)
