@@ -864,6 +864,22 @@ export interface paths {
         patch: operations["update"];
         trace?: never;
     };
+    "/api/v1/outputs/{output_id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/outputs/{output_id}/test": {
         parameters: {
             query?: never;
@@ -2800,6 +2816,43 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        /** @description One delivery of an output: whether the message arrived, and why not. */
+        OutputDeliveryView: {
+            agentName?: string | null;
+            /** Format: int32 */
+            attempts: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description Why the last attempt failed. Never contains the webhook URL. */
+            error?: string | null;
+            /**
+             * Format: uuid
+             * @description The run it reports on, only when the caller may see it.
+             */
+            executionId?: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description When a pending delivery is tried next.
+             */
+            nextAttemptAt?: string | null;
+            /**
+             * Format: int32
+             * @description HTTP status of the last attempt, when the destination answered.
+             */
+            responseStatus?: number | null;
+            /**
+             * @description `pending` (waiting, or retrying after an error), `sending`, `succeeded`, `failed`
+             *     (refused, not retried), `dead` (retries used up) or `skipped` (output off or deleted).
+             */
+            status: string;
+            task?: string | null;
+            /** Format: uuid */
+            teamRunId?: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
         OutputRequest: {
             /** Format: uuid */
             agentId?: string | null;
@@ -2824,6 +2877,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             kind: string;
+            lastDelivery?: components["schemas"]["OutputDeliveryView"] | null;
             name: string;
             /** Format: uuid */
             teamId?: string | null;
@@ -5035,6 +5089,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OutputView"];
                 };
+            };
+        };
+    };
+    deliveries: {
+        parameters: {
+            query?: {
+                /** @description How many deliveries to return, newest first (1–200, default 50). */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                output_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutputDeliveryView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

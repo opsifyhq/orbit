@@ -4406,6 +4406,7 @@ mod output_delivery {
                 &["succeeded".to_string(), "failed".to_string()],
                 &secret_ref,
                 None,
+                true,
             )
             .await
             .unwrap()
@@ -4705,6 +4706,71 @@ mod output_delivery {
         deliver_pending(&app.state).await;
         assert!(rows(&app, deleted.id).await.is_empty());
         assert_eq!(hook.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn delivery_history_shows_results_and_hides_runs_from_members() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_hook().await;
+        hook.status.store(404, Ordering::SeqCst);
+        // Organisation-wide: it reports on every agent's runs.
+        let output = make_output(&app, &hook, "slack").await;
+        let execution = finished_execution(&app).await;
+        deliver_pending(&app.state).await;
+
+        // An admin sees the result and the run it reported on.
+        let path = format!("/api/v1/outputs/{}/deliveries", output.id);
+        let (status, body) = send(&app.router, get(&path)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = body.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "failed");
+        assert_eq!(rows[0]["attempts"], 1);
+        assert_eq!(rows[0]["responseStatus"], 404);
+        assert_eq!(rows[0]["error"], "webhook returned HTTP 404 Not Found");
+        assert_eq!(rows[0]["executionId"], execution.to_string());
+        assert_eq!(rows[0]["task"], "notify");
+        assert!(
+            rows[0]["nextAttemptAt"].is_null(),
+            "only pending rows have one"
+        );
+        assert!(
+            !body.to_string().contains(&hook.url),
+            "the webhook URL never appears"
+        );
+
+        // The list carries the newest delivery, without run details.
+        let (status, body) = send(&app.router, get("/api/v1/outputs")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let listed = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == output.id.to_string())
+            .unwrap();
+        assert_eq!(listed["lastDelivery"]["status"], "failed");
+        assert!(listed["lastDelivery"]["executionId"].is_null());
+        assert!(listed["lastDelivery"]["task"].is_null());
+
+        // A member sees that it failed, but not which agent's run it was about.
+        let fx = d2_fixture(&app).await;
+        let (status, body) = send(&app.router, auth_get(&path, &fx.mallory_token)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = body.as_array().unwrap();
+        assert_eq!(rows[0]["status"], "failed");
+        assert!(rows[0]["executionId"].is_null());
+        assert!(rows[0]["task"].is_null());
+        assert!(rows[0]["agentName"].is_null());
+
+        let (status, _) = send(
+            &app.router,
+            get(&format!("/api/v1/outputs/{}/deliveries", Uuid::now_v7())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
 
@@ -6669,6 +6735,33 @@ async fn changing_provider_base_url_requires_reentering_the_credential() {
 }
 
 #[tokio::test]
+async fn output_can_be_created_off() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/outputs",
+            json!({
+                "name": format!("off-{}", Uuid::now_v7()),
+                "kind": "webhook",
+                "webhookUrl": "http://10.0.0.5/hook",
+                "enabled": false
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["enabled"], false,
+        "creating an output off keeps it off"
+    );
+    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    assert!(!app.store.get_output(app.org_id, id).await.unwrap().enabled);
+}
+
+#[tokio::test]
 async fn output_webhook_urls_are_validated_on_create_and_update() {
     let Some(app) = test_app(true).await else {
         return;
@@ -6712,6 +6805,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
             &["succeeded".to_string()],
             &secret_ref,
             None,
+            true,
         )
         .await
         .unwrap();

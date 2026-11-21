@@ -351,6 +351,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::outputs::test_output),
         )
         .route(
+            "/api/v1/outputs/{output_id}/deliveries",
+            get(handlers::outputs::deliveries),
+        )
+        .route(
             "/api/v1/env-mappings",
             get(handlers::env_mappings::list).post(handlers::env_mappings::create),
         )

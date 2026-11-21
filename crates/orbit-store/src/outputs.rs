@@ -3,7 +3,7 @@
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
-use crate::models::{ExecutionRecord, Output, OutputDeliveryJob, TeamRun};
+use crate::models::{ExecutionRecord, Output, OutputDelivery, OutputDeliveryJob, TeamRun};
 use crate::{Store, StoreError, StoreResult};
 
 /// Delivery attempts (including interrupted ones) before a retryable delivery is `dead`.
@@ -44,11 +44,12 @@ impl Store {
         events: &[String],
         secret_ref: &str,
         template: Option<&str>,
+        enabled: bool,
     ) -> StoreResult<Output> {
         sqlx::query_as::<_, Output>(
             r#"
-            INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref, template)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref, template, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
             "#,
         )
@@ -61,6 +62,7 @@ impl Store {
         .bind(events)
         .bind(secret_ref)
         .bind(template)
+        .bind(enabled)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| {
@@ -240,6 +242,53 @@ impl Store {
         )
         .bind(limit)
         .bind(lease.num_milliseconds() as f64 / 1000.0)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// The most recent deliveries of one output, newest first, with the task (and agent)
+    /// of the run each one reports on.
+    pub async fn list_output_deliveries(
+        &self,
+        org_id: Uuid,
+        output_id: Uuid,
+        limit: i64,
+    ) -> StoreResult<Vec<OutputDelivery>> {
+        Ok(sqlx::query_as::<_, OutputDelivery>(
+            r#"
+            SELECT d.id, d.output_id, d.execution_id, d.team_run_id, d.status, d.attempts,
+                   d.response_status, d.last_error, d.next_attempt_at, d.created_at, d.updated_at,
+                   COALESCE(e.input->>'task', t.input->>'task') AS task, e.agent_name
+            FROM output_deliveries d
+            LEFT JOIN executions e ON e.id = d.execution_id
+            LEFT JOIN team_runs t ON t.id = d.team_run_id
+            WHERE d.org_id = $1 AND d.output_id = $2
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(org_id)
+        .bind(output_id)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// The newest delivery of every output in the organisation that has one.
+    pub async fn latest_output_deliveries(&self, org_id: Uuid) -> StoreResult<Vec<OutputDelivery>> {
+        Ok(sqlx::query_as::<_, OutputDelivery>(
+            r#"
+            SELECT DISTINCT ON (d.output_id) d.id, d.output_id, d.execution_id, d.team_run_id, d.status, d.attempts,
+                   d.response_status, d.last_error, d.next_attempt_at, d.created_at, d.updated_at,
+                   COALESCE(e.input->>'task', t.input->>'task') AS task, e.agent_name
+            FROM output_deliveries d
+            LEFT JOIN executions e ON e.id = d.execution_id
+            LEFT JOIN team_runs t ON t.id = d.team_run_id
+            WHERE d.org_id = $1
+            ORDER BY d.output_id, d.created_at DESC, d.id DESC
+            "#,
+        )
+        .bind(org_id)
         .fetch_all(&self.pool)
         .await?)
     }
