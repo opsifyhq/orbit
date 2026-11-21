@@ -17,7 +17,7 @@ Practical, task-oriented documentation. For design rationale see
 | Access teams and resource sharing | [access-teams.md](access-teams.md) |
 | Offline enterprise licensing | [licensing.md](licensing.md) |
 | Tool policy and approvals | [tool-policies.md](tool-policies.md) |
-| Outputs (webhooks, Slack, Mattermost) | [outputs.md](outputs.md) |
+| Outputs (webhooks, Slack, Mattermost, Telegram) | [outputs.md](outputs.md) |
 | Connectors and connections | [connections.md](connections.md) |
 | Kubernetes connector (read-only) | [kubernetes-connector.md](kubernetes-connector.md) |
 | CLI tools (glab/gh escape hatch) | [cli-tools.md](cli-tools.md) |

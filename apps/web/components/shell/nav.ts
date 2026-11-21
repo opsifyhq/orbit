@@ -61,7 +61,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/connections", label: "Connectors", icon: Cable, keywords: "connections integrations github gitlab telegram webhook" },
       { href: "/models", label: "Model providers", icon: Boxes, keywords: "models llm openai gateway" },
-      { href: "/outputs", label: "Outputs", icon: Megaphone, keywords: "notifications slack mattermost webhook" },
+      { href: "/outputs", label: "Outputs", icon: Megaphone, keywords: "notifications slack mattermost telegram webhook" },
     ],
   },
   {

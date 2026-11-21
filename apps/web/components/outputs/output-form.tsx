@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Bot, Globe, Hash, MessageSquare, Users, Webhook } from "lucide-react";
+import { Bot, Globe, Hash, MessageSquare, Send, Users, Webhook } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,7 @@ const isSectionId = (value: string): value is SectionId => (SECTION_ORDER as str
 const KIND_ICON: Record<OutputKind, ReactNode> = {
   slack: <Hash />,
   mattermost: <MessageSquare />,
+  telegram: <Send />,
   webhook: <Webhook />,
 };
 
@@ -48,6 +49,9 @@ type Draft = {
   name: string;
   kind: OutputKind;
   webhookUrl: string;
+  botToken: string;
+  chatId: string;
+  messageThreadId: string;
   scope: Scope;
   agentId: string;
   teamId: string;
@@ -63,6 +67,9 @@ function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: s
     name: output?.name ?? "",
     kind: output?.kind ?? "slack",
     webhookUrl: "",
+    botToken: "",
+    chatId: output?.chatId ?? "",
+    messageThreadId: output?.messageThreadId ?? "",
     scope: teamId ? "team" : agentId ? "agent" : "all",
     agentId,
     teamId,
@@ -85,8 +92,8 @@ function sectionOfPath(path: string): SectionId {
 
 /**
  * Output Studio: the same one-section-at-a-time form as Agent and Connection Studio.
- * Where the message goes, which runs send it, and what it says. The webhook URL is
- * write-only: it is sent when entered and never shown again.
+ * Where the message goes, which runs send it, and what it says. Credentials are
+ * write-only: they are sent when entered and never shown again.
  */
 export function OutputForm({
   output,
@@ -118,16 +125,34 @@ export function OutputForm({
   const teamList = teams.data ?? [];
   const agentName = agentList.find((agent) => agent.id === draft.agentId)?.name;
   const teamName = teamList.find((team) => team.id === draft.teamId)?.name;
-  const storedUrl = Boolean(output?.hasWebhook);
+  const storedCredential = Boolean(output?.hasWebhook) && output?.kind === draft.kind;
   const kindName = kindLabel(draft.kind);
+  const isTelegram = draft.kind === "telegram";
 
   // ------------------------------------------------------------------ validation
   const issues: Issue[] = [];
   if (!draft.name.trim()) issues.push({ section: "destination", message: "Enter a name." });
   const url = draft.webhookUrl.trim();
-  if (!url && !storedUrl) issues.push({ section: "destination", message: "Enter the webhook URL." });
-  if (url && !/^https?:\/\/\S+$/i.test(url)) {
-    issues.push({ section: "destination", message: "The webhook URL must start with https:// or http://." });
+  const botToken = draft.botToken.trim();
+  const chatId = draft.chatId.trim();
+  const threadId = draft.messageThreadId.trim();
+  if (isTelegram) {
+    if (!botToken && !storedCredential) issues.push({ section: "destination", message: "Enter the bot token." });
+    if (botToken && !/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
+      issues.push({ section: "destination", message: "The bot token must look like <numeric id>:<secret>." });
+    }
+    if (!chatId) issues.push({ section: "destination", message: "Enter the chat id." });
+    else if (!/^-?\d+$/.test(chatId) || chatId === "0" || chatId === "-0") {
+      issues.push({ section: "destination", message: "The chat id must be numeric and not zero." });
+    }
+    if (threadId && (!/^\d+$/.test(threadId) || threadId === "0")) {
+      issues.push({ section: "destination", message: "The topic id must be a positive number." });
+    }
+  } else {
+    if (!url && !storedCredential) issues.push({ section: "destination", message: "Enter the webhook URL." });
+    if (url && !/^https?:\/\/\S+$/i.test(url)) {
+      issues.push({ section: "destination", message: "The webhook URL must start with https:// or http://." });
+    }
   }
   if (draft.scope === "agent" && !draft.agentId) issues.push({ section: "trigger", message: "Choose the agent." });
   if (draft.scope === "team" && !draft.teamId) issues.push({ section: "trigger", message: "Choose the agent team." });
@@ -182,7 +207,15 @@ export function OutputForm({
       agentId: draft.scope === "agent" ? draft.agentId : null,
       teamId: draft.scope === "team" ? draft.teamId : null,
       events: OUTPUT_EVENTS.filter((event) => draft.events.includes(event)),
-      ...(url ? { webhookUrl: url } : {}),
+      ...(isTelegram
+        ? {
+            ...(botToken ? { botToken } : {}),
+            chatId,
+            messageThreadId: threadId || null,
+          }
+        : url
+          ? { webhookUrl: url }
+          : {}),
       template: draft.template.trim() || null,
       enabled: draft.enabled,
     });
@@ -195,12 +228,23 @@ export function OutputForm({
       : draft.scope === "agent"
         ? agentName ?? "Agent not chosen"
         : "Every agent";
+  const destinationDetail = isTelegram
+    ? chatId
+      ? `${chatId}${threadId ? ` · topic ${threadId}` : ""}`
+      : "chat not set"
+    : url
+      ? "new URL"
+      : storedCredential
+        ? "credential stored"
+        : "no URL";
   const summary: Record<SectionId, { value: string; missing?: boolean }> = {
     destination: {
-      value: draft.name.trim()
-        ? `${kindName} · ${url ? "new URL" : storedUrl ? "URL stored" : "no URL"}`
-        : "Name not set",
-      missing: !draft.name.trim() || (!url && !storedUrl),
+      value: draft.name.trim() ? `${kindName} · ${destinationDetail}` : "Name not set",
+      missing:
+        !draft.name.trim() ||
+        (isTelegram
+          ? !chatId || (!botToken && !storedCredential)
+          : !url && !storedCredential),
     },
     trigger: {
       value: `${scopeValue} · ${eventsLabel(draft.events).toLowerCase()}`,
@@ -268,7 +312,7 @@ export function OutputForm({
             <Button asChild variant="ghost" className="w-full">
               <Link href={cancelHref}>Cancel</Link>
             </Button>
-            <p className="text-[13px] text-muted-foreground">Webhook URLs are encrypted at rest and never shown again.</p>
+            <p className="text-[13px] text-muted-foreground">Webhook URLs and bot tokens are encrypted at rest and never shown again.</p>
           </div>
         </aside>
 
@@ -277,7 +321,7 @@ export function OutputForm({
             "destination",
             "Where the message goes.",
             <>
-              <div role="radiogroup" aria-label="Destination" className="grid gap-2 sm:grid-cols-3">
+              <div role="radiogroup" aria-label="Destination" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 {OUTPUT_KINDS.map((item) => (
                   <ChoiceCard
                     key={item.kind}
@@ -297,28 +341,87 @@ export function OutputForm({
                   onChange={(event) => set("name", event.target.value)}
                 />
               </Field>
-              <Field
-                label={draft.kind === "webhook" ? "Webhook URL" : `${kindName} incoming webhook URL`}
-                htmlFor="output-webhook"
-                hint={
-                  storedUrl
-                    ? "A URL is stored. Leave this empty to keep it, or enter a new one to replace it."
-                    : draft.kind === "webhook"
-                      ? "Stored encrypted; you will not see it again."
-                      : `Create one under your ${kindName} integrations. Stored encrypted; you will not see it again.`
-                }
-              >
-                <Input
-                  id="output-webhook"
-                  type="password"
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  className="font-mono"
-                  value={draft.webhookUrl}
-                  placeholder={storedUrl ? "••••••••  (stored)" : "https://…"}
-                  onChange={(event) => set("webhookUrl", event.target.value)}
-                />
-              </Field>
+              {isTelegram ? (
+                <>
+                  <Callout tone="info" title="Telegram bot setup">
+                    Create a bot with @BotFather, add it to the target group or channel (as an
+                    administrator for channels), then copy its numeric chat id. The token is
+                    stored encrypted and never shown again.
+                  </Callout>
+                  <Field
+                    label="Bot token"
+                    htmlFor="output-bot-token"
+                    hint={
+                      storedCredential
+                        ? "A token is stored. Leave this empty to keep it, or enter a new one to replace it."
+                        : "Create one with @BotFather. Stored encrypted; you will not see it again."
+                    }
+                  >
+                    <Input
+                      id="output-bot-token"
+                      type="password"
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      className="font-mono"
+                      value={draft.botToken}
+                      placeholder={storedCredential ? "••••••••  (stored)" : "123456:ABC-def"}
+                      onChange={(event) => set("botToken", event.target.value)}
+                    />
+                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label="Chat id"
+                      htmlFor="output-chat-id"
+                      hint="Numeric user, group or channel id, for example -1001234567890."
+                    >
+                      <Input
+                        id="output-chat-id"
+                        inputMode="numeric"
+                        value={draft.chatId}
+                        placeholder="-1001234567890"
+                        onChange={(event) => set("chatId", event.target.value)}
+                      />
+                    </Field>
+                    <Field
+                      label="Message thread id"
+                      optional
+                      htmlFor="output-thread-id"
+                      hint="Forum topic id, if the chat uses topics."
+                    >
+                      <Input
+                        id="output-thread-id"
+                        inputMode="numeric"
+                        value={draft.messageThreadId}
+                        placeholder="42"
+                        onChange={(event) => set("messageThreadId", event.target.value)}
+                      />
+                    </Field>
+                  </div>
+                </>
+              ) : (
+                <Field
+                  label={draft.kind === "webhook" ? "Webhook URL" : `${kindName} incoming webhook URL`}
+                  htmlFor="output-webhook"
+                  hint={
+                    storedCredential
+                      ? "A URL is stored. Leave this empty to keep it, or enter a new one to replace it."
+                      : draft.kind === "webhook"
+                        ? "Stored encrypted; you will not see it again."
+                        : `Create one under your ${kindName} integrations. Stored encrypted; you will not see it again.`
+                  }
+                >
+                  <Input
+                    id="output-webhook"
+                    type="password"
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    className="font-mono"
+                    value={draft.webhookUrl}
+                    placeholder={storedCredential ? "••••••••  (stored)" : "https://…"}
+                    onChange={(event) => set("webhookUrl", event.target.value)}
+                  />
+                </Field>
+              )}
             </>,
           )}
 

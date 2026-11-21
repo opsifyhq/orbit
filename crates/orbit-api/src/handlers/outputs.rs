@@ -1,4 +1,4 @@
-//! Execution result outputs (Slack/Mattermost/webhook) and delivery.
+//! Execution result outputs (Slack/Mattermost/webhook/Telegram) and delivery.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -7,8 +7,11 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use orbit_contracts::{
+    redact_secret, telegram_error, telegram_message_parts, OutputEvent, OutputKind, TelegramTarget,
+};
 use orbit_domain::ValidationIssue;
-use orbit_security::{new_secret_ref, AuthContext, Permission, SecretValue};
+use orbit_security::{new_secret_ref, AuthContext, OutboundPolicy, Permission, SecretValue};
 use orbit_store::outputs::DeliveryOutcome;
 use orbit_store::{
     ExecutionRecord, Output, OutputDelivery, OutputDeliveryJob, StoreError, TeamRun,
@@ -17,6 +20,11 @@ use orbit_store::{
 use crate::audit;
 use crate::error::ApiError;
 use crate::state::AppState;
+
+/// Default Bot API host. Override with `ORBIT_TELEGRAM_API_BASE_URL` only for an explicit
+/// admin-controlled proxy or test server; the override is still passed through the outbound
+/// URL guard on every request.
+const TELEGRAM_API_BASE_URL: &str = "https://api.telegram.org";
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -29,9 +37,18 @@ pub struct OutputRequest {
     pub team_id: Option<Uuid>,
     #[serde(default)]
     pub events: Vec<String>,
-    /// Incoming webhook / target URL. Write-only; never returned.
+    /// Incoming webhook / target URL for webhook kinds. Write-only; never returned.
     #[serde(default)]
     pub webhook_url: Option<String>,
+    /// Telegram bot token. Write-only; never returned, logged or published in events.
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    /// Numeric Telegram user/group/channel id (for example `-100…`).
+    #[serde(default)]
+    pub chat_id: Option<String>,
+    /// Optional numeric Telegram forum topic id.
+    #[serde(default)]
+    pub message_thread_id: Option<String>,
     #[serde(default)]
     pub template: Option<String>,
     #[serde(default = "default_enabled")]
@@ -53,7 +70,11 @@ pub struct OutputView {
     pub events: Vec<String>,
     pub template: Option<String>,
     pub enabled: bool,
+    /// True when a webhook URL or Telegram bot token is stored. The value itself is never
+    /// returned.
     pub has_webhook: bool,
+    pub chat_id: Option<String>,
+    pub message_thread_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     /// The newest delivery, without run details. Only in list responses, and only once the
@@ -139,6 +160,8 @@ impl From<Output> for OutputView {
             template: output.template,
             enabled: output.enabled,
             has_webhook: !output.secret_ref.is_empty(),
+            chat_id: output.telegram_chat_id,
+            message_thread_id: output.telegram_message_thread_id,
             created_at: output.created_at,
             updated_at: output.updated_at,
             last_delivery: None,
@@ -146,7 +169,71 @@ impl From<Output> for OutputView {
     }
 }
 
-fn validated(body: &OutputRequest) -> Result<(String, Vec<String>), ApiError> {
+fn credential_field(kind: OutputKind) -> &'static str {
+    match kind {
+        OutputKind::Telegram => "botToken",
+        _ => "webhookUrl",
+    }
+}
+
+fn credential(body: &OutputRequest, kind: OutputKind) -> Option<&str> {
+    match kind {
+        OutputKind::Telegram => body.bot_token.as_deref(),
+        _ => body.webhook_url.as_deref(),
+    }
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+}
+
+async fn guard_credential(kind: OutputKind, value: &str) -> Result<(), ApiError> {
+    match kind {
+        OutputKind::Telegram => {
+            // Telegram tokens are `<numeric id>:<secret>`; rejecting URL metacharacters here
+            // prevents the token from altering the assembled Bot API request path.
+            let mut parts = value.split(':');
+            let id = parts.next().unwrap_or_default();
+            let secret = parts.next().unwrap_or_default();
+            let valid = !id.is_empty()
+                && id.bytes().all(|byte| byte.is_ascii_digit())
+                && !secret.is_empty()
+                && secret
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                && parts.next().is_none();
+            if !valid {
+                return Err(ApiError::validation(vec![ValidationIssue::new(
+                    "botToken",
+                    "botToken must be a Telegram bot token (numeric id:secret)",
+                )]));
+            }
+            Ok(())
+        }
+        _ => guard_webhook_url(value).await,
+    }
+}
+
+async fn store_credential(
+    state: &AppState,
+    org_id: Uuid,
+    name: &str,
+    value: &str,
+) -> Result<String, ApiError> {
+    let secret_ref = new_secret_ref("output");
+    state
+        .store
+        .put_secret(
+            Some(org_id),
+            &secret_ref,
+            &SecretValue::new(value),
+            &format!("output:{name}"),
+        )
+        .await?;
+    Ok(secret_ref)
+}
+
+fn validated(
+    body: &OutputRequest,
+) -> Result<(String, Vec<String>, OutputKind, Option<TelegramTarget>), ApiError> {
     let mut issues = Vec::new();
     let name = body.name.trim().to_string();
     if body.agent_id.is_some() && body.team_id.is_some() {
@@ -158,31 +245,54 @@ fn validated(body: &OutputRequest) -> Result<(String, Vec<String>), ApiError> {
     if name.is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
-    if !matches!(body.kind.as_str(), "slack" | "mattermost" | "webhook") {
+    let Some(kind) = OutputKind::parse(&body.kind) else {
         issues.push(ValidationIssue::new(
             "kind",
-            "kind must be slack, mattermost or webhook",
+            "kind must be slack, mattermost, webhook or telegram",
         ));
-    }
+        return Err(ApiError::validation(issues));
+    };
     let mut events = if body.events.is_empty() {
-        vec!["succeeded".into(), "failed".into(), "cancelled".into()]
+        OutputEvent::ALL
+            .iter()
+            .map(|event| (*event).to_string())
+            .collect()
     } else {
         body.events.clone()
     };
     events.sort();
     events.dedup();
     for event in &events {
-        if !matches!(event.as_str(), "succeeded" | "failed" | "cancelled") {
+        if OutputEvent::parse(event).is_none() {
             issues.push(ValidationIssue::new(
                 "events",
                 format!("unknown event '{event}'"),
             ));
         }
     }
+    let telegram = if kind == OutputKind::Telegram {
+        match TelegramTarget::parse(
+            body.chat_id.as_deref().unwrap_or(""),
+            body.message_thread_id.as_deref(),
+        ) {
+            Ok(target) => Some(target),
+            Err(message) => {
+                let field = if message.contains("messageThreadId") {
+                    "messageThreadId"
+                } else {
+                    "chatId"
+                };
+                issues.push(ValidationIssue::new(field, message));
+                None
+            }
+        }
+    } else {
+        None
+    };
     if !issues.is_empty() {
         return Err(ApiError::validation(issues));
     }
-    Ok((name, events))
+    Ok((name, events, kind, telegram))
 }
 
 /// An output forwards each run's task and result to an external URL, so attaching one
@@ -341,42 +451,32 @@ pub async fn create(
     crate::extract::ApiJson(body): crate::extract::ApiJson<OutputRequest>,
 ) -> Result<(StatusCode, Json<OutputView>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let (name, events) = validated(&body)?;
+    let (name, events, kind, telegram) = validated(&body)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
-    let url = body
-        .webhook_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            ApiError::validation(vec![orbit_domain::ValidationIssue::new(
-                "webhookUrl",
-                "webhookUrl is required",
-            )])
-        })?;
-    guard_webhook_url(url).await?;
-    let secret_ref = new_secret_ref("output");
-    state
-        .store
-        .put_secret(
-            Some(auth.org_id),
-            &secret_ref,
-            &SecretValue::new(url),
-            &format!("output:{name}"),
-        )
-        .await?;
+    let value = credential(&body, kind).ok_or_else(|| {
+        ApiError::validation(vec![ValidationIssue::new(
+            credential_field(kind),
+            format!("{} is required", credential_field(kind)),
+        )])
+    })?;
+    guard_credential(kind, value).await?;
+    let secret_ref = store_credential(&state, auth.org_id, &name, value).await?;
     let output = match state
         .store
         .create_output(
             auth.org_id,
             &name,
-            &body.kind,
+            kind.as_str(),
             body.agent_id,
             body.team_id,
             &events,
             &secret_ref,
             body.template.as_deref(),
+            telegram.as_ref().map(|target| target.chat_id.as_str()),
+            telegram
+                .as_ref()
+                .and_then(|target| target.message_thread_id.as_deref()),
             body.enabled,
         )
         .await
@@ -408,26 +508,24 @@ pub async fn update(
     crate::extract::ApiJson(body): crate::extract::ApiJson<OutputRequest>,
 ) -> Result<Json<OutputView>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let (name, events) = validated(&body)?;
+    let (name, events, kind, telegram) = validated(&body)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    load_managed_output(&state, &auth, &access, output_id).await?;
+    let existing = load_managed_output(&state, &auth, &access, output_id).await?;
     require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
-    let secret_ref = match body.webhook_url.as_deref().map(str::trim) {
-        Some(url) if !url.is_empty() => {
-            guard_webhook_url(url).await?;
-            let reference = new_secret_ref("output");
-            state
-                .store
-                .put_secret(
-                    Some(auth.org_id),
-                    &reference,
-                    &SecretValue::new(url),
-                    &format!("output:{name}"),
-                )
-                .await?;
-            Some(reference)
-        }
-        _ => None,
+    let secret_ref = if let Some(value) = credential(&body, kind) {
+        guard_credential(kind, value).await?;
+        Some(store_credential(&state, auth.org_id, &name, value).await?)
+    } else if existing.kind != kind.as_str() {
+        // Switching kinds must not reuse a stored webhook URL as a bot token (or vice versa).
+        return Err(ApiError::validation(vec![ValidationIssue::new(
+            credential_field(kind),
+            format!(
+                "{} is required when changing the output kind",
+                credential_field(kind)
+            ),
+        )]));
+    } else {
+        None
     };
     let output = match state
         .store
@@ -435,12 +533,16 @@ pub async fn update(
             auth.org_id,
             output_id,
             &name,
-            &body.kind,
+            kind.as_str(),
             body.agent_id,
             body.team_id,
             &events,
             secret_ref.as_deref(),
             body.template.as_deref(),
+            telegram.as_ref().map(|target| target.chat_id.as_str()),
+            telegram
+                .as_ref()
+                .and_then(|target| target.message_thread_id.as_deref()),
             body.enabled,
         )
         .await
@@ -539,7 +641,7 @@ pub async fn deliver(
 
 /// POST one notification. When `delivery_id` is set it is sent as `Idempotency-Key` and
 /// `X-Orbit-Delivery-Id` (and `deliveryId` in generic webhook bodies) so receivers can
-/// de-duplicate the at-least-once delivery. Slack/Mattermost ignore unknown headers.
+/// de-duplicate the at-least-once delivery. Telegram/Slack/Mattermost ignore the headers.
 pub async fn send(
     state: &AppState,
     output: &Output,
@@ -548,12 +650,17 @@ pub async fn send(
     team_run: Option<&TeamRun>,
     delivery_id: Option<Uuid>,
 ) -> Result<(), SendError> {
-    let url = match state.store.get_secret_value(&output.secret_ref).await {
+    let kind = OutputKind::parse(&output.kind).ok_or_else(|| SendError {
+        status: None,
+        message: format!("unsupported output kind '{}'", output.kind),
+        retryable: false,
+    })?;
+    let secret = match state.store.get_secret_value(&output.secret_ref).await {
         Ok(Some(value)) => value.expose().to_string(),
         Ok(None) => {
             return Err(SendError {
                 status: None,
-                message: "output webhook secret is missing".into(),
+                message: "output credential is missing".into(),
                 retryable: false,
             })
         }
@@ -565,13 +672,34 @@ pub async fn send(
             })
         }
     };
-    guard_webhook_url(&url).await.map_err(|error| SendError {
-        status: None,
-        message: error.message,
-        retryable: false,
-    })?;
+    if kind == OutputKind::Telegram {
+        let target = TelegramTarget::parse(
+            output.telegram_chat_id.as_deref().unwrap_or(""),
+            output.telegram_message_thread_id.as_deref(),
+        )
+        .map_err(|message| SendError {
+            status: None,
+            message: message.to_string(),
+            retryable: false,
+        })?;
+        return send_telegram(
+            &TelegramEndpoint::from_env(),
+            &secret,
+            &target,
+            text,
+            delivery_id,
+        )
+        .await;
+    }
+    guard_webhook_url(&secret)
+        .await
+        .map_err(|error| SendError {
+            status: None,
+            message: error.message,
+            retryable: false,
+        })?;
     let client = orbit_security::guarded_client(std::time::Duration::from_secs(15));
-    let payload = if output.kind == "webhook" {
+    let payload = if kind == OutputKind::Webhook {
         serde_json::json!({
             "event": execution
                 .map(|e| format!("execution.{}", e.status))
@@ -591,7 +719,7 @@ pub async fn send(
     } else {
         serde_json::json!({ "text": text })
     };
-    let mut request = client.post(&url).json(&payload);
+    let mut request = client.post(&secret).json(&payload);
     if let Some(id) = delivery_id {
         request = request
             .header("Idempotency-Key", id.to_string())
@@ -610,6 +738,100 @@ pub async fn send(
             message: format!("webhook returned HTTP {status}"),
             retryable: status_is_retryable(status.as_u16()),
         });
+    }
+    Ok(())
+}
+
+/// Operator-controlled Telegram endpoint. The base URL defaults to the official Bot API;
+/// an admin may set `ORBIT_TELEGRAM_API_BASE_URL` (for a proxy or mock server), but the
+/// fully assembled URL is always checked against the outbound policy before any request.
+#[derive(Debug, Clone)]
+pub struct TelegramEndpoint {
+    pub base_url: String,
+    policy: OutboundPolicy,
+}
+
+impl TelegramEndpoint {
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("ORBIT_TELEGRAM_API_BASE_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| TELEGRAM_API_BASE_URL.to_string());
+        Self::new(base_url, OutboundPolicy::from_env())
+    }
+
+    pub fn new(base_url: impl Into<String>, policy: OutboundPolicy) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            policy,
+        }
+    }
+}
+
+/// Send one Telegram notification, splitting long text into multiple `sendMessage` calls.
+/// The bot token is only ever used in the request URL, never in errors or diagnostics.
+pub async fn send_telegram(
+    endpoint: &TelegramEndpoint,
+    bot_token: &str,
+    target: &TelegramTarget,
+    text: &str,
+    delivery_id: Option<Uuid>,
+) -> Result<(), SendError> {
+    let url = format!("{}/bot{}/sendMessage", endpoint.base_url, bot_token);
+    orbit_security::check_outbound_url(&url, &endpoint.policy)
+        .await
+        .map_err(|error| SendError {
+            status: None,
+            message: format!(
+                "telegram endpoint refused by outbound policy ({})",
+                error.category()
+            ),
+            retryable: false,
+        })?;
+    let client = orbit_security::guarded_client_with_policy(
+        std::time::Duration::from_secs(15),
+        endpoint.policy.clone(),
+    );
+    let parts = telegram_message_parts(text, delivery_id);
+    for (index, part) in parts.iter().enumerate() {
+        let mut payload = serde_json::json!({
+            "chat_id": target.chat_id,
+            "text": part,
+            "disable_web_page_preview": true,
+        });
+        if let Some(thread_id) = &target.message_thread_id {
+            payload["message_thread_id"] = serde_json::Value::String(thread_id.clone());
+        }
+        let mut request = client.post(&url).json(&payload);
+        if let Some(id) = delivery_id {
+            request = request
+                .header("Idempotency-Key", format!("{id}-{index}"))
+                .header("X-Orbit-Delivery-Id", id.to_string());
+        }
+        let response = request.send().await.map_err(|error| SendError {
+            status: None,
+            message: redact_secret(&orbit_security::describe_request_error(&error), bot_token),
+            retryable: true,
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let description = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("description")
+                        .and_then(|description| description.as_str())
+                        .map(str::to_string)
+                });
+            let mapped = telegram_error(status.as_u16(), description.as_deref(), bot_token);
+            return Err(SendError {
+                status: Some(status.as_u16()),
+                message: mapped.message,
+                retryable: mapped.retryable,
+            });
+        }
     }
     Ok(())
 }
@@ -799,7 +1021,7 @@ async fn guard_webhook_url(url: &str) -> Result<(), ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::with_note;
+    use super::*;
 
     #[test]
     fn note_is_appended_after_the_summary() {
@@ -834,5 +1056,30 @@ mod tests {
     fn blank_note_adds_nothing() {
         assert_eq!(with_note("summary".into(), None), "summary");
         assert_eq!(with_note("summary".into(), Some("   ")), "summary");
+    }
+
+    #[test]
+    fn telegram_endpoint_defaults_to_the_official_host() {
+        let endpoint = TelegramEndpoint::new("https://proxy.example/", OutboundPolicy::default());
+        assert_eq!(endpoint.base_url, "https://proxy.example");
+    }
+
+    #[tokio::test]
+    async fn telegram_tokens_cannot_alter_the_request_path() {
+        assert!(guard_credential(OutputKind::Telegram, "123456:ABC_def-1")
+            .await
+            .is_ok());
+        for token in [
+            "123:abc/../../evil",
+            "123:abc?x=1",
+            "abc:secret",
+            "123:",
+            ":secret",
+        ] {
+            assert!(
+                guard_credential(OutputKind::Telegram, token).await.is_err(),
+                "{token} must be rejected"
+            );
+        }
     }
 }

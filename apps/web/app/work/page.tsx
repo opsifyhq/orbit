@@ -747,7 +747,7 @@ export default function WorkPage() {
               ) : (
                 <p className="mt-1.5 text-[13px] text-muted-foreground">
                   {who
-                    ? `Nothing is notified when this ${whoType === "agent" ? "agent" : "team"} finishes. Add a Slack, Mattermost or webhook output to change that.`
+                    ? `Nothing is notified when this ${whoType === "agent" ? "agent" : "team"} finishes. Add a Slack, Mattermost, Telegram or webhook output to change that.`
                     : "Choose who does the work to see where results are sent."}
                 </p>
               )}

@@ -102,7 +102,7 @@ export default function OutputsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Outputs"
-        description="Post to Slack, Mattermost or a webhook when a run finishes, so people hear about results without watching ORBIT."
+        description="Post to Slack, Mattermost, Telegram or a webhook when a run finishes, so people hear about results without watching ORBIT."
         actions={
           <Button asChild>
             <Link href="/outputs/new">
@@ -203,7 +203,7 @@ export default function OutputsPage() {
             search
               ? "Try a shorter term, or clear the filter to see every output."
               : all.length === 0
-                ? "Add an output to hear in Slack, Mattermost or a webhook when an agent or team run succeeds, fails or is cancelled."
+                ? "Add an output to hear in Slack, Mattermost, Telegram or a webhook when an agent or team run succeeds, fails or is cancelled."
                 : "Outputs with another status are one tap away in the filter."
           }
           action={

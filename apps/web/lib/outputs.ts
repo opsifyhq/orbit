@@ -2,16 +2,21 @@
 
 import { request } from "./http";
 
+export type OutputKind = "slack" | "mattermost" | "webhook" | "telegram";
+
 export interface OutputView {
   id: string;
   name: string;
-  kind: "slack" | "mattermost" | "webhook";
+  kind: OutputKind;
   agentId?: string | null;
   teamId?: string | null;
   events: string[];
   template?: string | null;
   enabled: boolean;
+  /** True when a webhook URL or Telegram bot token is stored; the value is never returned. */
   hasWebhook: boolean;
+  chatId?: string | null;
+  messageThreadId?: string | null;
   createdAt: string;
   updatedAt: string;
   /** The newest delivery, without run details (list responses only). */
@@ -36,11 +41,17 @@ export interface OutputDelivery {
 
 export interface OutputInput {
   name: string;
-  kind: "slack" | "mattermost" | "webhook";
+  kind: OutputKind;
   agentId?: string | null;
   teamId?: string | null;
   events: string[];
   webhookUrl?: string;
+  /** Telegram bot token, write-only. Omit when editing to keep the stored token. */
+  botToken?: string;
+  /** Numeric Telegram user/group/channel id (for example -100…). */
+  chatId?: string | null;
+  /** Optional numeric Telegram forum topic id. */
+  messageThreadId?: string | null;
   template?: string | null;
   enabled: boolean;
 }
