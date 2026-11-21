@@ -21,6 +21,10 @@ import { cn } from "@/lib/utils";
 export const LIST_GRID =
   "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 md:grid-cols-[1.5rem_minmax(0,1fr)_9rem_13rem_6.5rem] md:gap-x-4";
 
+/** The same columns without the checkbox, for lists with no bulk actions (Team runs, Outputs). */
+export const LIST_GRID_PLAIN =
+  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_9rem_13rem_6.5rem] md:gap-x-4";
+
 /** Classes for the whole-row link on a row's name. */
 export const ROW_LINK =
   "truncate text-sm font-semibold after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-ring";
@@ -99,19 +103,28 @@ export function SelectionBar({
   );
 }
 
-/** The list card with its column header. `columns` are the name, status, details and updated labels. */
+/**
+ * The list card with its column header. `columns` are the name, status, details and
+ * updated labels. Set `selectable={false}` (and leave out each row's checkbox) for a list
+ * without bulk actions, so rows do not keep an empty checkbox column.
+ */
 export function ListCard({
   columns,
+  selectable = true,
   children,
 }: {
   columns: [string, string, string, string];
+  selectable?: boolean;
   children: ReactNode;
 }) {
   const [name, status, details, updated] = columns;
   return (
     <Card className="overflow-hidden">
-      <div aria-hidden className={cn(LIST_GRID, "hidden border-b bg-subtle py-2 text-xs font-medium text-muted-foreground md:grid")}>
-        <span />
+      <div
+        aria-hidden
+        className={cn(selectable ? LIST_GRID : LIST_GRID_PLAIN, "hidden border-b bg-subtle py-2 text-xs font-medium text-muted-foreground md:grid")}
+      >
+        {selectable ? <span /> : null}
         <span>{name}</span>
         <span>{status}</span>
         <span>{details}</span>
@@ -124,7 +137,8 @@ export function ListCard({
 
 /**
  * One row. On a phone it is checkbox · name block · status; from `md` the details and
- * updated cells take their columns. The name cell holds the whole-row link.
+ * updated cells take their columns. The name cell holds the whole-row link. Without a
+ * `checkbox` the row uses the plain grid, matching `ListCard selectable={false}`.
  */
 export function ListRow({
   checkbox,
@@ -144,8 +158,8 @@ export function ListRow({
 }) {
   return (
     <li className="group relative border-b last:border-b-0">
-      <div className={cn(LIST_GRID, "py-3.5 transition-colors group-hover:bg-muted/50")}>
-        <div className="relative z-10 flex">{checkbox}</div>
+      <div className={cn(checkbox ? LIST_GRID : LIST_GRID_PLAIN, "py-3.5 transition-colors group-hover:bg-muted/50")}>
+        {checkbox ? <div className="relative z-10 flex">{checkbox}</div> : null}
         <div className="min-w-0">{name}</div>
         <div className="justify-self-end md:justify-self-start">{status}</div>
         <div className="hidden min-w-0 text-[13px] md:block">{details}</div>

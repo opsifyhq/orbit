@@ -257,11 +257,17 @@ approvals UI is still being finished.
 
 | Step | Expected |
 |---|---|
-| `/outputs` on a fresh database | Empty state “No outputs yet” with **New output** |
-| **New output** | Dialog “New output” with Name, Destination (webhook and the other listed kinds), the webhook URL, **Applies to** (one agent, one agent team, or the whole organisation) and the events to send |
-| Save without a webhook URL | The output is listed with a warning that it has no webhook URL; **Test** is disabled (“Add a webhook URL first”) |
-| Edit, add a URL, **Test** | A result toast; the stored URL secret is never shown again |
-| A URL that points at `http://169.254.169.254/` | Refused with a clear message (cloud-metadata addresses are always blocked) |
+| `/outputs` | Same layout as Agents: search, **All / On / Failing / Off / Cannot send** filter with counts, columns Output · Status · Sends · Updated, count under the list; the whole row opens the output |
+| New output | Output Studio with Destination / Trigger / Message; Create with no name or URL jumps to Destination and lists both |
+| Trigger | **Every agent / One agent / One agent team**; choosing one shows its picker; no events chosen blocks saving |
+| Message | The example updates with the note; for **Webhook** it shows the JSON body |
+| Output page | Status On, **Send test**, **Edit**, ⋯ **Turn off** (status Off and a callout with **Turn on**), **Delete output** returns to the list |
+| Edit | The URL field says a URL is stored; saving with it empty keeps it |
+| Create with **On** unticked | The output starts Off |
+| After a run that matches | **Recent deliveries** lists it (Delivered, Refused, Retrying with the next try, or Gave up) with its run, HTTP status and error; a refused or abandoned last delivery shows **Failing** in the list and a callout on the page |
+| A member opens an organisation-wide output | Deliveries show their status but not which run they were about |
+| 360 px | Rows collapse to name, status and one meta line; Save is pinned above the tab bar |
+| A URL that points at `http://169.254.169.254/` | Refused; Destination shows the server's reason (cloud-metadata addresses are always blocked) |
 | An organisation-wide output as a non-admin | Refused: only an owner or admin may manage it |
 
 ## Flow 16 — Access teams, sharing and roles (5 min)
