@@ -51,7 +51,7 @@ Every table is scoped by `org_id` unless it is global infrastructure.
 | `skills` | reusable SKILL.md packages |
 | `worker_profiles`, `worker_tokens`, `worker_launches`, `worker_heartbeats` | execution-plane configuration, credentials, launches, liveness |
 | `env_mappings`, `worker_profile_env_mappings` | connection or secret to environment-variable mappings and their use by profiles |
-| `outputs`, `output_deliveries` | result destinations (webhook) and their delivery attempts |
+| `outputs`, `output_deliveries` | result destinations (webhook, Slack, Mattermost, Telegram) and their delivery attempts |
 | `custom_roles` | organization-defined permission sets stored by name in `users.role` |
 | `access_teams`, `team_members` | access teams (ownership and visibility groups), not Agent Teams |
 | `api_tokens`, `audit_logs`, `platform_settings` | user tokens, audit trail, platform configuration |
@@ -271,8 +271,9 @@ Short-term or summary memory for an agent, with optional `expires_at`; pruned ho
   ownership and visibility. It is separate from an Agent Team.
 - **EnvMapping**: maps a connection or secret to an environment variable for worker
   profiles and Agent Teams; see the execution plane page.
-- **Output**: a result destination (an encrypted webhook URL held in `secret_ref`) with
-  per-execution or per-team-run deliveries.
+- **Output**: a result destination with an encrypted credential in `secret_ref` (a webhook
+  URL for Slack/Mattermost/generic webhooks, a bot token for Telegram), with per-execution
+  or per-team-run deliveries.
 
 ## Invariants
 

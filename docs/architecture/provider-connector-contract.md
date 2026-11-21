@@ -97,7 +97,7 @@ tmpfs files; they are never written to logs, execution events or the frontend.
 
 Source: `crates/orbit-contracts/src/connector.rs` (trait + DTOs), manifests in
 `crates/orbit-api/src/connectors.rs`, execution-plane clients in
-`services/worker/src/{github,gitlab}.rs`.
+`services/worker/src/{github,gitlab,x}.rs`.
 
 ### Concepts
 

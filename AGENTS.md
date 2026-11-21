@@ -59,6 +59,7 @@ pnpm --filter @orbit/web test        # web unit tests (node --test lib/*.test.ts
 pnpm --filter @orbit/web build
 pnpm api:generate            # openapi.json + schema.d.ts from the Rust code (no running API needed)
 pnpm api:generate --check    # what CI runs for schema.d.ts
+pnpm docs:check              # links, navigation.yaml and repository paths in docs (Node only)
 ./scripts/check-versions.sh  # Rust, Node and chart versions must match (CI gate)
 cargo audit                  # CI also runs pnpm audit --audit-level=high
 
@@ -149,6 +150,7 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 - Harness change → contract tests + real-harness integration evidence.
 - UI change → `pnpm typecheck` + `pnpm build`; keep pages usable at 360px width and follow
   `docs/development/design-system.md` (tokens, primitives, patterns).
+- Docs change → `pnpm docs:check`; new pages must be listed in `docs/navigation.yaml`.
 
 ## Local requirements
 

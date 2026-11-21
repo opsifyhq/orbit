@@ -212,5 +212,5 @@ bounded:
 
 - Connections are attached per **agent**; `connectionIds` on the team adds shared ones.
 - Parallel subagents are not supported; pipeline steps are sequential.
-- Inbound webhook verification and X posting are still pending.
+- Inbound webhook verification is still pending.
 - GitHub/GitLab writes require a token and may require approvals depending on autonomy.
