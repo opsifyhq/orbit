@@ -238,7 +238,10 @@ approvals UI is still being finished.
 | `/workers` → New profile | Harness, target, driver, image/tag (defaults to `latest`), provider/model |
 | Agents / Shared skills | **Select all** and **Clear** work |
 | Env variable mappings | Add row, choose connection, set the env var name; saved and reloaded |
-| `/environment-mappings` | New mapping, Edit (rename a variable, switch Connection / Secret), Duplicate, Delete; invalid or duplicate names block saving with a reason; cards show "Used by" worker profiles |
+| `/environments` (and `/environment-mappings` redirects) | Same layout as Agents: search, **All / In use / Unused / Needs attention** filter with counts, columns Environment · Status · Used by · Updated, row checkboxes with **Change access** |
+| **New environment** | Environment Studio with Details / Variables / Access control; saving with no name, no variable, a bad or duplicate name, or a variable without a source opens the section and lists why |
+| Environment page | Variables with their source, **Used by** with **Attach to a worker** (opens the profile with it ticked), **Edit**, ⋯ **Duplicate** (opens a prefilled copy) and **Delete** (names the profiles that use it) |
+| A variable whose connection was removed | Status **Needs attention**, a callout naming the variable, and the editor says to choose another connection |
 | Enable + Launch | Launch appears in Launches; Pod/Job created when a launcher is configured |
 | Without a launcher | Clear error: no worker launcher configured |
 | Launches filter | Active / History |

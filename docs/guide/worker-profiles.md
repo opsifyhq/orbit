@@ -61,12 +61,21 @@ Docker driver. **Worker CPU/memory belong here, not in the agent definition.**
 Reusable environment mappings are sets of environment variables for worker processes. Each
 value comes from a connection's credential or a stored secret, so no value is typed in
 plain text. Manage them under **Environments** in the Infrastructure group of the sidebar
-(`/environment-mappings`).
+(`/environments`; the old `/environment-mappings` address redirects there).
 
-To create one, choose **New mapping**, enter a **Name** and an optional **Description**,
-and for each variable choose **Add variable**: enter the **Variable name** (for example
-`GITLAB_TOKEN`) and a source, either **Connection** (pick a connection) or **Secret** (the
-key of a stored secret). A mapping needs at least one variable.
+The list works like the other registries: search by name, variable or connection, a filter
+**All / In use / Unused / Needs attention** with counts, which worker profiles use each one,
+and row checkboxes for **Change access**. **Needs attention** means a variable would be
+empty because its connection was removed or has no credential.
+
+**New environment** opens Environment Studio, one section at a time: **Details** (name and
+optional description), **Variables** and **Access control**. For each variable choose **Add
+variable**, enter the **Variable name** (for example `GITLAB_TOKEN`) and a source: either
+**Connection** (pick a connection; the name is suggested from it) or **Secret** (the key of
+a stored secret). An environment needs at least one variable, and names must be unique.
+
+Each environment has a page with its variables and sources, the worker profiles that use
+it with **Attach to a worker**, **Edit**, and **Duplicate** and **Delete** under ⋯.
 
 Attach a mapping to many worker profiles in the worker editor's Environment section, or to
 an agent team ([agent teams](agent-teams.md)). Inline mappings on a profile override
