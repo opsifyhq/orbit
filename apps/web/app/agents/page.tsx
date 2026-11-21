@@ -72,6 +72,20 @@ export default function AgentsPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
 
+  const restore = useMutation({
+    mutationFn: async (agentId: string) =>
+      unwrap(
+        await api.POST("/api/v1/agents/{agent_id}/activate", {
+          params: { path: { agent_id: agentId } },
+        }),
+      ),
+    onSuccess: () => {
+      toast.success("Agent restored");
+      void invalidateAgents();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
   const all = agents.data?.items ?? [];
   const counts = useMemo(() => {
     const result: Record<Filter, number> = { current: 0, active: 0, draft: 0, paused: 0, archived: 0 };
@@ -186,6 +200,7 @@ export default function AgentsPage() {
                   agent={agent}
                   selected={selected.has(agent.id)}
                   onSelect={(checked) => setSelected((current) => toggleId(current, agent.id, checked))}
+                  onRestore={(target) => restore.mutate(target.id)}
                   onDelete={async (target) => {
                     const confirmed = await confirm({
                       title: `Delete ${target.name} permanently?`,

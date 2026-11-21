@@ -7340,10 +7340,9 @@ async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
     assert_eq!(body["unchanged"].as_array().unwrap().len(), 1);
     assert_eq!(bulk_failed_ids(&body), vec![private]);
     for id in [a1, a2, archived] {
-        assert_eq!(
-            app.store.get_agent(app.org_id, id).await.unwrap().status,
-            "archived"
-        );
+        let agent = app.store.get_agent(app.org_id, id).await.unwrap();
+        assert_eq!(agent.status, "archived");
+        assert!(agent.archived_at.is_some());
     }
     let (rows, _) = app
         .store
@@ -7358,7 +7357,7 @@ async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
     // Archived agents disappear from the normal list but keep versions and can return.
     let (status, body) = send(
         &app.router,
-        auth_get("/api/v1/agents?status=current", &lead_token),
+        auth_get("/api/v1/agents?status=active", &lead_token),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -7372,7 +7371,7 @@ async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
         .await
         .unwrap()
         .is_empty());
-    let (status, _) = send(
+    let (status, body) = send(
         &app.router,
         auth_post(
             &format!("/api/v1/agents/{a1}/activate"),
@@ -7381,7 +7380,11 @@ async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "active");
+    let restored = app.store.get_agent(app.org_id, a1).await.unwrap();
+    assert_eq!(restored.status, "active");
+    assert!(restored.archived_at.is_none());
 
     // Member cannot manage, outsider cannot view, admin can.
     let (status, body) = send(

@@ -215,7 +215,7 @@ export default function AgentDetailPage() {
     const confirmed = await confirm({
       title: `Archive ${data.name}?`,
       description:
-        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its execution history is kept. Archiving cannot be undone.",
+        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its execution history is kept and you can restore it at any time.",
       confirmLabel: "Archive agent",
       destructive: true,
     });
@@ -332,8 +332,20 @@ export default function AgentDetailPage() {
       ) : null}
 
       {archived ? (
-        <Callout tone="neutral" title="This agent is archived">
-          It cannot run, be edited or be reactivated. Its execution history is still available, and its
+        <Callout
+          tone="neutral"
+          title="This agent is archived"
+          action={
+            <Button
+              size="sm"
+              onClick={() => lifecycle.mutate("activate")}
+              loading={lifecycle.isPending}
+            >
+              <Zap /> Restore
+            </Button>
+          }
+        >
+          It cannot run or be edited until restored. Its execution history is still available, and its
           definition can be exported and used to create a new agent.
         </Callout>
       ) : null}
