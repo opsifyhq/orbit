@@ -37,8 +37,7 @@ service.
 
 ## Opt-in suites
 
-Tests in four files are marked `#[ignore]` because they need something that CI does not
-have.
+Some tests are marked `#[ignore]` because they need something that CI does not have.
 Never add `-- --include-ignored` to a general `cargo test` run.
 
 | Suite | Needs | Command |
@@ -47,6 +46,7 @@ Never add `-- --include-ignored` to a general `cargo test` run.
 | Real OpenCode (`crates/orbit-harness/tests/opencode_e2e.rs`) | OpenCode CLI and provider credentials. Set `ORBIT_OPENCODE_E2E=1`; `ORBIT_OPENCODE_TEST_MODEL` overrides the model | `cargo test -p orbit-harness --test opencode_e2e -- --ignored --nocapture` |
 | Real Pi (`crates/orbit-harness/tests/pi_e2e.rs`) | Pi CLI and provider credentials. Set `ORBIT_PI_E2E=1`; `ORBIT_PI_TEST_MODEL` overrides the model | `cargo test -p orbit-harness --test pi_e2e -- --ignored --nocapture` |
 | Live Kubernetes (`crates/orbit-kubernetes/tests/live.rs`) | A reachable cluster. `ORBIT_TEST_KUBECONFIG` holds the kubeconfig contents; the second test also needs `ORBIT_TEST_KUBECTL_CONTEXT` | `ORBIT_TEST_KUBECONFIG="$(kubectl config view --raw --minify)" cargo test -p orbit-kubernetes --test live -- --ignored` |
+| Live X post (`services/worker/src/x.rs`) | A user-context X token with `tweet.write` and `ORBIT_X_LIVE=1`. Publishes a real tweet | `ORBIT_X_LIVE=1 ORBIT_X_USER_TOKEN=… cargo test -p orbit-worker --bin orbit-worker live_post_requires_user_context_token -- --ignored --nocapture` |
 
 The OpenCode and Pi tests send a real prompt to a model, so they spend model credits.
 Without their opt-in variable these tests return early and report a pass; read the

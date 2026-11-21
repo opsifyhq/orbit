@@ -60,6 +60,8 @@ sections:
         title: CLI tools (gh, glab)
       - path: guide/kubernetes-connector.md
         title: Kubernetes connector
+      - path: guide/x-connector.md
+        title: X connector
 
   - id: infrastructure
     title: Infrastructure

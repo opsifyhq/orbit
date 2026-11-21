@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use orbit_contracts::x_posts_create_input_schema;
 use orbit_domain::{
     evaluate_capability, evaluate_tool_call, AgentSpec, ApprovalMode, AutonomyLevel,
     CapabilityEffect, GrantedCapability, LogLevel, PolicyDecision, ToolCall, ToolPolicyOutcome,
@@ -27,6 +28,7 @@ use orbit_store::{Approval, Connection, ExecutionRecord};
 use crate::client::WorkerClient;
 use crate::github::{self, GitHubClientConfig};
 use crate::gitlab::{self, GitLabClientConfig};
+use crate::x::{self, XClientConfig};
 use orbit_kubernetes::KubernetesClientConfig;
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,13 @@ struct ToolSpec {
     description: String,
     effect: CapabilityEffect,
     input_schema: Value,
+}
+
+/// Execution-plane collaborators, grouped so the injectable test entry point stays small.
+struct BrokerRuntime {
+    http: reqwest::Client,
+    pause: orbit_contracts::PauseClock,
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 struct BrokerState {
@@ -65,6 +74,7 @@ enum ConnectorClient {
     Github(GitHubClientConfig),
     Gitlab(GitLabClientConfig),
     Kubernetes(KubernetesClientConfig),
+    X(XClientConfig),
 }
 
 impl BrokerState {
@@ -352,6 +362,38 @@ fn kubernetes_tool_specs(
         .collect()
 }
 
+/// X broker tools. `posts.search` is intentionally excluded: it stays a read-only
+/// pre-execution hydration step in `crate::connectors`, not a model-callable tool.
+fn x_tool_specs(
+    capabilities: &[String],
+    effects: &std::collections::BTreeMap<String, CapabilityEffect>,
+) -> Vec<ToolSpec> {
+    capabilities
+        .iter()
+        .filter(|capability| capability.as_str() == "posts.create")
+        .map(|capability| {
+            // Posting publishes externally regardless of a stale/corrupt manifest effect.
+            let effect = CapabilityEffect::ExternalSideEffect;
+            let declared = effects.get(capability).copied();
+            if declared.is_some_and(|declared| declared != effect) {
+                tracing::warn!(
+                    capability = %capability,
+                    "X posts.create manifest effect is not external_side_effect; enforcing the platform effect"
+                );
+            }
+            ToolSpec {
+                capability: capability.clone(),
+                name: format!("x_{}", capability.replace('.', "_")),
+                description: "Publish an X post or reply. Requires a user-context access token \
+                     with tweet.write; app-only bearer tokens cannot post. External side effect."
+                    .to_string(),
+                effect,
+                input_schema: x_posts_create_input_schema(),
+            }
+        })
+        .collect()
+}
+
 fn gitlab_tool_specs(
     capabilities: &[String],
     effects: &std::collections::BTreeMap<String, CapabilityEffect>,
@@ -550,9 +592,35 @@ pub async fn start(
     pause: orbit_contracts::PauseClock,
     cancel: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<Option<BrokerHandle>> {
+    start_with_http(
+        client,
+        spec,
+        execution,
+        workspace,
+        tool_policies,
+        BrokerRuntime {
+            http: orbit_security::guarded_client(Duration::from_secs(30)),
+            pause,
+            cancel,
+        },
+    )
+    .await
+}
+
+/// Same as [`start`] with injectable connector HTTP policy (used by the mock-server tests).
+async fn start_with_http(
+    client: WorkerClient,
+    spec: &AgentSpec,
+    execution: &ExecutionRecord,
+    workspace: &std::path::Path,
+    tool_policies: &[ToolPolicyRule],
+    runtime: BrokerRuntime,
+) -> anyhow::Result<Option<BrokerHandle>> {
     let binding = spec.connectors.iter().find(|b| {
-        matches!(b.connector.as_str(), "github" | "gitlab" | "kubernetes")
-            && !b.capabilities.is_empty()
+        matches!(
+            b.connector.as_str(),
+            "github" | "gitlab" | "kubernetes" | "x"
+        ) && !b.capabilities.is_empty()
     });
 
     let mut connection = None;
@@ -600,6 +668,7 @@ pub async fn start(
             tools = match connector_slug.as_str() {
                 "gitlab" => gitlab_tool_specs(&allowed, &effects),
                 "kubernetes" => kubernetes_tool_specs(&allowed, &effects),
+                "x" => x_tool_specs(&allowed, &effects),
                 _ => github_tool_specs(&allowed, &effects),
             };
             let credential = worker_connection
@@ -615,6 +684,7 @@ pub async fn start(
                     KubernetesClientConfig::from_connection(&conn.config, credential)
                         .map_err(anyhow::Error::msg)?,
                 ),
+                "x" => ConnectorClient::X(XClientConfig::from_connection(&conn.config, credential)),
                 _ => ConnectorClient::Github(GitHubClientConfig::from_connection(
                     &conn.config,
                     credential,
@@ -641,10 +711,10 @@ pub async fn start(
         tools,
         tool_policies: tool_policies.to_vec(),
         token: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()),
-        http: orbit_security::guarded_client(Duration::from_secs(30)),
+        http: runtime.http,
         repo_specs: crate::git::repo_specs(&execution.input),
-        pause,
-        cancel,
+        pause: runtime.pause,
+        cancel: runtime.cancel,
         rejected: Default::default(),
     });
 
@@ -844,6 +914,9 @@ async fn call_tool(
             }
             Some(ConnectorClient::Kubernetes(config)) => {
                 config.invoke(&tool.capability, &call.arguments).await
+            }
+            Some(ConnectorClient::X(config)) => {
+                x::invoke(&state.http, config, &tool.capability, &call.arguments).await
             }
             None => Err("execution has no connector client".to_string()),
         }
@@ -1711,5 +1784,373 @@ mod tests {
             arguments_hash("edit", &json!({ "command": "ls", "cwd": "/w" }))
         );
         assert_eq!(a.len(), 64);
+    }
+
+    // --- X connector: mock control plane + mock X API -------------------------------
+
+    const X_TOKEN: &str = "user-context-token-do-not-log";
+
+    #[derive(Default)]
+    struct MockControlPlane {
+        connection: Value,
+        events: std::sync::Mutex<Vec<Value>>,
+        audits: std::sync::Mutex<Vec<Value>>,
+    }
+
+    async fn control_plane_connection(State(api): State<Arc<MockControlPlane>>) -> Json<Value> {
+        Json(api.connection.clone())
+    }
+
+    async fn control_plane_event(
+        State(api): State<Arc<MockControlPlane>>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        api.events.lock().unwrap().push(body);
+        Json(json!({}))
+    }
+
+    async fn control_plane_audit(
+        State(api): State<Arc<MockControlPlane>>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        api.audits.lock().unwrap().push(body);
+        Json(json!({}))
+    }
+
+    async fn spawn_control_plane(connection: Value) -> (WorkerClient, Arc<MockControlPlane>) {
+        let api = Arc::new(MockControlPlane {
+            connection,
+            ..Default::default()
+        });
+        let app = Router::new()
+            .route(
+                "/api/v1/worker/connections/{id}",
+                get(control_plane_connection),
+            )
+            .route(
+                "/api/v1/worker/executions/{id}/events",
+                post(control_plane_event),
+            )
+            .route("/api/v1/worker/audit", post(control_plane_audit))
+            .with_state(api.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (WorkerClient::new(url, "worker-token").unwrap(), api)
+    }
+
+    fn x_connection(base_url: &str) -> (Uuid, Value) {
+        let connection_id = Uuid::now_v7();
+        let connector_id = Uuid::now_v7();
+        let now = chrono::Utc::now();
+        let value = json!({
+            "connection": {
+                "id": connection_id,
+                "orgId": Uuid::now_v7(),
+                "ownerUserId": null,
+                "ownerTeamId": null,
+                "visibility": "private",
+                "connectorId": connector_id,
+                "name": "X test connection",
+                "status": "active",
+                "credentialRef": null,
+                "config": { "baseUrl": base_url },
+                "scopes": ["tweet.write"],
+                "createdBy": null,
+                "lastCheckedAt": null,
+                "createdAt": now,
+                "updatedAt": now
+            },
+            "connector": {
+                "id": connector_id,
+                "orgId": null,
+                "slug": "x",
+                "name": "X",
+                "version": "0.2.0",
+                "description": "test",
+                "auth": ["oauth2"],
+                "capabilities": [
+                    { "id": "posts.search", "effect": "read" },
+                    { "id": "posts.create", "effect": "external_side_effect" }
+                ],
+                "configSchema": {},
+                "webhooks": false,
+                "builtin": true,
+                "docsUrl": null,
+                "createdAt": now
+            },
+            "credential": { "secretRef": "secret-ref", "value": X_TOKEN }
+        });
+        (connection_id, value)
+    }
+
+    #[derive(Clone)]
+    struct RecordedXRequest {
+        path: String,
+        authorization: String,
+        body: Value,
+    }
+
+    #[derive(Default)]
+    struct MockXApi {
+        status: Option<StatusCode>,
+        requests: std::sync::Mutex<Vec<RecordedXRequest>>,
+    }
+
+    async fn mock_tweets(
+        State(api): State<Arc<MockXApi>>,
+        uri: axum::http::Uri,
+        headers: axum::http::HeaderMap,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        api.requests.lock().unwrap().push(RecordedXRequest {
+            path: uri.path().to_string(),
+            authorization: headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            body,
+        });
+        match api.status {
+            Some(status) => (
+                status,
+                Json(json!({ "title": "Forbidden", "detail": "app-only token cannot post" })),
+            )
+                .into_response(),
+            None => (
+                StatusCode::OK,
+                Json(json!({
+                    "data": { "id": "123456", "text": "posted" }
+                })),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn spawn_x_api(status: Option<StatusCode>) -> (String, Arc<MockXApi>) {
+        let api = Arc::new(MockXApi {
+            status,
+            ..Default::default()
+        });
+        let app = Router::new()
+            .route("/tweets", post(mock_tweets))
+            .with_state(api.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, api)
+    }
+
+    fn broker_execution() -> ExecutionRecord {
+        let now = chrono::Utc::now();
+        ExecutionRecord {
+            id: Uuid::now_v7(),
+            org_id: Uuid::now_v7(),
+            agent_id: Uuid::now_v7(),
+            agent_version_id: Uuid::now_v7(),
+            agent_name: "X agent".into(),
+            harness_kind: "mock".into(),
+            trigger_id: None,
+            trigger_source: "manual".into(),
+            placement: "local".into(),
+            status: "running".into(),
+            session_ref: None,
+            input: json!({}),
+            skills: vec![],
+            output: None,
+            error: None,
+            usage: json!({}),
+            timeout_seconds: 300,
+            idempotency_key: None,
+            requested_by: None,
+            worker_id: None,
+            team_run_id: None,
+            team_step_index: None,
+            created_at: now,
+            started_at: Some(now),
+            running_started_at: Some(now),
+            finished_at: None,
+            updated_at: now,
+            archived_at: None,
+        }
+    }
+
+    async fn start_x_broker(
+        status: Option<StatusCode>,
+    ) -> (
+        BrokerHandle,
+        Arc<MockControlPlane>,
+        Arc<MockXApi>,
+        tempfile::TempDir,
+    ) {
+        let (x_url, x_api) = spawn_x_api(status).await;
+        let (connection_id, connection) = x_connection(&x_url);
+        let (client, control_plane) = spawn_control_plane(connection).await;
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "instructions": { "system": "test" },
+            "connectors": [{
+                "connector": "x",
+                "connectionId": connection_id,
+                "capabilities": ["posts.search", "posts.create"]
+            }],
+            "autonomy": { "level": 4, "approvalMode": "auto" }
+        }))
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let http = orbit_security::guarded_client_with_policy(
+            Duration::from_secs(5),
+            orbit_security::OutboundPolicy::new(true, "127.0.0.1"),
+        );
+        let handle = start_with_http(
+            client,
+            &spec,
+            &broker_execution(),
+            workspace.path(),
+            &[],
+            BrokerRuntime {
+                http,
+                pause: orbit_contracts::PauseClock::with_budget(Duration::from_secs(60)),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("X binding exposes posts.create");
+        (handle, control_plane, x_api, workspace)
+    }
+
+    async fn broker_call(handle: &BrokerHandle, name: &str, arguments: Value) -> Value {
+        let response = reqwest::Client::new()
+            .post(format!("{}/tools/call", handle.url))
+            .bearer_auth(&handle.token)
+            .json(&json!({ "name": name, "arguments": arguments }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+
+    fn result_payload(response: &Value) -> Value {
+        serde_json::from_str(response["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn workspace_contents(path: &std::path::Path) -> String {
+        let mut combined = String::new();
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                combined.push_str(&std::fs::read_to_string(path).unwrap_or_default());
+            }
+        }
+        combined
+    }
+
+    fn assert_no_credential(control_plane: &MockControlPlane, workspace: &tempfile::TempDir) {
+        let events = control_plane.events.lock().unwrap();
+        let audits = control_plane.audits.lock().unwrap();
+        for payload in events.iter().chain(audits.iter()) {
+            assert!(
+                !payload.to_string().contains(X_TOKEN),
+                "credential appeared in an event or audit: {payload}"
+            );
+        }
+        assert!(!workspace_contents(workspace.path()).contains(X_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn x_posts_create_uses_the_x_client_with_user_context_auth() {
+        let (handle, control_plane, x_api, workspace) = start_x_broker(None).await;
+
+        let tools: Value = reqwest::Client::new()
+            .get(format!("{}/tools", handle.url))
+            .bearer_auth(&handle.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        // posts.search stays pre-execution hydration; it is never an agent tool.
+        assert_eq!(names, vec!["x_posts_create"]);
+
+        let response = broker_call(
+            &handle,
+            "x_posts_create",
+            json!({ "text": "hello from ORBIT" }),
+        )
+        .await;
+        assert_eq!(response["isError"], false);
+        assert_eq!(result_payload(&response)["id"], "123456");
+
+        let requests = x_api.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/tweets");
+        assert_eq!(requests[0].authorization, format!("Bearer {X_TOKEN}"));
+        assert_eq!(requests[0].body, json!({ "text": "hello from ORBIT" }));
+        drop(requests);
+        assert_no_credential(&control_plane, &workspace);
+    }
+
+    #[tokio::test]
+    async fn x_posts_create_reply_sends_in_reply_to_tweet_id() {
+        let (handle, control_plane, x_api, workspace) = start_x_broker(None).await;
+
+        for arguments in [
+            json!({ "text": "reply one", "replyTo": "1234567890" }),
+            json!({
+                "text": "reply two",
+                "reply": { "in_reply_to_tweet_id": "9876543210" }
+            }),
+        ] {
+            let response = broker_call(&handle, "x_posts_create", arguments).await;
+            assert_eq!(response["isError"], false);
+        }
+
+        let requests = x_api.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].body,
+            json!({
+                "text": "reply one",
+                "reply": { "in_reply_to_tweet_id": "1234567890" }
+            })
+        );
+        assert_eq!(
+            requests[1].body,
+            json!({
+                "text": "reply two",
+                "reply": { "in_reply_to_tweet_id": "9876543210" }
+            })
+        );
+        drop(requests);
+        assert_no_credential(&control_plane, &workspace);
+    }
+
+    #[tokio::test]
+    async fn x_403_is_an_actionable_error_without_leaking_the_credential() {
+        let (handle, control_plane, x_api, workspace) =
+            start_x_broker(Some(StatusCode::FORBIDDEN)).await;
+
+        let response = broker_call(&handle, "x_posts_create", json!({ "text": "nope" })).await;
+        assert_eq!(response["isError"], true);
+        let error = result_payload(&response)["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("403"), "{error}");
+        assert!(error.contains("user-context"), "{error}");
+        assert!(error.contains("tweet.write"), "{error}");
+        assert!(error.contains("app-only"), "{error}");
+        assert!(!error.contains(X_TOKEN), "{error}");
+        assert_eq!(x_api.requests.lock().unwrap().len(), 1);
+        assert_no_credential(&control_plane, &workspace);
     }
 }

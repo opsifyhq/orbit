@@ -4,7 +4,9 @@
 //! flows and webhook verification are implemented in Phase 2; manifests are already the
 //! contract the platform and UI consume.
 
-use orbit_contracts::{AuthMethod, CapabilityDescriptor, ConnectorManifest};
+use orbit_contracts::{
+    x_posts_create_input_schema, AuthMethod, CapabilityDescriptor, ConnectorManifest,
+};
 use orbit_domain::CapabilityEffect;
 
 fn capability(
@@ -20,6 +22,19 @@ fn capability(
         effect,
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
+    }
+}
+
+fn capability_with_input_schema(
+    id: &str,
+    name: &str,
+    description: &str,
+    effect: CapabilityEffect,
+    input_schema: serde_json::Value,
+) -> CapabilityDescriptor {
+    CapabilityDescriptor {
+        input_schema,
+        ..capability(id, name, description, effect)
     }
 }
 
@@ -195,22 +210,39 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
         ConnectorManifest {
             slug: "x".into(),
             name: "X".into(),
-            version: "0.1.0".into(),
-            description: "X/Twitter monitoring: search recent posts.".into(),
+            version: "0.2.0".into(),
+            description: "X/Twitter: search recent posts and publish posts with a user-context token.".into(),
             auth: vec![AuthMethod::OAuth2, AuthMethod::ApiToken],
             webhooks: false,
             capabilities: vec![
                 capability(
                     "posts.search",
                     "Search posts",
-                    "Searches recent posts.",
+                    "Searches recent posts during context hydration. An app-only bearer token is sufficient.",
                     CapabilityEffect::Read,
                 ),
-                // Posting is not advertised: the worker has no X write client, and it
-                // needs a user-context token the connection model does not hold (#265).
-                // AGENTS.md rule 6: a capability is listed once it works.
+                capability_with_input_schema(
+                    "posts.create",
+                    "Publish a post",
+                    "Publishes a post or reply. Requires a user-context access token with tweet.write; app-only bearer tokens cannot post.",
+                    CapabilityEffect::ExternalSideEffect,
+                    x_posts_create_input_schema(),
+                ),
             ],
-            config_schema: serde_json::json!({ "type": "object" }),
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "baseUrl": {
+                        "type": "string",
+                        "default": "https://api.x.com/2",
+                        "description": "X API v2 base URL. The stored credential is sent as a user-context bearer token."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Default query for posts.search hydration."
+                    }
+                }
+            }),
             docs_url: Some("https://developer.x.com/en/docs".into()),
             builtin: true,
         },
@@ -235,4 +267,28 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             builtin: true,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x_advertises_search_and_user_context_posting() {
+        let x = builtin_manifests()
+            .into_iter()
+            .find(|manifest| manifest.slug == "x")
+            .expect("X manifest");
+        assert_eq!(
+            x.capability("posts.search").unwrap().effect,
+            CapabilityEffect::Read
+        );
+        let create = x
+            .capability("posts.create")
+            .expect("posts.create is implemented");
+        assert_eq!(create.effect, CapabilityEffect::ExternalSideEffect);
+        assert_eq!(create.input_schema, x_posts_create_input_schema());
+        assert!(create.description.contains("user-context"));
+        assert!(create.description.contains("tweet.write"));
+    }
 }

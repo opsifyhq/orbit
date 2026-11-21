@@ -71,7 +71,7 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   Succeeded, Failed, Cancelled); the Overview tiles link to exactly the set they count.
 - The JetStream stream is capped at 1 GiB by default (`ORBIT_NATS_STREAM_MAX_BYTES`), and an
   existing uncapped stream is brought in line on connect (#217).
-- The X connector no longer advertises `posts.create`, which never worked (#265).
+- The X connector publishes posts and replies via `posts.create` in the tool broker using a user-context token with `tweet.write`; `posts.search` stays read-only hydration. App-only tokens produce an actionable auth error (#265).
 - `/readyz` no longer returns database or event-bus error text; it is logged instead (#218).
 - Skill Studio replaces the skill dialogs: the same section layout as Agent and Team Studio,
   name/slug/description as fields that are written into the SKILL.md frontmatter (other keys
