@@ -50,6 +50,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   prompts or execution events. Team goals travel as trusted system context, native subagent
   materialization keeps primary instructions out of subagent files, and prompt provenance
   events are tagged as run instruction, system instructions or delegation (#259).
+- The OpenAPI document and generated TypeScript client now cover bulk sharing, the docs
+  catch-all route, browser OIDC endpoints and worker-token operations, and use the correct
+  `openai_compatible` provider value. A DB-free parity test and offline spec dump keep
+  `pnpm api:generate` reproducible (#207).
 
 ## [0.25.0] - 2026-11-20
 

@@ -181,9 +181,10 @@ mod tests {
             .await
             .unwrap_err();
 
+        let rendered = format!("{error:#}");
         assert!(
-            error.to_string().contains("symlink") || error.to_string().contains("escape"),
-            "unexpected error: {error:#}"
+            rendered.contains("symlink") || rendered.contains("escape"),
+            "unexpected error: {rendered}"
         );
         assert!(!outside.path().join("example").exists());
         assert!(workspace

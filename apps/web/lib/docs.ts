@@ -5,9 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { request } from "./http";
 
 /**
- * Embedded documentation endpoints (`/api/v1/docs`). These are not in the generated
- * OpenAPI client yet, so the response shapes are declared here; replace them with the
- * generated types after the next `pnpm api:generate`.
+ * Embedded documentation endpoints (`/api/v1/docs`). The JSON shapes are in the
+ * generated OpenAPI client, but these local types also cover the Markdown/HTML variants
+ * and keep the docs UI independent of client regeneration.
  */
 export interface DocSummary {
   slug: string;

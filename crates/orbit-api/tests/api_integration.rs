@@ -6633,9 +6633,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body["error"]["details"]
         .as_array()
-        .is_some_and(|details| details
-            .iter()
-            .any(|detail| detail["path"] == "webhookUrl")));
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 
     let secret_ref = format!("secret://output/{}", Uuid::now_v7());
     app.store
@@ -6684,9 +6682,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body["error"]["details"]
         .as_array()
-        .is_some_and(|details| details
-            .iter()
-            .any(|detail| detail["path"] == "webhookUrl")));
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 }
 
 #[tokio::test]
@@ -7359,10 +7355,10 @@ async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
     assert_eq!(rows[0].metadata["unchanged"], 1);
     assert_eq!(rows[0].metadata["failed"], 1);
 
-    // Archived agents disappear from the normal list but keep versions and can return.
+    // Archived agents disappear from the active list but keep versions and can return.
     let (status, body) = send(
         &app.router,
-        auth_get("/api/v1/agents?status=current", &lead_token),
+        auth_get("/api/v1/agents?status=active", &lead_token),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
