@@ -452,6 +452,8 @@ pub struct TeamRun {
     pub updated_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub advance_claimed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]

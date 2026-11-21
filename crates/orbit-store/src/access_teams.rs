@@ -82,14 +82,57 @@ impl Store {
     }
 
     pub async fn delete_access_team(&self, org_id: Uuid, team_id: Uuid) -> StoreResult<()> {
+        let mut tx = self.pool.begin().await?;
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM access_teams WHERE org_id = $1 AND id = $2)",
+        )
+        .bind(org_id)
+        .bind(team_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Err(StoreError::NotFound("team".into()));
+        }
+
+        let mut blockers: Vec<String> = Vec::new();
+        for (label, table) in [
+            ("agents", "agents"),
+            ("skills", "skills"),
+            ("connections", "connections"),
+            ("providers", "providers"),
+            ("worker profiles", "worker_profiles"),
+            ("agent teams", "agent_teams"),
+            ("triggers", "triggers"),
+            ("tool policies", "tool_policies"),
+            ("env mappings", "env_mappings"),
+        ] {
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table} WHERE owner_team_id = $1"
+            )))
+            .bind(team_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if count > 0 {
+                blockers.push(format!("{label} ({count})"));
+            }
+        }
+
+        if !blockers.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "team still owns resources: {}; reassign or remove them before deleting the team",
+                blockers.join(", ")
+            )));
+        }
+
         let result = sqlx::query("DELETE FROM access_teams WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(team_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("team".into()));
         }
+        tx.commit().await?;
         Ok(())
     }
 

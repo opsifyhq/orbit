@@ -259,11 +259,19 @@ impl Store {
         .await?)
     }
 
-    pub async fn release_team_run_advance(&self, run_id: Uuid) -> StoreResult<()> {
-        sqlx::query("UPDATE team_runs SET advance_claimed_at = NULL WHERE id = $1")
-            .bind(run_id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn release_team_run_advance(
+        &self,
+        run_id: Uuid,
+        claimed_at: chrono::DateTime<Utc>,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            "UPDATE team_runs SET advance_claimed_at = NULL \
+             WHERE id = $1 AND advance_claimed_at = $2",
+        )
+        .bind(run_id)
+        .bind(claimed_at)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -306,7 +314,7 @@ impl Store {
             SET status = $2, output = COALESCE($3, output), error = $4,
                 finished_at = CASE WHEN $5 THEN now() ELSE finished_at END,
                 updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')
             RETURNING *
             "#,
         )
@@ -315,9 +323,9 @@ impl Store {
         .bind(output)
         .bind(error)
         .bind(finished)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StoreError::Conflict("team run is already terminal".into()))
     }
 
     #[allow(clippy::too_many_arguments)]

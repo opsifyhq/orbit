@@ -242,11 +242,12 @@ impl Store {
         org_id: Uuid,
         launch_id: Uuid,
     ) -> StoreResult<WorkerLaunch> {
-        sqlx::query_as::<_, WorkerLaunch>(
+        let Some(launch) = sqlx::query_as::<_, WorkerLaunch>(
             r#"
             UPDATE worker_launches
             SET archived_at = now(), updated_at = now()
             WHERE org_id = $1 AND id = $2
+              AND status NOT IN ('pending', 'starting', 'running')
             RETURNING *
             "#,
         )
@@ -254,7 +255,21 @@ impl Store {
         .bind(launch_id)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| StoreError::NotFound("worker launch".into()))
+        else {
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM worker_launches WHERE org_id = $1 AND id = $2)",
+            )
+            .bind(org_id)
+            .bind(launch_id)
+            .fetch_one(&self.pool)
+            .await?;
+            return Err(if exists {
+                StoreError::Conflict("only terminal worker launches can be archived".into())
+            } else {
+                StoreError::NotFound("worker launch".into())
+            });
+        };
+        Ok(launch)
     }
 }
 
