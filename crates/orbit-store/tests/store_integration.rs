@@ -795,7 +795,10 @@ async fn running_executions_past_timeout_and_grace_are_ended_on_a_live_worker() 
         let store = &store;
         async move {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE executions SET started_at = now() - interval '{interval}' WHERE id = $1"
+                "UPDATE executions \
+                 SET started_at = now() - interval '{interval}', \
+                     running_started_at = now() - interval '{interval}' \
+                 WHERE id = $1"
             )))
             .bind(id)
             .execute(store.pool())
@@ -844,6 +847,131 @@ async fn running_executions_past_timeout_and_grace_are_ended_on_a_live_worker() 
         .await
         .unwrap();
     assert!(late.is_none());
+}
+
+#[tokio::test]
+async fn timeout_reaper_counts_from_running_not_dispatch() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Timeout From Running Agent"))
+        .await
+        .unwrap();
+
+    let dispatch_old_just_started = {
+        let execution = store
+            .create_execution(NewExecution {
+                org_id: org,
+                agent_id: agent.id,
+                agent_version_id: version.id,
+                agent_name: agent.name.clone(),
+                harness_kind: agent.harness_kind.clone(),
+                trigger_id: None,
+                trigger_source: "manual".to_string(),
+                placement: "local".to_string(),
+                status: "queued".to_string(),
+                session_ref: None,
+                input: serde_json::json!({"task":"dispatch-old"}),
+                output: None,
+                error: None,
+                usage: serde_json::json!({}),
+                timeout_seconds: 300,
+                idempotency_key: None,
+                requested_by: Some(user),
+                worker_id: None,
+                team_run_id: None,
+                team_step_index: None,
+                skills: Vec::new(),
+            })
+            .await
+            .unwrap();
+        store
+            .claim_execution(execution.id, "worker-dispatch-old")
+            .await
+            .unwrap();
+        store
+            .mark_execution_running(execution.id, Some("s"))
+            .await
+            .unwrap();
+        // Simulate a long checkout: dispatched/started long ago, but only just entered running.
+        sqlx::query(
+            "UPDATE executions \
+             SET started_at = now() - interval '15 minutes', \
+                 running_started_at = now() \
+             WHERE id = $1",
+        )
+        .bind(execution.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        execution
+    };
+
+    let running_past_deadline = {
+        let execution = store
+            .create_execution(NewExecution {
+                org_id: org,
+                agent_id: agent.id,
+                agent_version_id: version.id,
+                agent_name: agent.name.clone(),
+                harness_kind: agent.harness_kind.clone(),
+                trigger_id: None,
+                trigger_source: "manual".to_string(),
+                placement: "local".to_string(),
+                status: "queued".to_string(),
+                session_ref: None,
+                input: serde_json::json!({"task":"running-old"}),
+                output: None,
+                error: None,
+                usage: serde_json::json!({}),
+                timeout_seconds: 300,
+                idempotency_key: None,
+                requested_by: Some(user),
+                worker_id: None,
+                team_run_id: None,
+                team_step_index: None,
+                skills: Vec::new(),
+            })
+            .await
+            .unwrap();
+        store
+            .claim_execution(execution.id, "worker-running-old")
+            .await
+            .unwrap();
+        store
+            .mark_execution_running(execution.id, Some("s"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE executions \
+             SET started_at = now() - interval '20 minutes', \
+                 running_started_at = now() - interval '10 minutes' \
+             WHERE id = $1",
+        )
+        .bind(execution.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        execution
+    };
+
+    let reaped = store
+        .reap_timed_out_executions(Some(org), 300)
+        .await
+        .unwrap();
+    assert_eq!(reaped.len(), 1);
+    assert_eq!(reaped[0].id, running_past_deadline.id);
+    assert_eq!(
+        store
+            .get_execution(org, dispatch_old_just_started.id)
+            .await
+            .unwrap()
+            .status,
+        "running",
+        "a run that only just started running must not be timed out for old dispatch time"
+    );
 }
 
 #[tokio::test]
