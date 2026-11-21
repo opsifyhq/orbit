@@ -38,6 +38,19 @@ fn validated(body: &EnvMappingRequest) -> Result<(String, String, serde_json::Va
         ));
     }
     for (index, item) in array.iter().enumerate() {
+        // References only: an extra key (say `value`) would be stored and returned.
+        if let Some(map) = item.as_object() {
+            for key in map.keys() {
+                if !orbit_store::INLINE_ENV_MAPPING_KEYS.contains(&key.as_str()) {
+                    issues.push(ValidationIssue::new(
+                        "mappings",
+                        format!(
+                            "mapping {index}: unknown field '{key}'; mappings reference a connection or secret and cannot hold a value"
+                        ),
+                    ));
+                }
+            }
+        }
         let env_var = item.get("envVar").and_then(|v| v.as_str()).unwrap_or("");
         if env_var.trim().is_empty() {
             issues.push(ValidationIssue::new(

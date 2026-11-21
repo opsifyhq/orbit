@@ -31,6 +31,9 @@ struct AppState {
     pi_agent_host_dir: Option<String>,
     image_pull_secret: Option<String>,
     image_aliases: Vec<(String, String)>,
+    /// Harness auth Secrets a launch may mount (`ORBIT_WORKER_AUTH_SECRETS`). The launcher
+    /// cannot read Secrets, so the rule is by name, enforced here and not only in the API.
+    auth_secrets: orbit_domain::AuthSecretPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -147,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
             .map(|(from, to)| (from.trim().to_string(), to.trim().to_string()))
             .filter(|(from, to)| !from.is_empty() && !to.is_empty())
             .collect(),
+        auth_secrets: orbit_domain::AuthSecretPolicy::from_env(),
     };
     let addr = std::env::var("ORBIT_LAUNCHER_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = Router::new()
@@ -725,10 +729,30 @@ fn kubernetes_secret_manifest(
     })
 }
 
+/// Refuse a launch whose profile names a Secret the installer has not allowed, so a
+/// profile editor cannot get an arbitrary Secret mounted into an agent pod.
+fn check_auth_secret(
+    policy: &orbit_domain::AuthSecretPolicy,
+    request: &LaunchRequest,
+) -> anyhow::Result<()> {
+    match request
+        .auth_secret_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => policy
+            .check(name)
+            .map_err(|reason| anyhow::anyhow!("authSecretName refused: {reason}")),
+        None => Ok(()),
+    }
+}
+
 async fn launch_kubernetes(
     state: &AppState,
     request: &LaunchRequest,
 ) -> anyhow::Result<LaunchStatus> {
+    check_auth_secret(&state.auth_secrets, request)?;
     let name = pod_name(request.launch_id);
     let secret_name = format!("{name}-env");
     let (mut env, secret_data) = kubernetes_env(request, &secret_name)?;
@@ -1359,5 +1383,52 @@ mod credential_tests {
         let spec = base_pod_spec(json!({ "name": "worker" }), vec![]);
         assert_eq!(spec["automountServiceAccountToken"], false);
         assert_eq!(spec["securityContext"]["runAsNonRoot"], true);
+    }
+
+    fn state_with(policy: orbit_domain::AuthSecretPolicy) -> AppState {
+        AppState {
+            token: "t".into(),
+            docker: "docker".into(),
+            // Must never be reached for a refused launch.
+            kubectl: "/nonexistent/kubectl".into(),
+            namespace: "orbit".into(),
+            opencode_auth_export: None,
+            opencode_auth_host_path: None,
+            pi_agent_dir: None,
+            pi_agent_host_dir: None,
+            image_pull_secret: None,
+            image_aliases: Vec::new(),
+            auth_secrets: policy,
+        }
+    }
+
+    #[tokio::test]
+    async fn kubernetes_launch_refuses_a_secret_outside_the_allowlist() {
+        let state = state_with(orbit_domain::AuthSecretPolicy::default_policy());
+        for name in ["orbit-orbit", "orbit", "postgres-credentials", "Bad_Name"] {
+            let mut req = request(json!({}), None);
+            req.harness_kind = "pi".into();
+            req.auth_secret_name = Some(name.into());
+            let error = launch_kubernetes(&state, &req).await.unwrap_err();
+            assert!(
+                error.to_string().contains("authSecretName refused"),
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn kubernetes_launch_passes_the_check_for_allowed_and_absent_names() {
+        let state = state_with(orbit_domain::AuthSecretPolicy::default_policy());
+        for name in [Some("orbit-pi-auth"), Some("orbit-opencode-auth"), None] {
+            let mut req = request(json!({}), None);
+            req.auth_secret_name = name.map(str::to_string);
+            // Allowed: it gets past the check and only then fails on the missing kubectl.
+            let error = launch_kubernetes(&state, &req).await.unwrap_err();
+            assert!(
+                !error.to_string().contains("authSecretName refused"),
+                "{error}"
+            );
+        }
     }
 }

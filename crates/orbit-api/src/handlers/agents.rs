@@ -40,8 +40,10 @@ pub async fn list_agents(
 ) -> Result<Json<AgentPage>, ApiError> {
     auth.require(Permission::AgentsRead)?;
     if let Some(status) = &query.status {
-        if AgentStatus::parse(status).is_none() {
-            return Err(ApiError::bad_request(format!("unknown status '{status}'")));
+        if status != "current" && AgentStatus::parse(status).is_none() {
+            return Err(ApiError::bad_request(format!(
+                "unknown status '{status}'; expected draft, active, paused, archived, or current (everything not archived)"
+            )));
         }
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
@@ -89,8 +91,7 @@ pub async fn create_agent(
     }
     // The author must be able to use every connection/provider the spec binds (#140).
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    crate::preflight::require_spec_references_use(&state, auth.org_id, &access, &definition.spec)
-        .await?;
+    crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
 
     let (agent, _version) = state
         .store
@@ -143,14 +144,17 @@ pub async fn update_agent(
             return Err(ApiError::validation(report.issues));
         }
         let access = crate::access::AccessScope::load(&state, &auth).await?;
-        crate::preflight::require_spec_references_use(
-            &state,
-            auth.org_id,
-            &access,
-            &definition.spec,
-        )
-        .await?;
+        crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
         let agent = state.store.get_agent(auth.org_id, agent_id).await?;
+        // Someone else saved a newer version since this edit was opened: refuse rather
+        // than silently overwrite their work (the version write re-checks under a lock).
+        if let Some(expected) = body.expected_version {
+            if expected != agent.current_version {
+                return Err(ApiError::conflict(
+                    orbit_store::agents::stale_version_message(expected, agent.current_version),
+                ));
+            }
+        }
         let current = state.store.get_current_version(auth.org_id, &agent).await?;
         let candidate_spec = serde_json::to_value(&definition.spec)
             .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -179,7 +183,13 @@ pub async fn update_agent(
         } else {
             let (_, version) = state
                 .store
-                .add_agent_version(auth.org_id, agent_id, Some(auth.user_id), definition)
+                .add_agent_version_expecting(
+                    auth.org_id,
+                    agent_id,
+                    Some(auth.user_id),
+                    definition,
+                    body.expected_version,
+                )
                 .await?;
             audit::record(
                 &state,
@@ -376,7 +386,11 @@ pub async fn list_agent_instances(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<AgentInstancePage>, ApiError> {
     auth.require(Permission::AgentsRead)?;
-    let instances = state.store.list_agent_instances(auth.org_id).await?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let instances = state
+        .store
+        .list_agent_instances(auth.org_id, Some(&access.store_access()))
+        .await?;
     let total = instances.len() as i64;
     Ok(Json(AgentInstancePage {
         items: instances

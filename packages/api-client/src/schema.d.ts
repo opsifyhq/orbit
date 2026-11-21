@@ -428,6 +428,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Public sign-in configuration for the browser's Authorization Code + PKCE flow. */
         get: operations["config"];
         put?: never;
         post?: never;
@@ -446,6 +447,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Exchange an authorization code for tokens. The client secret stays on the server. */
         post: operations["token"];
         delete?: never;
         options?: never;
@@ -2067,6 +2069,11 @@ export interface components {
             ok: boolean;
             /** Format: int32 */
             status?: number | null;
+            /**
+             * @description False when ORBIT has no probe for this connector. Nothing was contacted and
+             *     the connection's status is left as it was.
+             */
+            supported: boolean;
         };
         ConnectionView: {
             config: unknown;
@@ -2135,6 +2142,11 @@ export interface components {
             idempotencyKey?: string | null;
             name?: string | null;
             payload?: unknown;
+            /**
+             * @description Where this run may execute: `auto` (any matching worker), `local`, `docker` or
+             *     `kubernetes`. Overrides the placement stored on the agent for this run only.
+             */
+            placement?: string | null;
             /** @description Skills to materialize for this execution, in addition to the agent spec. */
             skills?: string[];
             /** @description The task or message for the agent. */
@@ -2227,9 +2239,17 @@ export interface components {
             /** @description Allow OpenCode's built-in Web Search tool. Default false for headless runs. */
             allowWebSearch?: boolean;
             authSecretName?: string | null;
-            env?: unknown;
+            /**
+             * @description Variable name -> value. A string sets or replaces the value; `null` keeps the
+             *     stored value (422 when none is stored); a name left out is removed. Responses never
+             *     contain values, only `{ "NAME": { "hasValue": bool } }`.
+             */
+            env?: {
+                [key: string]: string | null;
+            };
             /** @description Reusable environment mapping IDs attached to this profile. */
             envMappingIds?: string[];
+            /** @description Inline references only: `envVar` plus `connectionId`, `secretKey` or `secretRef`. */
             envMappings?: unknown;
             executionDriver?: string;
             harnessKind: string;
@@ -2365,6 +2385,10 @@ export interface components {
             mappings?: unknown;
             name: string;
         };
+        /** @description What a response says about a stored profile variable: never the value. */
+        EnvVarState: {
+            hasValue: boolean;
+        };
         ErrorBody: {
             code: string;
             details?: components["schemas"]["ValidationIssue"][];
@@ -2425,6 +2449,8 @@ export interface components {
             placement: string;
             /** Format: uuid */
             requestedBy?: string | null;
+            /** Format: date-time */
+            runningStartedAt?: string | null;
             sessionRef?: string | null;
             skills: string[];
             /** Format: date-time */
@@ -3007,6 +3033,8 @@ export interface components {
         };
         TeamRun: {
             /** Format: date-time */
+            advanceClaimedAt?: string | null;
+            /** Format: date-time */
             archivedAt?: string | null;
             /** Format: date-time */
             createdAt: string;
@@ -3195,6 +3223,12 @@ export interface components {
         UpdateAgentRequest: {
             definition?: components["schemas"]["AgentDefinition"] | null;
             description?: string | null;
+            /**
+             * Format: int32
+             * @description The agent version this edit started from. When given and the agent has a newer
+             *     version by now, the update is refused with 409 instead of overwriting it.
+             */
+            expectedVersion?: number | null;
             labels?: unknown;
             name?: string | null;
         };
@@ -3320,8 +3354,14 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             enabled: boolean;
-            env: unknown;
-            envMappings: unknown;
+            /**
+             * @description Stored variable values. Never serialized: responses carry only names and a
+             *     `hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher
+             *     payload and for update merging.
+             */
+            env?: {
+                [key: string]: components["schemas"]["EnvVarState"];
+            };
             executionDriver: string;
             harnessKind: string;
             /** Format: uuid */
@@ -3670,6 +3710,10 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /**
+                 * @description `draft`, `active`, `paused`, `archived`, or `current` for every agent that is
+                 *     not archived.
+                 */
                 status?: string;
                 q?: string;
             };
@@ -3860,6 +3904,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description One execution status, or several separated by commas (`failed,timed_out`). */
                 status?: string;
                 agentId?: string;
                 archived?: boolean;
@@ -4108,6 +4153,8 @@ export interface operations {
         parameters: {
             query?: {
                 status?: string;
+                /** @description Only approvals requested by this execution. */
+                executionId?: string;
                 limit?: number;
             };
             header?: never;
@@ -4208,7 +4255,6 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Public browser OIDC configuration */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4217,8 +4263,15 @@ export interface operations {
                     "application/json": components["schemas"]["OidcWebConfig"];
                 };
             };
-            /** @description OIDC authentication is not configured */
+            /** @description OIDC is not enabled */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The identity provider's discovery document could not be read */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4239,7 +4292,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OIDC tokens from the authorization-code + PKCE exchange */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4248,14 +4300,14 @@ export interface operations {
                     "application/json": components["schemas"]["OidcTokenResponse"];
                 };
             };
-            /** @description Missing code or code verifier */
+            /** @description Missing code or verifier */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description OIDC discovery or token exchange failed */
+            /** @description The identity provider rejected or failed the exchange */
             502: {
                 headers: {
                     [name: string]: unknown;
@@ -4454,8 +4506,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Page content (JSON/Markdown/HTML) or asset bytes */
+            /** @description A page as metadata and Markdown (JSON), raw Markdown (`format=markdown`) or HTML (`format=html` / `Accept: text/html`); or the asset bytes with their content type */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocPageView"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4561,6 +4622,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                /** @description One execution status, or several separated by commas (`failed,timed_out`). */
                 status?: string;
                 agentId?: string;
                 archived?: boolean;
@@ -5592,6 +5654,10 @@ export interface operations {
         parameters: {
             query?: {
                 archived?: boolean;
+                /** @description Only runs of this agent team. */
+                teamId?: string;
+                /** @description Newest first; 1 to 200, default 100. */
+                limit?: number;
             };
             header?: never;
             path?: never;

@@ -101,7 +101,8 @@ pub async fn index(
         DocsQuery
     ),
     responses(
-        (status = 200, description = "Page content (JSON/Markdown/HTML) or asset bytes"),
+        (status = 200, description = "A page as metadata and Markdown (JSON), raw Markdown (`format=markdown`) or HTML (`format=html` / `Accept: text/html`); or the asset bytes with their content type", body = DocPageView),
+        (status = 401, description = "Not authenticated"),
         (status = 404, description = "Unknown page or asset")
     )
 )]
@@ -119,30 +120,6 @@ pub async fn get_doc(
     page_response(&tail, &query, &headers)
 }
 
-/// A documentation page: Markdown plus metadata, or rendered HTML.
-#[utoipa::path(
-    get,
-    path = "/api/v1/docs/{slug}",
-    tag = "docs",
-    params(
-        ("slug" = String, Path, description = "Page slug from the index, e.g. `architecture/overview`"),
-        DocsQuery
-    ),
-    responses(
-        (status = 200, description = "Metadata and Markdown (JSON), raw Markdown (`format=markdown`) or HTML (`format=html` / `Accept: text/html`)", body = DocPageView),
-        (status = 404, description = "Unknown page")
-    )
-)]
-pub async fn get_page(
-    Extension(auth): Extension<AuthContext>,
-    Path(slug): Path<String>,
-    Query(query): Query<DocsQuery>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    let _ = auth;
-    page_response(&slug, &query, &headers)
-}
-
 fn page_response(slug: &str, query: &DocsQuery, headers: &HeaderMap) -> Result<Response, ApiError> {
     let bundle = docs::bundle();
     let page = bundle
@@ -157,24 +134,6 @@ fn page_response(slug: &str, query: &DocsQuery, headers: &HeaderMap) -> Result<R
             .into_response(),
         Format::Json => Json(bundle.view(page)).into_response(),
     })
-}
-
-/// An embedded documentation image (architecture diagrams, brand assets).
-#[utoipa::path(
-    get,
-    path = "/api/v1/docs/assets/{path}",
-    tag = "docs",
-    params(("path" = String, Path, description = "Asset path relative to the docs root, e.g. `architecture/orbit-overview.png`")),
-    responses(
-        (status = 200, description = "The asset bytes with their content type"),
-        (status = 404, description = "Unknown asset")
-    )
-)]
-pub async fn get_asset(
-    Extension(_auth): Extension<AuthContext>,
-    Path(path): Path<String>,
-) -> Result<Response, ApiError> {
-    asset_response(&path)
 }
 
 fn asset_response(path: &str) -> Result<Response, ApiError> {

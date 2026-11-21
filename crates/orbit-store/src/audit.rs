@@ -4,6 +4,11 @@ use uuid::Uuid;
 use crate::models::{AuditLogEntry, AuditLogRecord};
 use crate::{Store, StoreResult};
 
+/// Rows deleted per transaction by [`Store::prune_audit_logs`].
+const AUDIT_PRUNE_BATCH: i64 = 5000;
+/// Advisory lock key ("audit" in ASCII) so only one replica prunes at a time.
+const AUDIT_PRUNE_LOCK_KEY: i64 = 0x0061_7564_6974;
+
 impl Store {
     #[allow(clippy::too_many_arguments)]
     pub async fn append_audit_log(
@@ -95,11 +100,44 @@ impl Store {
 
     /// Delete audit log rows created before `before`; returns the number removed.
     /// Driven by `ORBIT_AUDIT_RETENTION_DAYS` in the API background loop.
+    ///
+    /// Rows go in batches of [`AUDIT_PRUNE_BATCH`], one short transaction each, so a first
+    /// run over a large table never holds one huge transaction. Each batch takes a
+    /// transaction-scoped advisory lock: while another replica is pruning this call stops
+    /// early (deletes are idempotent, and the next daily run continues). The lock is
+    /// released with the transaction, so a cancelled or panicking task cannot leak it.
     pub async fn prune_audit_logs(&self, before: DateTime<Utc>) -> StoreResult<u64> {
-        let result = sqlx::query("DELETE FROM audit_logs WHERE created_at < $1")
+        let mut total = 0u64;
+        loop {
+            let mut tx = self.pool.begin().await?;
+            let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+                .bind(AUDIT_PRUNE_LOCK_KEY)
+                .fetch_one(&mut *tx)
+                .await?;
+            if !locked {
+                return Ok(total);
+            }
+            let removed = sqlx::query(
+                r#"
+                DELETE FROM audit_logs
+                WHERE id IN (
+                    SELECT id FROM audit_logs
+                    WHERE created_at < $1
+                    ORDER BY created_at
+                    LIMIT $2
+                )
+                "#,
+            )
             .bind(before)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
+            .bind(AUDIT_PRUNE_BATCH)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            tx.commit().await?;
+            total += removed;
+            if removed < AUDIT_PRUNE_BATCH as u64 {
+                return Ok(total);
+            }
+        }
     }
 }

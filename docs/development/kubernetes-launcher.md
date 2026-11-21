@@ -80,6 +80,7 @@ The launcher adds `imagePullSecrets` to every pod it creates.
 | `ORBIT_LAUNCHER_NAMESPACE` | Target namespace for worker pods (default `orbit`) |
 | `ORBIT_LAUNCHER_IMAGE_PULL_SECRET` | Secret name for registry auth |
 | `ORBIT_LAUNCHER_IMAGE_ALIASES` | Rewrite registry hosts (e.g. `registry.example.com:5000=registry.example.com:5000`) |
+| `ORBIT_WORKER_AUTH_SECRETS` | Allowlist for `authSecretName`: comma-separated exact names or `prefix*` patterns (default `orbit-opencode-auth*,orbit-pi-auth*`; empty allows none). Read by both the API (rejects on save) and the launcher (refuses at launch). Helm: `launcher.authSecrets`. |
 | `ORBIT_LAUNCHER_TOKEN` | Bearer token the API uses to authenticate to the launcher. The Helm chart generates it and reuses it from the release Secret when `launcher.token` is empty; set the value explicitly for GitOps. |
 
 ## Security model
@@ -95,6 +96,12 @@ The launcher adds `imagePullSecrets` to every pod it creates.
   as the Secret's owner, so the Secret is garbage-collected when the workload is deleted
   (stop, relaunch, Job TTL). It needs only `create`/`patch`/`delete` on `secrets`.
   Secrets are only as private as your cluster's etcd: enable encryption at rest.
+- A worker profile's `authSecretName` is mounted into the pod, so it is restricted to the
+  installer's allowlist (`ORBIT_WORKER_AUTH_SECRETS` / `launcher.authSecrets`): a valid
+  Kubernetes name that matches an allowed exact name or `prefix*`. The API rejects other
+  names; the launcher refuses them again at launch (it cannot read Secrets, so the check is
+  by name, not by label). Profiles saved before this rule that name another Secret fail to
+  launch until the name is added to the allowlist or the profile is changed.
 - Docker launches pass the same values through a 0600 `--env-file` that is deleted right
   after `docker run`; nothing secret is in argv. `docker inspect` on the host still shows
   container env, so protect Docker socket access.

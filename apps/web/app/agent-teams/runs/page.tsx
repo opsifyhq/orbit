@@ -31,7 +31,7 @@ type Filter = "active" | "archived" | "all";
 export default function TeamRunsPage() {
   const [filter, setFilter] = useState<Filter>("active");
   const [search, setSearch] = useState("");
-  const runs = useTeamRuns(filter === "all" ? undefined : filter === "archived");
+  const runs = useTeamRuns({ archived: filter === "all" ? undefined : filter === "archived", limit: 200 });
   const teams = useAgentTeams();
   const teamName = (id: string) => teams.data?.find((team) => team.id === id)?.name;
 

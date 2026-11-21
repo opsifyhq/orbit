@@ -67,16 +67,27 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            match team_state.store.list_running_team_runs().await {
-                Ok(runs) => {
-                    for run in runs {
-                        if let Err(error) = crate::handlers::teams::advance(&team_state, run).await
-                        {
-                            tracing::warn!(%error, "team run advance failed");
+            // Page through every running run (keyset on id) so a backlog of long-lived
+            // runs cannot starve newer ones.
+            let mut after = None;
+            loop {
+                match team_state.store.list_running_team_runs(after, 50).await {
+                    Ok(runs) if runs.is_empty() => break,
+                    Ok(runs) => {
+                        after = runs.last().map(|run| run.id);
+                        for run in runs {
+                            if let Err(error) =
+                                crate::handlers::teams::advance(&team_state, run).await
+                            {
+                                tracing::warn!(%error, "team run advance failed");
+                            }
                         }
                     }
+                    Err(error) => {
+                        tracing::warn!(%error, "team run polling failed");
+                        break;
+                    }
                 }
-                Err(error) => tracing::warn!(%error, "team run polling failed"),
             }
             if let Err(error) = crate::handlers::teams::reconcile_team_outcomes(&team_state).await {
                 tracing::warn!(%error, "team outcome reconciliation failed");
@@ -151,7 +162,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
             }
         },
     ));
-    spawn_audit_retention(state.clone());
+    handles.extend(spawn_audit_retention(&state));
     handles
 }
 
@@ -175,26 +186,28 @@ fn audit_retention_days(raw: Option<&str>) -> Option<u32> {
 }
 
 /// Delete audit log rows older than `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0` keeps
-/// everything). Runs daily; the delete is idempotent so multiple API replicas are safe.
-fn spawn_audit_retention(state: AppState) {
-    let Some(days) =
-        audit_retention_days(std::env::var("ORBIT_AUDIT_RETENTION_DAYS").ok().as_deref())
-    else {
-        return;
-    };
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(24 * 3600));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let cutoff = Utc::now() - chrono::Duration::days(days as i64);
-            match state.store.prune_audit_logs(cutoff).await {
-                Ok(0) => {}
-                Ok(count) => tracing::info!(count, days, "pruned old audit log entries"),
-                Err(error) => tracing::warn!(%error, "audit log pruning failed"),
+/// everything). Runs daily under `supervise` (restarted after a panic, stopped on
+/// shutdown). The store deletes in bounded batches and holds an advisory lock, so only
+/// one API replica prunes at a time.
+fn spawn_audit_retention(state: &AppState) -> Option<JoinHandle<()>> {
+    let days = audit_retention_days(std::env::var("ORBIT_AUDIT_RETENTION_DAYS").ok().as_deref())?;
+    Some(supervise(
+        "audit_retention",
+        state,
+        move |retention_state| async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(24 * 3600));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let cutoff = Utc::now() - chrono::Duration::days(days as i64);
+                match retention_state.store.prune_audit_logs(cutoff).await {
+                    Ok(0) => {}
+                    Ok(count) => tracing::info!(count, days, "pruned old audit log entries"),
+                    Err(error) => tracing::warn!(%error, "audit log pruning failed"),
+                }
             }
-        }
-    });
+        },
+    ))
 }
 
 /// Archive terminal executions, team runs and worker launches older than the configured
@@ -842,7 +855,9 @@ async fn advance_runtime(
     };
     let last_failed = last
         .as_ref()
-        .filter(|execution| execution.status == "failed");
+        // A run the reaper ended as `timed_out` is as unsuccessful as one that failed; if
+        // it did not count, a runtime whose runs always time out would loop forever.
+        .filter(|execution| matches!(execution.status.as_str(), "failed" | "timed_out"));
     if let Some(failed) = last_failed {
         // First time this failure is seen: count it and back off. Once accounted for, the
         // next due tick falls through and creates a new execution.

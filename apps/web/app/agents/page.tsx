@@ -109,6 +109,14 @@ export default function AgentsPage() {
 
   const truncated = agents.data ? agents.data.total > all.length : false;
 
+  // Bulk actions only ever touch rows that are on screen: a selection made under
+  // another filter or search must not be archived or deleted unseen.
+  const selectedVisible = useMemo(
+    () => visible.filter((agent) => selected.has(agent.id)),
+    [visible, selected],
+  );
+  const selectedIds = useMemo(() => selectedVisible.map((agent) => agent.id), [selectedVisible]);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -146,11 +154,11 @@ export default function AgentsPage() {
         />
       </ListToolbar>
 
-      {selected.size ? (
+      {selectedIds.length ? (
         <BulkActionsBar
           resource="agents"
-          selectedIds={[...selected]}
-          allShownSelected={visible.length > 0 && visible.every((agent) => selected.has(agent.id))}
+          selectedIds={selectedIds}
+          allShownSelected={selectedIds.length === visible.length}
           onToggleAllShown={(checked) =>
             setSelected(
               checked
@@ -159,8 +167,8 @@ export default function AgentsPage() {
             )
           }
           onChangeAccess={() => setBulkOpen(true)}
-          archivedIds={all
-            .filter((agent) => selected.has(agent.id) && agent.status === "archived")
+          archivedIds={selectedVisible
+            .filter((agent) => agent.status === "archived")
             .map((agent) => agent.id)}
           onSucceeded={(ids) => {
             setSelected((current) => {
@@ -178,7 +186,7 @@ export default function AgentsPage() {
         open={bulkOpen}
         onOpenChange={setBulkOpen}
         resource="agents"
-        ids={[...selected]}
+        ids={selectedIds}
         onDone={() => {
           setSelected(new Set());
           void invalidateAgents();

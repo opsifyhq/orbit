@@ -73,6 +73,13 @@ export default function SkillsPage() {
     });
   }, [all, search, filter, usersOf]);
 
+  // Bulk actions only ever touch rows that are on screen: a selection made under
+  // another filter or search must not be changed or deleted unseen.
+  const selectedIds = useMemo(
+    () => visible.filter((skill) => selected.has(skill.id)).map((skill) => skill.id),
+    [visible, selected],
+  );
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -109,11 +116,11 @@ export default function SkillsPage() {
         />
       </ListToolbar>
 
-      {selected.size ? (
+      {selectedIds.length ? (
         <BulkActionsBar
           resource="skills"
-          selectedIds={[...selected]}
-          allShownSelected={visible.length > 0 && visible.every((skill) => selected.has(skill.id))}
+          selectedIds={selectedIds}
+          allShownSelected={selectedIds.length === visible.length}
           onToggleAllShown={(checked) =>
             setSelected(
               checked
@@ -138,7 +145,7 @@ export default function SkillsPage() {
         open={bulkOpen}
         onOpenChange={setBulkOpen}
         resource="skills"
-        ids={[...selected]}
+        ids={selectedIds}
         onDone={() => {
           setSelected(new Set());
           void queryClient.invalidateQueries({ queryKey: queryKeys.skills });

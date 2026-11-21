@@ -27,6 +27,30 @@ const ORBIT_GENERATED_PATHS: &[&str] = &[
     ".pi-sessions",
 ];
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(300);
+/// Local-only git operations (config, add, reset, commit): these never touch the network.
+const GIT_LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Why a git operation was stopped before it finished. Carried inside the `anyhow` error
+/// so callers can tell a cancel from a timeout without matching on message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitAbort {
+    Cancelled,
+    TimedOut { op: &'static str, seconds: u64 },
+}
+
+impl std::fmt::Display for GitAbort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => write!(f, "repository checkout cancelled"),
+            Self::TimedOut { op, seconds } => {
+                write!(f, "git {op} timed out after {seconds} seconds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GitAbort {}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,11 +200,13 @@ fn is_dangerous_config_key(key: &str) -> bool {
 /// robust: it covers every driver kind (filter, textconv, merge, credential helper,
 /// includes) and cannot miss a name. System and global config are disabled, so any hit
 /// comes from the workspace itself; legitimate clones define none of these keys.
-async fn ensure_safe_repo_config(workspace: &Path) -> anyhow::Result<()> {
-    let output = git_command(workspace)
-        .args(["config", "--list", "--name-only", "--includes", "-z"])
-        .output()
-        .await?;
+async fn ensure_safe_repo_config(
+    workspace: &Path,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    let mut command = git_command(workspace);
+    command.args(["config", "--list", "--name-only", "--includes", "-z"]);
+    let output = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "config").await?;
     if !output.status.success() {
         anyhow::bail!(
             "could not read repository config: {}",
@@ -242,24 +268,26 @@ fn write_askpass() -> anyhow::Result<NamedTempFile> {
     Ok(file)
 }
 
-async fn stage_workspace_changes(workspace: &Path) -> anyhow::Result<()> {
-    ensure_safe_repo_config(workspace).await?;
-    let head = git_command(workspace)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-        .await?;
+async fn stage_workspace_changes(
+    workspace: &Path,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    ensure_safe_repo_config(workspace, cancel).await?;
+    let mut command = git_command(workspace);
+    command.args(["rev-parse", "--verify", "HEAD"]);
+    let head = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "rev-parse").await?;
     let unstage = if head.status.success() {
         let mut command = git_command(workspace);
         command
             .args(["reset", "--quiet", "HEAD", "--"])
             .args(ORBIT_GENERATED_PATHS);
-        command.output().await?
+        run_git(command, cancel, GIT_LOCAL_TIMEOUT, "reset").await?
     } else {
         let mut command = git_command(workspace);
         command
             .args(["rm", "--cached", "--ignore-unmatch", "-r", "--"])
             .args(ORBIT_GENERATED_PATHS);
-        command.output().await?
+        run_git(command, cancel, GIT_LOCAL_TIMEOUT, "rm").await?
     };
     if !unstage.status.success() {
         anyhow::bail!(
@@ -273,7 +301,7 @@ async fn stage_workspace_changes(workspace: &Path) -> anyhow::Result<()> {
     for path in ORBIT_GENERATED_PATHS {
         command.arg(format!(":(exclude){path}"));
     }
-    let add = command.output().await?;
+    let add = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "add").await?;
     if !add.status.success() {
         anyhow::bail!(
             "git add failed: {}",
@@ -381,7 +409,7 @@ pub async fn checkout(
     cancel: &CancellationToken,
 ) -> anyhow::Result<Option<String>> {
     if cancel.is_cancelled() {
-        anyhow::bail!("repository checkout cancelled");
+        return Err(GitAbort::Cancelled.into());
     }
     let Some(connection_id) = connection_id else {
         return Ok(None);
@@ -418,7 +446,7 @@ pub async fn checkout_workspace(
     cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<String>> {
     if cancel.is_cancelled() {
-        anyhow::bail!("repository checkout cancelled");
+        return Err(GitAbort::Cancelled.into());
     }
     let specs = repo_specs(input);
     if specs.is_empty() {
@@ -441,7 +469,7 @@ pub async fn checkout_workspace(
     let mut notes = Vec::new();
     for spec in &specs {
         if cancel.is_cancelled() {
-            anyhow::bail!("repository checkout cancelled");
+            return Err(GitAbort::Cancelled.into());
         }
         validate_repo_path(&spec.path)?;
         let target = if single && spec.path.is_empty() {
@@ -481,7 +509,7 @@ async fn checkout_repository(
     cancel: &CancellationToken,
 ) -> anyhow::Result<String> {
     if cancel.is_cancelled() {
-        anyhow::bail!("repository checkout cancelled");
+        return Err(GitAbort::Cancelled.into());
     }
     if workspace.join(".git").exists() {
         return Ok(format!("repository {repo} already checked out"));
@@ -526,7 +554,7 @@ async fn checkout_repository(
     if let Some(askpass) = &askpass {
         apply_git_auth(&mut command, askpass.path(), &username);
     }
-    let output = run_clone_command(command, cancel, GIT_CLONE_TIMEOUT).await?;
+    let output = run_git(command, cancel, GIT_CLONE_TIMEOUT, "clone").await?;
     if !output.status.success() {
         anyhow::bail!(
             "git clone failed: {}",
@@ -536,12 +564,16 @@ async fn checkout_repository(
     Ok(format!("checked out {repo}"))
 }
 
-async fn run_clone_command(
+/// Run a git child process to completion, bounded by `timeout` and aborted when `cancel`
+/// fires. The child is killed on every early return (`kill_on_drop`).
+async fn run_git(
     mut command: Command,
     cancel: &CancellationToken,
     timeout: Duration,
+    op: &'static str,
 ) -> anyhow::Result<Output> {
     command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -550,10 +582,10 @@ async fn run_clone_command(
     tokio::pin!(output);
     tokio::select! {
         biased;
-        _ = cancel.cancelled() => anyhow::bail!("git clone cancelled"),
+        _ = cancel.cancelled() => Err(GitAbort::Cancelled.into()),
         result = tokio::time::timeout(timeout, &mut output) => match result {
             Ok(result) => Ok(result?),
-            Err(_) => anyhow::bail!("git clone timed out after {} seconds", timeout.as_secs()),
+            Err(_) => Err(GitAbort::TimedOut { op, seconds: timeout.as_secs() }.into()),
         },
     }
 }
@@ -565,6 +597,7 @@ pub async fn commit(
     connection_id: uuid::Uuid,
     workspace: &Path,
     message: &str,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Value> {
     let connection = client.connection(execution_id, connection_id).await?;
     let username = git_username(&connection);
@@ -573,12 +606,12 @@ pub async fn commit(
         .as_ref()
         .map(|secret| secret.value.clone())
         .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
-    stage_workspace_changes(workspace).await?;
+    stage_workspace_changes(workspace, cancel).await?;
     let askpass = write_askpass()?;
     let mut command = commit_command(workspace, message);
     command.env("ORBIT_GIT_TOKEN", &token);
     apply_git_auth(&mut command, askpass.path(), &username);
-    let output = command.output().await?;
+    let output = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "commit").await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("nothing to commit") {
@@ -600,6 +633,7 @@ pub async fn push(
     connection_id: uuid::Uuid,
     workspace: &Path,
     branch: &str,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Value> {
     if branch.is_empty()
         || branch.len() > 200
@@ -616,12 +650,12 @@ pub async fn push(
         .as_ref()
         .map(|secret| secret.value.clone())
         .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
-    ensure_safe_repo_config(workspace).await?;
+    ensure_safe_repo_config(workspace, cancel).await?;
     let askpass = write_askpass()?;
     let mut command = push_command(workspace, branch);
     command.env("ORBIT_GIT_TOKEN", &token);
     apply_git_auth(&mut command, askpass.path(), &username);
-    let output = command.output().await?;
+    let output = run_git(command, cancel, GIT_PUSH_TIMEOUT, "push").await?;
     if !output.status.success() {
         anyhow::bail!(
             "git push failed: {}",
@@ -725,7 +759,9 @@ mod tests {
         plant_script(&workspace.join(".git/hooks/pre-commit"), &marker);
         plant_script(&workspace.join(".git/hooks/commit-msg"), &marker);
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        stage_workspace_changes(&workspace).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
         let output = commit_command(&workspace, "test commit")
             .output()
             .await
@@ -753,7 +789,9 @@ mod tests {
             &["config", "core.fsmonitor", &script.display().to_string()],
         );
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        stage_workspace_changes(&workspace).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
         let output = commit_command(&workspace, "fsmonitor")
             .output()
             .await
@@ -776,10 +814,16 @@ mod tests {
         );
         std::fs::write(workspace.join(".gitattributes"), "* filter=evil\n").unwrap();
         std::fs::write(workspace.join("a.txt"), "hello\n").unwrap();
-        let err = stage_workspace_changes(&workspace).await.unwrap_err();
+        let err = stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("filter.evil.clean"), "{err}");
         assert!(!marker.exists(), "filter executed");
-        assert!(ensure_safe_repo_config(&workspace).await.is_err());
+        assert!(
+            ensure_safe_repo_config(&workspace, &CancellationToken::new())
+                .await
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(workspace);
     }
 
@@ -850,7 +894,9 @@ mod tests {
         std::fs::write(&source, "pub fn change() {}\n").unwrap();
         git(&workspace, &["add", "-A"]);
 
-        stage_workspace_changes(&workspace).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
 
         let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
         let paths = String::from_utf8(staged.stdout).unwrap();
@@ -872,7 +918,9 @@ mod tests {
         std::fs::write(&source, "pub fn change() {}\n").unwrap();
         git(&workspace, &["add", "-A"]);
 
-        stage_workspace_changes(&workspace).await.unwrap();
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
 
         let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
         let paths = String::from_utf8(staged.stdout).unwrap();
@@ -902,35 +950,63 @@ mod cleanup_tests {
         command
     }
 
-    #[cfg(windows)]
+    #[cfg(not(windows))]
+    fn long_running_command() -> Command {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        command
+    }
+
     #[tokio::test]
-    async fn clone_timeout_kills_child_process() {
-        let error = run_clone_command(
+    async fn git_timeout_is_typed_and_prompt() {
+        let started = std::time::Instant::now();
+        let error = run_git(
             long_running_command(),
             &CancellationToken::new(),
-            Duration::from_secs(1),
+            Duration::from_millis(300),
+            "clone",
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("timed out after 1 seconds"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            error.downcast_ref::<GitAbort>(),
+            Some(&GitAbort::TimedOut {
+                op: "clone",
+                seconds: 0
+            })
+        );
     }
 
-    #[cfg(windows)]
     #[tokio::test]
-    async fn clone_cancellation_kills_child_process() {
+    async fn git_cancellation_is_typed_and_prompt() {
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
-            run_clone_command(
+            run_git(
                 long_running_command(),
                 &task_cancel,
                 Duration::from_secs(30),
+                "push",
             )
             .await
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
         cancel.cancel();
         let error = task.await.unwrap().unwrap_err();
-        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(error.downcast_ref::<GitAbort>(), Some(&GitAbort::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn commit_and_stage_abort_when_already_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = stage_workspace_changes(dir.path(), &cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.downcast_ref::<GitAbort>(), Some(&GitAbort::Cancelled));
     }
 }

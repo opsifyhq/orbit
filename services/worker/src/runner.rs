@@ -33,9 +33,6 @@ pub struct WorkerState {
     pub allow_web_search: bool,
     pub allow_web_fetch: bool,
     pub native_tool_permissions: serde_json::Value,
-    /// Environment variables resolved from worker-profile connection mappings. Applied
-    /// to each harness process instead of mutating the worker's global environment.
-    pub extra_env: Arc<std::collections::BTreeMap<String, String>>,
     /// Executions this worker currently owns (claimed and not yet reported terminal),
     /// each with its cancellation token. Entries are removed by [`ActiveGuard`].
     pub active: ActiveMap,
@@ -239,7 +236,7 @@ async fn report_unfinished(
             message,
             data: serde_json::json!({ "error": error }),
         };
-        if let Err(error) = state.client.event(execution_id, &event).await {
+        if let Err(error) = post_event(state, execution_id, &event).await {
             tracing::warn!(%execution_id, %error, "failed to persist failure event");
         }
     }
@@ -283,14 +280,49 @@ pub async fn shutdown(state: &WorkerState, grace: Duration) {
 
 /// Single-execution container mode: bind one dispatched execution to this worker and run
 /// it, without entering the claim loop or scheduler.
-pub async fn run_single(state: WorkerState, execution_id: uuid::Uuid) -> anyhow::Result<()> {
-    let context = state.client.context(execution_id).await?;
+///
+/// When `signal` resolves (SIGTERM/SIGINT) the execution is cancelled, the adapter gets up
+/// to `grace` to stop and report, and whatever is still unreported is then failed with
+/// `worker_shutdown` — the same behaviour as the long-running worker. The run is tracked
+/// before its context is fetched so a signal during start-up is still reported.
+pub async fn run_single_until<S>(
+    state: WorkerState,
+    execution_id: uuid::Uuid,
+    signal: S,
+    grace: Duration,
+) -> anyhow::Result<()>
+where
+    S: std::future::Future<Output = ()>,
+{
     let (guard, cancel) = track(&state, execution_id);
     let task_state = state.clone();
-    supervise(&state, execution_id, guard, async move {
+    let run = supervise(&state, execution_id, guard, async move {
+        let context = task_state
+            .retry
+            .run("fetch execution context", || {
+                task_state.client.context(execution_id)
+            })
+            .await?;
+        if cancel.is_cancelled() {
+            return report_unfinished(&task_state, execution_id, SHUTDOWN_CODE, SHUTDOWN_MESSAGE)
+                .await;
+        }
         run_execution(task_state, context, cancel).await
-    })
-    .await
+    });
+    tokio::pin!(run);
+    tokio::select! {
+        result = &mut run => result,
+        _ = signal => {
+            tracing::info!(%execution_id, "shutdown signal received; cancelling the execution");
+            let (finished, ()) = tokio::join!(
+                tokio::time::timeout(grace + Duration::from_secs(2), &mut run),
+                shutdown(&state, grace),
+            );
+            // A run that did not finish within the grace was reported failed by
+            // `shutdown`; the process exits right after, ending its task.
+            finished.unwrap_or(Ok(()))
+        }
+    }
 }
 
 /// Execute one claimed execution and persist its lifecycle.
@@ -375,9 +407,37 @@ async fn run_execution_inner(
         }
     };
 
+    // Watch for user cancellation from the very start, so checkout and tool setup are
+    // cancellable too. Dropped (aborting the poll task) on every exit path.
+    let watcher = spawn_cancel_watcher(&state, execution_id, &cancel);
+
     let adapter = match state.registry.require(harness_kind) {
         Ok(adapter) => adapter,
         Err(err) => return fail_execution(&state, &execution, err).await,
+    };
+
+    // Worker-profile env mappings, resolved per execution so rotated values are picked
+    // up. A failed lookup fails the run: running without the mapped variables would
+    // surface later as a confusing skill/tool failure.
+    let profile_env = tokio::select! {
+        _ = cancel.cancelled() => {
+            return end_cancelled(&state, &execution, watcher.user_cancelled()).await;
+        }
+        result = state.retry.run("fetch worker env", || state.client.resolve_env()) => result,
+    };
+    let profile_env = match profile_env {
+        Ok(env) => env,
+        Err(error) => {
+            return fail_execution(
+                &state,
+                &execution,
+                HarnessError::new(
+                    HarnessErrorKind::ExecutionFailed,
+                    format!("could not load worker environment mappings: {error}"),
+                ),
+            )
+            .await
+        }
     };
 
     let model = context.model.map(|model| model.into_resolved());
@@ -487,7 +547,7 @@ async fn run_execution_inner(
         })
         .and_then(|binding| binding.connection_id);
     let checkout = tokio::select! {
-        _ = cancel.cancelled() => Err(anyhow::anyhow!("repository checkout cancelled")),
+        _ = cancel.cancelled() => Err(anyhow::Error::new(crate::git::GitAbort::Cancelled)),
         result = crate::git::checkout_workspace(
             &state.client,
             execution_id,
@@ -512,21 +572,18 @@ async fn run_execution_inner(
             }
         }
         Err(error) => {
-            let message = error.to_string();
-            let error = if cancel.is_cancelled() || message.contains("cancelled") {
-                HarnessError::cancelled()
-            } else if let Some(seconds) = message
-                .split("git clone timed out after ")
-                .nth(1)
-                .and_then(|value| value.split(" seconds").next())
-                .and_then(|value| value.parse::<u64>().ok())
-            {
-                HarnessError::timeout(seconds)
-            } else {
-                HarnessError::new(
+            let abort = error.downcast_ref::<crate::git::GitAbort>().copied();
+            let error = match abort {
+                _ if cancel.is_cancelled() || abort == Some(crate::git::GitAbort::Cancelled) => {
+                    return end_cancelled(&state, &execution, watcher.user_cancelled()).await;
+                }
+                Some(crate::git::GitAbort::TimedOut { seconds, .. }) => {
+                    HarnessError::timeout(seconds)
+                }
+                _ => HarnessError::new(
                     HarnessErrorKind::ExecutionFailed,
-                    format!("repository checkout failed: {message}"),
-                )
+                    format!("repository checkout failed: {error}"),
+                ),
             };
             return fail_execution(&state, &execution, error).await;
         }
@@ -577,6 +634,7 @@ async fn run_execution_inner(
             &workspace,
             &context.tool_policies,
             pause.clone(),
+            cancel.clone(),
         )
         .await
         {
@@ -685,35 +743,12 @@ async fn run_execution_inner(
     )
     .await;
 
-    // Persist harness events as they arrive.
+    // Persist harness events in order as they arrive (each is retried before the next).
     let event_state = state.clone();
     let event_execution = execution.clone();
     let event_task = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             append_harness_event(&event_state, &event_execution, event).await;
-        }
-    });
-
-    // Deliver cancellation requests from the control plane.
-    let watcher_client = state.client.clone();
-    let watcher_cancel = cancel.clone();
-    let done = Arc::new(AtomicBool::new(false));
-    let watcher_done = done.clone();
-    let user_cancelled = Arc::new(AtomicBool::new(false));
-    let watcher_user_cancelled = user_cancelled.clone();
-    let watcher = tokio::spawn(async move {
-        while !watcher_done.load(Ordering::Relaxed) {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-            match watcher_client.cancel_requested(execution_id).await {
-                Ok(true) => {
-                    tracing::info!(%execution_id, "cancellation requested; cancelling harness");
-                    watcher_user_cancelled.store(true, Ordering::Relaxed);
-                    watcher_cancel.cancel();
-                    break;
-                }
-                Ok(false) => {}
-                Err(err) => tracing::warn!(error = %err, "cancel poll failed"),
-            }
         }
     });
 
@@ -763,7 +798,8 @@ async fn run_execution_inner(
         ),
     )
     .await;
-    let mut extra_env = (*state.extra_env).clone();
+    let mut extra_env: std::collections::BTreeMap<String, String> =
+        profile_env.into_iter().collect();
     for item in &context.env {
         extra_env.insert(item.env_var.clone(), item.value.clone());
     }
@@ -811,43 +847,35 @@ async fn run_execution_inner(
 
     let timeout_seconds = request.resources.timeout_seconds;
     let started = std::time::Instant::now();
-    let outcome = tokio::select! {
-        _ = cancel.cancelled() => {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
-            outcome.status = ExecutionStatus::Cancelled;
-            outcome
-        }
-        // Backstop for an adapter that ignores its own timeout. Same pause-aware clock.
-        _ = pause.deadline(Duration::from_secs(timeout_seconds.saturating_add(5))) => {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::timeout(timeout_seconds));
-            outcome.status = ExecutionStatus::TimedOut;
-            outcome
-        }
-        result = adapter.execute(request) => match result {
-            Ok(outcome) => outcome,
-            Err(err) => outcome_from_error(err),
-        }
-    };
+    let mut outcome = drive_adapter(
+        adapter.execute(request),
+        &cancel,
+        &pause,
+        timeout_seconds,
+        CANCEL_BACKSTOP,
+    )
+    .await;
 
-    // Stop the cancellation watcher before finishing.
-    done.store(true, Ordering::Relaxed);
-    watcher.abort();
+    // The run is over: stop polling for cancellation.
+    let user_cancelled = watcher.user_cancelled();
+    drop(watcher);
 
-    // Drain the event channel: drop the sender by ending the adapter future, then wait.
-    let _ = tokio::time::timeout(Duration::from_secs(2), event_task).await;
+    // Flush pending harness events before the final status and `complete`, so the stream
+    // is complete and ordered. Bounded: a dead API must not hang the worker.
+    drain_events(event_task, EVENT_FLUSH_TIMEOUT).await;
 
-    let mut outcome = outcome;
     if outcome.status == ExecutionStatus::Cancelled
-        && !user_cancelled.load(Ordering::Relaxed)
+        && !user_cancelled
         && state.shutdown.is_cancelled()
     {
         // Interrupted by worker shutdown rather than by a person: report it as a failed
-        // run with a clear reason, not as a user cancellation.
-        outcome = ExecutionOutcome::failed(HarnessError::new(
-            HarnessErrorKind::ExecutionFailed,
-            SHUTDOWN_MESSAGE,
-        ));
+        // run with a clear reason, not as a user cancellation. Keep what the adapter
+        // returned (session ref, usage).
         outcome.status = ExecutionStatus::Failed;
+        let mut error = HarnessError::new(HarnessErrorKind::ExecutionFailed, SHUTDOWN_MESSAGE);
+        error.retryable = true;
+        error.details = serde_json::json!({ "code": SHUTDOWN_CODE });
+        outcome.error = Some(error);
     }
     if outcome.usage.wall_time_ms.is_none() {
         outcome.usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
@@ -938,6 +966,146 @@ async fn run_execution_inner(
     Ok(())
 }
 
+/// After a cancel request the adapter gets this long to stop its process, then report
+/// its outcome (session ref, usage) before the runner gives up on it.
+const CANCEL_BACKSTOP: Duration = Duration::from_secs(10);
+/// Upper bound for flushing queued harness events before the final status is sent.
+const EVENT_FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Polls the control plane for a user cancel request and cancels the execution token.
+/// Aborts its poll task when dropped, so every exit path stops it.
+struct CancelWatcher {
+    task: tokio::task::JoinHandle<()>,
+    user_cancelled: Arc<AtomicBool>,
+}
+
+impl CancelWatcher {
+    fn user_cancelled(&self) -> bool {
+        self.user_cancelled.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for CancelWatcher {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn spawn_cancel_watcher(
+    state: &WorkerState,
+    execution_id: Uuid,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> CancelWatcher {
+    spawn_cancel_watcher_every(state, execution_id, cancel, CANCEL_POLL_INTERVAL)
+}
+
+fn spawn_cancel_watcher_every(
+    state: &WorkerState,
+    execution_id: Uuid,
+    cancel: &tokio_util::sync::CancellationToken,
+    interval: Duration,
+) -> CancelWatcher {
+    let client = state.client.clone();
+    let cancel = cancel.clone();
+    let user_cancelled = Arc::new(AtomicBool::new(false));
+    let flag = user_cancelled.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(interval) => {}
+            }
+            match client.cancel_requested(execution_id).await {
+                Ok(true) => {
+                    tracing::info!(%execution_id, "cancellation requested; cancelling execution");
+                    flag.store(true, Ordering::Relaxed);
+                    cancel.cancel();
+                    break;
+                }
+                Ok(false) => {}
+                Err(err) => tracing::warn!(error = %err, "cancel poll failed"),
+            }
+        }
+    });
+    CancelWatcher {
+        task,
+        user_cancelled,
+    }
+}
+
+/// End an execution that was cancelled before the harness ran. A person's cancel is
+/// `cancelled`; a worker shutdown is a failed run (`worker_shutdown`).
+async fn end_cancelled(
+    state: &WorkerState,
+    execution: &ExecutionRecord,
+    user_cancelled: bool,
+) -> anyhow::Result<()> {
+    if !user_cancelled && state.shutdown.is_cancelled() {
+        return report_unfinished(state, execution.id, SHUTDOWN_CODE, SHUTDOWN_MESSAGE).await;
+    }
+    fail_execution(state, execution, HarnessError::cancelled()).await
+}
+
+/// Wait for the adapter's outcome. The adapter owns cancellation (it observes the token
+/// in its request and returns an outcome with session ref and usage), so a cancel only
+/// arms a hard `backstop` for an adapter that never returns; the run timeout gets the
+/// same treatment with a fixed 5 s margin on the pause-aware clock.
+async fn drive_adapter<F>(
+    adapter: F,
+    cancel: &tokio_util::sync::CancellationToken,
+    pause: &orbit_contracts::PauseClock,
+    timeout_seconds: u64,
+    backstop: Duration,
+) -> ExecutionOutcome
+where
+    F: std::future::Future<Output = Result<ExecutionOutcome, HarnessError>>,
+{
+    tokio::pin!(adapter);
+    tokio::select! {
+        result = &mut adapter => match result {
+            Ok(outcome) => outcome,
+            Err(err) => outcome_from_error(err),
+        },
+        _ = async {
+            cancel.cancelled().await;
+            tokio::time::sleep(backstop).await;
+        } => {
+            tracing::warn!("adapter did not return after cancellation; abandoning it");
+            outcome_from_error(HarnessError::cancelled())
+        }
+        _ = pause.deadline(Duration::from_secs(timeout_seconds.saturating_add(5))) => {
+            outcome_from_error(HarnessError::timeout(timeout_seconds))
+        }
+    }
+}
+
+/// Wait up to `timeout` for the event task to post everything queued. On timeout the task
+/// is aborted, so no event can arrive after the final status and `complete`.
+async fn drain_events(mut task: tokio::task::JoinHandle<()>, timeout: Duration) {
+    if tokio::time::timeout(timeout, &mut task).await.is_err() {
+        task.abort();
+        tracing::warn!(
+            ?timeout,
+            "event flush timed out; dropping the remaining events"
+        );
+    }
+}
+
+/// Post one event, retrying transport errors and 5xx/408/429 with a short bounded
+/// backoff (not other 4xx). Callers post sequentially, so per-execution order holds.
+async fn post_event(
+    state: &WorkerState,
+    execution_id: Uuid,
+    request: &crate::client::EventRequest<'_>,
+) -> anyhow::Result<()> {
+    state
+        .retry
+        .for_events()
+        .run("post event", || state.client.event(execution_id, request))
+        .await
+}
+
 fn outcome_from_error(error: HarnessError) -> ExecutionOutcome {
     let status = match error.kind {
         HarnessErrorKind::Cancelled => ExecutionStatus::Cancelled,
@@ -995,18 +1163,17 @@ async fn append_event(
     message: &str,
     data: serde_json::Value,
 ) {
-    if let Err(error) = state
-        .client
-        .event(
-            execution.id,
-            &crate::client::EventRequest {
-                kind: kind.as_str(),
-                level: level.as_str(),
-                message,
-                data,
-            },
-        )
-        .await
+    if let Err(error) = post_event(
+        state,
+        execution.id,
+        &crate::client::EventRequest {
+            kind: kind.as_str(),
+            level: level.as_str(),
+            message,
+            data,
+        },
+    )
+    .await
     {
         tracing::error!(%error, "failed to persist execution event");
     }
@@ -1126,7 +1293,6 @@ mod tests {
             allow_web_search: false,
             allow_web_fetch: false,
             native_tool_permissions: serde_json::Value::Null,
-            extra_env: Arc::new(Default::default()),
             active: Default::default(),
             shutdown: tokio_util::sync::CancellationToken::new(),
             retry: RetryPolicy {
@@ -1343,7 +1509,7 @@ mod cleanup_tests {
     use crate::client::{WorkerClient, WorkerExecutionContext};
     use axum::{http::Uri, routing::any, Json, Router};
     use orbit_harness::HarnessRegistry;
-    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use std::{sync::Arc, time::Duration};
     use uuid::Uuid;
 
     async fn mock_worker_api(uri: Uri) -> Json<serde_json::Value> {
@@ -1351,6 +1517,8 @@ mod cleanup_tests {
             serde_json::json!({ "cancelRequested": false })
         } else if uri.path().ends_with("/complete") {
             serde_json::json!({ "updated": true })
+        } else if uri.path().ends_with("/worker/env") {
+            serde_json::json!([])
         } else {
             serde_json::json!({})
         };
@@ -1463,7 +1631,6 @@ mod cleanup_tests {
             allow_web_search: false,
             allow_web_fetch: false,
             native_tool_permissions: serde_json::json!({}),
-            extra_env: Arc::new(BTreeMap::new()),
             active: Default::default(),
             shutdown: tokio_util::sync::CancellationToken::new(),
             retry: crate::retry::RetryPolicy {
@@ -1497,5 +1664,505 @@ mod cleanup_tests {
         assert!(state.active.lock().unwrap().is_empty());
         server.abort();
         let _ = server.await;
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use orbit_contracts::{ExecutionOutcome, HarnessError, HarnessErrorKind};
+    use orbit_domain::ExecutionStatus;
+    use serde_json::{json, Value};
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::client::{WorkerClient, WorkerExecutionContext};
+
+    /// Configurable stand-in for the worker-facing API. `log` records events and
+    /// completions in arrival order so ordering can be asserted.
+    #[derive(Clone, Default)]
+    struct Api {
+        log: Arc<Mutex<Vec<(String, Value)>>>,
+        /// Remaining `/events` calls to answer with `event_failure_status`.
+        event_failures: Arc<AtomicUsize>,
+        event_failure_status: u16,
+        event_delay_ms: u64,
+        env_failures: Arc<AtomicUsize>,
+        env_calls: Arc<AtomicUsize>,
+        cancel_requested: Arc<AtomicBool>,
+        hang_connection: bool,
+        context: Arc<Mutex<Option<Value>>>,
+    }
+
+    impl Api {
+        fn completes(&self) -> Vec<Value> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _)| kind == "complete")
+                .map(|(_, body)| body.clone())
+                .collect()
+        }
+
+        fn events(&self) -> Vec<Value> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _)| kind == "event")
+                .map(|(_, body)| body.clone())
+                .collect()
+        }
+    }
+
+    async fn event(
+        State(api): State<Api>,
+        Path(_id): Path<Uuid>,
+        Json(body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        if api.event_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(api.event_delay_ms)).await;
+        }
+        let remaining = api.event_failures.load(Ordering::SeqCst);
+        if remaining > 0 {
+            api.event_failures.store(remaining - 1, Ordering::SeqCst);
+            return (
+                StatusCode::from_u16(api.event_failure_status).unwrap(),
+                Json(json!({ "error": { "message": "boom" } })),
+            );
+        }
+        api.log.lock().unwrap().push(("event".into(), body));
+        (StatusCode::OK, Json(json!({})))
+    }
+
+    async fn complete(
+        State(api): State<Api>,
+        Path(_id): Path<Uuid>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        api.log.lock().unwrap().push(("complete".into(), body));
+        Json(json!({ "updated": true }))
+    }
+
+    async fn cancel(State(api): State<Api>, Path(_id): Path<Uuid>) -> Json<Value> {
+        Json(json!({ "cancelRequested": api.cancel_requested.load(Ordering::SeqCst) }))
+    }
+
+    async fn env(State(api): State<Api>) -> (StatusCode, Json<Value>) {
+        api.env_calls.fetch_add(1, Ordering::SeqCst);
+        let remaining = api.env_failures.load(Ordering::SeqCst);
+        if remaining > 0 {
+            api.env_failures.store(remaining - 1, Ordering::SeqCst);
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({})));
+        }
+        (
+            StatusCode::OK,
+            Json(json!([{ "envVar": "FOO", "value": "bar" }])),
+        )
+    }
+
+    async fn connection(State(api): State<Api>, Path(_id): Path<Uuid>) -> Json<Value> {
+        if api.hang_connection {
+            std::future::pending::<()>().await;
+        }
+        Json(json!({}))
+    }
+
+    async fn context(State(api): State<Api>, Path(_id): Path<Uuid>) -> Json<Value> {
+        Json(api.context.lock().unwrap().clone().unwrap_or(json!({})))
+    }
+
+    async fn ok_empty() -> StatusCode {
+        StatusCode::NO_CONTENT
+    }
+
+    async fn serve(mut api: Api) -> (Api, WorkerState) {
+        if api.event_failure_status == 0 {
+            api.event_failure_status = 503;
+        }
+        let app = Router::new()
+            .route("/api/v1/worker/executions/{id}/events", post(event))
+            .route("/api/v1/worker/executions/{id}/complete", post(complete))
+            .route("/api/v1/worker/executions/{id}/cancel", get(cancel))
+            .route("/api/v1/worker/executions/{id}/context", get(context))
+            .route("/api/v1/worker/executions/{id}/running", post(ok_empty))
+            .route("/api/v1/worker/env", get(env))
+            .route("/api/v1/worker/connections/{id}", get(connection))
+            .with_state(api.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = tempfile::tempdir().unwrap().keep();
+        let state = WorkerState {
+            worker_id: "lifecycle-test".into(),
+            client: WorkerClient::new(format!("http://{addr}"), "token").unwrap(),
+            registry: Arc::new(orbit_harness::HarnessRegistry::builtin()),
+            workspace_root: root,
+            harnesses: vec!["mock".into()],
+            execution_driver: "process".into(),
+            target: "local".into(),
+            profile_agent_ids: vec![],
+            profile_skill_slugs: vec![],
+            allow_web_search: false,
+            allow_web_fetch: false,
+            native_tool_permissions: Value::Null,
+            active: Default::default(),
+            shutdown: CancellationToken::new(),
+            retry: crate::retry::RetryPolicy {
+                attempts: 4,
+                base: Duration::from_millis(5),
+                max_delay: Duration::from_millis(20),
+            },
+        };
+        (api, state)
+    }
+
+    fn context_json(task: &str, harness: &str, spec: Value) -> Value {
+        let now = chrono::Utc::now();
+        json!({
+            "execution": {
+                "id": Uuid::now_v7(),
+                "orgId": Uuid::now_v7(),
+                "agentId": Uuid::now_v7(),
+                "agentVersionId": Uuid::now_v7(),
+                "agentName": "lifecycle test",
+                "harnessKind": harness,
+                "triggerId": null,
+                "triggerSource": "manual",
+                "placement": "local",
+                "status": "dispatched",
+                "sessionRef": null,
+                "input": {
+                    "task": task,
+                    "payload": {},
+                    "provenance": { "source": "test", "trusted": false, "receivedAt": now }
+                },
+                "skills": [],
+                "output": null,
+                "error": null,
+                "usage": {},
+                "timeoutSeconds": 30,
+                "idempotencyKey": null,
+                "requestedBy": null,
+                "workerId": "lifecycle-test",
+                "teamRunId": null,
+                "teamStepIndex": null,
+                "createdAt": now,
+                "startedAt": null,
+                "finishedAt": null,
+                "updatedAt": now,
+                "archivedAt": null
+            },
+            "spec": spec,
+            "model": null,
+            "grants": [],
+            "skills": [],
+        })
+    }
+
+    fn context_for(task: &str, harness: &str, spec: Value) -> WorkerExecutionContext {
+        serde_json::from_value(context_json(task, harness, spec)).unwrap()
+    }
+
+    fn plain_spec() -> Value {
+        json!({ "instructions": { "system": "test" } })
+    }
+
+    fn checkout_spec() -> Value {
+        json!({
+            "instructions": { "system": "test" },
+            "connectors": [{
+                "connector": "github",
+                "connectionId": Uuid::now_v7(),
+                "capabilities": ["repo.checkout"]
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn worker_env_is_retried_and_failure_is_loud() {
+        // A transient 503 is retried and the run proceeds.
+        let (api, state) = serve(Api {
+            env_failures: Arc::new(AtomicUsize::new(2)),
+            ..Default::default()
+        })
+        .await;
+        run_execution(
+            state,
+            context_for("hello", "mock", plain_spec()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(api.env_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(api.completes()[0]["status"], "succeeded");
+
+        // A persistent failure fails the execution instead of running with no env.
+        let (api, state) = serve(Api {
+            env_failures: Arc::new(AtomicUsize::new(usize::MAX)),
+            ..Default::default()
+        })
+        .await;
+        run_execution(
+            state,
+            context_for("hello", "mock", plain_spec()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(api.env_calls.load(Ordering::SeqCst), 4);
+        let completes = api.completes();
+        assert_eq!(completes[0]["status"], "failed");
+        assert!(completes[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("worker environment"));
+    }
+
+    #[tokio::test]
+    async fn resolve_env_reports_errors_instead_of_an_empty_list() {
+        let (_api, state) = serve(Api {
+            env_failures: Arc::new(AtomicUsize::new(1)),
+            ..Default::default()
+        })
+        .await;
+        assert!(state.client.resolve_env().await.is_err());
+        let env = state.client.resolve_env().await.unwrap();
+        assert_eq!(env, vec![("FOO".to_string(), "bar".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn user_cancel_during_checkout_ends_cancelled() {
+        let (api, state) = serve(Api {
+            hang_connection: true,
+            cancel_requested: Arc::new(AtomicBool::new(true)),
+            ..Default::default()
+        })
+        .await;
+        let started = Instant::now();
+        let context = context_for("hello", "mock", checkout_spec());
+        let (_guard, cancel) = track(&state, context.execution.id);
+        run_execution(state, context, cancel).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(6));
+        let completes = api.completes();
+        assert_eq!(completes.len(), 1);
+        assert_eq!(completes[0]["status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_checkout_is_reported_as_worker_shutdown() {
+        let (api, state) = serve(Api {
+            hang_connection: true,
+            ..Default::default()
+        })
+        .await;
+        let context = context_for("hello", "mock", checkout_spec());
+        let (_guard, cancel) = track(&state, context.execution.id);
+        let shutdown = state.shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            shutdown.cancel();
+        });
+        run_execution(state, context, cancel).await.unwrap();
+        let completes = api.completes();
+        assert_eq!(completes[0]["status"], "failed");
+        assert_eq!(completes[0]["error"]["code"], "worker_shutdown");
+    }
+
+    #[tokio::test]
+    async fn cancel_watcher_runs_until_dropped() {
+        let (api, state) = serve(Api::default()).await;
+        let cancel = CancellationToken::new();
+        let watcher =
+            spawn_cancel_watcher_every(&state, Uuid::now_v7(), &cancel, Duration::from_millis(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!cancel.is_cancelled());
+        api.cancel_requested.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), cancel.cancelled())
+            .await
+            .expect("watcher cancels the token");
+        assert!(watcher.user_cancelled());
+    }
+
+    fn cancelled_outcome_with_session() -> ExecutionOutcome {
+        let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
+        outcome.status = ExecutionStatus::Cancelled;
+        outcome.session_ref = Some("session-1".into());
+        outcome.usage.input_tokens = Some(42);
+        outcome
+    }
+
+    #[tokio::test]
+    async fn cancelled_adapter_keeps_its_outcome() {
+        let cancel = CancellationToken::new();
+        let pause = orbit_contracts::PauseClock::with_budget(Duration::from_secs(60));
+        let adapter_cancel = cancel.clone();
+        // Cooperative adapter: observes the token, spends time cleaning up, then returns
+        // its outcome. The runner must wait for that instead of dropping the future.
+        let adapter = async move {
+            adapter_cancel.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(cancelled_outcome_with_session())
+        };
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        let outcome = drive_adapter(adapter, &cancel, &pause, 60, Duration::from_secs(5)).await;
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert_eq!(outcome.status, ExecutionStatus::Cancelled);
+        assert_eq!(outcome.session_ref.as_deref(), Some("session-1"));
+        assert_eq!(outcome.usage.input_tokens, Some(42));
+    }
+
+    #[tokio::test]
+    async fn hung_adapter_is_abandoned_after_the_backstop() {
+        let cancel = CancellationToken::new();
+        let pause = orbit_contracts::PauseClock::with_budget(Duration::from_secs(60));
+        cancel.cancel();
+        let started = Instant::now();
+        let outcome = drive_adapter(
+            std::future::pending::<Result<ExecutionOutcome, HarnessError>>(),
+            &cancel,
+            &pause,
+            60,
+            Duration::from_millis(200),
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(outcome.status, ExecutionStatus::Cancelled);
+        assert_eq!(
+            outcome.error.map(|error| error.kind),
+            Some(HarnessErrorKind::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn event_posts_are_retried_in_order_without_loss() {
+        let (api, state) = serve(Api {
+            event_failures: Arc::new(AtomicUsize::new(2)),
+            ..Default::default()
+        })
+        .await;
+        let id = Uuid::now_v7();
+        for message in ["one", "two", "three"] {
+            post_event(
+                &state,
+                id,
+                &crate::client::EventRequest {
+                    kind: "log",
+                    level: "info",
+                    message,
+                    data: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let messages: Vec<String> = api
+            .events()
+            .iter()
+            .map(|event| event["message"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(messages, ["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn client_errors_on_events_are_not_retried() {
+        let (api, state) = serve(Api {
+            event_failures: Arc::new(AtomicUsize::new(1)),
+            event_failure_status: 400,
+            ..Default::default()
+        })
+        .await;
+        let result = post_event(
+            &state,
+            Uuid::now_v7(),
+            &crate::client::EventRequest {
+                kind: "log",
+                level: "info",
+                message: "x",
+                data: json!({}),
+            },
+        )
+        .await;
+        assert_eq!(crate::retry::status_of(&result.unwrap_err()), Some(400));
+        assert!(api.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn drain_events_is_bounded_and_stops_the_task() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let started = Instant::now();
+        drain_events(task, Duration::from_millis(100)).await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn complete_is_sent_after_every_harness_event_even_when_the_api_is_slow() {
+        // 300 ms per event puts the flush well past the old 2 s drain limit.
+        let (api, state) = serve(Api {
+            event_delay_ms: 300,
+            ..Default::default()
+        })
+        .await;
+        run_execution(
+            state,
+            context_for("hello", "mock", plain_spec()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let log = api.log.lock().unwrap().clone();
+        let (last_kind, last_body) = log.last().unwrap();
+        assert_eq!(last_kind, "complete");
+        assert_eq!(last_body["status"], "succeeded");
+        let messages: Vec<&str> = log
+            .iter()
+            .filter(|(kind, _)| kind == "event")
+            .map(|(_, body)| body["message"].as_str().unwrap())
+            .collect();
+        let position = |needle: &str| {
+            messages
+                .iter()
+                .position(|message| message.contains(needle))
+                .unwrap_or_else(|| panic!("missing event {needle:?} in {messages:?}"))
+        };
+        assert!(position("Composing response") < position("execution succeeded"));
+        assert_eq!(*messages.last().unwrap(), "execution succeeded");
+    }
+
+    #[tokio::test]
+    async fn single_execution_signal_cancels_and_reports_worker_shutdown() {
+        let (api, state) = serve(Api::default()).await;
+        let context = context_json("run slow please", "mock", plain_spec());
+        let id: Uuid = serde_json::from_value(context["execution"]["id"].clone()).unwrap();
+        *api.context.lock().unwrap() = Some(context);
+
+        let started = Instant::now();
+        let signal = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        run_single_until(state.clone(), id, signal, Duration::from_secs(10))
+            .await
+            .unwrap();
+        // The mock sleeps 25 s on "slow"; the signal must cut that short.
+        assert!(started.elapsed() < Duration::from_secs(8));
+        let completes = api.completes();
+        assert_eq!(completes.len(), 1);
+        assert_eq!(completes[0]["status"], "failed");
+        assert_eq!(completes[0]["error"]["details"]["code"], "worker_shutdown");
+        assert!(state.active.lock().unwrap().is_empty());
     }
 }

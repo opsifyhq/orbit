@@ -188,6 +188,7 @@ use crate::handlers;
         handlers::worker_profiles::WorkerBootstrap,
         orbit_store::Skill,
         orbit_store::WorkerProfile,
+        orbit_store::EnvVarState,
         HarnessHealthView,
         CreateProviderRequest,
         UpdateProviderRequest,
@@ -307,7 +308,7 @@ use crate::handlers;
     )),
     tags(
         (name = "system", description = "Health, readiness, metadata and OpenAPI"),
-        (name = "auth", description = "Public browser OIDC configuration and token exchange"),
+        (name = "auth", description = "Browser sign-in helpers (OIDC discovery and code exchange); unauthenticated"),
         (name = "account", description = "Identity, organization, API tokens and audit"),
         (name = "agents", description = "Persistent agent definitions and versions"),
         (name = "executions", description = "Executions, events and live streaming"),

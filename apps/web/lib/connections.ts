@@ -24,9 +24,24 @@ export const URL_CONNECTORS = ["gitlab", "webhook"];
 /** Config keys the URL field writes, hidden from the generic schema fields. */
 export const URL_KEYS = ["baseUrl", "cloneBaseUrl", "url"];
 
-export function connectionStatus(connection: Pick<ConnectionView, "status">): StatusMeta {
-  if (connection.status === "connected") return { label: "Connected", tone: "success", shape: "solid" };
-  if (connection.status === "error") return { label: "Check failed", tone: "danger", shape: "cross" };
+/** How a connection's last check went. The API keeps a usable connection `active`. */
+export type ConnectionHealth = "connected" | "error" | "unchecked";
+
+export function connectionHealth(
+  connection: Pick<ConnectionView, "status" | "lastCheckedAt">,
+): ConnectionHealth {
+  if (connection.status === "error") return "error";
+  // "active" only means usable; a recorded check is what earns "Connected".
+  return connection.status === "active" && connection.lastCheckedAt ? "connected" : "unchecked";
+}
+
+export function connectionStatus(
+  connection: Pick<ConnectionView, "status" | "lastCheckedAt">,
+): StatusMeta {
+  const health = connectionHealth(connection);
+  if (health === "connected") return { label: "Connected", tone: "success", shape: "solid" };
+  // Degraded, not broken: agents can still use a connection whose last check failed.
+  if (health === "error") return { label: "Check failed", tone: "warning", shape: "cross" };
   return { label: "Not checked", tone: "neutral", shape: "ring" };
 }
 

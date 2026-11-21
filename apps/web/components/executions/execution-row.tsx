@@ -47,7 +47,10 @@ export function ExecutionRow({
       )}
     >
       <ExecutionStatusBadge status={execution.status} className="hidden sm:inline-flex" />
-      <ExecutionStatusBadge status={execution.status} hideLabel className="h-4 w-4 sm:hidden" />
+      {/* The status is spelled out in the line below on phones; do not announce it twice. */}
+      <span aria-hidden className="sm:hidden">
+        <ExecutionStatusBadge status={execution.status} hideLabel className="h-4 w-4" />
+      </span>
       <div className="min-w-0">
         <p className="truncate text-sm font-medium">{title}</p>
         <p className="truncate text-[13px] text-muted-foreground">

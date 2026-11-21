@@ -30,7 +30,7 @@ import { Section } from "@/components/ui/section";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Status } from "@/components/ui/status";
-import { connectionStatus, type Capability } from "@/lib/connections";
+import { connectionHealth, connectionStatus, type Capability } from "@/lib/connections";
 import { capabilityLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
 import { queryKeys, useConnections, useConnectors } from "@/lib/queries";
 import type { ConnectionView } from "@/lib/types";
@@ -47,10 +47,7 @@ const FILTER_LABEL: Record<Filter, string> = {
 };
 
 function inFilter(connection: ConnectionView, filter: Filter) {
-  if (filter === "all") return true;
-  if (filter === "connected") return connection.status === "connected";
-  if (filter === "error") return connection.status === "error";
-  return connection.status !== "connected" && connection.status !== "error";
+  return filter === "all" || connectionHealth(connection) === filter;
 }
 
 export default function ConnectionsPage() {

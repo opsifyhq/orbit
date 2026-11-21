@@ -145,6 +145,14 @@ launcher:
   # `launcher-token` in `secrets.existingSecret`.
   token: ""
   imagePullSecret: ""
+  # Harness auth Secrets a worker profile may name in `authSecretName` (OpenCode/Pi). The
+  # launcher mounts the named Secret into the agent pod, so profile editors must not be
+  # able to pick any Secret in the namespace (e.g. ORBIT's own). Comma-separated exact
+  # names or `prefix*` patterns, enforced by the API on save and by the launcher on launch
+  # (it deliberately cannot read Secrets, so the rule is by name). The default covers the
+  # documented `orbit-opencode-auth` / `orbit-pi-auth`; add your own names here. Empty
+  # allows none.
+  authSecrets: "orbit-opencode-auth*,orbit-pi-auth*"
   resources:
     requests:
       cpu: 50m

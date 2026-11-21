@@ -1140,6 +1140,8 @@ async fn apply_item(
                     description: None,
                     labels: None,
                     definition: Some(*definition),
+                    // An import replaces whatever is there; it did not start from a known version.
+                    expected_version: None,
                 }),
             )
             .await?;

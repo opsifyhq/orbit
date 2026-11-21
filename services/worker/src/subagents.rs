@@ -70,13 +70,7 @@ pub async fn materialize(
     if subagents.is_empty() {
         return Ok(Vec::new());
     }
-    let root = orbit_harness::paths::canonical_root(workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-    let directory = root.join(".opencode/agents");
-    orbit_harness::paths::safe_create_dir_all(&root, &directory)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let directory = std::path::Path::new(".opencode/agents");
     let mut names = Vec::new();
     for subagent in subagents {
         let name = subagent
@@ -118,9 +112,13 @@ pub async fn materialize(
         document.push_str("---\n\n");
         document.push_str(instructions);
         document.push('\n');
-        orbit_harness::paths::safe_write(&root, &directory.join(format!("{file}.md")), document)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.message))?;
+        // Never through a symlink the repository shipped at `.opencode` or below.
+        orbit_harness::paths::write_workspace_file(
+            workspace,
+            directory.join(format!("{file}.md")),
+            document,
+        )
+        .map_err(|error| anyhow::anyhow!("could not write subagent {file}: {error}"))?;
         names.push(file);
     }
     Ok(names)

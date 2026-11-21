@@ -16,7 +16,7 @@ definitions, harnesses, model providers, connectors, triggers, executions and po
 
 ```
 apps/web/              Next.js + React + Tailwind web app (App Router)
-packages/api-client/   Generated OpenAPI TypeScript client (do not hand-edit schema.d.ts)
+packages/api-client/   Generated OpenAPI document and TypeScript client (do not hand-edit openapi.json or schema.d.ts)
 packages/contracts/    Zod schemas shared by web and future mobile app
 services/api/          orbit-api binary (control plane HTTP)
 services/worker/       orbit-worker binary (execution plane supervisor)
@@ -50,7 +50,7 @@ pnpm install
 pnpm --filter @orbit/web dev
 pnpm --filter @orbit/web typecheck
 pnpm --filter @orbit/web build
-pnpm api:generate            # requires a running API at localhost:8080
+pnpm api:generate            # openapi.json + schema.d.ts from the Rust code (no running API needed)
 
 # containers + Kubernetes (mkd.local conventions)
 docker compose -f deploy/compose/compose.yaml up --build

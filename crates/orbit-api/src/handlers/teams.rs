@@ -11,7 +11,7 @@ use orbit_domain::{HarnessKind, TriggerSource, ValidationIssue};
 use orbit_security::{AuthContext, Permission};
 use orbit_store::{AgentTeam, TeamRun, TeamStep};
 
-use crate::dto::ArchiveListQuery;
+use crate::dto::TeamRunListQuery;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::work_sources::{
@@ -268,10 +268,13 @@ async fn validate_work_source_connection(
                         connection.connector_slug, source.provider
                     ),
                 ));
-            } else if connection.connection.status != "active" {
+            } else if !connection.connection.is_usable() {
                 issues.push(ValidationIssue::new(
                     "workSource.connectionId",
-                    format!("connection '{}' is not active", connection.connection.name),
+                    format!(
+                        "connection '{}' is {}",
+                        connection.connection.name, connection.connection.status
+                    ),
                 ));
             }
         }
@@ -426,6 +429,7 @@ pub async fn create_team(
     if !body.repositories.is_empty() {
         issues.extend(validate_repositories(&body.repositories));
     }
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
     for step in &body.steps {
         if !agent_ids.insert(step.agent_id) {
@@ -434,35 +438,54 @@ pub async fn create_team(
                 "the same agent cannot appear twice in one team",
             ));
         }
-        if state
-            .store
-            .get_agent(auth.org_id, step.agent_id)
-            .await
-            .is_err()
-        {
+        // An agent the caller cannot view is reported exactly like a missing one.
+        let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
+            Ok(agent) => {
+                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+            }
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "steps.agentId",
                 format!("unknown agent '{}'", step.agent_id),
             ));
         }
     }
-    for slug in &body.skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            issues.push(ValidationIssue::new(
-                "skills",
-                format!("unknown skill '{slug}'"),
-            ));
-        }
-    }
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    if let Some(profile_id) = body.worker_profile_id {
+        let viewable = match state
+            .store
+            .get_worker_profile(auth.org_id, profile_id)
+            .await
+        {
+            Ok(profile) => access.can_view(
+                profile.owner_user_id,
+                profile.owner_team_id,
+                &profile.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
+            issues.push(ValidationIssue::new(
+                "workerProfileId",
+                format!("unknown worker profile '{profile_id}'"),
+            ));
+        }
+    }
+    issues.extend(
+        crate::preflight::unusable_skill_issues(
+            &state,
+            auth.org_id,
+            &access,
+            &body.skills,
+            "skills",
+            false,
+        )
+        .await?,
+    );
     for connection_id in &body.connection_ids {
         match state
             .store
@@ -486,12 +509,15 @@ pub async fn create_team(
         }
     }
     for mapping_id in &body.env_mapping_ids {
-        if state
-            .store
-            .get_env_mapping(auth.org_id, *mapping_id)
-            .await
-            .is_err()
-        {
+        let viewable = match state.store.get_env_mapping(auth.org_id, *mapping_id).await {
+            Ok(mapping) => access.can_view(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "envMappingIds",
                 format!("unknown environment mapping '{mapping_id}'"),
@@ -589,6 +615,7 @@ pub async fn update_team(
     if !body.repositories.is_empty() {
         issues.extend(validate_repositories(&body.repositories));
     }
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
     for step in &body.steps {
         if !agent_ids.insert(step.agent_id) {
@@ -597,35 +624,54 @@ pub async fn update_team(
                 "the same agent cannot appear twice in one team",
             ));
         }
-        if state
-            .store
-            .get_agent(auth.org_id, step.agent_id)
-            .await
-            .is_err()
-        {
+        // An agent the caller cannot view is reported exactly like a missing one.
+        let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
+            Ok(agent) => {
+                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+            }
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "steps.agentId",
                 format!("unknown agent '{}'", step.agent_id),
             ));
         }
     }
-    for slug in &body.skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            issues.push(ValidationIssue::new(
-                "skills",
-                format!("unknown skill '{slug}'"),
-            ));
-        }
-    }
     if let Some(source) = &body.work_source {
         validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
     }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    if let Some(profile_id) = body.worker_profile_id {
+        let viewable = match state
+            .store
+            .get_worker_profile(auth.org_id, profile_id)
+            .await
+        {
+            Ok(profile) => access.can_view(
+                profile.owner_user_id,
+                profile.owner_team_id,
+                &profile.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
+            issues.push(ValidationIssue::new(
+                "workerProfileId",
+                format!("unknown worker profile '{profile_id}'"),
+            ));
+        }
+    }
+    issues.extend(
+        crate::preflight::unusable_skill_issues(
+            &state,
+            auth.org_id,
+            &access,
+            &body.skills,
+            "skills",
+            false,
+        )
+        .await?,
+    );
     for connection_id in &body.connection_ids {
         match state
             .store
@@ -649,12 +695,15 @@ pub async fn update_team(
         }
     }
     for mapping_id in &body.env_mapping_ids {
-        if state
-            .store
-            .get_env_mapping(auth.org_id, *mapping_id)
-            .await
-            .is_err()
-        {
+        let viewable = match state.store.get_env_mapping(auth.org_id, *mapping_id).await {
+            Ok(mapping) => access.can_view(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            ),
+            Err(_) => false,
+        };
+        if !viewable {
             issues.push(ValidationIssue::new(
                 "envMappingIds",
                 format!("unknown environment mapping '{mapping_id}'"),
@@ -1119,18 +1168,24 @@ pub async fn create_run(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(ArchiveListQuery), responses((status = 200, body = [orbit_store::TeamRun])))]
+#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(TeamRunListQuery), responses((status = 200, body = [orbit_store::TeamRun])))]
 pub async fn list_runs(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Query(query): Query<ArchiveListQuery>,
+    Query(query): Query<TeamRunListQuery>,
 ) -> Result<Json<Vec<TeamRun>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     Ok(Json(
         state
             .store
-            .list_team_runs(auth.org_id, query.archived, Some(&access.store_access()))
+            .list_team_runs(
+                auth.org_id,
+                query.archived,
+                query.team_id,
+                query.limit.unwrap_or(100).clamp(1, 200) as i64,
+                Some(&access.store_access()),
+            )
             .await?,
     ))
 }
@@ -1163,23 +1218,16 @@ const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
 /// next one exists, the next tick sees "last step succeeded, run still running" and
 /// continues from there; a run is never stranded in that state.
 pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
-    let Some(run) = state
+    let Some((run, lease)) = state
         .store
         .claim_team_run_advance(run.id, ADVANCE_LEASE_SECS)
         .await?
     else {
         return Ok(());
     };
-    let claimed_at = run.advance_claimed_at;
     let result = advance_claimed(state, run.clone()).await;
-    if let Some(claimed_at) = claimed_at {
-        if let Err(error) = state
-            .store
-            .release_team_run_advance(run.id, claimed_at)
-            .await
-        {
-            tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
-        }
+    if let Err(error) = state.store.release_team_run_advance(run.id, lease).await {
+        tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
     }
     result
 }

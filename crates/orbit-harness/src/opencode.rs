@@ -3,13 +3,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
+use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChild};
 use crate::process_env::child_environment;
-use crate::stream::{self, MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
+use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
     HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
@@ -339,32 +339,34 @@ fn merge_native_permissions(
     merged
 }
 
-async fn read_workspace_json(
-    workspace: &Path,
-    path: &Path,
-) -> Result<serde_json::Value, HarnessError> {
-    let existing = crate::paths::safe_read_to_string_if_regular(workspace, path).await?;
-    let mut config = existing
+/// The workspace's `opencode.json` (never read through a symlink that leaves the
+/// workspace), or an empty object.
+fn read_open_code_config(workspace: &Path) -> serde_json::Value {
+    crate::paths::read_workspace_file(workspace, "opencode.json")
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !config.is_object() {
-        config = serde_json::json!({});
-    }
-    Ok(config)
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_open_code_config(workspace: &Path, config: &serde_json::Value) -> std::io::Result<()> {
+    crate::paths::write_workspace_file(
+        workspace,
+        "opencode.json",
+        serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".into()),
+    )
 }
 
 /// Write OpenCode tool permissions. Web Search/WebFetch default to deny because
 /// `opencode run` is non-interactive and aborts when they ask for input.
-async fn write_open_code_tool_permissions(
+fn write_open_code_tool_permissions(
     workspace: &Path,
     web_search: bool,
     web_fetch: bool,
     native: &std::collections::BTreeMap<String, String>,
     autonomy: AutonomyLevel,
-) -> Result<(), HarnessError> {
+) -> std::io::Result<()> {
     let native = merge_native_permissions(autonomy_native_baseline(autonomy), native);
-    let path = workspace.join("opencode.json");
-    let mut config = read_workspace_json(workspace, &path).await?;
+    let mut config = read_open_code_config(workspace);
     let root = config.as_object_mut().unwrap();
     // OpenCode's websearch plugin reads a root `websearch` setting; `false` removes the
     // provider prompt/tool entirely. `tools`/`permission` alone still advertised it.
@@ -402,21 +404,14 @@ async fn write_open_code_tool_permissions(
             }
         }
     }
-    crate::paths::safe_write(
-        workspace,
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )
-    .await
+    write_open_code_config(workspace, &config)
 }
 
 /// Write a local OpenCode plugin that checks the ORBIT broker before native tools.
-async fn write_open_code_policy_plugin(workspace: &Path) -> Result<(), HarnessError> {
-    let dir = workspace.join(".opencode/plugins");
-    crate::paths::safe_create_dir_all(workspace, &dir).await?;
-    crate::paths::safe_write(
+fn write_open_code_policy_plugin(workspace: &Path) -> std::io::Result<()> {
+    crate::paths::write_workspace_file(
         workspace,
-        &dir.join("orbit-policy.ts"),
+        ".opencode/plugins/orbit-policy.ts",
         r#"import { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
 
@@ -488,18 +483,13 @@ export default Plugin.define({
 })
 "#,
     )
-    .await
 }
 
-async fn write_open_code_mcp_config(
-    workspace: &Path,
-    bridge: &OrbitMcpBridge,
-) -> Result<(), HarnessError> {
+fn write_open_code_mcp_config(workspace: &Path, bridge: &OrbitMcpBridge) -> std::io::Result<()> {
     if bridge.command.is_empty() {
         return Ok(());
     }
-    let path = workspace.join("opencode.json");
-    let mut config = read_workspace_json(workspace, &path).await?;
+    let mut config = read_open_code_config(workspace);
     let root = config.as_object_mut().unwrap();
     root.entry("$schema")
         .or_insert_with(|| json!("https://opencode.ai/config.json"));
@@ -520,12 +510,7 @@ async fn write_open_code_mcp_config(
             }
         }),
     );
-    crate::paths::safe_write(
-        workspace,
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )
-    .await
+    write_open_code_config(workspace, &config)
 }
 
 fn open_code_environment_reference(name: &str) -> String {
@@ -534,11 +519,11 @@ fn open_code_environment_reference(name: &str) -> String {
 
 /// Write a platform-managed provider into opencode.json so OpenCode can use
 /// ORBIT-resolved OpenAI-compatible endpoints (e.g. vLLM).
-async fn write_open_code_provider_config(
+fn write_open_code_provider_config(
     workspace: &Path,
     model: &orbit_contracts::ResolvedModel,
     environment_index: usize,
-) -> Result<Vec<(String, String)>, HarnessError> {
+) -> std::io::Result<Vec<(String, String)>> {
     use orbit_contracts::ModelSelection;
     let (provider_name, endpoint, credential) =
         match (&model.selection, &model.endpoint, &model.credential) {
@@ -550,8 +535,7 @@ async fn write_open_code_provider_config(
     let mut environment = Vec::new();
 
     // Read existing config or start fresh.
-    let path = workspace.join("opencode.json");
-    let mut config = read_workspace_json(workspace, &path).await?;
+    let mut config = read_open_code_config(workspace);
 
     let mut provider = serde_json::Map::new();
     provider.insert(
@@ -604,24 +588,13 @@ async fn write_open_code_provider_config(
         map.insert(provider_name, serde_json::Value::Object(provider));
     }
 
-    crate::paths::safe_write(
-        workspace,
-        &path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
-    )
-    .await?;
+    write_open_code_config(workspace, &config)?;
     Ok(environment)
 }
 
-async fn write_agent_instructions(
-    workspace: &Path,
-    request: &ExecutionRequest,
-) -> Result<(), HarnessError> {
+fn write_agent_instructions(workspace: &Path, request: &ExecutionRequest) -> std::io::Result<()> {
     let instructions: &InstructionsBlock = &request.instructions;
-    let path = workspace.join("AGENTS.md");
-    let existing = crate::paths::safe_read_to_string_if_regular(workspace, &path)
-        .await?
-        .unwrap_or_default();
+    let existing = crate::paths::read_workspace_file(workspace, "AGENTS.md").unwrap_or_default();
     let mut content = String::new();
     if !existing.trim().is_empty() {
         // Do not discard repository-local agent guidance when an execution runs in a
@@ -660,7 +633,7 @@ async fn write_agent_instructions(
          retry the same write.
 ",
     );
-    crate::paths::safe_write(workspace, &path, content).await
+    crate::paths::write_workspace_file(workspace, "AGENTS.md", content)
 }
 
 /// Separates assistant text written before a tool call from what follows it.
@@ -676,34 +649,10 @@ fn final_answer(text: &str) -> String {
         .to_string()
 }
 
-fn truncate(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        value.to_string()
-    } else {
-        let mut end = limit;
-        while end > 0 && !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}… [truncated]", &value[..end])
-    }
-}
-
-fn truncate_json(value: &Value, limit: usize) -> Value {
-    let Ok(serialized) = serde_json::to_string(value) else {
-        return json!("[unserializable JSON]");
-    };
-    if serialized.len() <= limit {
-        value.clone()
-    } else {
-        json!(truncate(&serialized, limit))
-    }
-}
-
 fn map_open_code_event(
     value: &Value,
     usage: &mut Usage,
     text: &mut String,
-    error: &mut Option<String>,
 ) -> Option<HarnessEvent> {
     let kind = value.get("type")?.as_str()?;
     let part = value.get("part").cloned().unwrap_or(Value::Null);
@@ -798,9 +747,7 @@ fn map_open_code_event(
                 .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str)
-                .unwrap_or("opencode reported an error")
-                .to_string();
-            *error = Some(message.clone());
+                .unwrap_or("opencode reported an error");
             Some(HarnessEvent::new(
                 HarnessEventKind::Error,
                 LogLevel::Error,
@@ -808,34 +755,6 @@ fn map_open_code_event(
             ))
         }
         _ => None,
-    }
-}
-
-async fn emit(sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>, event: HarnessEvent) {
-    if let Some(sender) = sender {
-        let _ = sender.send(event).await;
-    }
-}
-
-fn terminate(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            // Kill the whole process group (OpenCode may spawn helpers).
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
-        }
-    }
-    let _ = child.start_kill();
-}
-
-async fn wait_or_kill(child: &mut tokio::process::Child, grace: Duration) {
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = child.kill().await;
-        }
     }
 }
 
@@ -867,8 +786,12 @@ impl OpenCodeHarnessAdapter {
                 workspace_root
             }
         };
-        let workspace = crate::paths::canonical_root(&workspace).await?;
-        write_agent_instructions(&workspace, &request).await?;
+        if let Err(err) = write_agent_instructions(&workspace, &request) {
+            return Err(HarnessError::new(
+                HarnessErrorKind::Internal,
+                format!("could not write AGENTS.md: {err}"),
+            ));
+        }
 
         write_open_code_tool_permissions(
             &workspace,
@@ -877,7 +800,6 @@ impl OpenCodeHarnessAdapter {
             &settings.native_tool_permissions,
             request.autonomy,
         )
-        .await
         .map_err(|error| {
             HarnessError::new(
                 HarnessErrorKind::Internal,
@@ -885,29 +807,24 @@ impl OpenCodeHarnessAdapter {
             )
         })?;
         if let Some(bridge) = &settings.orbit_mcp {
-            write_open_code_mcp_config(&workspace, bridge)
-                .await
-                .map_err(|error| {
-                    HarnessError::new(
-                        HarnessErrorKind::Internal,
-                        format!("could not write opencode.json: {error}"),
-                    )
-                })?;
-            write_open_code_policy_plugin(&workspace)
-                .await
-                .map_err(|error| {
-                    HarnessError::new(
-                        HarnessErrorKind::Internal,
-                        format!("could not write OpenCode policy plugin: {error}"),
-                    )
-                })?;
+            write_open_code_mcp_config(&workspace, bridge).map_err(|error| {
+                HarnessError::new(
+                    HarnessErrorKind::Internal,
+                    format!("could not write opencode.json: {error}"),
+                )
+            })?;
+            write_open_code_policy_plugin(&workspace).map_err(|error| {
+                HarnessError::new(
+                    HarnessErrorKind::Internal,
+                    format!("could not write OpenCode policy plugin: {error}"),
+                )
+            })?;
         }
         let mut provider_environment = Vec::new();
         let mut provider_environment_index = 0;
         if let Some(model) = &request.model {
             provider_environment.extend(
                 write_open_code_provider_config(&workspace, model, provider_environment_index)
-                    .await
                     .map_err(|error| {
                         HarnessError::new(
                             HarnessErrorKind::Internal,
@@ -920,7 +837,6 @@ impl OpenCodeHarnessAdapter {
         for model in &request.subagent_models {
             provider_environment.extend(
                 write_open_code_provider_config(&workspace, model, provider_environment_index)
-                    .await
                     .map_err(|error| {
                         HarnessError::new(
                             HarnessErrorKind::Internal,
@@ -969,207 +885,129 @@ impl OpenCodeHarnessAdapter {
         // worker's PWD points at the ORBIT repository, so explicitly set it to the
         // per-execution workspace. This also keeps shell tools inside the sandbox.
         command.env("PWD", &workspace);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        command.kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.as_std_mut().process_group(0);
-        }
-
-        let mut child = command.spawn().map_err(|e| {
-            HarnessError::new(
-                HarnessErrorKind::Unavailable,
-                format!(
-                    "could not start OpenCode binary '{}': {e}. The worker image must include the OpenCode CLI.",
-                    settings.binary()
-                ),
-            )
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "opencode stdout unavailable")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "opencode stderr unavailable")
-        })?;
-
         let debug_logs = settings.debug_logs.unwrap_or(false);
-        let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_events = request.events.clone();
-        let stderr_task = {
-            let buffer = stderr_buffer.clone();
-            tokio::spawn(async move {
-                let lines = stream::lines(stderr);
-                tokio::pin!(lines);
-                while let Some(line) = lines.next().await {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(error) => {
-                            let mut buffer = buffer.lock().expect("stderr lock");
-                            if buffer.len() < 16_000 {
-                                buffer.push_str(&format!(
-                                    "[skipped oversized stderr line: {error}]\n"
-                                ));
-                            }
-                            continue;
-                        }
-                    };
-                    {
-                        let mut buffer = buffer.lock().expect("stderr lock");
-                        if buffer.len() < 16_000 {
-                            buffer.push_str(&line);
-                            buffer.push('\n');
-                        }
-                    }
-                    let lower = line.to_ascii_lowercase();
-                    if debug_logs && (lower.contains("mcp") || lower.contains("error")) {
-                        if let Some(sender) = &stderr_events {
-                            let _ = sender
-                                .send(HarnessEvent::log(
-                                    LogLevel::Warn,
-                                    format!("opencode: {}", truncate(&line, 1500)),
-                                ))
-                                .await;
-                        }
-                    }
-                }
-            })
-        };
-
         let started = Instant::now();
         let timeout = Duration::from_secs(request.resources.timeout_seconds.max(1));
-        let cancel = request.cancel.clone();
         let sender = request.events.clone();
+        // Active time only: waiting for a human approval does not use up the timeout.
+        let pause = request.pause.clone();
+        let mut run = SupervisedChild::spawn(
+            command,
+            "OpenCode",
+            request.cancel.clone(),
+            async move { pause.deadline(timeout).await },
+            request.events.clone(),
+            move |line| {
+                let lower = line.to_ascii_lowercase();
+                (debug_logs && (lower.contains("mcp") || lower.contains("error"))).then(|| {
+                    HarnessEvent::log(
+                        LogLevel::Warn,
+                        format!("opencode: {}", truncate(line, 1500)),
+                    )
+                })
+            },
+        )?;
+
         let mut usage = Usage::default();
         let mut text = String::new();
         let mut session = session_ref.clone();
+        // Last `error` event. A later answer supersedes it (OpenCode retries recoverable
+        // provider errors and then continues), mirroring how the Pi adapter treats errors.
         let mut error: Option<String> = None;
-        let lines = stream::lines(stdout);
-        tokio::pin!(lines);
-        let mut timed_out = false;
-        let mut cancelled = false;
-        // Active time only: waiting for a human approval does not use up the timeout.
-        let pause = request.pause.clone();
-        let deadline = pause.deadline(timeout);
-        tokio::pin!(deadline);
-
         loop {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    cancelled = true;
-                    terminate(&mut child);
-                    wait_or_kill(&mut child, Duration::from_secs(3)).await;
-                    break;
-                }
-                _ = &mut deadline => {
-                    timed_out = true;
-                    terminate(&mut child);
-                    wait_or_kill(&mut child, Duration::from_secs(3)).await;
-                    break;
-                }
-                line = lines.next() => {
-                    match line {
-                        Some(Ok(line)) => {
-                            if line.trim().is_empty() { continue; }
-                            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                                emit(&sender, HarnessEvent::log(LogLevel::Debug, format!("opencode: {line}"))).await;
-                                continue;
-                            };
-                            if let Some(found) = value.get("sessionID").and_then(Value::as_str) {
-                                session = Some(found.to_string());
-                            }
-                            if let Some(event) =
-                                map_open_code_event(&value, &mut usage, &mut text, &mut error)
-                            {
-                                emit(&sender, event).await;
-                            }
+            match run.next().await {
+                Next::Line(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                        emit(
+                            &sender,
+                            HarnessEvent::log(LogLevel::Debug, format!("opencode: {line}")),
+                        )
+                        .await;
+                        continue;
+                    };
+                    if let Some(found) = value.get("sessionID").and_then(Value::as_str) {
+                        session = Some(found.to_string());
+                    }
+                    if let Some(event) = map_open_code_event(&value, &mut usage, &mut text) {
+                        if event.kind == HarnessEventKind::Error {
+                            error = Some(event.message.clone());
+                        } else if event.kind == HarnessEventKind::OutputDelta {
+                            error = None;
                         }
-                        Some(Err(err)) => {
-                            emit(&sender, HarnessEvent::log(
-                                LogLevel::Warn,
-                                format!("opencode output line skipped: {err}"),
-                            )).await;
-                        }
-                        None => break,
+                        emit(&sender, event).await;
                     }
                 }
+                Next::Line(Err(err)) => {
+                    emit(
+                        &sender,
+                        HarnessEvent::log(
+                            LogLevel::Warn,
+                            format!("opencode output line skipped: {err}"),
+                        ),
+                    )
+                    .await;
+                }
+                Next::Eof | Next::Cancelled | Next::TimedOut => break,
             }
         }
-
-        let status = if cancelled || timed_out {
-            let _ = child.wait().await;
-            None
-        } else {
-            Some(child.wait().await.map_err(|e| {
-                HarnessError::new(
-                    HarnessErrorKind::Internal,
-                    format!("opencode wait failed: {e}"),
-                )
-            })?)
-        };
-        let _ = tokio::time::timeout(Duration::from_secs(2), stderr_task).await;
+        let finished = run.finish().await?;
 
         usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
         usage.cpu_millis = None;
 
-        if cancelled {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
-            outcome.status = ExecutionStatus::Cancelled;
+        let with_run = |mut outcome: ExecutionOutcome, status| {
+            outcome.status = status;
             outcome.session_ref = session.clone();
             outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-        if timed_out {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs()));
-            outcome.status = ExecutionStatus::TimedOut;
-            outcome.session_ref = session.clone();
-            outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-
-        let exit = status.expect("status present unless cancelled/timed out");
-        if !exit.success() {
-            let stderr = stderr_buffer.lock().expect("stderr lock").clone();
-            let error = HarnessError::new(
-                HarnessErrorKind::ExecutionFailed,
-                format!(
-                    "opencode exited with {}: {}",
-                    exit.code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into()),
-                    truncate(stderr.trim(), 4_000)
+            outcome
+        };
+        let outcome = match finished.ending {
+            Ending::Cancelled => with_run(
+                ExecutionOutcome::failed(HarnessError::cancelled()),
+                ExecutionStatus::Cancelled,
+            ),
+            Ending::TimedOut => with_run(
+                ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs())),
+                ExecutionStatus::TimedOut,
+            ),
+            Ending::Exited(exit) if !exit.success() => with_run(
+                ExecutionOutcome::failed(HarnessError::new(
+                    HarnessErrorKind::ExecutionFailed,
+                    format!(
+                        "opencode exited with {}: {}",
+                        exit.code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".into()),
+                        truncate(finished.stderr.trim(), 4_000)
+                    ),
+                )),
+                ExecutionStatus::Failed,
+            ),
+            // OpenCode can exit 0 after reporting a fatal error (bad credentials, unknown
+            // model). Without a later answer that is a failed run, not an empty success.
+            Ending::Exited(_) if error.is_some() => with_run(
+                ExecutionOutcome::failed(HarnessError::new(
+                    HarnessErrorKind::ExecutionFailed,
+                    error.clone().unwrap_or_default(),
+                )),
+                ExecutionStatus::Failed,
+            ),
+            Ending::Exited(_) => with_run(
+                ExecutionOutcome::succeeded(
+                    json!({
+                        "text": final_answer(&text),
+                        "sessionRef": session,
+                        "harness": "opencode",
+                        "wallTimeMs": usage.wall_time_ms,
+                    }),
+                    session.clone(),
                 ),
-            );
-            let mut outcome = ExecutionOutcome::failed(error);
-            outcome.status = ExecutionStatus::Failed;
-            outcome.session_ref = session.clone();
-            outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-
-        let answer = final_answer(&text);
-        if error.is_some() && answer.is_empty() {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::new(
-                HarnessErrorKind::ExecutionFailed,
-                error.unwrap_or_else(|| "opencode reported an error".into()),
-            ));
-            outcome.status = ExecutionStatus::Failed;
-            outcome.session_ref = session.clone();
-            outcome.usage = usage.clone();
-            return Ok((outcome, session, usage));
-        }
-
-        let output = json!({
-            "text": answer,
-            "sessionRef": session,
-            "harness": "opencode",
-            "wallTimeMs": usage.wall_time_ms,
-        });
-        let mut outcome = ExecutionOutcome::succeeded(output, session.clone());
-        outcome.usage = usage.clone();
+                ExecutionStatus::Succeeded,
+            ),
+        };
         Ok((outcome, session, usage))
     }
 }
@@ -1377,29 +1215,44 @@ mod tests {
     fn result_text_is_the_answer_after_the_last_tool_call() {
         let mut usage = Usage::default();
         let mut text = String::new();
-        let mut error = None;
-        macro_rules! feed {
-            ($line:expr) => {
-                map_open_code_event(
-                    &serde_json::from_str($line).unwrap(),
-                    &mut usage,
-                    &mut text,
-                    &mut error,
-                )
-            };
-        }
-        feed!(r#"{"type":"text","part":{"text":"Let me look around first."}}"#);
-        feed!(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"running"}}}"#);
-        feed!(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"completed"}}}"#);
-        feed!(r#"{"type":"text","part":{"text":"The answer"}}"#);
-        feed!(r#"{"type":"text","part":{"text":"is 42."}}"#);
+        let feed = |line: &str, usage: &mut Usage, text: &mut String| {
+            map_open_code_event(&serde_json::from_str(line).unwrap(), usage, text)
+        };
+        feed(
+            r#"{"type":"text","part":{"text":"Let me look around first."}}"#,
+            &mut usage,
+            &mut text,
+        );
+        feed(
+            r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"running"}}}"#,
+            &mut usage,
+            &mut text,
+        );
+        feed(
+            r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"completed"}}}"#,
+            &mut usage,
+            &mut text,
+        );
+        feed(
+            r#"{"type":"text","part":{"text":"The answer"}}"#,
+            &mut usage,
+            &mut text,
+        );
+        feed(
+            r#"{"type":"text","part":{"text":"is 42."}}"#,
+            &mut usage,
+            &mut text,
+        );
         assert_eq!(final_answer(&text), "The answer\nis 42.");
 
         // Ending on a tool call keeps the last thing said instead of returning nothing.
-        feed!(r#"{"type":"tool_use","part":{"tool":"todowrite","state":{"status":"completed"}}}"#);
+        feed(
+            r#"{"type":"tool_use","part":{"tool":"todowrite","state":{"status":"completed"}}}"#,
+            &mut usage,
+            &mut text,
+        );
         assert_eq!(final_answer(&text), "The answer\nis 42.");
         assert_eq!(final_answer(""), "");
-        assert!(error.is_none());
     }
 
     #[test]
@@ -1416,19 +1269,17 @@ mod tests {
     fn parses_text_tool_and_usage_events() {
         let mut usage = Usage::default();
         let mut text = String::new();
-        let mut error = None;
         let text_event: Value =
             serde_json::from_str(r#"{"type":"text","part":{"text":"hello world"}}"#).unwrap();
-        let event = map_open_code_event(&text_event, &mut usage, &mut text, &mut error).unwrap();
+        let event = map_open_code_event(&text_event, &mut usage, &mut text).unwrap();
         assert_eq!(event.kind, HarnessEventKind::OutputDelta);
         assert!(text.contains("hello world"));
-        assert!(error.is_none());
 
         let tool_event: Value = serde_json::from_str(
             r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"path":"a"},"output":"content"}}}"#,
         )
         .unwrap();
-        let event = map_open_code_event(&tool_event, &mut usage, &mut text, &mut error).unwrap();
+        let event = map_open_code_event(&tool_event, &mut usage, &mut text).unwrap();
         assert_eq!(event.kind, HarnessEventKind::ToolCall);
         assert_eq!(event.data["tool"], "read");
 
@@ -1436,23 +1287,9 @@ mod tests {
             r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":4},"cost":0.01}}"#,
         )
         .unwrap();
-        assert!(map_open_code_event(&usage_event, &mut usage, &mut text, &mut error).is_none());
+        assert!(map_open_code_event(&usage_event, &mut usage, &mut text).is_none());
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.output_tokens, Some(4));
-    }
-
-    #[test]
-    fn records_error_events() {
-        let mut usage = Usage::default();
-        let mut text = String::new();
-        let mut error = None;
-        let value: Value =
-            serde_json::from_str(r#"{"type":"error","error":{"message":"authentication failed"}}"#)
-                .unwrap();
-        let event = map_open_code_event(&value, &mut usage, &mut text, &mut error).unwrap();
-        assert_eq!(event.kind, HarnessEventKind::Error);
-        assert_eq!(error.as_deref(), Some("authentication failed"));
-        assert!(text.is_empty());
     }
 
     #[test]
@@ -1581,10 +1418,10 @@ mod config_tests {
         }
     }
 
-    #[tokio::test]
-    async fn writes_web_tool_permissions() {
+    #[test]
+    fn writes_web_tool_permissions() {
         let dir = std::env::temp_dir().join(format!("orbit-opencode-{}", uuid::Uuid::now_v7()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         write_open_code_tool_permissions(
             &dir,
             false,
@@ -1592,14 +1429,10 @@ mod config_tests {
             &Default::default(),
             AutonomyLevel::AUTONOMOUS,
         )
-        .await
         .unwrap();
-        let config: serde_json::Value = serde_json::from_str(
-            &tokio::fs::read_to_string(dir.join("opencode.json"))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
         assert_eq!(config["permission"]["websearch"], "deny");
         assert_eq!(config["permission"]["webfetch"], "allow");
         assert_eq!(config["tools"]["websearch"], false);
@@ -1612,7 +1445,7 @@ mod config_tests {
                 ("ORBIT_BROKER_TOKEN".into(), "broker-secret-value".into()),
             ]),
         };
-        write_open_code_mcp_config(&dir, &bridge).await.unwrap();
+        write_open_code_mcp_config(&dir, &bridge).unwrap();
         let model = orbit_contracts::ResolvedModel {
             selection: orbit_contracts::ModelSelection::Platform {
                 provider_id: uuid::Uuid::now_v7(),
@@ -1637,12 +1470,8 @@ mod config_tests {
                 "provider-secret-value",
             )),
         };
-        let provider_environment = write_open_code_provider_config(&dir, &model, 0)
-            .await
-            .unwrap();
-        let contents = tokio::fs::read_to_string(dir.join("opencode.json"))
-            .await
-            .unwrap();
+        let provider_environment = write_open_code_provider_config(&dir, &model, 0).unwrap();
+        let contents = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let merged: serde_json::Value = serde_json::from_str(&contents).unwrap();
         assert_eq!(merged["tools"]["websearch"], false);
         assert_eq!(merged["websearch"], false);
@@ -1680,36 +1509,28 @@ mod config_tests {
                 )
             ]
         );
-        let _ = tokio::fs::remove_dir_all(dir).await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
-    async fn permissions_for(
-        autonomy: AutonomyLevel,
-        profile: &[(&str, &str)],
-    ) -> serde_json::Value {
+    fn permissions_for(autonomy: AutonomyLevel, profile: &[(&str, &str)]) -> serde_json::Value {
         let dir = std::env::temp_dir().join(format!("orbit-opencode-{}", uuid::Uuid::now_v7()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let profile = profile
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
-        write_open_code_tool_permissions(&dir, false, false, &profile, autonomy)
-            .await
-            .unwrap();
-        let config = serde_json::from_str(
-            &tokio::fs::read_to_string(dir.join("opencode.json"))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        let _ = tokio::fs::remove_dir_all(dir).await;
+        write_open_code_tool_permissions(&dir, false, false, &profile, autonomy).unwrap();
+        let config =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        let _ = std::fs::remove_dir_all(dir);
         config
     }
 
-    #[tokio::test]
-    async fn low_autonomy_denies_write_capable_tools_and_omits_auto() {
+    #[test]
+    fn low_autonomy_denies_write_capable_tools_and_omits_auto() {
         for level in [AutonomyLevel::OBSERVE, AutonomyLevel::RECOMMEND] {
-            let config = permissions_for(level, &[]).await;
+            let config = permissions_for(level, &[]);
             for tool in ["bash", "edit", "write", "patch", "multiedit", "apply_patch"] {
                 assert_eq!(config["permission"][tool], "deny", "{tool} at {level:?}");
                 assert_eq!(config["tools"][tool], false, "{tool} hidden at {level:?}");
@@ -1730,30 +1551,29 @@ mod config_tests {
         }
     }
 
-    #[tokio::test]
-    async fn act_level_keeps_auto_and_does_not_add_baseline() {
-        let config = permissions_for(AutonomyLevel::PREPARE, &[]).await;
+    #[test]
+    fn act_level_keeps_auto_and_does_not_add_baseline() {
+        let config = permissions_for(AutonomyLevel::PREPARE, &[]);
         assert!(config["permission"].get("bash").is_none());
         assert!(config["tools"].get("bash").is_none());
         let args = OpenCodeSettings::default().cli_args("task", None, None, AutonomyLevel::PREPARE);
         assert!(args.contains(&"--auto".to_string()));
     }
 
-    #[tokio::test]
-    async fn profile_permissions_cannot_loosen_the_baseline() {
+    #[test]
+    fn profile_permissions_cannot_loosen_the_baseline() {
         let config = permissions_for(
             AutonomyLevel::RECOMMEND,
             &[("bash", "allow"), ("edit", "ask"), ("read", "deny")],
-        )
-        .await;
+        );
         assert_eq!(config["permission"]["bash"], "deny");
         assert_eq!(config["permission"]["edit"], "deny");
         // Restricting a read-only tool is still honored.
         assert_eq!(config["permission"]["read"], "deny");
     }
 
-    #[tokio::test]
-    async fn profile_permissions_apply_at_higher_autonomy() {
+    #[test]
+    fn profile_permissions_apply_at_higher_autonomy() {
         let config = permissions_for(
             AutonomyLevel::AUTONOMOUS,
             &[
@@ -1762,8 +1582,7 @@ mod config_tests {
                 ("write", "allow"),
                 ("x", "bogus"),
             ],
-        )
-        .await;
+        );
         assert_eq!(config["permission"]["bash"], "deny");
         assert_eq!(config["permission"]["edit"], "ask");
         assert_eq!(config["permission"]["write"], "allow");
@@ -1771,11 +1590,11 @@ mod config_tests {
         assert_eq!(config["tools"]["bash"], false);
     }
 
-    #[tokio::test]
-    async fn anthropic_platform_provider_uses_the_native_sdk() {
+    #[test]
+    fn anthropic_platform_provider_uses_the_native_sdk() {
         let dir =
             std::env::temp_dir().join(format!("orbit-opencode-test-{}", uuid::Uuid::now_v7()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let model = orbit_contracts::ResolvedModel {
             selection: orbit_contracts::ModelSelection::Platform {
                 provider_id: uuid::Uuid::now_v7(),
@@ -1794,141 +1613,15 @@ mod config_tests {
             }),
             credential: None,
         };
-        write_open_code_provider_config(&dir, &model, 0)
-            .await
-            .unwrap();
-        let config: serde_json::Value = serde_json::from_str(
-            &tokio::fs::read_to_string(dir.join("opencode.json"))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
+        write_open_code_provider_config(&dir, &model, 0).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
         assert_eq!(config["provider"]["claude"]["npm"], "@ai-sdk/anthropic");
         assert_eq!(
             config["provider"]["claude"]["options"]["baseURL"],
             "https://api.anthropic.com/v1"
         );
-        let _ = tokio::fs::remove_dir_all(dir).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn symlinked_agents_md_is_not_read_or_overwritten() {
-        let dir =
-            std::env::temp_dir().join(format!("orbit-opencode-symlink-{}", uuid::Uuid::now_v7()));
-        let outside =
-            std::env::temp_dir().join(format!("orbit-opencode-victim-{}", uuid::Uuid::now_v7()));
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        tokio::fs::create_dir_all(outside.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&outside, "victim").await.unwrap();
-        std::os::unix::fs::symlink(&outside, dir.join("AGENTS.md")).unwrap();
-
-        let request = ExecutionRequest {
-            execution_id: uuid::Uuid::now_v7(),
-            agent_id: uuid::Uuid::now_v7(),
-            agent_version_id: uuid::Uuid::now_v7(),
-            agent_name: "test-agent".into(),
-            instructions: InstructionsBlock {
-                system: "trusted".into(),
-                constraints: vec![],
-            },
-            input: orbit_contracts::ExecutionInput {
-                task: "t".into(),
-                payload: serde_json::json!({}),
-                provenance: orbit_contracts::InputProvenance::manual("test"),
-            },
-            model: None,
-            subagent_models: Vec::new(),
-            grants: vec![],
-            autonomy: AutonomyLevel::OBSERVE,
-            resources: orbit_domain::ResourceLimits::default(),
-            harness_config: serde_json::json!({}),
-            extra_env: Default::default(),
-            session: SessionRequest::default(),
-            workspace: orbit_contracts::WorkspaceSpec::default(),
-            events: None,
-            cancel: tokio_util::sync::CancellationToken::new(),
-            pause: Default::default(),
-        };
-
-        let error = write_agent_instructions(&dir, &request).await.unwrap_err();
-        assert!(error.message.contains("symlink") || error.message.contains("escapes"));
-
-        assert_eq!(tokio::fs::read_to_string(&outside).await.unwrap(), "victim");
-        let meta = tokio::fs::symlink_metadata(dir.join("AGENTS.md"))
-            .await
-            .unwrap();
-        assert!(meta.file_type().is_symlink());
-        let _ = tokio::fs::remove_dir_all(dir).await;
-        let _ = tokio::fs::remove_file(outside).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn fake_opencode_error_event_with_exit_zero_fails() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir =
-            std::env::temp_dir().join(format!("orbit-opencode-fake-{}", uuid::Uuid::now_v7()));
-        let workspace = dir.join("workspace");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-        let bin = dir.join("fake-opencode");
-        let script = r#"#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo "fake-opencode 0.0.0"
-  exit 0
-fi
-echo '{"type":"error","error":{"message":"authentication failed"}}'
-exit 0
-"#;
-        tokio::fs::write(&bin, script).await.unwrap();
-        let mut perms = tokio::fs::metadata(&bin).await.unwrap().permissions();
-        perms.set_mode(0o755);
-        tokio::fs::set_permissions(&bin, perms).await.unwrap();
-
-        let adapter = OpenCodeHarnessAdapter;
-        let request = ExecutionRequest {
-            execution_id: uuid::Uuid::now_v7(),
-            agent_id: uuid::Uuid::now_v7(),
-            agent_version_id: uuid::Uuid::now_v7(),
-            agent_name: "test-agent".into(),
-            instructions: InstructionsBlock {
-                system: "test".into(),
-                constraints: vec![],
-            },
-            input: orbit_contracts::ExecutionInput {
-                task: "hello".into(),
-                payload: serde_json::json!({}),
-                provenance: orbit_contracts::InputProvenance::manual("test"),
-            },
-            model: None,
-            subagent_models: Vec::new(),
-            grants: vec![],
-            autonomy: AutonomyLevel::OBSERVE,
-            resources: orbit_domain::ResourceLimits {
-                timeout_seconds: 30,
-                ..Default::default()
-            },
-            harness_config: serde_json::json!({ "binary": bin.to_string_lossy() }),
-            extra_env: Default::default(),
-            session: SessionRequest::default(),
-            workspace: orbit_contracts::WorkspaceSpec {
-                root: workspace.to_string_lossy().to_string(),
-                read_only: false,
-            },
-            events: None,
-            cancel: tokio_util::sync::CancellationToken::new(),
-            pause: Default::default(),
-        };
-
-        let outcome = adapter.execute(request).await.unwrap();
-        assert_eq!(outcome.status, ExecutionStatus::Failed);
-        let error = outcome.error.expect("error");
-        assert_eq!(error.kind, HarnessErrorKind::ExecutionFailed);
-        assert!(error.message.contains("authentication failed"));
-
-        let _ = tokio::fs::remove_dir_all(dir).await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

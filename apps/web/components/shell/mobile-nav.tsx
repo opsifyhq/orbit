@@ -94,7 +94,7 @@ export function MobileTabBar({ pathname, signals }: { pathname: string; signals:
                 {badge > 0 ? (
                   <span
                     className={cn(
-                      "tabular absolute -right-2.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-xs font-bold leading-none text-[hsl(var(--ink))]",
+                      "tabular absolute -right-2.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-xs font-bold leading-none text-ink",
                       item.href === "/approvals" ? "bg-warning" : "bg-info",
                     )}
                   >
@@ -149,7 +149,7 @@ export function MobileTabBar({ pathname, signals }: { pathname: string; signals:
               {NAV_GROUPS.map((group) => (
                 <div key={group.id} className="mt-4">
                   {group.label ? (
-                    <p className="px-2.5 pb-1 text-xs font-medium text-ink-muted/75">{group.label}</p>
+                    <p className="px-2.5 pb-1 text-xs font-medium text-ink-muted">{group.label}</p>
                   ) : null}
                   <ul>
                     {group.items.map((item) => (

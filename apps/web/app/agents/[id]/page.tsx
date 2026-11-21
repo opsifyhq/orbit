@@ -2,6 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -14,6 +15,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -40,7 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { request, requestRaw } from "@/lib/http";
+import { errorStatus, request, requestRaw } from "@/lib/http";
 import { copyText } from "@/lib/browser";
 import { agentSpecSchema } from "@orbit/contracts";
 import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useSkills } from "@/lib/queries";
@@ -83,8 +85,14 @@ export default function AgentDetailPage() {
         lastExecutionId?: string | null;
         lastError?: string | null;
         consecutiveFailures?: number;
-      } | null>(`/api/v1/agents/${agentId}/runtime`).catch(() => null),
-    refetchInterval: 10_000,
+      } | null>(`/api/v1/agents/${agentId}/runtime`).catch((error) => {
+        // No runtime is the normal case (404); anything else must not look like it.
+        if (errorStatus(error) === 404) return null;
+        throw error;
+      }),
+    // Only a running 24/7 agent changes on its own; an idle one is refreshed by Start.
+    refetchInterval: (query) => (query.state.data ? 10_000 : false),
+    retry: false,
   });
   const startRuntime = useMutation({
     mutationFn: () =>
@@ -109,17 +117,20 @@ export default function AgentDetailPage() {
   });
 
   const lifecycle = useMutation({
-    mutationFn: async (action: "activate" | "pause") =>
+    // Restoring an archived agent is an activation; it keeps its own name in the UI.
+    mutationFn: async (action: "activate" | "pause" | "restore") =>
       unwrap(
         await api.POST(
-          action === "activate"
-            ? "/api/v1/agents/{agent_id}/activate"
-            : "/api/v1/agents/{agent_id}/pause",
+          action === "pause"
+            ? "/api/v1/agents/{agent_id}/pause"
+            : "/api/v1/agents/{agent_id}/activate",
           { params: { path: { agent_id: agentId } } },
         ),
       ),
     onSuccess: (_, action) => {
-      toast.success(action === "activate" ? "Agent activated" : "Agent paused");
+      toast.success(
+        action === "pause" ? "Agent paused" : action === "restore" ? "Agent restored" : "Agent activated",
+      );
       void queryClient.invalidateQueries({ queryKey: queryKeys.agent(agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
@@ -153,16 +164,14 @@ export default function AgentDetailPage() {
     );
   }
 
-  if (agent.isError || !agent.data) {
+  if (!agent.data) {
     return (
-      <EmptyState
-        title="Agent not found"
-        description={agent.error ? errorMessage(agent.error) : "This agent does not exist."}
-        action={
-          <Button asChild>
-            <Link href="/agents">Back to agents</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent"
+        error={agent.error}
+        back={{ href: "/agents", label: "Back to agents" }}
+        onRetry={() => void agent.refetch()}
+        retrying={agent.isFetching}
       />
     );
   }
@@ -215,7 +224,7 @@ export default function AgentDetailPage() {
     const confirmed = await confirm({
       title: `Archive ${data.name}?`,
       description:
-        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its execution history is kept and you can restore it at any time.",
+        "Triggers stop, it can no longer run or be edited, and it moves to the Archived filter. Its versions and execution history are kept, and you can restore it later.",
       confirmLabel: "Archive agent",
       destructive: true,
     });
@@ -256,7 +265,7 @@ export default function AgentDetailPage() {
                 agentHarness={spec.harness?.type}
               />
             ) : null}
-            {data.status === "active" ? (
+            {data.status !== "active" || runtime.isError ? null : (
               runtime.data ? (
                 <Button
                   variant="outline"
@@ -274,7 +283,7 @@ export default function AgentDetailPage() {
                   Start 24/7
                 </Button>
               )
-            ) : null}
+            )}
             {!archived ? (
               <Button asChild variant="outline">
                 <Link href={`/agents/${data.id}/edit`}>
@@ -289,6 +298,10 @@ export default function AgentDetailPage() {
             ) : data.status === "paused" ? (
               <Button variant="outline" onClick={() => lifecycle.mutate("activate")} loading={lifecycle.isPending}>
                 <Zap /> Resume
+              </Button>
+            ) : archived ? (
+              <Button onClick={() => lifecycle.mutate("restore")} loading={lifecycle.isPending}>
+                <RotateCcw /> Restore agent
               </Button>
             ) : null}
             <DropdownMenu>
@@ -332,24 +345,17 @@ export default function AgentDetailPage() {
       ) : null}
 
       {archived ? (
-        <Callout
-          tone="neutral"
-          title="This agent is archived"
-          action={
-            <Button
-              size="sm"
-              onClick={() => lifecycle.mutate("activate")}
-              loading={lifecycle.isPending}
-            >
-              <Zap /> Restore
-            </Button>
-          }
-        >
-          It cannot run or be edited until restored. Its execution history is still available, and its
+        <Callout tone="neutral" title="This agent is archived">
+          It cannot run or be edited until you restore it. Its execution history is still available, and its
           definition can be exported and used to create a new agent.
         </Callout>
       ) : null}
 
+      {runtime.isError ? (
+        <Callout tone="warning" title="Could not check whether this agent is running 24/7">
+          {errorMessage(runtime.error)}
+        </Callout>
+      ) : null}
       {runtime.data ? (
         <Callout
           tone={runtime.data.status === "running" ? "info" : runtime.data.status === "stopping" ? "warning" : "neutral"}

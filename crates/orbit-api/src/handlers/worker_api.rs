@@ -370,19 +370,37 @@ pub async fn claim(
         .as_ref()
         .map(profile_agent_ids)
         .unwrap_or(body.agent_ids);
-    let execution = match state
-        .store
-        .claim_next_queued(
-            auth.org_id,
-            &body.worker_id,
-            &harnesses,
-            &body.target,
-            &agent_ids,
-            profile.as_ref().and_then(|profile| profile.owner_team_id),
-            Some(auth.token_id),
-        )
-        .await?
-    {
+    let claimed = match &profile {
+        Some(profile) => {
+            state
+                .store
+                .claim_next_queued_for_profile(
+                    auth.org_id,
+                    &body.worker_id,
+                    &harnesses,
+                    &body.target,
+                    &agent_ids,
+                    profile.owner_team_id,
+                    Some(auth.token_id),
+                )
+                .await?
+        }
+        None => {
+            state
+                .store
+                .claim_next_queued(
+                    auth.org_id,
+                    &body.worker_id,
+                    &harnesses,
+                    &body.target,
+                    &agent_ids,
+                    None,
+                    Some(auth.token_id),
+                )
+                .await?
+        }
+    };
+    let execution = match claimed {
         Some(execution) => execution,
         None => return Ok(Json(ClaimResponse { execution: None })),
     };
@@ -488,14 +506,13 @@ async fn build_context(
     slugs.dedup();
     let skills = state.store.skills_by_slugs(org_id, &slugs).await?;
     let env = resolve_team_env(&state.store, org_id, execution, &spec, profile).await;
-    let tool_policies = state
-        .store
-        .effective_tool_policy_rules(org_id, execution.agent_id)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(error = %error, "failed to load tool policies; using platform decisions only");
-            Vec::new()
-        });
+    let tool_policies = require_loaded_policies(
+        execution.id,
+        state
+            .store
+            .effective_tool_policy_rules(org_id, execution.agent_id)
+            .await,
+    )?;
     Ok(WorkerExecutionContext {
         execution: execution.clone(),
         spec,
@@ -1231,6 +1248,30 @@ async fn resolve_model(
     }))
 }
 
+/// Tool policies only ever restrict, so a load failure must stop the run instead of
+/// continuing with "no rules" (fail closed).
+fn require_loaded_policies(
+    execution_id: Uuid,
+    loaded: Result<Vec<ToolPolicyRule>, orbit_store::StoreError>,
+) -> Result<Vec<ToolPolicyRule>, ApiError> {
+    loaded.map_err(|error| {
+        tracing::error!(%error, %execution_id, "failed to load tool policies; refusing to build context");
+        ApiError::internal("failed to load tool policies; run not started")
+    })
+}
+
+/// Effect of `capability` in a connector catalog, or `None` when it is absent or its effect
+/// string does not parse.
+fn capability_effect(catalog: &serde_json::Value, capability: &str) -> Option<CapabilityEffect> {
+    catalog
+        .as_array()?
+        .iter()
+        .find(|item| item.get("id").and_then(|id| id.as_str()) == Some(capability))?
+        .get("effect")?
+        .as_str()
+        .and_then(CapabilityEffect::parse)
+}
+
 async fn resolve_grants(store: &Store, org_id: Uuid, spec: &AgentSpec) -> Vec<GrantedCapability> {
     let mut grants = Vec::new();
     for binding in &spec.connectors {
@@ -1246,17 +1287,15 @@ async fn resolve_grants(store: &Store, org_id: Uuid, spec: &AgentSpec) -> Vec<Gr
             }
         };
         for capability in &binding.capabilities {
-            let effect = connector
-                .capabilities
-                .as_array()
-                .and_then(|items| {
-                    items.iter().find(|item| {
-                        item.get("id").and_then(|id| id.as_str()) == Some(capability.as_str())
-                    })
-                })
-                .and_then(|item| item.get("effect").and_then(|effect| effect.as_str()))
-                .and_then(CapabilityEffect::parse)
-                .unwrap_or(CapabilityEffect::Read);
+            // An unknown capability or unparseable effect grants nothing (fail closed).
+            let Some(effect) = capability_effect(&connector.capabilities, capability) else {
+                tracing::warn!(
+                    connector = %binding.connector,
+                    %capability,
+                    "capability missing from the connector catalog or has an unparseable effect; no grant issued"
+                );
+                continue;
+            };
             grants.push(GrantedCapability {
                 connection_id: binding.connection_id.unwrap_or(Uuid::nil()),
                 connector: binding.connector.clone(),
@@ -1287,6 +1326,7 @@ pub struct ListMemoryRequest {
     /// Accepted for backward compatibility; must match the execution's agent if sent.
     #[serde(default)]
     pub agent_id: Option<uuid::Uuid>,
+    /// Ignored: retention comes from the execution's agent version, not the caller.
     #[serde(default)]
     pub retention_days: Option<u32>,
 }
@@ -1305,19 +1345,30 @@ pub struct StoreMemoryRequest {
 }
 
 /// Memory is always the claimed execution's own agent memory, never a caller-chosen one.
+/// Returns the agent and the retention window (`spec.memory.retentionDays`) of the
+/// version the execution runs, so retention is platform-enforced rather than worker-sent.
 async fn memory_agent(
     state: &AppState,
     auth: &WorkerAuth,
     execution_id: Uuid,
     claimed_agent: Option<Uuid>,
-) -> Result<Uuid, ApiError> {
+) -> Result<(Uuid, Option<i64>), ApiError> {
     let execution = ensure_execution(state, auth, execution_id).await?;
     if claimed_agent.is_some_and(|agent_id| agent_id != execution.agent_id) {
         return Err(ApiError::forbidden(
             "agentId does not match the execution's agent",
         ));
     }
-    Ok(execution.agent_id)
+    let version = state
+        .store
+        .get_agent_version_by_id(auth.org_id, execution.agent_version_id)
+        .await?;
+    let retention_days = version
+        .spec
+        .pointer("/memory/retentionDays")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|days| *days > 0);
+    Ok((execution.agent_id, retention_days))
 }
 
 pub async fn list_memory(
@@ -1325,14 +1376,18 @@ pub async fn list_memory(
     auth: WorkerAuth,
     crate::extract::ApiJson(body): crate::extract::ApiJson<ListMemoryRequest>,
 ) -> Result<Json<Vec<MemoryEntry>>, ApiError> {
-    let agent_id = memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let (agent_id, retention_days) =
+        memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
     let entries = state
         .store
         .list_memory(auth.org_id, agent_id, None, 20)
         .await?;
+    // Entries are newest first, so filtering after the limit drops exactly the stale tail.
+    let cutoff = retention_days.map(|days| Utc::now() - chrono::Duration::days(days));
     Ok(Json(
         entries
             .into_iter()
+            .filter(|e| cutoff.is_none_or(|cutoff| e.created_at >= cutoff))
             .map(|e| MemoryEntry {
                 id: e.id,
                 kind: e.kind,
@@ -1355,7 +1410,9 @@ pub async fn store_memory(
             format!("memory content exceeds {MAX_MEMORY_CONTENT_BYTES} bytes"),
         ));
     }
-    let agent_id = memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let (agent_id, retention_days) =
+        memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    let expires_at = retention_days.map(|days| Utc::now() + chrono::Duration::days(days));
     state
         .store
         .store_memory(
@@ -1364,7 +1421,7 @@ pub async fn store_memory(
             &body.kind,
             &body.content,
             &body.metadata,
-            None,
+            expires_at,
         )
         .await?;
     Ok(Json(serde_json::json!({ "stored": true })))
@@ -1490,5 +1547,44 @@ mod worker_payload_tests {
             json["triggers"][1],
             serde_json::json!({ "type": "schedule", "cron": "0 8 * * 1-5" })
         );
+    }
+}
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_or_unparseable_capabilities_grant_nothing() {
+        let catalog = json!([
+            { "id": "issues.list", "effect": "read" },
+            { "id": "issues.create", "effect": "write" },
+            { "id": "broken", "effect": "sideways" },
+            { "id": "no-effect" }
+        ]);
+        assert_eq!(
+            capability_effect(&catalog, "issues.list"),
+            Some(CapabilityEffect::Read)
+        );
+        assert_eq!(
+            capability_effect(&catalog, "issues.create"),
+            Some(CapabilityEffect::Write)
+        );
+        assert_eq!(capability_effect(&catalog, "missing"), None);
+        assert_eq!(capability_effect(&catalog, "broken"), None);
+        assert_eq!(capability_effect(&catalog, "no-effect"), None);
+        assert_eq!(capability_effect(&json!({}), "issues.list"), None);
+    }
+
+    #[test]
+    fn policy_load_failure_fails_the_context_request() {
+        let error = require_loaded_policies(
+            Uuid::nil(),
+            Err(orbit_store::StoreError::Internal("boom".into())),
+        )
+        .unwrap_err();
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(require_loaded_policies(Uuid::nil(), Ok(Vec::new())).is_ok());
     }
 }

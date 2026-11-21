@@ -164,7 +164,9 @@ function SignedInShell({ pathname, children }: { pathname: string; children: Rea
         <div className="lg:pl-[15.5rem]">
           <main
             id="main"
-            className="mx-auto w-full max-w-[1180px] px-4 pb-28 pt-5 sm:px-6 lg:px-10 lg:pb-14 lg:pt-14"
+            // Focusable so the skip link moves keyboard focus, not only the scroll position.
+            tabIndex={-1}
+            className="mx-auto w-full max-w-[1180px] px-4 pb-28 focus:outline-none pt-5 sm:px-6 lg:px-10 lg:pb-14 lg:pt-14"
           >
             {children}
           </main>

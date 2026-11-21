@@ -138,7 +138,7 @@ files, and forced teardown on timeout/cancel.
   - `opencode run --standalone --format json` in a per-execution workspace
   - trusted instructions written to `AGENTS.md`; untrusted input passed in the prompt
   - NDJSON text/tool/usage/error events mapped to ORBIT harness events
-  - session IDs captured; `--session` used for resume; cancellation kills the process group
+  - session IDs captured; `--session` used for resume; cancel and timeout SIGTERM then SIGKILL the whole process group, and any exit SIGKILLs leftovers (shared supervisor in `crates/orbit-harness/src/process.rs`); an `error` event with no later answer fails the run even when the CLI exits 0; worker-written files never follow workspace symlinks
   - `PWD` and the working directory are pinned to the per-execution workspace
   - harness-managed providers via `opencode auth export` imported from a mounted Secret;
     ORBIT never passes raw provider keys in CLI arguments

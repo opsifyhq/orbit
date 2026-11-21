@@ -329,22 +329,38 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_api_tokens(&self, org_id: Uuid) -> StoreResult<Vec<ApiTokenView>> {
+    /// API tokens of the organisation; `only_user` restricts the list to one user's tokens.
+    pub async fn list_api_tokens(
+        &self,
+        org_id: Uuid,
+        only_user: Option<Uuid>,
+    ) -> StoreResult<Vec<ApiTokenView>> {
         let records = sqlx::query_as::<_, ApiTokenRecord>(
-            "SELECT * FROM api_tokens WHERE org_id = $1 ORDER BY created_at DESC",
+            "SELECT * FROM api_tokens WHERE org_id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
+             ORDER BY created_at DESC",
         )
         .bind(org_id)
+        .bind(only_user)
         .fetch_all(&self.pool)
         .await?;
         Ok(records.into_iter().map(Into::into).collect())
     }
 
-    pub async fn revoke_api_token(&self, org_id: Uuid, token_id: Uuid) -> StoreResult<()> {
+    /// Revoke a token; `only_user` limits the revocation to that user's own tokens (a token
+    /// of anyone else is reported as not found).
+    pub async fn revoke_api_token(
+        &self,
+        org_id: Uuid,
+        token_id: Uuid,
+        only_user: Option<Uuid>,
+    ) -> StoreResult<()> {
         let result = sqlx::query(
-            "UPDATE api_tokens SET revoked_at = now() WHERE org_id = $1 AND id = $2 AND revoked_at IS NULL",
+            "UPDATE api_tokens SET revoked_at = now() WHERE org_id = $1 AND id = $2 \
+             AND revoked_at IS NULL AND ($3::uuid IS NULL OR user_id = $3)",
         )
         .bind(org_id)
         .bind(token_id)
+        .bind(only_user)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {

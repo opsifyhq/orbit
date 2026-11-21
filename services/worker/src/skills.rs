@@ -29,50 +29,37 @@ pub async fn materialize(
         .iter()
         .filter(|skill| slugs.contains(&skill.slug))
         .collect();
-    let root = orbit_harness::paths::canonical_root(workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
     let mut materialized = Vec::new();
     for skill in skills {
         for base in [".pi/skills", ".opencode/skills"] {
-            let dir = root.join(base).join(&skill.slug);
-            orbit_harness::paths::safe_create_dir_all(&root, &dir)
-                .await
-                .with_context(|| format!("could not create skill directory {}", dir.display()))?;
-            orbit_harness::paths::safe_write(&root, &dir.join("SKILL.md"), &skill.content)
-                .await
-                .with_context(|| format!("could not write {}", dir.join("SKILL.md").display()))?;
+            // The repository is untrusted: nothing here is written through a symlink it
+            // shipped (a linked `.opencode/skills` would otherwise redirect these writes).
+            let dir = Path::new(base).join(&skill.slug);
+            let skill_file = dir.join("SKILL.md");
+            orbit_harness::paths::write_workspace_file(workspace, &skill_file, &skill.content)
+                .with_context(|| format!("could not write {}", skill_file.display()))?;
             if let Some(files) = skill.files.as_object() {
                 for (path, content) in files {
                     if path.starts_with('/') || path.contains("..") || path.contains('\\') {
                         anyhow::bail!("skill {} contains invalid file path {path:?}", skill.slug);
                     }
-                    if let Some(content) = content.as_str() {
-                        let target = dir.join(path);
-                        orbit_harness::paths::safe_write(&root, &target, content)
-                            .await
-                            .with_context(|| format!("could not write {}", target.display()))?;
-                        // Make scripts executable.
-                        let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
-                        if is_script {
-                            #[cfg(unix)]
-                            {
-                                orbit_harness::paths::safe_set_executable(&root, &target)
-                                    .await
-                                    .with_context(|| {
-                                        format!(
-                                            "could not set script executable {}",
-                                            target.display()
-                                        )
-                                    })?;
-                            }
-                            tracing::info!(skill = %skill.slug, path = %path, "materialized executable script");
-                        }
-                    } else {
+                    let Some(content) = content.as_str() else {
                         anyhow::bail!(
                             "skill {} file {path:?} must contain string content",
                             skill.slug
                         );
+                    };
+                    let target = dir.join(path);
+                    let is_script = path.starts_with("scripts/") || path.contains("/scripts/");
+                    if is_script {
+                        orbit_harness::paths::write_workspace_executable(
+                            workspace, &target, content,
+                        )
+                        .with_context(|| format!("could not write {}", target.display()))?;
+                        tracing::info!(skill = %skill.slug, path = %path, "materialized executable script");
+                    } else {
+                        orbit_harness::paths::write_workspace_file(workspace, &target, content)
+                            .with_context(|| format!("could not write {}", target.display()))?;
                     }
                 }
             }
@@ -134,9 +121,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("could not create skill directory"));
+        // The whole chain: which file could not be written, and why.
+        let message = format!("{error:#}");
+        assert!(message.contains("could not write"), "{message}");
+        assert!(message.contains("not a directory"), "{message}");
     }
 
     #[tokio::test]
@@ -181,10 +169,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        let rendered = format!("{error:#}");
         assert!(
-            rendered.contains("symlink") || rendered.contains("escape"),
-            "unexpected error: {rendered}"
+            format!("{error:#}").contains("symlink"),
+            "unexpected error: {error:#}"
         );
         assert!(!outside.path().join("example").exists());
         assert!(workspace

@@ -48,18 +48,18 @@ export default function ConnectionPage() {
 
   const test = useMutation({
     mutationFn: () =>
-      request<{ ok: boolean; latencyMs: number; message: string }>(`/api/v1/connections/${connectionId}/test`, {
-        method: "POST",
-      }),
+      request<{ supported: boolean; ok: boolean; latencyMs: number; message: string }>(
+        `/api/v1/connections/${connectionId}/test`,
+        { method: "POST" },
+      ),
     onSuccess: (result) => {
-      if (result.ok) toast.success(`${result.message} (${result.latencyMs} ms)`);
+      // No probe for this connector: nothing was contacted and nothing changed.
+      if (!result.supported) toast.info(result.message);
+      else if (result.ok) toast.success(`${result.message} (${result.latencyMs} ms)`);
       else toast.error(`Test failed: ${result.message}`);
       void queryClient.invalidateQueries({ queryKey: queryKeys.connections });
     },
-    onError: (error) => {
-      const message = errorMessage(error);
-      toast.error(/^HTTP 404$/.test(message) ? "This connector has no connection test yet." : `Test failed: ${message}`);
-    },
+    onError: (error) => toast.error(`Test failed: ${errorMessage(error)}`),
   });
 
   const remove = useMutation({
@@ -157,8 +157,10 @@ export default function ConnectionPage() {
       />
 
       {data.status === "error" ? (
-        <Callout tone="danger" title="The last check failed">
-          Run <span className="font-medium">Test</span> again after fixing the URL or credential in Edit.
+        <Callout tone="warning" title="The last check failed">
+          Agents can still use this connection: the check runs from the ORBIT API, which may not
+          reach what your workers reach. If the URL or credential is wrong, fix it in Edit and run{" "}
+          <span className="font-medium">Test</span> again.
         </Callout>
       ) : null}
       {!data.hasCredential ? (

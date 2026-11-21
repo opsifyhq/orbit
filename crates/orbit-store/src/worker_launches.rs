@@ -237,39 +237,64 @@ impl Store {
 }
 
 impl Store {
+    /// Claim a queued execution for a launch and bind it to the launch's worker token in a
+    /// single statement. `None` when the execution is no longer queued.
+    pub async fn claim_execution_for_launch(
+        &self,
+        execution_id: Uuid,
+        worker_id: &str,
+        worker_token_id: Uuid,
+    ) -> StoreResult<Option<crate::models::ExecutionRecord>> {
+        Ok(sqlx::query_as::<_, crate::models::ExecutionRecord>(
+            r#"
+            UPDATE executions
+            SET status = 'dispatched', worker_id = $2, worker_token_id = $3,
+                started_at = COALESCE(started_at, now()), updated_at = now()
+            WHERE id = $1 AND status = 'queued'
+            RETURNING *
+            "#,
+        )
+        .bind(execution_id)
+        .bind(worker_id)
+        .bind(worker_token_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn archive_worker_launch(
         &self,
         org_id: Uuid,
         launch_id: Uuid,
     ) -> StoreResult<WorkerLaunch> {
-        let Some(launch) = sqlx::query_as::<_, WorkerLaunch>(
+        let row = sqlx::query_as::<_, WorkerLaunch>(
             r#"
             UPDATE worker_launches
-            SET archived_at = now(), updated_at = now()
-            WHERE org_id = $1 AND id = $2
-              AND status NOT IN ('pending', 'starting', 'running')
+            SET archived_at = COALESCE(archived_at, now()), updated_at = now()
+            WHERE org_id = $1 AND id = $2 AND status IN ('stopped', 'failed')
             RETURNING *
             "#,
         )
         .bind(org_id)
         .bind(launch_id)
         .fetch_optional(&self.pool)
-        .await?
-        else {
-            let exists = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM worker_launches WHERE org_id = $1 AND id = $2)",
-            )
-            .bind(org_id)
-            .bind(launch_id)
-            .fetch_one(&self.pool)
-            .await?;
-            return Err(if exists {
-                StoreError::Conflict("only terminal worker launches can be archived".into())
-            } else {
-                StoreError::NotFound("worker launch".into())
-            });
-        };
-        Ok(launch)
+        .await?;
+        if let Some(launch) = row {
+            return Ok(launch);
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_launches WHERE org_id = $1 AND id = $2)",
+        )
+        .bind(org_id)
+        .bind(launch_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if exists {
+            Err(StoreError::Conflict(
+                "stop the launch before archiving it".into(),
+            ))
+        } else {
+            Err(StoreError::NotFound("worker launch".into()))
+        }
     }
 }
 

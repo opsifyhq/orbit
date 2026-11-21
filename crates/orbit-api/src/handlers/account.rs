@@ -46,13 +46,42 @@ pub async fn list_users(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<User>>, ApiError> {
     auth.require(Permission::MembersRead)?;
-    Ok(Json(state.store.list_users(auth.org_id).await?))
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let mut users = state.store.list_users(auth.org_id).await?;
+    if !access.is_privileged() {
+        // Members can see who else is in the organisation (pickers, owners), but another
+        // user's identity-provider subject is only for owners and admins.
+        for user in users.iter_mut().filter(|user| user.id != auth.user_id) {
+            user.oidc_issuer = None;
+            user.oidc_subject = None;
+        }
+    }
+    Ok(Json(users))
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUserRoleRequest {
     pub role: String,
+}
+
+/// Permission set a role name resolves to: a built-in role or an organisation custom role.
+pub(crate) async fn role_permission_set(
+    state: &AppState,
+    org_id: Uuid,
+    name: &str,
+) -> Result<Vec<String>, ApiError> {
+    if let Ok(role) = name.parse::<UserRole>() {
+        return Ok(Permission::all_for(role)
+            .into_iter()
+            .map(str::to_string)
+            .collect());
+    }
+    Ok(state
+        .store
+        .custom_role_permissions(org_id, name)
+        .await?
+        .unwrap_or_default())
 }
 
 #[utoipa::path(patch, path = "/api/v1/users/{user_id}", tag = "account", request_body = UpdateUserRoleRequest, responses((status = 200, body = User)))]
@@ -80,6 +109,26 @@ pub async fn update_user_role(
     if user_id == auth.user_id {
         return Err(ApiError::bad_request("you cannot change your own role"));
     }
+    // Grant ceiling: only an Owner assigns or changes the Owner role, and nobody hands out
+    // (or takes away) a role that is more powerful than what they hold themselves.
+    let is_owner = auth.role == UserRole::Owner;
+    let target = state.store.get_user(auth.org_id, user_id).await?;
+    if !is_owner && (role_name == "owner" || target.role == "owner") {
+        return Err(ApiError::forbidden(
+            "only an owner can assign or change the owner role",
+        ));
+    }
+    let held = auth.permissions();
+    for name in [role_name, target.role.as_str()] {
+        let permissions = role_permission_set(&state, auth.org_id, name).await?;
+        let beyond = orbit_security::ungranted_permissions(&held, &permissions);
+        if !beyond.is_empty() {
+            return Err(ApiError::forbidden(format!(
+                "role '{name}' includes permissions you do not hold: {}",
+                beyond.join(", ")
+            )));
+        }
+    }
     let user = state
         .store
         .set_user_role_name(auth.org_id, user_id, role_name)
@@ -102,7 +151,12 @@ pub async fn list_api_tokens(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<ApiTokenView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
-    Ok(Json(state.store.list_api_tokens(auth.org_id).await?))
+    // Owners and admins see every token; everyone else only their own.
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let only_user = (!access.is_privileged()).then_some(auth.user_id);
+    Ok(Json(
+        state.store.list_api_tokens(auth.org_id, only_user).await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/api-tokens", tag = "account", request_body = CreateApiTokenRequest, responses((status = 201, body = CreatedApiToken)))]
@@ -193,7 +247,12 @@ pub async fn revoke_api_token(
     Path(token_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    state.store.revoke_api_token(auth.org_id, token_id).await?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let only_user = (!access.is_privileged()).then_some(auth.user_id);
+    state
+        .store
+        .revoke_api_token(auth.org_id, token_id, only_user)
+        .await?;
     audit::record(
         &state,
         &auth,

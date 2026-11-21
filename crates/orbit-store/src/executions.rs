@@ -128,6 +128,7 @@ impl Store {
     /// Keyset-paginated execution list with optional filters. Visibility is applied in SQL
     /// via the owning agent (`access = None` means org-wide/internal). The returned total
     /// uses the same predicate, so it is the visible total for the filter.
+    /// `status` is one status or a comma-separated set (`failed,timed_out`).
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub async fn list_executions(
         &self,
@@ -152,7 +153,7 @@ impl Store {
             SELECT e.* FROM executions e
             JOIN agents a ON a.id = e.agent_id
             WHERE e.org_id = $1
-              AND ($2::text IS NULL OR e.status = $2)
+              AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
               AND ($3::uuid IS NULL OR e.agent_id = $3)
               AND ($4::timestamptz IS NULL OR (e.created_at, e.id) < ($4::timestamptz, $5::uuid))
               AND ($6::boolean IS NULL OR ($6 = FALSE AND e.archived_at IS NULL) OR ($6 = TRUE AND e.archived_at IS NOT NULL))
@@ -184,7 +185,7 @@ impl Store {
             SELECT COUNT(*) FROM executions e
             JOIN agents a ON a.id = e.agent_id
             WHERE e.org_id = $1
-              AND ($2::text IS NULL OR e.status = $2)
+              AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
               AND ($3::uuid IS NULL OR e.agent_id = $3)
               AND ($4::boolean IS NULL OR ($4 = FALSE AND e.archived_at IS NULL) OR ($4 = TRUE AND e.archived_at IS NOT NULL))
               AND ($5::bool OR a.owner_user_id = $6
@@ -542,7 +543,10 @@ impl Store {
 }
 
 impl Store {
-    /// Claim the oldest queued execution atomically.
+    /// Claim the oldest queued execution atomically. `profile_team_id` restricts the claim to
+    /// agents visible to that access team; `None` applies no visibility filter (tokens that
+    /// are not bound to a worker profile). Profile-bound workers use
+    /// [`Self::claim_next_queued_for_profile`], which also covers org-level profiles.
     #[allow(clippy::too_many_arguments)]
     pub async fn claim_next_queued(
         &self,
@@ -554,16 +558,78 @@ impl Store {
         profile_team_id: Option<Uuid>,
         worker_token_id: Option<Uuid>,
     ) -> StoreResult<Option<ExecutionRecord>> {
-        let team_filter = if profile_team_id.is_some() {
-            r#"
+        self.claim_next_queued_inner(
+            org_id,
+            worker_id,
+            harnesses,
+            worker_target,
+            agent_ids,
+            profile_team_id.is_some(),
+            profile_team_id,
+            worker_token_id,
+        )
+        .await
+    }
+
+    /// Claim for a worker bound to a profile. Mirrors the visibility rule the worker API
+    /// enforces afterwards (`ensure_execution`): org-visible agents, plus the profile's own
+    /// team's agents when the profile has an owner team. An org-level profile (no owner
+    /// team) therefore never claims team-private executions it would then be refused.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_next_queued_for_profile(
+        &self,
+        org_id: Uuid,
+        worker_id: &str,
+        harnesses: &[String],
+        worker_target: &str,
+        agent_ids: &[Uuid],
+        profile_owner_team_id: Option<Uuid>,
+        worker_token_id: Option<Uuid>,
+    ) -> StoreResult<Option<ExecutionRecord>> {
+        self.claim_next_queued_inner(
+            org_id,
+            worker_id,
+            harnesses,
+            worker_target,
+            agent_ids,
+            true,
+            profile_owner_team_id,
+            worker_token_id,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_next_queued_inner(
+        &self,
+        org_id: Uuid,
+        worker_id: &str,
+        harnesses: &[String],
+        worker_target: &str,
+        agent_ids: &[Uuid],
+        visibility_scoped: bool,
+        team_id: Option<Uuid>,
+        worker_token_id: Option<Uuid>,
+    ) -> StoreResult<Option<ExecutionRecord>> {
+        let team_filter = match (visibility_scoped, team_id.is_some()) {
+            (true, true) => {
+                r#"
                   AND EXISTS (
                       SELECT 1 FROM agents a
                       WHERE a.id = executions.agent_id
                         AND (a.visibility = 'org' OR a.owner_team_id = $7)
                   )
             "#
-        } else {
-            ""
+            }
+            (true, false) => {
+                r#"
+                  AND EXISTS (
+                      SELECT 1 FROM agents a
+                      WHERE a.id = executions.agent_id AND a.visibility = 'org'
+                  )
+            "#
+            }
+            (false, _) => "",
         };
         let sql = format!(
             r#"
@@ -585,7 +651,7 @@ impl Store {
             RETURNING *
             "#
         );
-        // Safe: `team_filter` is one of two static strings; all values are bound.
+        // Safe: `team_filter` is one of three static strings; all values are bound.
         let mut query = sqlx::query_as::<_, ExecutionRecord>(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(worker_id)
@@ -593,8 +659,10 @@ impl Store {
             .bind(worker_target)
             .bind(agent_ids)
             .bind(worker_token_id);
-        if let Some(team_id) = profile_team_id {
-            query = query.bind(team_id);
+        if visibility_scoped {
+            if let Some(team_id) = team_id {
+                query = query.bind(team_id);
+            }
         }
         Ok(query.fetch_optional(&self.pool).await?)
     }

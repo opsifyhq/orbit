@@ -20,7 +20,7 @@ pub async fn healthz() -> impl IntoResponse {
 pub async fn readyz(State(state): State<AppState>) -> Response {
     let db = state.store.health().await;
     let bus = state.bus.health().await;
-    let mut checks = json!({
+    let checks = json!({
         "database": if db.is_ok() { "ok" } else { "unavailable" },
         "eventBus": if bus.is_ok() { "ok" } else { "unavailable" },
         "eventBusDriver": state.events_driver,
@@ -29,11 +29,13 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
     // nothing in the API consumes it, so a bus outage must not remove pods from the
     // Service. It is reported as degraded but does not gate readiness.
     let ready = db.is_ok();
+    // Dependency error text can name hosts, users or schema; it goes to the log only,
+    // never to the unauthenticated caller.
     if let Err(err) = &db {
-        checks["databaseError"] = json!(err.to_string());
+        tracing::error!(error = %err, "readiness check failed: database");
     }
     if let Err(err) = &bus {
-        checks["eventBusError"] = json!(err.to_string());
+        tracing::warn!(error = %err, "readiness check degraded: event bus");
     }
     let status = if ready {
         StatusCode::OK

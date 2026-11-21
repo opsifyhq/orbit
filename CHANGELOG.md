@@ -10,6 +10,18 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- `POST /agents/{id}/executions` accepts `placement` for that run (`auto`, `local`, `docker`,
+  `kubernetes`), and Start work sends the "Where" choice it always asked for.
+- `PATCH /agents/{id}` accepts `expectedVersion`: an edit that started from an older version
+  is refused with 409 instead of silently overwriting someone else's save. Agent Studio sends
+  it and warns as soon as another version appears.
+- List filters on the server: several statuses on `GET /executions` (`failed,timed_out`),
+  `teamId` and `limit` on `GET /team-runs`, `executionId` on `GET /approvals`, and
+  `status=current` (everything not archived) on `GET /agents`.
+- `pnpm api:generate` works without a running API. The OpenAPI document is committed as
+  `packages/api-client/openapi.json`; CI fails when it, the router or the generated
+  TypeScript drift apart, when a release tag does not match the version, or when a PR edits
+  an existing migration.
 - Skill pages (`/skills/<id>`) with formatted instructions, bundled file contents, and the
   agents, teams and worker profiles that use the skill. Agent summaries now list their
   skill slugs (`skills`) so usage needs no extra requests.
@@ -20,6 +32,28 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
+- Archived agents can be restored (activate), as ADR 0013 already said: Restore is offered on
+  the agent page and in the Archived filter.
+- Worker profile `env` is write-only: responses list variable names with `hasValue`, never
+  values. On update a string sets a value, `null` keeps the stored one, an omitted name is
+  removed (#203).
+- `authSecretName` must be on an installer-controlled allowlist (`ORBIT_WORKER_AUTH_SECRETS`,
+  chart value `launcher.authSecrets`, default `orbit-opencode-auth*,orbit-pi-auth*`), checked by
+  the API and again by the launcher. **Upgrade:** a profile that names another Secret fails to
+  launch until the name is added (#203).
+- A failed connection test is advisory: agents keep using the connection, and testing again
+  restores it. Only expired and revoked connections are refused.
+- The run timeout counts from the moment the harness reports running, not from dispatch
+  (migration `0050`), so a slow checkout no longer times out a healthy run (#199).
+- Continuous runtimes count timed-out runs as failures: they back off and stop after five (#208).
+- Rerunning a single step of an agent team run is refused (409); the execution page links to
+  the team run instead (#201).
+- Executions filters are groups that cover every status (In flight, Needs approval,
+  Succeeded, Failed, Cancelled); the Overview tiles link to exactly the set they count.
+- The JetStream stream is capped at 1 GiB by default (`ORBIT_NATS_STREAM_MAX_BYTES`), and an
+  existing uncapped stream is brought in line on connect (#217).
+- The X connector no longer advertises `posts.create`, which never worked (#265).
+- `/readyz` no longer returns database or event-bus error text; it is logged instead (#218).
 - Skill Studio replaces the skill dialogs: the same section layout as Agent and Team Studio,
   name/slug/description as fields that are written into the SKILL.md frontmatter (other keys
   kept), a Markdown preview, and bundled files as a file list with upload (text files only)
@@ -37,6 +71,51 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Connections "Test" works: the route was missing, a passing test could not be recorded (it
+  wrote a status the database rejects, so one failed check left a connection unusable for
+  good), and connectors without a probe are now reported as untestable instead of failed (#207).
+- The API reference and generated client match the router again; the client had none of the
+  endpoints added since v0.22 (#207).
+- Autonomy inputs fail closed: a tool-policy load failure stops the run, an unparseable rule
+  denies instead of being skipped, and an unknown capability gets no grant instead of read
+  access. Agents cannot be saved with a capability the connector does not have (#200).
+- Private skills cannot be attached to agents, executions or teams by people who may not use
+  them (#201).
+- Object-level access checks behind `settings:write`: worker tokens, profiles and launches,
+  outputs, agent-team steps and sharing targets. Roles cannot grant permissions their editor
+  lacks, only an Owner assigns Owner, and API tokens are revocable by their owner or an admin
+  (#202). Lists of outputs, worker tokens and API tokens are scoped to what the caller may
+  see (#218).
+- OIDC discovery and JWKS are cached and refreshed at a bounded rate, so unauthenticated
+  requests can no longer be turned into a stream of calls to the identity provider (#218).
+- Harness processes: cancel and timeout stop the whole process group (SIGTERM, grace,
+  SIGKILL), nothing outlives the run, and OpenCode and Pi share one supervisor. An OpenCode
+  run that reports an error and exits 0 fails instead of "succeeding" with an empty answer.
+  Workspace files are never written through a symlink the repository shipped (#117, #211).
+- Workers: a single-execution worker handles SIGTERM and reports its run; Cancel works during
+  checkout; git operations are bounded; a cancelled run keeps its session and usage; worker
+  env is fetched per run and a failed lookup fails the run instead of running without it;
+  event posts are retried in order and `complete` is sent after them (#210, #217).
+- State changes are compare-and-set (agent status, team runs, worker launches); deleting an
+  access team that still owns resources is refused instead of orphaning them; output webhook
+  secrets are removed with their output; the team dispatcher lock cannot leak; worker memory
+  honours `retentionDays`; org-level worker profiles no longer claim team-private runs they
+  are then refused (#215, #216, #218).
+- Team-run advancement visits every running run instead of the oldest 50; audit retention
+  deletes in batches; new indexes for the reapers, active counts and unindexed foreign keys
+  (migration `0051`) (#208, #209).
+- Web, data loss and wrong answers: a failed background refresh no longer replaces a
+  half-filled form with "not found"; sharing edits made in Agent Studio or the worker editor
+  are saved even when another section is open; bulk archive and delete only touch rows that
+  are on screen; the Executions list loads older pages; the live timeline reconnects after a
+  stalled connection and no longer replays the whole log; approvals track each card's
+  decision on its own and cannot be decided after they expire; server validation errors are
+  shown in the section they belong to; the whole agent registry is offered where agents are
+  picked; durations no longer read "1m 60s"; `*/45` is not described as "every 45 minutes".
+- Web, accessibility: labels, hints and errors are tied to their controls; semantic colours
+  meet 4.5:1 on every surface; phones no longer zoom on focus or hide the focused field
+  under the bars; the command palette, section navigation and live timeline are usable with
+  a screen reader; Studio sections fit a 360px screen.
 - New skills no longer ship the template's `name: example-skill` and placeholder description
   to agents, and editing the description now reaches the SKILL.md agents read.
 - Deleting a skill names the agents and teams that use it, and Agent Studio and Team Studio

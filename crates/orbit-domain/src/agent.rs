@@ -812,7 +812,8 @@ impl AgentStatus {
         })
     }
 
-    /// Archived agents are restored by activating them; the store clears `archived_at`.
+    /// Activation also restores an archived agent: archiving hides an agent and stops
+    /// its triggers but keeps its versions and history, so it is reversible (ADR 0013).
     pub fn can_activate(&self) -> bool {
         matches!(self, Self::Draft | Self::Paused | Self::Archived)
     }

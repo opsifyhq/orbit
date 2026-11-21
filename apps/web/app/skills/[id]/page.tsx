@@ -1,5 +1,6 @@
 "use client";
 
+import { LoadFailure } from "@/components/load-failure";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -21,7 +22,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { EmptyState } from "@/components/ui/empty-state";
 import { Markdown } from "@/components/ui/markdown";
 import { PageHeader } from "@/components/ui/page-header";
 import { Segmented } from "@/components/ui/segmented";
@@ -59,7 +59,7 @@ export default function SkillPage() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const skill = useSkill(skillId);
-  const { usersOf, isLoading: usageLoading } = useSkillUsage();
+  const { usersOf, isLoading: usageLoading, isKnown: usageKnown } = useSkillUsage();
   const [view, setView] = useState<"rendered" | "source">("rendered");
   const [openFile, setOpenFile] = useState<string | null>(null);
 
@@ -83,16 +83,14 @@ export default function SkillPage() {
       </div>
     );
   }
-  if (skill.isError || !skill.data || !doc) {
+  if (!skill.data || !doc) {
     return (
-      <EmptyState
-        title="Skill not found"
-        description={skill.error ? errorMessage(skill.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/skills">Back to skills</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="skill"
+        error={skill.error}
+        back={{ href: "/skills", label: "Back to skills" }}
+        onRetry={() => void skill.refetch()}
+        retrying={skill.isFetching}
       />
     );
   }
@@ -113,7 +111,9 @@ export default function SkillPage() {
         ? users.length === 1
           ? `${shown} uses this skill. It runs without it from now on, and its settings show the missing skill so you can remove it before saving them again. This cannot be undone.`
           : `${shown} use this skill. They run without it from now on, and their settings show the missing skill so you can remove it before saving them again. This cannot be undone.`
-        : "Nothing uses this skill. This cannot be undone.",
+        : usageKnown
+          ? "Nothing uses this skill. This cannot be undone."
+          : "ORBIT could not check which agents use this skill. Any that do will run without it from now on. This cannot be undone.",
       confirmLabel: "Delete skill",
       destructive: true,
     });
@@ -235,7 +235,7 @@ export default function SkillPage() {
                           <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
                           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-                          <span className="tabular shrink-0 text-[11px] text-muted-foreground">
+                          <span className="tabular shrink-0 text-xs text-muted-foreground">
                             {file.content.split("\n").length} lines
                           </span>
                         </button>

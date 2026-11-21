@@ -522,10 +522,13 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
     }
 }
 
+/// Validate URL-typed connection config fields against the outbound policy
+/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`); errors are 422s on
+/// the offending field name.
 pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
     let policy = orbit_security::OutboundPolicy::from_env();
     let mut issues = Vec::new();
-    for field in ["baseUrl", "url"] {
+    for field in ["baseUrl", "cloneBaseUrl", "url"] {
         let Some(value) = config.get(field).and_then(|v| v.as_str()) else {
             continue;
         };
@@ -679,14 +682,14 @@ pub async fn update_connection(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    if let Some(config) = &body.config {
+        validate_connection_urls(config).await?;
+    }
     let name = body
         .name
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if let Some(config) = &body.config {
-        validate_connection_urls(config).await?;
-    }
     let mut secret_ref: Option<String> = None;
     if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
@@ -794,6 +797,9 @@ pub struct WorkerView {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionTestResponse {
+    /// False when ORBIT has no probe for this connector. Nothing was contacted and
+    /// the connection's status is left as it was.
+    pub supported: bool,
     pub ok: bool,
     pub status: Option<u16>,
     pub latency_ms: u64,
@@ -827,18 +833,35 @@ pub async fn test_connection(
         None => None,
     };
     let started = std::time::Instant::now();
-    let (ok, status, message) = probe_connection(
+    let Some((ok, status, message)) = probe_connection(
         &row.connector_slug,
         &row.connection.config,
         credential.as_deref(),
     )
-    .await;
+    .await
+    else {
+        // An untestable connector is not a failed one: do not mark it as an error.
+        return Ok(Json(ConnectionTestResponse {
+            supported: false,
+            ok: false,
+            status: None,
+            latency_ms: 0,
+            message: format!(
+                "ORBIT cannot test {} connections yet. The credential is checked the first time an agent uses it.",
+                row.connector_name
+            ),
+        }));
+    };
     let latency_ms = started.elapsed().as_millis() as u64;
-    let _ = state
+    if let Err(error) = state
         .store
         .set_connection_check(auth.org_id, connection_id, ok)
-        .await;
+        .await
+    {
+        tracing::warn!(%connection_id, %error, "could not record connection test result");
+    }
     Ok(Json(ConnectionTestResponse {
+        supported: true,
         ok,
         status,
         latency_ms,
@@ -846,7 +869,27 @@ pub async fn test_connection(
     }))
 }
 
+/// Contact the service behind a connection. `None` means this connector has no probe.
 async fn probe_connection(
+    slug: &str,
+    config: &serde_json::Value,
+    credential: Option<&str>,
+) -> Option<(bool, Option<u16>, String)> {
+    Some(match slug {
+        // The mock connector talks to nothing; a stored connection is always usable.
+        "mock" => (
+            true,
+            None,
+            "Mock connector needs no external service".into(),
+        ),
+        "gitlab" | "github" | "webhook" | "kubernetes" => {
+            probe_supported_connection(slug, config, credential).await
+        }
+        _ => return None,
+    })
+}
+
+async fn probe_supported_connection(
     slug: &str,
     config: &serde_json::Value,
     credential: Option<&str>,

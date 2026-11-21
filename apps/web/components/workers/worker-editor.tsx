@@ -16,7 +16,7 @@ import { launchWorkerProfile, stopWorkerLaunch } from "@/lib/launcher";
 import {
   queryKeys,
   unwrap,
-  useAgents,
+  useAllAgents,
   useConnections,
   useEnvMappings,
   useMeta,
@@ -98,7 +98,7 @@ export function WorkerEditor({
   const [attempted, setAttempted] = useState(false);
 
   const providers = useProviders();
-  const agents = useAgents({ limit: 100 });
+  const agents = useAllAgents({ status: "current" });
   const skills = useSkills();
   const connections = useConnections();
   const meta = useMeta();
@@ -401,7 +401,8 @@ export function WorkerEditor({
             <ResourceFields form={form} />
           </SectionCard>
 
-          <SectionCard id="sharing" active={active} onGo={goToSection}>
+          {/* Kept mounted while hidden: Save reads the pending access edits from it. */}
+          <SectionCard id="sharing" active={active} onGo={goToSection} keepMounted>
             <ResourceAccessFields ref={accessRef} resource="worker_profiles" resourceId={editing?.id} />
           </SectionCard>
         </div>

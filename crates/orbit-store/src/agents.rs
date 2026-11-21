@@ -125,6 +125,8 @@ impl Store {
 
     /// List agents with their current spec in one query.
     #[allow(clippy::type_complexity)]
+    /// `status` is an agent status, or `current` for every agent that is not archived
+    /// (what a person means by "my agents").
     pub async fn list_agents(
         &self,
         org_id: Uuid,
@@ -148,7 +150,8 @@ impl Store {
             FROM agents a
             LEFT JOIN agent_versions av ON av.agent_id = a.id AND av.version = a.current_version
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::timestamptz IS NULL OR (a.created_at, a.id) < ($4::timestamptz, $5::uuid))
               AND ($7::bool OR a.owner_user_id = $8
@@ -177,7 +180,8 @@ impl Store {
             r#"
             SELECT COUNT(*) FROM agents a
             WHERE a.org_id = $1
-              AND ($2::text IS NULL OR a.status = $2)
+              AND ($2::text IS NULL
+                   OR CASE WHEN $2 = 'current' THEN a.status <> 'archived' ELSE a.status = $2 END)
               AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%' OR a.description ILIKE '%' || $3 || '%')
               AND ($4::bool OR a.owner_user_id = $5
                    OR CASE WHEN $7::bool AND a.owner_team_id IS NOT NULL
@@ -239,6 +243,22 @@ impl Store {
         actor: Option<Uuid>,
         definition: &AgentDefinition,
     ) -> StoreResult<(Agent, AgentVersion)> {
+        self.add_agent_version_expecting(org_id, agent_id, actor, definition, None)
+            .await
+    }
+
+    /// [`Self::add_agent_version`] for an edit that started from a known version: when
+    /// `expected_version` is given and the agent has moved on since, nothing is written
+    /// and a `Conflict` says so. Checked under the row lock, so two people saving at the
+    /// same moment cannot both win.
+    pub async fn add_agent_version_expecting(
+        &self,
+        org_id: Uuid,
+        agent_id: Uuid,
+        actor: Option<Uuid>,
+        definition: &AgentDefinition,
+        expected_version: Option<i32>,
+    ) -> StoreResult<(Agent, AgentVersion)> {
         let mut tx = self.begin().await?;
         let current = sqlx::query_as::<_, Agent>(
             "SELECT * FROM agents WHERE org_id = $1 AND id = $2 FOR UPDATE",
@@ -252,6 +272,14 @@ impl Store {
             return Err(StoreError::Invalid(
                 "archived agents cannot be modified".into(),
             ));
+        }
+        if let Some(expected) = expected_version {
+            if expected != current.current_version {
+                return Err(StoreError::Conflict(stale_version_message(
+                    expected,
+                    current.current_version,
+                )));
+            }
         }
 
         let checksum = definition.checksum();
@@ -356,13 +384,12 @@ impl Store {
                 "agent has no configuration version to activate".into(),
             ));
         }
+        // `archived_at` is set on archive and cleared when the agent is restored.
         let archived_at = (target == AgentStatus::Archived).then(Utc::now);
         sqlx::query_as::<_, Agent>(
             r#"
             UPDATE agents
-            SET status = $3,
-                archived_at = CASE WHEN $3 = 'active' THEN NULL ELSE COALESCE($4, archived_at) END,
-                updated_at = now()
+            SET status = $3, archived_at = $4, updated_at = now()
             WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,
@@ -374,15 +401,19 @@ impl Store {
         .bind(current_status.as_str())
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| StoreError::Conflict("agent status changed concurrently".into()))
+        .ok_or_else(|| StoreError::Conflict("agent status changed concurrently; retry".into()))
     }
 
+    /// Permanently delete an agent together with its versions, executions and other
+    /// agent-owned history. Refused with a `Conflict` while team run steps still reference
+    /// the agent: that history belongs to the team, not to the agent.
     pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
         let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(agent_id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -398,7 +429,8 @@ impl Store {
             .bind(org_id)
             .bind(agent_id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(agent_delete_error)?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("agent".into()));
         }
@@ -418,17 +450,39 @@ impl Store {
             let connector = self
                 .get_connector_by_slug(org_id, &binding.connector)
                 .await?;
-            if connector.is_none() {
+            let Some(connector) = connector else {
                 report.push(
                     format!("spec.connectors[{idx}].connector"),
                     format!("unknown connector '{}'", binding.connector),
                 );
                 continue;
+            };
+            // Capability ids must exist in the connector catalog with a parseable effect:
+            // grants for anything else would be dropped at run time (fail closed).
+            for (cap_idx, capability) in binding.capabilities.iter().enumerate() {
+                let known = connector
+                    .capabilities
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|item| item.get("id").and_then(|id| id.as_str()) == Some(capability))
+                    .and_then(|item| item.get("effect").and_then(|effect| effect.as_str()))
+                    .and_then(orbit_domain::CapabilityEffect::parse)
+                    .is_some();
+                if !known {
+                    report.push(
+                        format!("spec.connectors[{idx}].capabilities[{cap_idx}]"),
+                        format!(
+                            "unknown capability '{capability}' for connector '{}'",
+                            binding.connector
+                        ),
+                    );
+                }
             }
             if let Some(connection_id) = binding.connection_id {
                 match self.get_connection(org_id, connection_id).await {
                     Ok(connection) => {
-                        if Some(connection.connector_id) != connector.map(|c| c.id) {
+                        if connection.connector_id != connector.id {
                             report.push(
                                 format!("spec.connectors[{idx}].connectionId"),
                                 "connection does not belong to this connector",
@@ -470,14 +524,31 @@ impl Store {
 }
 
 impl Store {
+    /// Instances of agents the caller may view (`None` = platform access).
     pub async fn list_agent_instances(
         &self,
         org_id: Uuid,
+        access: Option<&crate::access::ResourceAccess>,
     ) -> StoreResult<Vec<crate::models::AgentInstance>> {
+        let (privileged, user_id, team_ids, isolation) = crate::access::binds(access);
         Ok(sqlx::query_as::<_, crate::models::AgentInstance>(
-            "SELECT * FROM agent_instances WHERE org_id = $1 ORDER BY created_at DESC LIMIT 100",
+            r#"
+            SELECT i.* FROM agent_instances i
+            JOIN agents a ON a.id = i.agent_id AND a.org_id = i.org_id
+            WHERE i.org_id = $1
+              AND ($2::bool OR a.owner_user_id = $3
+                   OR CASE WHEN $5::bool AND a.owner_team_id IS NOT NULL
+                        THEN a.owner_team_id = ANY($4)
+                        ELSE a.visibility = 'org'
+                             OR (a.visibility = 'team' AND a.owner_team_id = ANY($4)) END)
+            ORDER BY i.created_at DESC LIMIT 100
+            "#,
         )
         .bind(org_id)
+        .bind(privileged)
+        .bind(user_id)
+        .bind(&team_ids)
+        .bind(isolation)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -509,4 +580,30 @@ impl Store {
         .fetch_one(&self.pool)
         .await?)
     }
+}
+
+/// Translate the FK violation raised by an agent delete into an actionable conflict.
+fn agent_delete_error(error: sqlx::Error) -> StoreError {
+    let constraint = error
+        .as_database_error()
+        .filter(|db| db.is_foreign_key_violation())
+        .and_then(|db| db.constraint().map(str::to_owned));
+    match constraint.as_deref() {
+        Some(name) if name.starts_with("team_steps_") => StoreError::Conflict(
+            "agent is used by agent team runs; delete those runs or archive the agent instead"
+                .into(),
+        ),
+        Some(_) => StoreError::Conflict(
+            "agent is still referenced by other records; archive it instead".into(),
+        ),
+        None => error.into(),
+    }
+}
+
+/// What a person sees when their edit started from an older version of the agent.
+pub fn stale_version_message(expected: i32, current: i32) -> String {
+    format!(
+        "this agent changed while you were editing: you started from version {expected} and it is \
+         now version {current}. Reload to see the latest configuration, then make your changes again"
+    )
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
@@ -200,16 +201,19 @@ export function useAgents(
  */
 const ALL_AGENTS_MAX_PAGES = 10;
 
-export function useAllAgents() {
+export function useAllAgents(options: { status?: string; enabled?: boolean } = {}) {
+  const { status, enabled = true } = options;
   return useQuery<AgentPage>({
-    queryKey: queryKeys.agents({ all: true }),
+    // Under the "agents" prefix, so every agent mutation refreshes it too.
+    queryKey: queryKeys.agents(status ? { all: true, status } : { all: true }),
+    enabled,
     queryFn: async () => {
       const items: AgentPage["items"] = [];
       let cursor: string | undefined;
       let total = 0;
       for (let page = 0; page < ALL_AGENTS_MAX_PAGES; page += 1) {
         const result = unwrap(
-          await api.GET("/api/v1/agents", { params: { query: { limit: 100, cursor } } }),
+          await api.GET("/api/v1/agents", { params: { query: { limit: 100, cursor, status } } }),
         );
         items.push(...result.items);
         total = result.total;
@@ -240,32 +244,103 @@ export function useAgentVersions(id: string | undefined) {
   });
 }
 
-export function useExecutions(params: {
+type ExecutionListParams = {
   status?: string;
   agentId?: string;
   limit?: number;
   cursor?: string;
   archived?: boolean;
-} = {}) {
+};
+
+async function fetchExecutions(params: ExecutionListParams): Promise<ExecutionPage> {
+  return unwrap(
+    await api.GET("/api/v1/executions", {
+      params: {
+        query: {
+          limit: params.limit,
+          cursor: params.cursor,
+          status: params.status,
+          agentId: params.agentId,
+          archived: params.archived,
+        },
+      },
+    }),
+  );
+}
+
+export function useExecutions(params: ExecutionListParams = {}) {
   return useQuery<ExecutionPage>({
     queryKey: queryKeys.executions(params),
-    queryFn: async () =>
-      unwrap(
-        await api.GET("/api/v1/executions", {
-          params: {
-            query: {
-              limit: params.limit,
-              cursor: params.cursor,
-              status: params.status,
-              agentId: params.agentId,
-              archived: params.archived,
-            },
-          },
-        }),
-      ),
+    queryFn: () => fetchExecutions(params),
     refetchInterval: 10_000,
     placeholderData: (previous) => previous,
   });
+}
+
+/**
+ * The newest page of executions, kept live, plus older pages loaded on request.
+ *
+ * Only the first page polls: history does not change, so re-fetching every loaded
+ * page every ten seconds would be wasted work. Rows are de-duplicated because new
+ * runs push older ones across the page boundary between fetches.
+ */
+export function usePagedExecutions(params: Omit<ExecutionListParams, "cursor">) {
+  const first = useExecutions(params);
+  const key = JSON.stringify(params);
+  const [older, setOlder] = useState<{ key: string; pages: ExecutionPage[] }>({ key, pages: [] });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  // Pages loaded under other filters belong to another list.
+  const pages = older.key === key ? older.pages : [];
+
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: ExecutionPage["items"] = [];
+    for (const page of [first.data, ...pages]) {
+      for (const item of page?.items ?? []) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }, [first.data, pages]);
+
+  // While a filter change is loading, `first.data` is still the previous filter's page
+  // (kept on screen as a placeholder): its cursor belongs to another result set.
+  const settled = !first.isPlaceholderData;
+  const nextCursor = !settled
+    ? undefined
+    : pages.length
+      ? pages[pages.length - 1].nextCursor
+      : first.data?.nextCursor;
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setLoadError(null);
+    try {
+      const page = await fetchExecutions({ ...params, cursor: nextCursor });
+      setOlder((current) => ({
+        key,
+        pages: [...(current.key === key ? current.pages : []), page],
+      }));
+    } catch (error) {
+      setLoadError(error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  return {
+    first,
+    items,
+    total: first.data?.total ?? 0,
+    hasMore: Boolean(nextCursor),
+    loadMore,
+    loadingMore,
+    loadError,
+  };
 }
 
 export function useExecution(id: string | undefined) {
@@ -434,11 +509,18 @@ export function useTeamRun(runId: string) {
   });
 }
 
-export function useTeamRuns(archived?: boolean) {
+/**
+ * Team runs, newest first. Pass `teamId` for one team's runs: the server filters, so a
+ * busy organization cannot push this team's runs out of the page.
+ */
+export function useTeamRuns(options: { archived?: boolean; teamId?: string; limit?: number } = {}) {
+  const { archived, teamId, limit } = options;
   return useQuery<TeamRun[]>({
-    queryKey: [...queryKeys.teamRuns, archived ?? "all"],
-    queryFn: () => listTeamRuns(archived),
-    refetchInterval: 3_000,
+    queryKey: [...queryKeys.teamRuns, archived ?? "all", teamId ?? "any", limit ?? "default"],
+    queryFn: () => listTeamRuns({ archived, teamId, limit }),
+    // Fast while something is running, slow otherwise (new runs still show up).
+    refetchInterval: (query) =>
+      query.state.data?.some((run) => !TERMINAL_RUN.has(run.status)) ? 3_000 : 15_000,
   });
 }
 
@@ -450,16 +532,24 @@ export function useWorkerLaunches(includeInactive = false) {
   });
 }
 
-export function useApprovals(status?: string) {
+export function useApprovals(
+  status?: string,
+  options: { refetchInterval?: number | false; enabled?: boolean; executionId?: string } = {},
+) {
+  const { executionId } = options;
   return useQuery<ApprovalWithExecution[]>({
-    queryKey: queryKeys.approvals(status),
+    // Under the same prefix as the plain list, so a decision refreshes both.
+    queryKey: executionId
+      ? [...queryKeys.approvals(status), executionId]
+      : queryKeys.approvals(status),
+    enabled: options.enabled ?? true,
     queryFn: async () =>
       unwrap(
         await api.GET("/api/v1/approvals", {
-          params: { query: { status, limit: 100 } },
+          params: { query: { status, executionId, limit: 100 } },
         }),
       ),
-    refetchInterval: 5_000,
+    refetchInterval: options.refetchInterval ?? 5_000,
   });
 }
 

@@ -28,6 +28,34 @@ pub struct NatsEventBus {
 /// Timeout for handing a message to the client, and for the background ack confirmation.
 pub const DEFAULT_PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Size cap of the retained log. Every execution event (output deltas, tool payloads)
+/// lands in the stream and nothing consumes it durably, so without a cap it grows for
+/// the whole `max_age` window. When full, JetStream drops the oldest messages.
+pub const DEFAULT_STREAM_MAX_BYTES: i64 = 1024 * 1024 * 1024;
+const STREAM_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+/// A republished event (same idempotency key) within this window is stored once.
+const STREAM_DUPLICATE_WINDOW: Duration = Duration::from_secs(120);
+
+fn stream_config(name: &str, max_bytes: i64) -> jetstream::stream::Config {
+    jetstream::stream::Config {
+        name: name.to_string(),
+        subjects: vec!["orbit.>".to_string()],
+        max_age: STREAM_MAX_AGE,
+        max_bytes,
+        duplicate_window: STREAM_DUPLICATE_WINDOW,
+        ..Default::default()
+    }
+}
+
+/// `ORBIT_NATS_STREAM_MAX_BYTES`, or the default. `-1` removes the cap.
+fn configured_stream_max_bytes() -> i64 {
+    std::env::var("ORBIT_NATS_STREAM_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|bytes| *bytes == -1 || *bytes > 0)
+        .unwrap_or(DEFAULT_STREAM_MAX_BYTES)
+}
+
 /// Drive a JetStream publish (send + ack) to completion within `timeout`, mapping failures
 /// and timeouts to [`EventBusError::Unavailable`]. Generic so the mapping is unit-testable
 /// without a NATS server.
@@ -49,22 +77,47 @@ where
 
 impl NatsEventBus {
     pub async fn connect(url: &str, stream_name: &str) -> Result<Self, EventBusError> {
+        Self::connect_with_limit(url, stream_name, configured_stream_max_bytes()).await
+    }
+
+    /// Connect and make sure the stream exists with the given size cap.
+    pub async fn connect_with_limit(
+        url: &str,
+        stream_name: &str,
+        max_bytes: i64,
+    ) -> Result<Self, EventBusError> {
         let client = async_nats::connect(url)
             .await
             .map_err(|e| EventBusError::Unavailable(format!("NATS connect failed: {e}")))?;
         let js = jetstream::new(client.clone());
-        js.get_or_create_stream(jetstream::stream::Config {
-            name: stream_name.to_string(),
-            subjects: vec!["orbit.>".to_string()],
-            max_age: std::time::Duration::from_secs(7 * 24 * 3600),
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| {
-            EventBusError::Unavailable(format!(
-                "could not create JetStream stream '{stream_name}': {e}"
-            ))
-        })?;
+        let desired = stream_config(stream_name, max_bytes);
+        let mut stream = js
+            .get_or_create_stream(desired.clone())
+            .await
+            .map_err(|e| {
+                EventBusError::Unavailable(format!(
+                    "could not create JetStream stream '{stream_name}': {e}"
+                ))
+            })?;
+        // A stream created by an older version has no cap and no duplicate window:
+        // `get_or_create` returns it as it is, so bring it in line here. Not fatal: the
+        // bus is an accelerator and works with the old limits too.
+        match stream.info().await {
+            Ok(info)
+                if info.config.max_bytes != desired.max_bytes
+                    || info.config.duplicate_window != desired.duplicate_window =>
+            {
+                if let Err(error) = js.update_stream(desired).await {
+                    tracing::warn!(stream = %stream_name, %error, "could not apply JetStream stream limits");
+                } else {
+                    tracing::info!(stream = %stream_name, max_bytes, "applied JetStream stream limits");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(stream = %stream_name, %error, "could not read JetStream stream info")
+            }
+        }
         Ok(Self {
             client,
             js,
@@ -96,6 +149,16 @@ impl EventBus for NatsEventBus {
             .map_err(|e| EventBusError::Protocol(format!("could not encode event: {e}")))?;
         let js = self.js.clone();
         let subject = event.subject.clone();
+        // JetStream stores a message id once per duplicate window: a republished event
+        // (a retry after a lost ack) does not become a second copy.
+        let mut headers = async_nats::HeaderMap::new();
+        if let Some(key) = event
+            .idempotency_key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+        {
+            headers.insert(async_nats::header::NATS_MESSAGE_ID, key);
+        }
         // Hand the message to the client within the timeout and report failures to the
         // caller. The JetStream ack is confirmed in the background: publishes happen on
         // request paths (e.g. worker execution events), and waiting for the ack inline
@@ -106,7 +169,7 @@ impl EventBus for NatsEventBus {
         confirm_publish(
             async {
                 let ack = js
-                    .publish(subject.clone(), payload.into())
+                    .publish_with_headers(subject.clone(), headers, payload.into())
                     .await
                     .map_err(|e| e.to_string())?;
                 pending_ack = Some(ack);

@@ -4,6 +4,7 @@
 //! the control plane, harness adapters and the generated API contract.
 
 pub mod agent;
+pub mod auth_secret;
 pub mod autonomy;
 pub mod error;
 pub mod execution;
@@ -15,6 +16,7 @@ pub mod tool_policy;
 pub mod worker_resources;
 
 pub use agent::*;
+pub use auth_secret::{is_dns_label, AuthSecretPolicy, AUTH_SECRETS_ENV, DEFAULT_AUTH_SECRETS};
 pub use autonomy::*;
 pub use error::*;
 pub use execution::*;

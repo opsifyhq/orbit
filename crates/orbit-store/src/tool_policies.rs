@@ -170,9 +170,9 @@ impl Store {
         Ok(rows)
     }
 
-    /// Effective rules for an execution, ready for the worker/broker. Rows whose stored
-    /// action or matcher cannot be parsed are skipped (fail open to the platform decision;
-    /// invalid rules should not be created through the API).
+    /// Effective rules for an execution, ready for the worker/broker. A row whose stored
+    /// action or matcher cannot be parsed is never dropped: it becomes a `deny` rule over
+    /// the scope that is still readable (everything when the matcher itself is unreadable).
     pub async fn effective_tool_policy_rules(
         &self,
         org_id: Uuid,
@@ -181,21 +181,38 @@ impl Store {
         let rows = self
             .list_tool_policies(org_id, Some(agent_id), None)
             .await?;
-        Ok(rows.into_iter().filter_map(policy_into_rule).collect())
+        Ok(rows.into_iter().map(policy_into_rule).collect())
     }
 }
 
-fn policy_into_rule(policy: ToolPolicy) -> Option<ToolPolicyRule> {
-    let action = ToolPolicyAction::parse(&policy.action)?;
-    let matcher: ToolPolicyMatcher = serde_json::from_value(policy.matcher).ok()?;
-    Some(ToolPolicyRule {
+fn policy_into_rule(policy: ToolPolicy) -> ToolPolicyRule {
+    let action = ToolPolicyAction::parse(&policy.action);
+    let matcher = serde_json::from_value::<ToolPolicyMatcher>(policy.matcher.clone());
+    let invalid = action.is_none() || matcher.is_err();
+    if invalid {
+        tracing::error!(
+            policy_id = %policy.id,
+            policy = %policy.name,
+            action = %policy.action,
+            "stored tool policy is unparseable; enforcing it as deny"
+        );
+    }
+    let mut reason = policy.reason;
+    if invalid && reason.is_none() {
+        reason = Some("tool policy could not be parsed; denied (fail closed)".into());
+    }
+    ToolPolicyRule {
         id: policy.id,
         name: policy.name,
         priority: policy.priority,
         enabled: policy.enabled,
-        action,
-        matcher,
-        reason: policy.reason,
+        action: if matcher.is_err() {
+            ToolPolicyAction::Deny
+        } else {
+            action.unwrap_or(ToolPolicyAction::Deny)
+        },
+        matcher: matcher.unwrap_or_default(),
+        reason,
         impact: policy.impact,
-    })
+    }
 }

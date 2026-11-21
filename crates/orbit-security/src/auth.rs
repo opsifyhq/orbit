@@ -373,17 +373,36 @@ fn parse_email_verified(value: Option<&serde_json::Value>) -> Option<bool> {
     }
 }
 
+/// JWKS cache state. The async mutex around it is held across a refresh, so concurrent
+/// requests share one fetch instead of each starting their own.
+#[derive(Default)]
+struct JwksCache {
+    set: Option<JwkSet>,
+    fetched: Option<Instant>,
+    /// Last time a fetch was started, successful or not.
+    last_attempt: Option<Instant>,
+}
+
 enum KeySource {
     Jwks {
         url: String,
         client: reqwest::Client,
-        cache: tokio::sync::Mutex<Option<(JwkSet, Instant)>>,
+        cache: tokio::sync::Mutex<JwksCache>,
+        /// How long a fetched key set is considered fresh.
         ttl: Duration,
+        /// Minimum time between two fetches, whatever the reason (expiry, unknown `kid`,
+        /// previous failure), so unauthenticated bad tokens cannot drive traffic to the IdP.
+        min_refresh: Duration,
     },
     Hmac(Vec<u8>),
 }
 
-/// Validates OIDC JWTs. JWKS is cached and refreshed once on unknown `kid`.
+const JWKS_TTL: Duration = Duration::from_secs(600);
+const JWKS_MIN_REFRESH: Duration = Duration::from_secs(30);
+
+/// Validates OIDC JWTs. The JWKS is cached for [`JWKS_TTL`]; an unknown `kid` or an expired
+/// cache triggers at most one refresh per [`JWKS_MIN_REFRESH`], and a failed refresh keeps
+/// serving the cached keys.
 pub struct JwtValidator {
     issuer: String,
     audience: String,
@@ -404,6 +423,15 @@ const ALLOWED_ALGORITHMS: [Algorithm; 6] = [
 
 impl JwtValidator {
     pub fn new(config: &OidcConfig) -> Result<Self, SecurityError> {
+        Self::with_jwks_timing(config, JWKS_TTL, JWKS_MIN_REFRESH)
+    }
+
+    /// Like [`JwtValidator::new`] with explicit JWKS cache timing.
+    pub fn with_jwks_timing(
+        config: &OidcConfig,
+        ttl: Duration,
+        min_refresh: Duration,
+    ) -> Result<Self, SecurityError> {
         let client = crate::http::client_with_custom_ca(Duration::from_secs(10));
         Ok(Self {
             issuer: config.issuer.clone(),
@@ -414,8 +442,9 @@ impl JwtValidator {
             keys: KeySource::Jwks {
                 url: config.jwks_url.clone(),
                 client,
-                cache: tokio::sync::Mutex::new(None),
-                ttl: Duration::from_secs(300),
+                cache: tokio::sync::Mutex::new(JwksCache::default()),
+                ttl,
+                min_refresh,
             },
         })
     }
@@ -481,35 +510,60 @@ impl JwtValidator {
                 client,
                 cache,
                 ttl,
+                min_refresh,
             } => {
                 let kid = header.kid.clone().ok_or(SecurityError::Unauthorized)?;
-                {
-                    let guard = cache.lock().await;
-                    if let Some((set, fetched)) = guard.as_ref() {
-                        if fetched.elapsed() < *ttl {
-                            if let Some(jwk) = set.find(&kid) {
-                                return DecodingKey::from_jwk(jwk)
-                                    .map_err(|_| SecurityError::Unauthorized);
-                            }
+                let mut guard = cache.lock().await;
+                let lookup = |guard: &JwksCache| {
+                    guard
+                        .set
+                        .as_ref()
+                        .and_then(|set| set.find(&kid))
+                        .and_then(|jwk| DecodingKey::from_jwk(jwk).ok())
+                };
+                let fresh = guard.fetched.is_some_and(|at| at.elapsed() < *ttl);
+                if fresh {
+                    if let Some(key) = lookup(&guard) {
+                        return Ok(key);
+                    }
+                }
+                // Expired cache or unknown `kid`: refresh, but never more often than
+                // `min_refresh`, so a stream of bad tokens is not a stream of IdP requests.
+                let may_refresh = guard
+                    .last_attempt
+                    .is_none_or(|at| at.elapsed() >= *min_refresh);
+                if may_refresh {
+                    guard.last_attempt = Some(Instant::now());
+                    let fetched: Result<JwkSet, ()> = async {
+                        client
+                            .get(url)
+                            .send()
+                            .await
+                            .and_then(|r| r.error_for_status())
+                            .map_err(|_| ())?
+                            .json()
+                            .await
+                            .map_err(|_| ())
+                    }
+                    .await;
+                    match fetched {
+                        Ok(set) => {
+                            guard.set = Some(set);
+                            guard.fetched = Some(Instant::now());
+                        }
+                        Err(()) => {
+                            tracing::warn!("JWKS refresh failed; serving cached keys if any");
                         }
                     }
                 }
-                // Cache miss or expired: refresh once.
-                let set: JwkSet = client
-                    .get(url)
-                    .send()
-                    .await
-                    .and_then(|r| r.error_for_status())
-                    .map_err(|_| SecurityError::Unavailable("JWKS endpoint unreachable".into()))?
-                    .json()
-                    .await
-                    .map_err(|_| SecurityError::Unauthorized)?;
-                let key = set
-                    .find(&kid)
-                    .and_then(|jwk| DecodingKey::from_jwk(jwk).ok())
-                    .ok_or(SecurityError::Unauthorized)?;
-                *cache.lock().await = Some((set, Instant::now()));
-                Ok(key)
+                // Also covers a failed refresh: keep serving whatever copy is cached.
+                match lookup(&guard) {
+                    Some(key) => Ok(key),
+                    None if guard.set.is_none() => Err(SecurityError::Unavailable(
+                        "JWKS endpoint unreachable".into(),
+                    )),
+                    None => Err(SecurityError::Unauthorized),
+                }
             }
         }
     }
@@ -736,5 +790,102 @@ mod tests {
         );
         assert!(claim_values(Some(&serde_json::json!({"a": 1}))).is_empty());
         assert!(claim_values(None).is_empty());
+    }
+
+    /// Minimal JWKS server: counts requests, answers with an empty key set.
+    async fn jwks_server(
+        status: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/jwks", listener.local_addr().unwrap());
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut buffer = [0u8; 2048];
+                let _ = socket.read(&mut buffer).await;
+                let body = r#"{"keys":[]}"#;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        (url, hits)
+    }
+
+    fn oidc_config(jwks_url: &str) -> OidcConfig {
+        OidcConfig {
+            issuer: "https://idp.test".into(),
+            audience: "orbit".into(),
+            jwks_url: jwks_url.into(),
+            client_id: "orbit".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost/cb".into(),
+            scopes: vec![],
+            auto_provision: false,
+            default_role: UserRole::Viewer,
+            role_claim: "groups".into(),
+            email_claim: "email".into(),
+            group_roles: vec![],
+            team_groups: vec![],
+            auto_create_teams: false,
+            require_mapped_group: false,
+            sync_roles: false,
+            require_verified_email: false,
+            clock_skew_seconds: 5,
+        }
+    }
+
+    fn token_with_kid(kid: &str) -> String {
+        use base64::Engine;
+        let b64 = |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        format!(
+            "{}.{}.{}",
+            b64(&format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{kid}"}}"#)),
+            b64("{}"),
+            b64("sig")
+        )
+    }
+
+    #[tokio::test]
+    async fn unknown_kid_floods_cause_one_jwks_fetch_per_interval() {
+        let (url, hits) = jwks_server("200 OK").await;
+        let validator = JwtValidator::with_jwks_timing(
+            &oidc_config(&url),
+            Duration::from_secs(600),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        for index in 0..100 {
+            let result = validator
+                .validate(&token_with_kid(&format!("unknown-{index}")))
+                .await;
+            assert!(matches!(result, Err(SecurityError::Unauthorized)));
+        }
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failing_jwks_endpoint_is_not_hammered() {
+        let (url, hits) = jwks_server("500 Internal Server Error").await;
+        let validator = JwtValidator::with_jwks_timing(
+            &oidc_config(&url),
+            Duration::from_secs(600),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        for _ in 0..50 {
+            let result = validator.validate(&token_with_kid("k")).await;
+            assert!(matches!(result, Err(SecurityError::Unavailable(_))));
+        }
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

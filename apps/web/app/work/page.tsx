@@ -2,18 +2,26 @@
 
 export const dynamic = "force-dynamic";
 
+import { randomId } from "@/lib/browser";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, CalendarClock, ChevronLeft, ChevronRight, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
+import { Bot, CalendarClock, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { ScheduleEditor, type ScheduleValue } from "@/components/schedule-editor";
 import { Badge } from "@/components/ui/badge";
+import {
+  SectionCard,
+  SectionPills,
+  SectionRail,
+  sectionNeighbours,
+  type NavSection,
+} from "@/components/ui/section-nav";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
@@ -26,7 +34,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   queryKeys,
   unwrap,
-  useAgents,
+  useAllAgents,
   useAgentTeams,
   useDefaultHarness,
   useHarnesses,
@@ -79,36 +87,17 @@ function FormSection({
   go: (id: SectionId) => void;
   children: ReactNode;
 }) {
-  if (active !== id) return null;
-  const index = SECTION_ORDER.indexOf(id);
-  const previous = SECTION_ORDER[index - 1];
-  const next = SECTION_ORDER[index + 1];
   return (
-    <Card id={`section-${id}`} className="scroll-mt-20" aria-labelledby={`section-${id}-title`}>
-      <CardHeader>
-        <h2 id={`section-${id}-title`} className="text-[15px] font-semibold leading-6">
-          {SECTION_TITLES[id]}
-        </h2>
-        <p className="text-[13px] text-muted-foreground">{SECTION_QUESTIONS[id]}</p>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        {children}
-        <div className="flex items-center justify-between gap-3 border-t pt-4">
-          {previous ? (
-            <Button type="button" variant="ghost" onClick={() => go(previous)}>
-              <ChevronLeft /> {SECTION_TITLES[previous]}
-            </Button>
-          ) : (
-            <span />
-          )}
-          {next ? (
-            <Button type="button" variant="outline" onClick={() => go(next)}>
-              {SECTION_TITLES[next]} <ChevronRight />
-            </Button>
-          ) : null}
-        </div>
-      </CardContent>
-    </Card>
+    <SectionCard
+      id={id}
+      active={active}
+      title={SECTION_TITLES[id]}
+      description={SECTION_QUESTIONS[id]}
+      onGo={go}
+      {...sectionNeighbours(SECTION_ORDER, SECTION_TITLES, id)}
+    >
+      {children}
+    </SectionCard>
   );
 }
 
@@ -139,7 +128,7 @@ export default function WorkPage() {
   }, []);
 
   // Drafts can be run by hand, so they are offered too (marked as drafts).
-  const agents = useAgents({ limit: 100 });
+  const agents = useAllAgents({ status: "current" });
   const teams = useAgentTeams();
   const harnesses = useHarnesses();
   const workerProfiles = useWorkerProfiles();
@@ -148,6 +137,11 @@ export default function WorkPage() {
 
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  // Identifies this attempt to start work; renewed whenever what is being started changes.
+  const runKey = useRef(randomId());
+  useEffect(() => {
+    runKey.current = randomId();
+  }, [who, task, name, repository, harness, where]);
 
   /**
    * "On a schedule" adds a schedule trigger (cron, time zone and this task) to the agent
@@ -181,7 +175,11 @@ export default function WorkPage() {
     unwrap(
       await api.PATCH("/api/v1/agents/{agent_id}", {
         params: { path: { agent_id: who } },
-        body: { definition: toAgentDefinitionBody(definition as never) },
+        // Read-then-write of the whole definition: refuse to clobber an edit made in between.
+        body: {
+          definition: toAgentDefinitionBody(definition as never),
+          expectedVersion: detail.currentVersion,
+        },
       }),
     );
     void queryClient.invalidateQueries({ queryKey: queryKeys.agent(who) });
@@ -207,7 +205,17 @@ export default function WorkPage() {
         const result = unwrap(
           await api.POST("/api/v1/agents/{agent_id}/executions", {
             params: { path: { agent_id: who } },
-            body: { task: task.trim(), payload: repository.trim() ? { repository: repository.trim() } : {}, harnessOverride: harness || undefined, name: name.trim() || undefined },
+            body: {
+              task: task.trim(),
+              payload: repository.trim() ? { repository: repository.trim() } : {},
+              harnessOverride: harness || undefined,
+              // "Anywhere" leaves the agent's own placement in charge.
+              placement: where === "auto" ? undefined : where,
+              name: name.trim() || undefined,
+              idempotencyKey: runKey.current,
+            },
+            // Same key on a retry or a double click: the API returns the first run.
+            headers: { "idempotency-key": runKey.current },
           }),
         );
         const effectiveHarness = harness || selectedAgent?.harness || defaultHarness || "mock";
@@ -215,8 +223,17 @@ export default function WorkPage() {
 
         // A worker for this harness is already online: it will pick the work up, and
         // starting another would only add an error about the launcher.
-        const workerOnline = (workers.data ?? []).some(
-          (worker) => worker.live && worker.harnesses.includes(effectiveHarness),
+        // Decide on loaded data only: "not fetched yet" is not "no worker", and acting
+        // on it would create a profile and launch a worker beside one that is online.
+        const liveWorkers = workers.data ?? (await workers.refetch()).data;
+        const profiles = workerProfiles.data ?? (await workerProfiles.refetch()).data;
+        if (!liveWorkers || !profiles) {
+          toast.warning("The work is queued. ORBIT could not check for workers, so none was started.");
+          router.push(`/executions/${result.id}`);
+          return;
+        }
+        const workerOnline = liveWorkers.some(
+          (worker) => worker.live && worker.harnesses.includes(effectiveHarness) && canRunHere(worker.target),
         );
         if (workerOnline) {
           router.push(`/executions/${result.id}`);
@@ -225,7 +242,7 @@ export default function WorkPage() {
 
         // Reuse an enabled profile for this harness that covers this agent; a disabled
         // or out-of-scope profile would accept the work and then never run it.
-        let profileId = (workerProfiles.data ?? []).find(
+        let profileId = profiles.find(
           (p) =>
             p.harnessKind === effectiveHarness &&
             p.enabled &&
@@ -297,8 +314,10 @@ export default function WorkPage() {
     return !output.teamId && (!output.agentId || output.agentId === who);
   });
   const harnessProfiles = (workerProfiles.data ?? []).filter((p) => p.harnessKind === harness);
+  // A worker only takes runs placed on its own target (or placed anywhere).
+  const canRunHere = (target: string) => where === "auto" || target === where;
   const liveForHarness = (workers.data ?? []).filter(
-    (worker) => worker.live && worker.harnesses.includes(harness),
+    (worker) => worker.live && worker.harnesses.includes(harness) && canRunHere(worker.target),
   ).length;
   const agentOptions = (agents.data?.items ?? []).filter(
     (agent) => agent.status === "active" || agent.status === "draft",
@@ -354,16 +373,6 @@ export default function WorkPage() {
       ?.querySelector<HTMLElement>("[role=radio][aria-checked=true], input:not([type=hidden]), textarea, select")
       ?.focus({ preventScroll: true });
   }, [focusRequest, active]);
-  const pillNavRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const nav = pillNavRef.current;
-    const pill = nav?.querySelector<HTMLElement>(`[data-section="${active}"]`);
-    if (!nav || !pill) return;
-    const left = pill.offsetLeft - nav.offsetLeft;
-    if (left < nav.scrollLeft || left + pill.offsetWidth > nav.scrollLeft + nav.clientWidth) {
-      nav.scrollTo({ left: Math.max(0, left - 16) });
-    }
-  }, [active]);
   function go(id: SectionId) {
     setActive(id);
     setFocusRequest((count) => count + 1);
@@ -408,52 +417,15 @@ export default function WorkPage() {
     ? "Adds the schedule to the agent as a new version. Nothing runs until it next fires."
     : "Starts an execution and opens its live timeline.";
 
+  const navSections: NavSection<SectionId>[] = SECTION_ORDER.map((id) => ({
+    id,
+    title: SECTION_TITLES[id],
+    value: summary[id].value,
+    missing: summary[id].missing,
+    problems: issueCount(id),
+  }));
   const sectionNav = (
-    <nav aria-label="Work sections">
-      <ol className="space-y-0.5">
-        {SECTION_ORDER.map((id, index) => {
-          const current = id === active;
-          const problems = issueCount(id);
-          return (
-            <li key={id}>
-              <button
-                type="button"
-                onClick={() => go(id)}
-                aria-current={current ? "step" : undefined}
-                className={cn(
-                  "flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
-                  current ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
-                )}
-              >
-                <span
-                  className={cn(
-                    "tabular mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium",
-                    problems
-                      ? "bg-destructive/15 text-destructive"
-                      : current
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {problems ? "!" : index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium">{SECTION_TITLES[id]}</span>
-                  <span
-                    className={cn(
-                      "block line-clamp-2 text-xs",
-                      problems ? "text-destructive" : summary[id].missing ? "text-warning" : "text-muted-foreground",
-                    )}
-                  >
-                    {problems ? `${problems} to fix` : summary[id].value}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
+    <SectionRail label="Work sections" sections={navSections} active={active} onGo={go} wrapValues />
   );
 
   return (
@@ -464,38 +436,7 @@ export default function WorkPage() {
       />
 
       {/* Phones and tablets: the sections as a scrollable row of steps. */}
-      <nav
-        ref={pillNavRef}
-        aria-label="Work sections"
-        className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] lg:hidden [&::-webkit-scrollbar]:hidden"
-      >
-        <ol className="flex w-max gap-1.5">
-          {SECTION_ORDER.map((id, index) => {
-            const current = id === active;
-            const problems = issueCount(id);
-            return (
-              <li key={id}>
-                <button
-                  type="button"
-                  onClick={() => go(id)}
-                  aria-current={current ? "step" : undefined}
-                  data-section={id}
-                  className={cn(
-                    "inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors",
-                    current
-                      ? "border-primary/40 bg-accent text-accent-foreground"
-                      : "bg-card text-muted-foreground hover:text-foreground",
-                    problems && "border-destructive/40 text-destructive",
-                  )}
-                >
-                  <span className="tabular text-xs opacity-70">{problems ? "!" : index + 1}</span>
-                  {SECTION_TITLES[id]}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
+      <SectionPills label="Work sections" sections={navSections} active={active} onGo={go} />
 
       <div className="grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start">
         <aside className="hidden lg:sticky lg:top-6 lg:block">
@@ -532,7 +473,16 @@ export default function WorkPage() {
               ]}
             />
             {whoType === "agent" ? (
-              agentOptions.length ? (
+              agents.isLoading ? (
+                <div className="grid gap-2 sm:grid-cols-2" aria-busy="true">
+                  <Skeleton className="h-16 rounded-lg" />
+                  <Skeleton className="h-16 rounded-lg" />
+                </div>
+              ) : agents.isError ? (
+                <Callout tone="danger" title="Agents could not be loaded">
+                  {errorMessage(agents.error)}
+                </Callout>
+              ) : agentOptions.length ? (
                 <div role="radiogroup" aria-label="Agent" className="grid gap-2 sm:grid-cols-2">
                   {agentOptions.map((agent) => (
                     <ChoiceCard
@@ -558,6 +508,15 @@ export default function WorkPage() {
                   .
                 </p>
               )
+            ) : teams.isLoading ? (
+              <div className="grid gap-2 sm:grid-cols-2" aria-busy="true">
+                <Skeleton className="h-16 rounded-lg" />
+                <Skeleton className="h-16 rounded-lg" />
+              </div>
+            ) : teams.isError ? (
+              <Callout tone="danger" title="Agent teams could not be loaded">
+                {errorMessage(teams.error)}
+              </Callout>
             ) : (teams.data ?? []).length ? (
               <div role="radiogroup" aria-label="Agent team" className="grid gap-2 sm:grid-cols-2">
                 {(teams.data ?? []).map((team) => (

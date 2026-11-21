@@ -5,6 +5,28 @@ use uuid::Uuid;
 use crate::models::{AccessTeam, TeamMember};
 use crate::{Store, StoreError, StoreResult};
 
+/// Team-visible resources owned by one access team, per table (ADR 0011).
+macro_rules! team_owned_counts_sql {
+    ($($table:literal),+) => {
+        concat!($(
+            "SELECT '", $table, "' AS resource, count(*) AS n FROM ", $table,
+            " WHERE org_id = $1 AND owner_team_id = $2 AND visibility = 'team' UNION ALL "
+        ),+, "SELECT 'none', 0::bigint WHERE false")
+    };
+}
+
+const TEAM_OWNED_COUNTS_SQL: &str = team_owned_counts_sql!(
+    "agents",
+    "skills",
+    "connections",
+    "providers",
+    "worker_profiles",
+    "triggers",
+    "tool_policies",
+    "agent_teams",
+    "env_mappings"
+);
+
 impl Store {
     pub async fn list_access_teams(&self, org_id: Uuid) -> StoreResult<Vec<AccessTeam>> {
         Ok(sqlx::query_as::<_, AccessTeam>(
@@ -81,57 +103,43 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("team".into()))
     }
 
+    /// Delete an access team. Refused with a `Conflict` that counts what still belongs to
+    /// the team while any resource is team-visible and owned by it: the FK would otherwise
+    /// null `owner_team_id` and leave those resources visible only to their owner.
     pub async fn delete_access_team(&self, org_id: Uuid, team_id: Uuid) -> StoreResult<()> {
         let mut tx = self.pool.begin().await?;
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM access_teams WHERE org_id = $1 AND id = $2)",
+        // Row lock: concurrent inserts referencing the team take FOR KEY SHARE on it.
+        let found: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM access_teams WHERE org_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(org_id)
         .bind(team_id)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
-        if !exists {
+        if found.is_none() {
             return Err(StoreError::NotFound("team".into()));
         }
-
-        let mut blockers: Vec<String> = Vec::new();
-        for (label, table) in [
-            ("agents", "agents"),
-            ("skills", "skills"),
-            ("connections", "connections"),
-            ("providers", "providers"),
-            ("worker profiles", "worker_profiles"),
-            ("agent teams", "agent_teams"),
-            ("triggers", "triggers"),
-            ("tool policies", "tool_policies"),
-            ("env mappings", "env_mappings"),
-        ] {
-            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT COUNT(*) FROM {table} WHERE owner_team_id = $1"
-            )))
+        let counts: Vec<(String, i64)> = sqlx::query_as(TEAM_OWNED_COUNTS_SQL)
+            .bind(org_id)
             .bind(team_id)
-            .fetch_one(&mut *tx)
+            .fetch_all(&mut *tx)
             .await?;
-            if count > 0 {
-                blockers.push(format!("{label} ({count})"));
-            }
-        }
-
-        if !blockers.is_empty() {
+        let blocking: Vec<String> = counts
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(table, n)| format!("{n} {}", table.replace('_', " ")))
+            .collect();
+        if !blocking.is_empty() {
             return Err(StoreError::Conflict(format!(
-                "team still owns resources: {}; reassign or remove them before deleting the team",
-                blockers.join(", ")
+                "team still owns team-visible resources ({}); move or delete them first",
+                blocking.join(", ")
             )));
         }
-
-        let result = sqlx::query("DELETE FROM access_teams WHERE org_id = $1 AND id = $2")
+        sqlx::query("DELETE FROM access_teams WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(team_id)
             .execute(&mut *tx)
             .await?;
-        if result.rows_affected() == 0 {
-            return Err(StoreError::NotFound("team".into()));
-        }
         tx.commit().await?;
         Ok(())
     }
@@ -156,10 +164,15 @@ impl Store {
                 "team role must be lead, member or viewer".into(),
             ));
         }
-        Ok(sqlx::query_as::<_, TeamMember>(
+        // The user must belong to the team's org; otherwise report the same NotFound as an
+        // unknown id so the response is not an oracle for user ids in other orgs.
+        sqlx::query_as::<_, TeamMember>(
             r#"
             INSERT INTO team_members (team_id, user_id, role)
-            VALUES ($1, $2, $3)
+            SELECT t.id, u.id, $3
+            FROM access_teams t
+            JOIN users u ON u.org_id = t.org_id
+            WHERE t.id = $1 AND u.id = $2
             ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role
             RETURNING *
             "#,
@@ -167,8 +180,9 @@ impl Store {
         .bind(team_id)
         .bind(user_id)
         .bind(role)
-        .fetch_one(&self.pool)
-        .await?)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StoreError::NotFound("user".into()))
     }
 
     pub async fn remove_team_member(&self, team_id: Uuid, user_id: Uuid) -> StoreResult<()> {

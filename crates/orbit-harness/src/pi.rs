@@ -3,13 +3,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
+use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChild};
 use crate::process_env::child_environment;
-use crate::stream::{self, MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
+use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
     HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
@@ -191,11 +191,10 @@ fn write_platform_models(
 
 /// Write a Pi extension that asks the ORBIT broker before every native tool call.
 fn write_policy_extension(workspace: &Path) -> std::io::Result<PathBuf> {
-    let dir = workspace.join(".pi/extensions");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("orbit-policy.ts");
-    std::fs::write(
-        &path,
+    let rel = ".pi/extensions/orbit-policy.ts";
+    crate::paths::write_workspace_file(
+        workspace,
+        rel,
         r#"import { createHash } from "node:crypto";
 
 // Stable hash of tool name + canonical JSON (sorted keys); must match the broker's
@@ -234,7 +233,7 @@ export default function (pi: any) {
 }
 "#,
     )?;
-    Ok(path)
+    Ok(workspace.join(rel))
 }
 
 impl PiHarnessAdapter {
@@ -361,7 +360,6 @@ fn write_pi_mcp_config(workspace: &Path, bridge: &PiMcpBridge) -> std::io::Resul
     if bridge.command.is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(workspace.join(".pi"))?;
     let environment = bridge
         .environment
         .keys()
@@ -378,33 +376,11 @@ fn write_pi_mcp_config(workspace: &Path, bridge: &PiMcpBridge) -> std::io::Resul
             }
         }
     });
-    std::fs::write(
-        workspace.join(".pi/mcp.json"),
+    crate::paths::write_workspace_file(
+        workspace,
+        ".pi/mcp.json",
         serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".into()),
     )
-}
-
-fn truncate(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        value.to_string()
-    } else {
-        let mut end = limit;
-        while end > 0 && !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}… [truncated]", &value[..end])
-    }
-}
-
-fn truncate_json(value: &Value, limit: usize) -> Value {
-    let Ok(serialized) = serde_json::to_string(value) else {
-        return json!("[unserializable JSON]");
-    };
-    if serialized.len() <= limit {
-        value.clone()
-    } else {
-        json!(truncate(&serialized, limit))
-    }
 }
 
 fn map_event(value: &Value, usage: &mut Usage, text: String) -> (Option<HarnessEvent>, String) {
@@ -525,12 +501,6 @@ fn map_event(value: &Value, usage: &mut Usage, text: String) -> (Option<HarnessE
     }
 }
 
-async fn emit(sender: &Option<tokio::sync::mpsc::Sender<HarnessEvent>>, event: HarnessEvent) {
-    if let Some(sender) = sender {
-        let _ = sender.send(event).await;
-    }
-}
-
 const OUTPUT_DELTA_BATCH_BYTES: usize = 4 * 1024;
 
 async fn flush_output_delta(
@@ -564,18 +534,6 @@ async fn emit_batched(
     }
 }
 
-fn terminate(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
-        }
-    }
-    let _ = child.start_kill();
-}
-
 impl PiHarnessAdapter {
     async fn run_pi(
         &self,
@@ -596,16 +554,7 @@ impl PiHarnessAdapter {
             Some(dir) if !dir.trim().is_empty() => {
                 crate::paths::resolve_confined_dir(&workspace, dir).await?
             }
-            _ => {
-                let default = workspace.join(".pi-sessions");
-                tokio::fs::create_dir_all(&default).await.map_err(|e| {
-                    HarnessError::new(
-                        HarnessErrorKind::Internal,
-                        format!("could not create Pi session dir: {e}"),
-                    )
-                })?;
-                default
-            }
+            _ => crate::paths::resolve_confined_dir(&workspace, ".pi-sessions").await?,
         };
 
         if let Some(bridge) = &settings.orbit_mcp {
@@ -719,192 +668,132 @@ impl PiHarnessAdapter {
                 }
             }
         }
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        command.kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.as_std_mut().process_group(0);
-        }
-        let mut child = command.spawn().map_err(|e| {
-            HarnessError::new(
-                HarnessErrorKind::Unavailable,
-                format!(
-                    "could not start Pi binary '{}': {e}. The worker image must include Pi.",
-                    settings.binary()
-                ),
-            )
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "pi stdout unavailable")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            HarnessError::new(HarnessErrorKind::Internal, "pi stderr unavailable")
-        })?;
-
-        let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let debug_logs = settings.debug_logs.unwrap_or(false);
-        let stderr_events = request.events.clone();
-        let stderr_task = {
-            let buffer = stderr_buffer.clone();
-            tokio::spawn(async move {
-                let lines = stream::lines(stderr);
-                tokio::pin!(lines);
-                while let Some(line) = lines.next().await {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(error) => {
-                            let mut buffer = buffer.lock().expect("stderr lock");
-                            if buffer.len() < 16_000 {
-                                buffer.push_str(&format!(
-                                    "[skipped oversized stderr line: {error}]\n"
-                                ));
-                            }
-                            continue;
-                        }
-                    };
-                    {
-                        let mut buffer = buffer.lock().expect("stderr lock");
-                        if buffer.len() < 16_000 {
-                            buffer.push_str(&line);
-                            buffer.push('\n');
-                        }
-                    }
-                    if debug_logs {
-                        if let Some(sender) = &stderr_events {
-                            let _ = sender
-                                .send(HarnessEvent::log(LogLevel::Debug, format!("pi: {line}")))
-                                .await;
-                        }
-                    }
-                }
-            })
-        };
-
         let started = Instant::now();
         let timeout = Duration::from_secs(request.resources.timeout_seconds.max(1));
-        let cancel = request.cancel.clone();
         let sender = request.events.clone();
+        // Active time only: waiting for a human approval does not use up the timeout.
+        let pause = request.pause.clone();
+        let mut run = SupervisedChild::spawn(
+            command,
+            "Pi",
+            request.cancel.clone(),
+            async move { pause.deadline(timeout).await },
+            request.events.clone(),
+            move |line| {
+                debug_logs.then(|| HarnessEvent::log(LogLevel::Debug, format!("pi: {line}")))
+            },
+        )?;
+
         let mut usage = Usage::default();
         let mut text = String::new();
         let mut session = session_ref.clone();
         let mut error: Option<String> = None;
-        let lines = stream::lines(stdout);
-        tokio::pin!(lines);
         let mut pending_output = String::new();
-        // Active time only: waiting for a human approval does not use up the timeout.
-        let pause = request.pause.clone();
-        let deadline = pause.deadline(timeout);
-        tokio::pin!(deadline);
-        let mut cancelled = false;
-        let mut timed_out = false;
-
         loop {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => { cancelled = true; terminate(&mut child); let _=child.wait().await; break; }
-                _ = &mut deadline => { timed_out = true; terminate(&mut child); let _=child.wait().await; break; }
-                line = lines.next() => {
-                    match line {
-                        Some(Ok(line)) => {
-                            if line.trim().is_empty() { continue; }
-                            let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-                            if value.get("type").and_then(Value::as_str) == Some("session") {
-                                if let Some(id) = value.get("id").and_then(Value::as_str) {
-                                    session = Some(id.to_string());
-                                }
-                                continue;
-                            }
-                            if value.get("type").and_then(Value::as_str) == Some("message_end")
-                                && value.get("message").and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
-                                && value.get("message").and_then(|m| m.get("stopReason")).and_then(Value::as_str) == Some("error")
-                            {
-                                error = value.get("message").and_then(|m| m.get("errorMessage")).and_then(Value::as_str).map(str::to_string);
-                            }
-                            let (event, next_text) = map_event(&value, &mut usage, text);
-                            text = next_text;
-                            if let Some(event) = event {
-                                emit_batched(&sender, &mut pending_output, event).await;
-                            }
+            match run.next().await {
+                Next::Line(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if value.get("type").and_then(Value::as_str) == Some("session") {
+                        if let Some(id) = value.get("id").and_then(Value::as_str) {
+                            session = Some(id.to_string());
                         }
-                        Some(Err(err)) => {
-                            flush_output_delta(&sender, &mut pending_output).await;
-                            emit(
-                                &sender,
-                                HarnessEvent::log(
-                                    LogLevel::Warn,
-                                    format!("Pi output line skipped: {err}"),
-                                ),
-                            )
-                            .await;
-                        }
-                        None => break,
+                        continue;
+                    }
+                    if value.get("type").and_then(Value::as_str) == Some("message_end")
+                        && value
+                            .get("message")
+                            .and_then(|m| m.get("role"))
+                            .and_then(Value::as_str)
+                            == Some("assistant")
+                        && value
+                            .get("message")
+                            .and_then(|m| m.get("stopReason"))
+                            .and_then(Value::as_str)
+                            == Some("error")
+                    {
+                        error = value
+                            .get("message")
+                            .and_then(|m| m.get("errorMessage"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                    }
+                    let (event, next_text) = map_event(&value, &mut usage, text);
+                    text = next_text;
+                    if let Some(event) = event {
+                        emit_batched(&sender, &mut pending_output, event).await;
                     }
                 }
+                Next::Line(Err(err)) => {
+                    flush_output_delta(&sender, &mut pending_output).await;
+                    emit(
+                        &sender,
+                        HarnessEvent::log(LogLevel::Warn, format!("Pi output line skipped: {err}")),
+                    )
+                    .await;
+                }
+                Next::Eof | Next::Cancelled | Next::TimedOut => break,
             }
         }
         flush_output_delta(&sender, &mut pending_output).await;
-        let status = child.wait().await.map_err(|e| {
-            HarnessError::new(HarnessErrorKind::Internal, format!("pi wait failed: {e}"))
-        })?;
-        let _ = tokio::time::timeout(Duration::from_secs(2), stderr_task).await;
+        let finished = run.finish().await?;
         usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
         usage.cpu_millis = None;
 
-        if cancelled {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::cancelled());
-            outcome.status = ExecutionStatus::Cancelled;
-            outcome.session_ref = session;
-            outcome.usage = usage;
-            return Ok(outcome);
-        }
-        if timed_out {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs()));
-            outcome.status = ExecutionStatus::TimedOut;
-            outcome.session_ref = session;
-            outcome.usage = usage;
-            return Ok(outcome);
-        }
-        if let Some(message) = error {
-            let mut outcome = ExecutionOutcome::failed(HarnessError::new(
+        let with_run = |mut outcome: ExecutionOutcome, status| {
+            outcome.status = status;
+            outcome.session_ref = session.clone();
+            outcome.usage = usage.clone();
+            outcome
+        };
+        let failed = |message: String| {
+            ExecutionOutcome::failed(HarnessError::new(
                 HarnessErrorKind::ExecutionFailed,
                 message,
-            ));
-            outcome.status = ExecutionStatus::Failed;
-            outcome.session_ref = session;
-            outcome.usage = usage;
-            return Ok(outcome);
-        }
-        if !status.success() {
-            let stderr = stderr_buffer.lock().expect("stderr lock").clone();
-            let mut outcome = ExecutionOutcome::failed(HarnessError::new(
-                HarnessErrorKind::ExecutionFailed,
-                format!(
+            ))
+        };
+        Ok(match finished.ending {
+            Ending::Cancelled => with_run(
+                ExecutionOutcome::failed(HarnessError::cancelled()),
+                ExecutionStatus::Cancelled,
+            ),
+            Ending::TimedOut => with_run(
+                ExecutionOutcome::failed(HarnessError::timeout(timeout.as_secs())),
+                ExecutionStatus::TimedOut,
+            ),
+            Ending::Exited(_) if error.is_some() => with_run(
+                failed(error.clone().unwrap_or_default()),
+                ExecutionStatus::Failed,
+            ),
+            Ending::Exited(status) if !status.success() => with_run(
+                failed(format!(
                     "pi exited with {}: {}",
                     status
                         .code()
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "signal".into()),
-                    truncate(stderr.trim(), 4_000)
+                    truncate(finished.stderr.trim(), 4_000)
+                )),
+                ExecutionStatus::Failed,
+            ),
+            Ending::Exited(_) => with_run(
+                ExecutionOutcome::succeeded(
+                    json!({
+                        "text": text.trim(),
+                        "sessionRef": session,
+                        "harness": "pi",
+                        "wallTimeMs": usage.wall_time_ms,
+                    }),
+                    session.clone(),
                 ),
-            ));
-            outcome.status = ExecutionStatus::Failed;
-            outcome.session_ref = session;
-            outcome.usage = usage;
-            return Ok(outcome);
-        }
-
-        let output = json!({
-            "text": text.trim(),
-            "sessionRef": session,
-            "harness": "pi",
-            "wallTimeMs": usage.wall_time_ms,
-        });
-        let mut outcome = ExecutionOutcome::succeeded(output, session);
-        outcome.usage = usage;
-        Ok(outcome)
+                ExecutionStatus::Succeeded,
+            ),
+        })
     }
 }
 

@@ -434,6 +434,9 @@ impl Store {
 }
 
 impl Store {
+    /// Record the outcome of a connection test. A pass returns the connection to
+    /// `active` (the only status workers accept), so a failed check is recoverable
+    /// by testing again; `expired` and `revoked` are never overwritten by a probe.
     pub async fn set_connection_check(
         &self,
         org_id: Uuid,
@@ -441,11 +444,14 @@ impl Store {
         ok: bool,
     ) -> StoreResult<()> {
         sqlx::query(
-            "UPDATE connections SET status = $3, last_checked_at = now(), updated_at = now() WHERE org_id = $1 AND id = $2",
+            "UPDATE connections
+             SET status = CASE WHEN status IN ('active', 'error') THEN $3 ELSE status END,
+                 last_checked_at = now(), updated_at = now()
+             WHERE org_id = $1 AND id = $2",
         )
         .bind(org_id)
         .bind(connection_id)
-        .bind(if ok { "connected" } else { "error" })
+        .bind(if ok { "active" } else { "error" })
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -206,11 +206,12 @@ impl Store {
     /// Liveness is otherwise tracked per worker: a healthy worker whose runner task died,
     /// or whose `/complete` call never got through, keeps heartbeating while the run stays
     /// `running` and holds the agent's concurrency slot. A run is ended as `timed_out`
-    /// once `running_started_at + timeout_seconds + grace_seconds` has passed. Time spent
-    /// waiting on approvals is added to the deadline because the worker pauses the run's
-    /// clock for it. Dispatch and checkout time do not count against the execution timeout.
-    /// The conditional `status = 'running'` makes this safe to run from several API
-    /// replicas and loses cleanly to a worker that reports in at the same moment.
+    /// once `running_started_at + timeout_seconds + grace_seconds` has passed (the clock
+    /// starts when the harness reports `running`, so checkout and worker start-up do not
+    /// count; dispatch is bounded by [`Self::reap_unstarted_executions`]). Time spent waiting
+    /// on approvals is added to the deadline because the worker pauses the run's clock
+    /// for it. The conditional `status = 'running'` makes this safe to run from several
+    /// API replicas and loses cleanly to a worker that reports in at the same moment.
     pub async fn reap_timed_out_executions(
         &self,
         org_id: Option<Uuid>,

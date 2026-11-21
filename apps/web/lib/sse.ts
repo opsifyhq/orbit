@@ -1,5 +1,12 @@
-import { eventStreamUrl, getAccessToken } from "./api";
-import { apiErrorFromResponse, handleUnauthorized } from "./http";
+import { eventStreamUrl, getAccessToken } from "./api.ts";
+import { ApiError, apiErrorFromResponse, handleUnauthorized } from "./http.ts";
+
+/**
+ * The server sends a keep-alive comment every 15 s. Three missed in a row means the
+ * connection is dead even though the socket still looks open (laptop woke up, phone
+ * tab resumed, a proxy dropped the stream without closing it).
+ */
+export const STREAM_IDLE_TIMEOUT_MS = 45_000;
 
 export interface ParsedSseEvent {
   event: string;
@@ -23,12 +30,30 @@ export async function streamExecutionEvents(
     onOpen?: () => void;
     /** Called with an `ApiError` for HTTP failures (check `status`), or the network error. */
     onError?: (error: unknown) => void;
+    /** Give up on a stream that has been silent this long (keep-alives included). */
+    idleTimeoutMs?: number;
   },
 ): Promise<void> {
   const params = new URLSearchParams();
   if (options.afterSeq !== undefined) params.set("after_seq", String(options.afterSeq));
   const query = params.toString();
   const url = `${eventStreamUrl(executionId)}${query ? `?${query}` : ""}`;
+
+  // Our own controller, so a stalled stream can be torn down without the caller's signal.
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (options.signal?.aborted) return;
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const idleTimeoutMs = options.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
+  let stalled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, idleTimeoutMs);
+  };
 
   try {
     const token = getAccessToken();
@@ -38,7 +63,7 @@ export async function streamExecutionEvents(
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(options.lastEventId ? { "last-event-id": options.lastEventId } : {}),
       },
-      signal: options.signal,
+      signal: controller.signal,
       cache: "no-store",
     });
     if (!response.ok) {
@@ -52,9 +77,12 @@ export async function streamExecutionEvents(
     const decoder = new TextDecoder();
     let buffer = "";
 
+    armIdleTimer();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Any bytes count, keep-alive comments included.
+      armIdleTimer();
       buffer += decoder.decode(value, { stream: true });
 
       let separator = buffer.indexOf("\n\n");
@@ -67,8 +95,17 @@ export async function streamExecutionEvents(
       }
     }
   } catch (error) {
+    if (stalled) {
+      options.onError?.(
+        new ApiError(0, "The live connection went quiet. Reconnecting.", { code: "stream_stalled" }),
+      );
+      return;
+    }
     if ((error as { name?: string })?.name === "AbortError") return;
     options.onError?.(error);
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 

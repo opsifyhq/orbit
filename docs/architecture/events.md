@@ -24,7 +24,10 @@ missing ack or timeout is logged as a warning (it never blocks the request that 
 truth and workers poll the durable queue.
 
 > Current state: there are **no durable JetStream consumers and no event replay**. The
-> stream is a retained log (7 days); `subscribe` is a plain core NATS subscription, and
+> stream is a retained log (7 days, capped at 1 GiB by default; set
+> `ORBIT_NATS_STREAM_MAX_BYTES` to change it, the oldest events are dropped first). An
+> event with an idempotency key is published with it as `Nats-Msg-Id`, so a republished
+> event is stored once. `subscribe` is a plain core NATS subscription, and
 > nothing in the API consumes it today. Durable pull consumers with explicit ack remain a
 > possible future addition.
 

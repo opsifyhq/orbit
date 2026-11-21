@@ -1,12 +1,15 @@
 "use client";
 
+import { validationDetails } from "@/lib/http";
+import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AgentForm } from "@/components/agents/agent-form";
 import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/ui/callout";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,11 +22,22 @@ import { useQueryClient } from "@tanstack/react-query";
 
 export default function EditAgentPage() {
   const params = useParams<{ id: string }>();
-  const agentId = params.id;
+  // Keyed by id: moving from one edit page to another (the command palette does this
+  // without a full navigation) must start a fresh editor, never carry the previous
+  // object's form state or starting version into a save on this one.
+  return <EditAgentEditor key={params.id} agentId={params.id} />;
+}
+
+function EditAgentEditor({ agentId }: { agentId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const agent = useAgent(agentId);
   const [submitting, setSubmitting] = useState(false);
+  const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
+  // The version this edit started from. The agent keeps refreshing in the background,
+  // so the latest known version is not it; the API refuses a save based on an older one.
+  const startedFrom = useRef<number | null>(null);
+  if (agent.data && startedFrom.current === null) startedFrom.current = agent.data.currentVersion;
 
   if (agent.isLoading) {
     return (
@@ -34,16 +48,14 @@ export default function EditAgentPage() {
     );
   }
 
-  if (agent.isError || !agent.data) {
+  if (!agent.data) {
     return (
-      <EmptyState
-        title="Agent not found"
-        description={agent.error ? errorMessage(agent.error) : undefined}
-        action={
-          <Button asChild>
-            <Link href="/agents">Back to agents</Link>
-          </Button>
-        }
+      <LoadFailure
+        noun="agent"
+        error={agent.error}
+        back={{ href: "/agents", label: "Back to agents" }}
+        onRetry={() => void agent.refetch()}
+        retrying={agent.isFetching}
       />
     );
   }
@@ -71,13 +83,19 @@ export default function EditAgentPage() {
 
   async function handleSubmit(definition: AgentDefinition) {
     setSubmitting(true);
+    setServerIssues([]);
     try {
       const updated = unwrap(
         await api.PATCH("/api/v1/agents/{agent_id}", {
           params: { path: { agent_id: agentId } },
-          body: { definition: toAgentDefinitionBody(definition) },
+          body: {
+            definition: toAgentDefinitionBody(definition),
+            expectedVersion: startedFrom.current ?? undefined,
+          },
         }),
       );
+      // This save is now the baseline; the refresh below must not look like someone else's.
+      startedFrom.current = updated.currentVersion;
       await queryClient.invalidateQueries({ queryKey: queryKeys.agent(agentId) });
       // Name, description and labels are saved in place; only a changed spec is a new version.
       const version = (updated as { currentVersion?: number }).currentVersion;
@@ -86,11 +104,15 @@ export default function EditAgentPage() {
       );
       router.push(`/agents/${agentId}`);
     } catch (error) {
-      toast.error(errorMessage(error));
+      const details = validationDetails(error);
+      setServerIssues(details);
+      toast.error(details.length > 1 ? "Fix the highlighted fields" : errorMessage(error));
     } finally {
       setSubmitting(false);
     }
   }
+
+  const movedOn = startedFrom.current !== null && agent.data.currentVersion > startedFrom.current;
 
   return (
     <div className="space-y-6">
@@ -99,7 +121,22 @@ export default function EditAgentPage() {
         title={`Edit ${agent.data.name}`}
         description="Saving creates a new immutable version. Past executions keep the configuration they ran with."
       />
+      {movedOn ? (
+        <Callout
+          tone="warning"
+          title={`Someone saved version ${agent.data.currentVersion} while you were editing`}
+          action={
+            <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+              Reload
+            </Button>
+          }
+        >
+          You started from version {startedFrom.current}. Saving now would be refused so their
+          changes are not overwritten. Copy anything you want to keep, then reload.
+        </Callout>
+      ) : null}
       <AgentForm
+        serverIssues={serverIssues}
         initial={initial}
         submitLabel="Save changes"
         cancelHref={`/agents/${agentId}`}

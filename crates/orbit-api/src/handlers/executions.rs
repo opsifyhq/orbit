@@ -113,11 +113,24 @@ pub async fn list_executions(
     Query(query): Query<ExecutionListQuery>,
 ) -> Result<Json<ExecutionPage>, ApiError> {
     auth.require(Permission::ExecutionsRead)?;
-    if let Some(status) = &query.status {
-        if ExecutionStatus::parse(status).is_none() {
-            return Err(ApiError::bad_request(format!("unknown status '{status}'")));
+    // One status, or several separated by commas ("failed,timed_out"): the groups people
+    // think in (in flight, failed) span more than one status.
+    let status = match query.status.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(raw) => {
+            let mut statuses = Vec::new();
+            for part in raw
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+            {
+                let parsed = ExecutionStatus::parse(part)
+                    .ok_or_else(|| ApiError::bad_request(format!("unknown status '{part}'")))?;
+                statuses.push(parsed.as_str());
+            }
+            Some(statuses.join(","))
         }
-    }
+    };
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let store_access = access.store_access();
     let (items, next_cursor, total) = state
@@ -126,7 +139,7 @@ pub async fn list_executions(
             auth.org_id,
             limit(query.limit),
             query.cursor.as_deref(),
-            query.status.as_deref(),
+            status.as_deref(),
             query.agent_id,
             query.archived,
             Some(&store_access),
@@ -257,18 +270,8 @@ pub async fn execute_agent(
     let mut skills = body.skills.clone();
     skills.sort();
     skills.dedup();
-    for slug in &skills {
-        if state
-            .store
-            .get_skill_by_slug(auth.org_id, slug)
-            .await?
-            .is_none()
-        {
-            return Err(ApiError::validation(vec![
-                orbit_domain::ValidationIssue::new("skills", format!("unknown skill '{slug}'")),
-            ]));
-        }
-    }
+    crate::preflight::require_skills_use(&state, auth.org_id, &access, &skills, "skills", false)
+        .await?;
 
     // Harness resolution: explicit request -> legacy agent version -> org default.
     let requested_harness = body.harness.as_deref().or(body.harness_override.as_deref());
@@ -302,11 +305,21 @@ pub async fn execute_agent(
     };
     preflight.authorize_access().await?;
     preflight.check_harness().await?;
-    let placement = spec
-        .harness
-        .as_ref()
-        .map(|harness| harness.placement.as_str())
-        .unwrap_or("auto");
+    // Placement: the run's own choice, else the agent's, else any matching worker.
+    let placement = match body.placement.as_deref().map(str::trim) {
+        None | Some("") => spec
+            .harness
+            .as_ref()
+            .map(|harness| harness.placement)
+            .unwrap_or_default(),
+        Some(value) => orbit_domain::PlacementTarget::parse(value).ok_or_else(|| {
+            ApiError::validation(vec![orbit_domain::ValidationIssue::new(
+                "placement",
+                "unknown placement; expected auto, local, docker or kubernetes",
+            )])
+        })?,
+    };
+    let placement = placement.as_str();
 
     let idempotency_key = headers
         .get("idempotency-key")
@@ -576,7 +589,24 @@ pub async fn rerun_execution(
         .store
         .get_agent(auth.org_id, original.agent_id)
         .await?;
+    // A team step carries the team's connections, env mappings and subagents in its input.
+    // Replaying that without re-running the team authorization would hand them to whoever
+    // can merely view the execution, so team steps can only be re-run through the team.
+    if original.team_run_id.is_some() || original.input.get("team").is_some() {
+        return Err(ApiError::conflict(
+            "this execution is a team step and cannot be rerun on its own; re-run the team instead",
+        ));
+    }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    crate::preflight::require_skills_use(
+        &state,
+        auth.org_id,
+        &access,
+        &original.skills,
+        "skills",
+        false,
+    )
+    .await?;
     let version = state
         .store
         .get_agent_version_by_id(auth.org_id, original.agent_version_id)
