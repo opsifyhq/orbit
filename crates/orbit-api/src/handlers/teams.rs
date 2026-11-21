@@ -1170,9 +1170,16 @@ pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
     else {
         return Ok(());
     };
+    let claimed_at = run.advance_claimed_at;
     let result = advance_claimed(state, run.clone()).await;
-    if let Err(error) = state.store.release_team_run_advance(run.id).await {
-        tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
+    if let Some(claimed_at) = claimed_at {
+        if let Err(error) = state
+            .store
+            .release_team_run_advance(run.id, claimed_at)
+            .await
+        {
+            tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
+        }
     }
     result
 }

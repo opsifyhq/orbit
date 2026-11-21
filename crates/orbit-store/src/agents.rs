@@ -361,7 +361,7 @@ impl Store {
             r#"
             UPDATE agents
             SET status = $3, archived_at = COALESCE($4, archived_at), updated_at = now()
-            WHERE org_id = $1 AND id = $2
+            WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,
         )
@@ -369,9 +369,10 @@ impl Store {
         .bind(agent_id)
         .bind(target.as_str())
         .bind(archived_at)
+        .bind(current_status.as_str())
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| StoreError::NotFound("agent".into()))
+        .ok_or_else(|| StoreError::Conflict("agent status changed concurrently".into()))
     }
 
     pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
