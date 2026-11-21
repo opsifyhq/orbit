@@ -151,9 +151,15 @@ Migrations are embedded in the binaries and applied automatically at startup
 ```bash
 # with the API running
 pnpm api:generate
+
+# offline: dump the spec from ApiDoc (no API or database needed), then generate
+./scripts/dump-openapi.sh
+ORBIT_OPENAPI_SPEC=target/orbit-openapi.json pnpm api:generate
 ```
 
-Writes `packages/api-client/src/schema.d.ts` from `/api/v1/openapi.json`.
+Writes `packages/api-client/src/schema.d.ts` from `/api/v1/openapi.json`, or from the
+local document when `ORBIT_OPENAPI_SPEC` is set. `scripts/dump-openapi.sh` runs the
+`openapi_parity` test, which also guards documented paths and schemas.
 
 ## Useful commands
 

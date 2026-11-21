@@ -93,79 +93,6 @@ pub async fn resolve_confined_dir(root: &Path, rel: &str) -> Result<PathBuf, Har
     Ok(current)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_absolute_and_parent_paths() {
-        for bad in [
-            "/etc",
-            "/",
-            "\\windows",
-            "../other-execution",
-            "a/../../b",
-            "a/..",
-            "..",
-            "ok/../..",
-            "a\0b",
-        ] {
-            assert!(validate_relative_subpath(bad).is_err(), "{bad:?} accepted");
-        }
-    }
-
-    #[test]
-    fn accepts_plain_relative_paths() {
-        assert_eq!(
-            validate_relative_subpath("repo/src").unwrap(),
-            PathBuf::from("repo/src")
-        );
-        assert_eq!(
-            validate_relative_subpath("./repo").unwrap(),
-            PathBuf::from("repo")
-        );
-        assert_eq!(validate_relative_subpath("").unwrap(), PathBuf::new());
-    }
-
-    fn scratch(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("orbit-paths-{name}-{}", uuid::Uuid::now_v7()))
-    }
-
-    #[tokio::test]
-    async fn resolves_inside_root() {
-        let root = scratch("ok");
-        let dir = resolve_confined_dir(&root, "a/b").await.unwrap();
-        assert!(dir.starts_with(tokio::fs::canonicalize(&root).await.unwrap()));
-        assert!(dir.is_dir());
-        let _ = tokio::fs::remove_dir_all(&root).await;
-    }
-
-    #[tokio::test]
-    async fn runtime_rejects_traversal_and_absolute() {
-        let root = scratch("bad");
-        assert!(resolve_confined_dir(&root, "../x").await.is_err());
-        assert!(resolve_confined_dir(&root, "/tmp").await.is_err());
-        let _ = tokio::fs::remove_dir_all(&root).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn runtime_rejects_symlink_escape() {
-        let root = scratch("link");
-        let outside = scratch("outside");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        tokio::fs::create_dir_all(&outside).await.unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
-        let err = resolve_confined_dir(&root, "escape/inner")
-            .await
-            .unwrap_err();
-        assert!(err.message.contains("escapes"));
-        assert!(!outside.join("inner").exists());
-        let _ = tokio::fs::remove_dir_all(&root).await;
-        let _ = tokio::fs::remove_dir_all(&outside).await;
-    }
-}
-
 fn invalid(message: impl Into<String>) -> HarnessError {
     HarnessError::new(HarnessErrorKind::InvalidConfig, message)
 }
@@ -363,5 +290,77 @@ pub async fn safe_set_executable(root: &Path, path: &Path) -> Result<(), Harness
             "could not inspect {}: {error}",
             path.display()
         ))),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_absolute_and_parent_paths() {
+        for bad in [
+            "/etc",
+            "/",
+            "\\windows",
+            "../other-execution",
+            "a/../../b",
+            "a/..",
+            "..",
+            "ok/../..",
+            "a\0b",
+        ] {
+            assert!(validate_relative_subpath(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    #[test]
+    fn accepts_plain_relative_paths() {
+        assert_eq!(
+            validate_relative_subpath("repo/src").unwrap(),
+            PathBuf::from("repo/src")
+        );
+        assert_eq!(
+            validate_relative_subpath("./repo").unwrap(),
+            PathBuf::from("repo")
+        );
+        assert_eq!(validate_relative_subpath("").unwrap(), PathBuf::new());
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("orbit-paths-{name}-{}", uuid::Uuid::now_v7()))
+    }
+
+    #[tokio::test]
+    async fn resolves_inside_root() {
+        let root = scratch("ok");
+        let dir = resolve_confined_dir(&root, "a/b").await.unwrap();
+        assert!(dir.starts_with(tokio::fs::canonicalize(&root).await.unwrap()));
+        assert!(dir.is_dir());
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_rejects_traversal_and_absolute() {
+        let root = scratch("bad");
+        assert!(resolve_confined_dir(&root, "../x").await.is_err());
+        assert!(resolve_confined_dir(&root, "/tmp").await.is_err());
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_rejects_symlink_escape() {
+        let root = scratch("link");
+        let outside = scratch("outside");
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        let err = resolve_confined_dir(&root, "escape/inner")
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("escapes"));
+        assert!(!outside.join("inner").exists());
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        let _ = tokio::fs::remove_dir_all(&outside).await;
     }
 }

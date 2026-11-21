@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::error::ApiError;
 use crate::state::AppState;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcWebConfig {
     pub issuer: String,
@@ -24,14 +24,14 @@ pub struct OidcWebConfig {
     pub end_session_endpoint: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcTokenRequest {
     pub code: String,
     pub code_verifier: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcTokenResponse {
     pub access_token: Option<String>,
@@ -78,6 +78,15 @@ async fn discovery(issuer: &str) -> Result<Value, ApiError> {
         .map_err(|error| ApiError::internal(format!("invalid OIDC discovery: {error}")))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/oidc/config",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Public browser OIDC configuration", body = OidcWebConfig),
+        (status = 404, description = "OIDC authentication is not configured")
+    )
+)]
 pub async fn config(State(state): State<AppState>) -> Result<Json<OidcWebConfig>, ApiError> {
     let config = oidc(&state)?;
     let document = discovery(&config.issuer).await?;
@@ -99,6 +108,17 @@ pub async fn config(State(state): State<AppState>) -> Result<Json<OidcWebConfig>
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/oidc/token",
+    tag = "auth",
+    request_body = OidcTokenRequest,
+    responses(
+        (status = 200, description = "OIDC tokens from the authorization-code + PKCE exchange", body = OidcTokenResponse),
+        (status = 400, description = "Missing code or code verifier"),
+        (status = 502, description = "OIDC discovery or token exchange failed")
+    )
+)]
 pub async fn token(
     State(state): State<AppState>,
     crate::extract::ApiJson(body): crate::extract::ApiJson<OidcTokenRequest>,

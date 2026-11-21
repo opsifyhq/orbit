@@ -6633,9 +6633,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body["error"]["details"]
         .as_array()
-        .is_some_and(|details| details
-            .iter()
-            .any(|detail| detail["path"] == "webhookUrl")));
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 
     let secret_ref = format!("secret://output/{}", Uuid::now_v7());
     app.store
@@ -6684,9 +6682,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body["error"]["details"]
         .as_array()
-        .is_some_and(|details| details
-            .iter()
-            .any(|detail| detail["path"] == "webhookUrl")));
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 }
 
 #[tokio::test]

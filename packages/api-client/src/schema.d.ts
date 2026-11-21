@@ -421,6 +421,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/oidc/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connections": {
         parameters: {
             query?: never;
@@ -518,32 +550,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/docs/assets/{path}": {
+    "/api/v1/docs/{*path}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** An embedded documentation image (architecture diagrams, brand assets). */
-        get: operations["get_asset"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/docs/{slug}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** A documentation page: Markdown plus metadata, or rendered HTML. */
-        get: operations["get_page"];
+        /**
+         * One documentation page, or an embedded asset when the path starts with `assets/`.
+         * @description A single route serves both so that a page slug such as `assets/brand` and the
+         *     asset tree cannot shadow each other: an exact asset match wins, otherwise the path
+         *     is looked up as a page slug. The `{*path}` catch-all matches nested slugs; keep the
+         *     annotation in sync with the route in `routes.rs`.
+         */
+        get: operations["get_doc"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1027,6 +1048,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sharing/{resource}/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Bulk visibility/ownership update for agents, skills and other shareable resources.
+         * @description Partial success is intentional: one resource the caller cannot manage must not block
+         *     the rest, and the response says exactly which ids failed.
+         */
+        patch: operations["bulk_share"];
+        trace?: never;
+    };
     "/api/v1/sharing/{resource}/{resource_id}": {
         parameters: {
             query?: never;
@@ -1470,6 +1512,54 @@ export interface paths {
         put?: never;
         post: operations["launch_profile"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worker-profiles/{profile_id}/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rotate_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worker-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_tokens"];
+        put?: never;
+        post: operations["create_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/worker-tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["revoke_token"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1926,6 +2016,23 @@ export interface components {
             /** @description Ids archived by this request (empty for delete requests). */
             updated?: string[];
         };
+        BulkShareFailure: {
+            /** Format: uuid */
+            id: string;
+            message: string;
+        };
+        BulkShareRequest: {
+            /** @description Explicitly clear the owning team when no ownerTeamId is sent. */
+            clearOwnerTeam?: boolean;
+            ids: string[];
+            /** Format: uuid */
+            ownerTeamId?: string | null;
+            visibility?: string | null;
+        };
+        BulkShareResponse: {
+            failed: components["schemas"]["BulkShareFailure"][];
+            updated: string[];
+        };
         /** @enum {string} */
         CapabilityEffect: "read" | "write" | "external_side_effect";
         Connection: {
@@ -1979,8 +2086,9 @@ export interface components {
             updatedAt: string;
         };
         /**
-         * @description A connector reference. The shorthand string form (`- gitlab`) is accepted on import
-         *     and normalized to a binding with no explicit connection or capability allowlist.
+         * @description A connector reference. The shorthand string form (`- gitlab`) parses to a binding
+         *     without a connection, but semantic validation rejects it: a usable connector binding
+         *     must name the concrete connection that supplies its credentials and access scope.
          */
         ConnectorBinding: {
             /**
@@ -2057,8 +2165,8 @@ export interface components {
             /** @description Harness for team steps. Falls back to the legacy agent harness or org default. */
             harness?: string | null;
             /**
-             * @description Shared goal/instruction for the team. The first step receives it as its task;
-             *     later steps receive it together with the previous step output.
+             * @description Shared goal/instruction for the team. Passed to every step as configured system
+             *     context, never mixed into the run instruction shown as the task.
              */
             instructions?: string;
             /**
@@ -2135,6 +2243,12 @@ export interface components {
             resources?: unknown;
             skillSlugs?: string[];
             target?: string;
+        };
+        CreateWorkerTokenRequest: {
+            harnesses?: string[];
+            name: string;
+            /** Format: uuid */
+            profileId?: string | null;
         };
         CreatedApiToken: {
             /** Format: date-time */
@@ -2464,6 +2578,15 @@ export interface components {
             /** @description Trusted system instructions. Always transported separately from untrusted input. */
             system: string;
         };
+        IssuedWorkerToken: {
+            harnesses: string[];
+            name: string;
+            /** Format: uuid */
+            profileId?: string | null;
+            token: string;
+            /** Format: uuid */
+            tokenId: string;
+        };
         LaunchLogs: {
             logs: string;
         };
@@ -2620,6 +2743,26 @@ export interface components {
                 [key: string]: string;
             };
         };
+        OidcTokenRequest: {
+            code: string;
+            codeVerifier: string;
+        };
+        OidcTokenResponse: {
+            accessToken?: string | null;
+            /** Format: int64 */
+            expiresIn?: number | null;
+            idToken?: string | null;
+            refreshToken?: string | null;
+            tokenType?: string | null;
+        };
+        OidcWebConfig: {
+            authorizationEndpoint: string;
+            clientId: string;
+            endSessionEndpoint?: string | null;
+            issuer: string;
+            redirectUri: string;
+            scopes: string[];
+        };
         Organization: {
             /** Format: date-time */
             createdAt: string;
@@ -2723,7 +2866,7 @@ export interface components {
          *     modules are unaffected.
          * @enum {string}
          */
-        ProviderKind: "open_ai_compatible" | "anthropic" | "harness_managed";
+        ProviderKind: "openai_compatible" | "anthropic" | "harness_managed";
         ProviderProbeResponse: {
             error?: string | null;
             /** Format: int64 */
@@ -3201,6 +3344,21 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
             visibility: string;
+        };
+        WorkerTokenView: {
+            /** Format: date-time */
+            createdAt: string;
+            harnesses: string[];
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            lastUsedAt?: string | null;
+            name: string;
+            /** Format: uuid */
+            profileId?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            tokenPrefix: string;
         };
         WorkerView: {
             harnesses: string[];
@@ -4041,6 +4199,71 @@ export interface operations {
             };
         };
     };
+    config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public browser OIDC configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcWebConfig"];
+                };
+            };
+            /** @description OIDC authentication is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OidcTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description OIDC tokens from the authorization-code + PKCE exchange */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcTokenResponse"];
+                };
+            };
+            /** @description Missing code or code verifier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description OIDC discovery or token exchange failed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_connections: {
         parameters: {
             query?: never;
@@ -4216,35 +4439,7 @@ export interface operations {
             };
         };
     };
-    get_asset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Asset path relative to the docs root, e.g. `architecture/orbit-overview.png` */
-                path: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The asset bytes with their content type */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Unknown asset */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_page: {
+    get_doc: {
         parameters: {
             query?: {
                 /** @description `json` (default), `markdown` or `html`. `Accept: text/html` also selects HTML. */
@@ -4252,23 +4447,21 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Page slug from the index, e.g. `architecture/overview` */
-                slug: string;
+                /** @description Page slug (e.g. `architecture/overview`) or asset path under `assets/...` */
+                "*path": string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Metadata and Markdown (JSON), raw Markdown (`format=markdown`) or HTML (`format=html` / `Accept: text/html`) */
+            /** @description Page content (JSON/Markdown/HTML) or asset bytes */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["DocPageView"];
-                };
+                content?: never;
             };
-            /** @description Unknown page */
+            /** @description Unknown page or asset */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5190,6 +5383,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    bulk_share: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                resource: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkShareRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkShareResponse"];
                 };
             };
         };
@@ -6122,6 +6340,88 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WorkerLaunch"];
                 };
+            };
+        };
+    };
+    rotate_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedWorkerToken"];
+                };
+            };
+        };
+    };
+    list_tokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerTokenView"][];
+                };
+            };
+        };
+    };
+    create_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkerTokenRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedWorkerToken"];
+                };
+            };
+        };
+    };
+    revoke_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
