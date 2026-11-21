@@ -14,14 +14,23 @@ provider-specific code is required beyond the issuer URL and client registration
 | Client secret | `ORBIT_OIDC_CLIENT_SECRET` | optional for public PKCE clients |
 | Redirect URI | `ORBIT_OIDC_REDIRECT_URI` | `http://orbit.example.com/auth/callback` |
 | Scopes | `ORBIT_OIDC_SCOPES` | `openid profile email groups` |
-| JWKS | `ORBIT_OIDC_JWKS_URL` | issuer keys URL |
+| JWKS | `ORBIT_OIDC_JWKS_URL` | issuer keys URL (required) |
+| Auto-provision | `ORBIT_OIDC_AUTO_PROVISION` | `true` (create users on first login) |
+| Default role | `ORBIT_OIDC_DEFAULT_ROLE` | `viewer` |
 | Role claim | `ORBIT_OIDC_ROLE_CLAIM` | `groups` |
 | Identity/email claim | `ORBIT_OIDC_EMAIL_CLAIM` | `email` (or `name`) |
 | Group mappings | `ORBIT_OIDC_GROUP_ROLES` | `orbit-admins=admin,orbit-operators=operator` (or JSON) |
 | Sync roles | `ORBIT_OIDC_SYNC_ROLES` | `false` |
+| Team mappings | `ORBIT_OIDC_TEAM_GROUPS` | see [oidc-team-sync.md](oidc-team-sync.md) |
+| Auto-create teams | `ORBIT_OIDC_AUTO_CREATE_TEAMS` | `false` |
+| Require a mapped group | `ORBIT_OIDC_REQUIRE_MAPPED_GROUP` | `false` |
+| Require verified email | `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL` | `false` |
+| Clock skew | `ORBIT_OIDC_CLOCK_SKEW_SECONDS` | `60`; seconds of tolerance when checking token times |
 
-`ORBIT_OIDC_CLIENT_ID` defaults to the audience. The redirect URI must be registered
-exactly at the provider.
+`ORBIT_OIDC_ISSUER`, `ORBIT_OIDC_AUDIENCE` and `ORBIT_OIDC_JWKS_URL` are required in oidc
+mode; the API refuses to start without them. `ORBIT_OIDC_CLIENT_ID` defaults to the
+audience, and `ORBIT_OIDC_REDIRECT_URI` defaults to `http://localhost:3000/auth/callback`.
+The redirect URI must be registered exactly at the provider.
 
 The API fetches:
 
@@ -29,8 +38,14 @@ The API fetches:
 <issuer>/.well-known/openid-configuration
 ```
 
-for `authorization_endpoint` and `token_endpoint`. The browser never receives the client
-secret.
+for `authorization_endpoint`, `token_endpoint` and the optional `end_session_endpoint`.
+The browser never receives the client secret.
+
+The discovery document is cached for 10 minutes and refreshed at most once every 15
+seconds; if a refresh fails, the cached document is still served. The JWKS is cached for
+10 minutes as well. An unknown `kid` or an expired cache triggers at most one refresh per
+30 seconds, and a failed refresh keeps the cached keys. Unauthenticated requests therefore
+cannot be turned into a stream of calls to your identity provider.
 
 ## Dex example
 
@@ -74,9 +89,10 @@ Issuer:
 https://keycloak.example.com/realms/<realm>
 ```
 
-Set the same five variables plus `ORBIT_OIDC_JWKS_URL` if your deployment does not expose
-discovery at the issuer. ORBIT’s API validates the JWT audience against
-`ORBIT_OIDC_AUDIENCE` and auto-provisions users when enabled.
+Set the same variables, with `ORBIT_OIDC_JWKS_URL` set to the realm's certificate
+endpoint (`<issuer>/protocol/openid-connect/certs`). ORBIT does not derive the JWKS URL
+from discovery. ORBIT’s API validates the JWT audience against `ORBIT_OIDC_AUDIENCE` and
+auto-provisions users when enabled.
 
 ## Group-based roles
 
@@ -163,8 +179,12 @@ for example `"groupRoles": {}`.
   → API requests use Authorization: Bearer <id_token>
 ```
 
-Logout currently clears the local token. Provider end-session logout and refresh-token
-rotation are not implemented yet.
+`GET /api/v1/auth/oidc/config` returns 404 when OIDC is off and 502 when the discovery
+document cannot be read. It also returns `endSessionEndpoint` when the provider
+advertises one, and the token response includes `refresh_token` and `expires_in`. The web
+app uses neither: logout only clears the local token, and the session ends when the
+`id_token` expires. Provider end-session logout and refresh-token rotation are not
+implemented in the web app.
 
 ## Helm
 
@@ -177,9 +197,16 @@ auth:
     clientId: orbit
     redirectUri: http://orbit.example.com/auth/callback
     jwksUrl: https://dex.example.com/keys
-    scopes: "openid profile email"
+    scopes: "openid profile email groups"
     autoProvision: true
     defaultRole: viewer
+    roleClaim: groups
+    emailClaim: email
+    groupRoles:
+      orbit-admins: admin
+    syncRoles: false
+    requireVerifiedEmail: false
+    # teamGroups, autoCreateTeams and requireMappedGroup: see oidc-team-sync.md
 secrets:
   oidcClientSecret: ""
 ```

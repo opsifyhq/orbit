@@ -1,9 +1,19 @@
 # Provider UX and Harness Decoupling — Plan
 
-Status: proposed
+Status: partly shipped. Shipped: the harness can be chosen per execution and per team run
+(`harness`, with `harnessOverride` as a legacy alias), the Work wizard passes it, and the
+Agent Studio model field offers one provider list that sets the management mode. Not
+shipped as planned: the plan below stores the harness on the agent, but
+[ADR 0012](../decisions/0012-decouple-agent-and-harness.md) decouples it, and the
+`spec.harness` field is deprecated. Not checked against the UI: the "no providers" hint
+wording. The custom worker guide at the end matches the worker token API and environment
+variables.
 Scope: Agent Studio provider selection and execution harness selection
 
 ## Problem 1: Provider management mode confusion
+
+*Shipped: the Agent Studio form lists all providers in one control (see
+`apps/web/components/agents/agent-form.tsx`). The grouping by kind is not verified.*
 
 ### Current state
 
@@ -39,13 +49,16 @@ provider auto-sets the management mode. Add a note explaining that
 2. Replace the two separate inputs (dropdown for platform, text for harness) with a
    single dropdown grouped by kind.
 3. On selection, set `model.management` and `model.provider` based on the provider's kind.
-4. Update the "no providers" hint to guide users to the Models page.
+4. Update the "no providers" hint to guide users to the Providers page (the page is titled "Providers & models", ADR 0008).
 5. Document that opencode can be used as a platform provider by creating an
    `openai_compatible` provider with opencode's base URL and API key.
 
 ---
 
 ## Problem 2: Harness coupled to agent
+
+*Shipped, and superseded: option B was implemented, then ADR 0012 removed the harness from
+the agent. The "Current state" below describes the code before that change.*
 
 ### Current state
 
@@ -160,5 +173,3 @@ ORBIT_WORKSPACE_ROOT=/tmp/orbit-workspaces
 | Execution queue + scheduling | Compute (K8s cluster, Docker, etc.) |
 | Tool broker (MCP) | Network access to ORBIT API |
 | Connector credentials (encrypted) | Their own provider API keys (via harness auth) |
-EOF
-echo done

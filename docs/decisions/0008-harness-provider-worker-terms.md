@@ -1,6 +1,6 @@
 # ADR-0008: Harness / Provider / Model / Worker terminology
 
-**Status:** Accepted. 0.4.0 rename, 0.5.0 worker-token API and 0.5.1 launcher implemented.
+**Status:** Accepted. 0.4.0 rename, 0.5.0 worker-token API and 0.5.1 launcher implemented (see the amendment at the end).
 
 ## Context
 
@@ -69,3 +69,10 @@ milestone. The generated bootstrap must not claim token-only mode until that API
 - 0.4.0 is a breaking contract migration; regenerate clients and update deployments.
 - 0.5 adds worker tokens, API-based claim/events/complete, credential leases and launcher.
 - The UI already uses harness/provider wording; the API follows in 0.4.0.
+
+## Amendment (2026-11-21): bootstrap is now token-only
+The staged target above is reached. Workers hold no database URL, event-bus access or
+master key; they use `ORBIT_API_URL` and a scoped worker token (`/api/v1/worker/*`), and
+the launcher (`services/launcher`) is the only component with Docker or workload
+privileges. ADR 0002, 0003 and 0007 still use the pre-0.4.0 "runtime" terms; read them as
+"harness". See [Execution Plane](../architecture/execution-plane.md).

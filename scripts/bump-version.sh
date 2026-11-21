@@ -51,6 +51,14 @@ text = re.sub(r"(?m)^version:\s*.*$", f"version: {version}", text, count=1)
 text = re.sub(r'(?m)^appVersion:\s*.*$', f'appVersion: "{version}"', text, count=1)
 chart.write_text(text)
 
+# README install example (`ORBIT_VERSION=X.Y.Z`)
+readme = pathlib.Path("README.md")
+text = readme.read_text()
+text, count = re.subn(r"(?m)^ORBIT_VERSION=\S+$", f"ORBIT_VERSION={version}", text)
+if count != 1:
+    sys.exit("README.md: expected exactly one ORBIT_VERSION=<version> line")
+readme.write_text(text)
+
 print(f"bumped to {version}")
 PY
 

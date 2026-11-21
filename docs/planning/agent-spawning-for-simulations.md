@@ -1,6 +1,8 @@
 # Agent Spawning for Large-Scale Simulations — Discussion
 
-Status: proposed
+Status: proposal, not implemented. There is no batch execution endpoint, no `batchId`
+on executions and no worker autoscaling manifest in the Helm chart. Creating one
+execution per agent run (Option 1) works today.
 Scope: Execution plane scalability for high-volume, low-complexity agent runs
 
 ## Problem
@@ -100,8 +102,6 @@ scale the worker's concurrency or add more worker pods.
 ## Customer bringing their own worker
 
 A customer can build a custom worker image with any harness CLI. See
-`docs/planning/provider-ux-and-harness-decoupling.md` for the custom worker guide.
+[provider-ux-and-harness-decoupling.md](provider-ux-and-harness-decoupling.md) for the custom worker guide.
 The worker is token-only — no database access needed. Multiple workers compete for
 executions via the claim mechanism, so scaling is just adding more pods.
-EOF
-echo done

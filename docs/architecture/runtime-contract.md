@@ -1,7 +1,8 @@
 # Harness Adapter Contract
 
 Rust source of truth: `crates/orbit-contracts/src/harness.rs`.
-Adapters: `crates/orbit-harness/src/adapters/*`.
+Adapters: `crates/orbit-harness/src/{mock,opencode,pi,planned}.rs`, registered in
+`HarnessRegistry::builtin()` (`registry.rs`).
 
 ## Boundaries
 
@@ -17,23 +18,28 @@ Adapters: `crates/orbit-harness/src/adapters/*`.
 #[async_trait]
 pub trait HarnessAdapter: Send + Sync {
     fn kind(&self) -> HarnessKind;
-    fn capabilities(&self) -> HarnessCapabilities;
+    fn descriptor(&self) -> HarnessDescriptor;
+    fn capabilities(&self) -> HarnessCapabilities; // default: descriptor().capabilities
 
-    async fn validate_config(&self, cfg: &HarnessConfig) -> Result<ValidationReport, HarnessError>;
-    async fn health(&self, cfg: &HarnessConfig) -> Result<HarnessHealth, HarnessError>;
+    // Returns all problems at once instead of failing on the first.
+    async fn validate_config(&self, config: &HarnessConfig) -> ValidationReport;
+    async fn health(&self, config: &HarnessConfig) -> Result<HarnessHealth, HarnessError>;
 
-    // Long-running / instance-based harnesses. On-demand harnesses may return
-    // `Unsupported`; the control plane then skips instance management.
-    async fn create_instance(&self, req: CreateInstanceRequest) -> Result<HarnessInstance, HarnessError>;
-    async fn start_instance(&self, inst: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn stop_instance(&self, inst: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn delete_instance(&self, inst: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn instance_status(&self, inst: &HarnessInstanceRef) -> Result<HarnessInstanceStatus, HarnessError>;
+    // Instance lifecycle. Part of the contract, but the platform does not call it today.
+    async fn create_instance(&self, request: CreateInstanceRequest) -> Result<HarnessInstance, HarnessError>;
+    async fn start_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
+    async fn stop_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
+    async fn delete_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
+    async fn instance_status(&self, instance: &HarnessInstanceRef) -> Result<HarnessInstanceStatus, HarnessError>;
 
-    async fn execute(&self, req: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError>;
-    async fn resume(&self, req: ResumeRequest) -> Result<ExecutionOutcome, HarnessError>;
+    async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError>;
+    // Default implementation returns `Unsupported`.
+    async fn resume(&self, request: ResumeRequest) -> Result<ExecutionOutcome, HarnessError>;
 }
 ```
+
+The platform's continuous mode does not use instances; it starts one execution after
+another (see `AgentRuntime` in the domain model).
 
 `execute` is a long-running future. Cancellation and timeouts are delivered through
 `ExecutionRequest::cancel: CancellationToken` and `ResourceLimits::timeout_seconds`;
@@ -43,6 +49,11 @@ The timeout covers **active** time only. While the platform waits for a person t
 on an approval it pauses `ExecutionRequest::pause` (`PauseClock`); adapters enforce their
 timeout with `request.pause.deadline(timeout)` instead of a plain sleep, so a slow
 approver never turns into a timed-out execution.
+
+The control plane also enforces the timeout as a backstop. Its reaper counts from
+`running_started_at` (the moment the worker reports `running`, not dispatch), adds the
+time spent waiting for approvals and a grace period, and then marks a still-`running`
+execution `timed_out`. See the reaper section of the events page.
 
 ## Capabilities
 
@@ -60,12 +71,15 @@ Advertised per adapter and surfaced to the UI (`GET /api/v1/harnesses`):
 | `execution_modes` | `[on_demand]`, `[long_running]` or both |
 | `max_timeout_seconds` | upper bound on requested timeouts |
 | `harness_managed_providers` | harness owns provider inventory/auth |
+| `supports_platform_providers` | harness can use a provider configured in ORBIT |
+| `max_memory_mb` | upper bound on requested memory |
 
 ## Streaming events
 
-`HarnessEvent` variants: `Started { session_ref }`, `Log { level, message }`,
-`Status { phase }`, `ToolCall { name, input, output }`, `OutputDelta { text }`,
-`Usage { tokens_in, tokens_out }`, `Error { message, retryable }`.
+`HarnessEvent` is a struct: `{ kind, level, message, data }`. `kind` is a
+`HarnessEventKind`: `Started` (carries the session reference), `Status`, `Log`,
+`ToolCall`, `OutputDelta`, `Usage` or `Error`. Variant-specific values such as tool
+input and output or token counts travel in `data`.
 
 Events are forwarded by the worker to `execution_events` (with a monotonic `seq`) and to
 `orbit.execution.updated` for subscribers. Adapters should emit events incrementally,
@@ -89,18 +103,22 @@ and must not start the harness.
 
 `ExecutionRequest` carries:
 
-- `execution_id`, `agent_id`, `agent_version`, `agent_name`
+- `execution_id`, `agent_id`, `agent_version_id`, `agent_name`
 - trusted `instructions` (system prompt) — kept separate from untrusted user/event content
 - `input`: task text, structured payload, and provenance (`source`, `trusted: false`)
-- `model`: either `HarnessManaged { provider, model }` or `Endpoint { … }` with a
-  resolved credential (never serialized into logs)
+- `model`: an optional `ResolvedModel` (harness-managed selection or a platform endpoint
+  with a leased credential, never serialized into logs); `subagent_models` holds the
+  resolved models of native subagents
 - `grants`: platform-approved connector capabilities (`connection_id`, `capability`,
   `effect`)
 - `autonomy`: 1–4 with platform-enforced semantics
 - `resources`: timeout, memory, CPU, max output tokens, max concurrent executions
 - `harness_config`: free-form, adapter-owned JSON (validated by `validate_config`)
-- `workspace`: per-execution scratch directory contract
-- `events`, `cancel`
+- `extra_env`: environment variables resolved by the control plane (for example
+  environment mappings used by skill scripts); never serialized and never logged
+- `session`: session reference to resume, if any
+- `workspace`: per-execution scratch directory contract (`WorkspaceSpec`)
+- `events`, `cancel`, `pause` (the `PauseClock` described above)
 
 ## Error model
 
@@ -133,7 +151,12 @@ files, and forced teardown on timeout/cancel.
 
 ## Implementation status
 
-- `mock` — implemented, used for local development and contract tests.
+`ImplementationStatus` has three values: `available` (implemented and exercised by
+contract tests and a real-harness test), `scaffolded` (contract implemented, not yet
+certified against the real harness) and `planned` (descriptor only). No adapter is
+currently `scaffolded`.
+
+- `mock` — `available`; used for local development and contract tests.
 - `opencode` — **available**, tested against OpenCode **v2.3.0**:
   - `opencode run --standalone --format json` in a per-execution workspace
   - trusted instructions written to `AGENTS.md`; untrusted input passed in the prompt
@@ -158,7 +181,32 @@ files, and forced teardown on timeout/cancel.
     is selected (`supports_platform_providers=true`)
   - writes the execution-scoped `.pi/mcp.json` broker bridge and accepts `--skill` paths
   - ships as its own worker image (`deploy/docker/worker-pi.Dockerfile`)
-- `claude_code` — registered as a capability descriptor only, fails closed (planned).
+- `claude_code` and `generic` — `planned`: registered as descriptors only
+  (`planned.rs`); they cannot execute and fail closed.
+
+## Process supervision, workspace and environment
+
+The OpenCode and Pi adapters share the same supervisor, so their behaviour cannot drift.
+
+- **Process supervision** (`process.rs`). The harness starts in its own process group.
+  On cancel or timeout the supervisor sends SIGTERM to the whole group, waits 3 seconds
+  and then sends SIGKILL. When a run ends for any reason it also SIGKILLs everything left
+  in the group, so tool children or an MCP bridge cannot outlive the execution. After
+  stdout closes the harness gets 10 seconds to exit, and stderr is captured with a
+  16 KB bound. Both adapters treat an `error` event with no later answer as a failed run
+  even when the CLI exits with code 0.
+- **Workspace confinement** (`paths.rs`). `workspaceSubdir` and `sessionDir` must be
+  relative paths without `..` and must resolve, symlinks included, inside the execution
+  workspace. Files the worker writes into the workspace (instructions, `opencode.json`,
+  skills, policy hooks) never follow a symlink: a symlinked parent directory is refused,
+  a symlink at the file path is unlinked and replaced, and the file is opened with
+  `O_NOFOLLOW`. A cloned repository can ship symlinks, so this prevents it from
+  redirecting those writes elsewhere on the host.
+- **Environment scrubbing** (`process_env.rs`). The harness does not inherit the worker's
+  environment. Only an allowlist is passed through (`PATH`, `HOME`, `USER`, `LANG`,
+  `TMPDIR`, TLS certificate variables, and names starting with `XDG_` or `LC_`), plus the
+  variables the adapter sets explicitly. `ORBIT_WORKER_TOKEN` and `ORBIT_API_URL` are
+  never passed to the harness, even as explicit variables.
 
 ## Tool policy layer
 
@@ -203,9 +251,16 @@ harness tool call ──► worker broker /policy or /tools/call
 - Approvals record the rule, reason, impact and arguments for the reviewer. Every deny
   and approval is audited and emitted as a `tool_call` execution event.
 
-Adapters that run native tools (Claude Code `PreToolUse`, OpenCode hooks) must call the
-policy endpoint before executing the tool. Until that integration lands, native tools are
-constrained only by harness configuration and sandboxing.
+What is enforced for native tools today:
+
+- When the worker starts the broker for an execution (the agent has connector tools or
+  there are tool policy rules), the OpenCode adapter writes a plugin
+  (`.opencode/plugins/orbit-policy.ts`) and the Pi adapter an extension
+  (`.pi/extensions/orbit-policy.ts`). Both call `POST /policy` before each native tool
+  runs and block the call on any deny, error or missing broker. OpenCode checks `read`,
+  `grep`, `glob`, `list`, `bash`, `shell`, `edit`, `write`, `patch`, `webfetch`,
+  `websearch`, `subagent`, `task` and `question`; Pi checks every tool call.
+- Claude Code is `planned`; its `PreToolUse` integration does not exist.
 
 **Autonomy baseline for native tools (enforced by the adapter, independent of the
 broker).** Adapters derive a native-tool baseline from `request.autonomy` and never rely
@@ -221,5 +276,8 @@ on the broker or `/policy` being present:
 - Worker-profile `nativeToolPermissions` are merged onto the baseline and can only make a
   tool stricter (`deny` > `ask` > `allow`); they never loosen it.
 
-Starting the broker `/policy` endpoint for native-tool harnesses with no connector tools
-or policies (so approval mode also applies to native tools) is not done yet; see #110.
+The broker starts only when there are connector tools or tool policy rules
+(`services/worker/src/broker.rs`). For an agent with neither, no policy hook is installed
+and native tools are limited by the autonomy baseline above, harness configuration and
+sandboxing. Approval mode therefore does not apply to native tools in that case; see
+issue #110.

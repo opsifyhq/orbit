@@ -29,3 +29,10 @@ setting back, produced a spec equal to an older version and the save was refused
 migration `0049_agent_version_revert` only the *current* version is compared: a spec equal
 to an older version is appended as the next version (with the same checksum), so history
 stays append-only and shows the return explicitly.
+
+## Terminology note (2026-11-21)
+Harness-specific options live under `spec.harnessConfig.<kind>` and `spec.runtime` is now
+`spec.harness` (ADR 0008). The `spec.harness` field is itself deprecated (ADR 0012). The
+rollback sentence above still holds in effect, but the mechanism is the amendment above:
+returning to an earlier configuration appends a new version rather than moving
+`current_version`.

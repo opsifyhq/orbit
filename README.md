@@ -1,211 +1,229 @@
 <div align="center">
 <img src="docs/assets/brand/orbit-logo.png" alt="ORBIT" width="520">
-</div>
 
-# ORBIT — Open Agent Platform
+# ORBIT
 
-<div align="center">
+**Self-hosted control plane for persistent AI agents**
 
 [![CI](https://github.com/opsifyhq/orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/opsifyhq/orbit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/opsifyhq/orbit)](https://github.com/opsifyhq/orbit/releases)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org/)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black.svg)](https://nextjs.org/)
 
-**Self-hosted control plane for persistent AI agents.**
-
-Create agents, connect them to GitHub/GitLab, run them on Kubernetes or Docker,
-and govern every action with policy-enforced approvals.
-
-[Documentation](./docs/README.md) · [Architecture](./docs/architecture/overview.md) · [Deployment](./docs/development/deployment.md) · [Releases](https://github.com/opsifyhq/orbit/releases)
+[Quick start](#quick-start) · [Documentation](./docs/README.md) · [Deployment](./docs/development/deployment.md) · [Architecture](./docs/architecture/overview.md) · [Changelog](./CHANGELOG.md)
 
 </div>
 
-ORBIT is a self-hosted **control plane** for creating, configuring, connecting, deploying
-and governing persistent AI agents. It is deliberately *not* another agent framework:
-agent reasoning runs in dedicated harness processes behind a stable adapter contract,
-while ORBIT owns identity, configuration, orchestration, policy and history.
+ORBIT lets a team define AI agents once and run them on infrastructure it controls. You
+describe an agent: its instructions, its model, the tools it may use and how much it may
+do without asking. ORBIT stores every version of that definition, starts runs by hand or
+on a schedule, hands each run to a worker, enforces what the agent may touch, pauses for
+a human approval where one is required, and keeps the full history.
 
-```
-Browser / future mobile app
-        │  REST /api/v1 + SSE (OpenAPI contract)
-┌───────▼────────────────────────────────────────────────┐
-│ Control plane: orbit-api (Axum)                        │
-│   agents · executions · providers · connectors · policy │
-│   PostgreSQL (durable state) · NATS JetStream (events)  │
-└───────▲────────────────────────────────────────────────┘
-        │ HarnessAdapter contract
-┌───────▼────────────────────────────────────────────────┐
-│ Execution plane: orbit-worker                          │
-│   mock (working) · opencode (available, v2.3.0)        │
-│   pi (available, v1.5.2) · claude_code / generic (planned)│
-└─────────────────────────────────────────────────────────┘
-```
-
-## Architecture
+ORBIT is not an agent framework. The reasoning loop belongs to an existing coding-agent
+harness ([OpenCode](https://opencode.ai) and Pi today) that runs in a separate worker
+process. ORBIT owns identity, configuration, orchestration, policy and history, and the
+API process never executes agent work.
 
 ![ORBIT architecture overview](docs/architecture/orbit-overview.svg)
 
-Detailed diagrams (system context, execution sequence, broker policy path, domain model,
-deployment topology): [`docs/architecture/diagram.md`](docs/architecture/diagram.md).
+## What you can do with it
 
-## What can you do with ORBIT?
-
-| Put an agent to work on… | Start it with… | What happens |
+| Put an agent to work on | Start it with | What happens |
 |---|---|---|
-| **An issue → a pull request** | Manual, schedule, or an agent team's issue queue | Agent reads the issue, implements the fix, runs tests, commits, pushes, opens a PR |
-| **Dependency updates and daily briefings** | A cron schedule | Run saved instructions on a schedule, with separate history per run |
-| **Agent Teams** | Manual or auto-dispatch from GitHub/GitLab issues | Sequential or native subagent handoffs, each step is a normal execution |
-| **Monitoring and triage** | A schedule today (event and webhook triggers are planned) | Agent classifies, drafts replies, proposes actions for approval |
-| **Research and analysis** | Manual execution | Agent gathers info, summarizes, marks uncertainty |
+| An issue that should become a pull request | A manual run, a schedule, or an agent team's issue queue | The agent reads the issue, makes the change, runs the tests, pushes a branch and opens a pull request |
+| Dependency updates and daily briefings | A cron schedule | Saved instructions run on schedule; every run has its own history |
+| Work that needs several roles | An agent team | Agents hand off in sequence or as native subagents; each step is a normal run |
+| Monitoring and triage | A schedule | The agent classifies, drafts replies and proposes actions for approval |
+| Research and analysis | A manual run | The agent gathers information, summarizes it and marks what it is unsure of |
 
-## Five answers describe the work
+## Features
 
-| | Your choice |
-|---|---|
-| **When** | Manual, schedule (cron), or auto-dispatch from GitHub/GitLab issues. Event and webhook triggers are planned |
-| **Where** | Local worker, Docker, or Kubernetes — auto-routed by placement |
-| **Who** | A single agent or an Agent Team (primary + subagents) |
-| **What** | A task, repository, connectors, and skills |
-| **Then** | Succeed, fail, retry, or stay running as a 24/7 agent |
+- **Versioned agents.** Instructions, model, connectors, skills and limits are stored as
+  immutable versions. Agents can be exported and imported as YAML.
+- **Autonomy enforced by the platform.** Four levels (Observe, Recommend, Prepare,
+  Autonomous), per-connector capability allowlists and tool policies decide what a run
+  may do. Prompts are never trusted to enforce permissions.
+- **Approvals.** A write that needs sign-off pauses the run until someone approves or
+  rejects it in the web app.
+- **Agent teams.** A primary agent with subagents, run step by step or as native
+  subagents, optionally fed from a GitHub or GitLab issue queue.
+- **Workers you control.** Runs execute in a local process, a Docker container or a
+  Kubernetes pod. The launcher starts and stops workers and gives each one a scoped,
+  revocable token.
+- **Brokered tools.** GitHub, GitLab and Kubernetes access goes through a tool broker on
+  the worker, so credentials stay out of prompts and out of the browser.
+- **Model providers.** OpenAI-compatible endpoints, Anthropic, or the harness's own
+  provider configuration.
+- **Live runs and history.** A streaming timeline per run, schedules, skills, per-agent
+  memory and outputs to webhooks, Slack and Mattermost.
+- **Administration.** OIDC single sign-on, roles and permissions, API tokens and an audit
+  log.
+- **Built to be operated.** A responsive web app that works on a phone, a documented
+  REST API (OpenAPI) with a generated TypeScript client, a Helm chart and documentation
+  served by your own installation.
 
-## Quick start (Docker Compose)
+## Status
 
-Workers authenticate with a scoped token, so start the API first and issue one:
+ORBIT is pre-1.0. Minor releases may change the API and the database schema; read the
+[changelog](./CHANGELOG.md) before you upgrade.
+
+| Area | Works today | Not yet |
+|---|---|---|
+| Harnesses | Mock, OpenCode (tested with v2.3.0), Pi (tested with v1.5.2) | Claude Code, generic harness |
+| Starting a run | Manual, cron schedule, issue queue of an agent team | Event and webhook triggers (they can be saved but do not fire) |
+| Connectors | GitHub, GitLab and Kubernetes through the tool broker; X post search | Telegram, generic webhook, OAuth sign-in flows for connectors |
+| Where runs execute | A local worker, Docker, Kubernetes (long-lived workers or a Job per run) | |
+| Enterprise features | Custom roles, access teams, resource sharing ([licensed](#editions-and-license)) | Shared connections, quotas, marketplace |
+
+GitHub read access and approvals are verified end to end. GitHub writes are implemented
+but have not been verified against a live repository yet.
+
+## Quick start
+
+You need Docker with Compose v2, `curl` and `jq`. The first build compiles the Rust
+services and takes a few minutes.
 
 ```bash
+git clone https://github.com/opsifyhq/orbit.git && cd orbit
 cp .env.example .env
-# 1) infrastructure + API
-docker compose -f deploy/compose/compose.yaml up -d --build db nats api
+touch .orbit-auth-export.json   # mounted by the launcher; only OpenCode workers need real content
 
-# 2) issue a worker token for the mock harness and save it
-TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/worker-tokens \
+# 1. Database, NATS and API. The worker token does not exist yet, so pass a placeholder.
+ORBIT_WORKER_TOKEN=pending docker compose --env-file .env -f deploy/compose/compose.yaml \
+  up -d --build db nats api
+
+# 2. Issue a worker token for the mock harness and save it.
+TOKEN=$(curl -sf --retry 30 --retry-delay 2 --retry-connrefused \
+  -X POST http://localhost:8080/api/v1/worker-tokens \
   -H 'Authorization: Bearer orbit-dev-token' \
   -H 'content-type: application/json' \
   -d '{"name":"local-mock","harnesses":["mock"]}' | jq -r .token)
 echo "ORBIT_WORKER_TOKEN=$TOKEN" >> .env
 
-# 3) start the worker and web app
-docker compose -f deploy/compose/compose.yaml up -d
+# 3. Worker, launcher and web app.
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d --build
 ```
 
-- Web UI: http://localhost:3000
-- API: http://localhost:8080/api/v1 · docs: http://localhost:8080/docs
-- PostgreSQL: `localhost:5432` (`orbit`/`orbit`, db `orbit`)
-- NATS: `localhost:4222` (loopback only; the monitor port is not published)
+`--env-file .env` is required: Compose looks for `.env` next to the Compose file, not in
+the directory you run it from.
 
-The stack seeds demo agents (mock harness). Open an agent → **Run agent** → watch the
-live execution timeline, or use **Work** to create a run through the wizard.
+| | |
+|---|---|
+| Web app | http://localhost:3000 |
+| API | http://localhost:8080/api/v1 |
+| API reference | http://localhost:8080/docs |
 
-## OpenCode + X quick start
+The stack seeds demo agents that use the mock harness, so nothing needs a model key.
+Choose **Start work** in the sidebar, pick a demo agent and watch the run's live
+timeline. To run a real harness, continue with
+[workers and profiles](./docs/guide/worker-profiles.md) and
+[model providers](./docs/guide/providers.md).
 
-1. In **Connections**, add an X connection with a bearer token and optional
-   `config.query` (for example `{"query":"#ORBIT"}`), selecting `posts.search`.
-2. Create an agent with harness **OpenCode**, a harness-managed model
-   (`opencode-go/<model>`), and the X connector bound to that connection with
-   `posts.search`.
-3. Run it with a task such as "Summarize recent X posts" and optionally
-   `{"query":"#ORBIT"}` as payload.
+This stack uses development authentication: anyone who can reach it is signed in as the
+owner. Keep it on your own machine. [Run ORBIT locally](./docs/development/local.md)
+covers day-to-day development, including running the services without containers.
 
-OpenCode credentials are provided to the execution plane via an `opencode auth export`
-Secret (see `docs/development/deployment.md`); credentials never pass through prompts or
-the browser.
+## Deploy on Kubernetes
 
-## Kubernetes (Helm)
+Each release publishes container images to `ghcr.io/opsifyhq/orbit` and the Helm chart as
+a release asset, so a test installation needs no build:
 
 ```bash
-# build and push linux/amd64 images to your registry
-REGISTRY=registry.example.com:5000 TAG=<version> ./scripts/build-images.sh
-PUSH_REGISTRY=registry.example.com:5000 TAG=<version> ./scripts/push-images.sh
-
-# deploy (ingress host defaults to orbit.example.com)
-helm upgrade --install orbit deploy/helm/orbit \
+ORBIT_VERSION=0.25.0
+helm upgrade --install orbit \
+  "https://github.com/opsifyhq/orbit/releases/download/v${ORBIT_VERSION}/orbit-${ORBIT_VERSION}.tgz" \
   --namespace orbit --create-namespace \
-  -f deploy/helm/orbit/values.yaml \
-  --set imageRegistry=registry.example.com:5000 \
   --set ingress.host=orbit.example.com \
   --set auth.acknowledgeInsecureDev=true
 ```
 
-No worker token is needed: the launcher is enabled by default, a launchable mock worker
-profile is seeded on first start, and the API mints a scoped token per launch (revoked on
-stop). Tokens (`POST /api/v1/worker-tokens`) are only for custom/external workers or a
-fixed worker Deployment (`worker.enabled=true`). `./scripts/deploy.sh` wraps the same
-flow.
+This installs the API, the web app, the worker launcher and a bundled PostgreSQL and
+NATS, with development authentication. On first start the API seeds a mock worker
+profile; start it under **Workers** and the demo agents can run. No worker token is
+needed, because the API issues one per launched worker and revokes it when the worker
+stops.
 
-`values.yaml` bundles PostgreSQL and NATS for test clusters and uses dev auth. For
-production, start from `deploy/helm/orbit/values-prod.example.yaml` (external DB/NATS,
-OIDC, TLS, externally managed secrets, pinned tags). The `auth.acknowledgeInsecureDev=true`
-flag above is only for throwaway local/test clusters; use OIDC for anything reachable
-beyond your LAN.
-
-Ingress routes: `/docs`, `/healthz`, `/readyz` → API; `/api` → web (same-origin proxy
-that injects the dev token server-side or forwards OIDC/API bearer headers); `/` → web.
-SSE-friendly annotations are included (`proxy-buffering: off`, long read/send timeouts).
-
-Dev auth mode is enabled by default for local/test deployments. The web proxy injects
-the dev token server-side, so do not expose a dev-auth deployment beyond your LAN
-until OIDC is configured.
-
-## Native development
-
-```bash
-docker compose -f deploy/compose/compose.dev.yaml up -d
-cp .env.example .env
-
-cargo run -p orbit-api-server      # terminal 1
-cargo run -p orbit-worker          # terminal 2
-pnpm install
-pnpm --filter @orbit/web dev       # terminal 3 (proxies /api to localhost:8080)
-```
-
-## Tests
-
-```bash
-cargo test --workspace
-ORBIT_TEST_DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit cargo test --workspace
-pnpm --filter @orbit/web typecheck && pnpm --filter @orbit/web build
-helm lint deploy/helm/orbit
-helm template orbit deploy/helm/orbit -n orbit --set auth.acknowledgeInsecureDev=true >/dev/null
-API_URL=http://localhost:8080 ./scripts/smoke-k8s.sh
-```
-
-## Repository layout
-
-```
-apps/web/                 Next.js web app (App Router, Tailwind, shadcn-style UI)
-packages/api-client/      OpenAPI-generated typed client
-packages/contracts/       Shared Zod schemas (web + future Expo app)
-services/api|worker/      Rust binaries
-crates/orbit-*/           domain · contracts · store · events · security · harness · api
-deploy/docker/            Dockerfiles
-deploy/compose/           Local stacks
-deploy/helm/orbit/        Helm chart
-docs/                     Architecture, ADRs, development and deployment guides
-```
-
-## Security
-
-- Autonomy levels 1–4 are enforced by the platform, not by prompts.
-- Provider/connector credentials are AES-256-GCM encrypted at rest with a master key
-  (`ORBIT_MASTER_KEY`), write-only through the API, and never logged or serialized.
-- The control plane never executes agent tasks; execution belongs to the worker and,
-  in production, isolated harness containers/Jobs.
-- External content is untrusted: trusted system instructions are transported separately
-  with provenance metadata.
-- Never commit real credentials; `.env` is ignored and the example key is development-only.
+`auth.acknowledgeInsecureDev=true` accepts that anyone who can reach the ingress is
+signed in as the owner. Use it only on a throwaway cluster. For production, start from
+[`values-prod.example.yaml`](./deploy/helm/orbit/values-prod.example.yaml): OIDC, TLS, an
+external database and NATS, and secrets you manage yourself. The details are in the
+[deployment guide](./docs/development/deployment.md) and the
+[chart README](./deploy/helm/orbit/README.md). To build and push the images to your own
+registry, use `scripts/build-images.sh` and `scripts/push-images.sh`.
 
 ## Documentation
 
-- `docs/architecture/overview.md` — layers, modules, flows
-- `docs/architecture/domain-model.md` — entities and invariants
-- `docs/architecture/runtime-contract.md` — adapter contract and implementation status
-- `docs/architecture/provider-connector-contract.md`
-- `docs/architecture/api.md` — REST/OpenAPI/SSE/auth conventions
-- `docs/architecture/events.md` — event bus, durability, triggers
-- `docs/decisions/` — ADRs
-- `docs/development/local.md`, `docs/development/testing.md`, `docs/development/deployment.md`
-- `AGENTS.md` — contributor and AI-agent operating manual
+The handbook lives in [`docs/`](./docs/README.md) and is also served inside the web app
+under **Documentation**.
 
-## License
+| If you want to | Read |
+|---|---|
+| Learn the concepts | [How ORBIT fits together](./docs/guide/README.md) |
+| Build agents, teams, skills and policies | [Agents](./docs/guide/agents.md), [agent teams](./docs/guide/agent-teams.md), [skills](./docs/guide/skills.md), [tool policies](./docs/guide/tool-policies.md) |
+| Run and supervise work | [Start work](./docs/guide/start-work.md), [executions](./docs/guide/executions.md), [approvals](./docs/guide/approvals.md), [connections](./docs/guide/connections.md) |
+| Install, configure and upgrade | [Deployment](./docs/development/deployment.md), [single sign-on](./docs/development/oidc.md), [roles and permissions](./docs/guide/rbac.md) |
+| Understand the design | [Architecture](./docs/architecture/overview.md), [diagrams](./docs/architecture/diagram.md), [decision records](./docs/decisions/README.md) |
+| Review the security model | [Threat analysis](./docs/security/threat-analysis.md), [access matrix](./docs/security/idor-matrix.md) |
+| Call the API | `/docs` on your installation, or [`packages/api-client/openapi.json`](./packages/api-client/openapi.json) |
 
-Apache-2.0.
+## Security
+
+- Autonomy levels, capability allowlists and tool policies are enforced by the platform
+  and fail closed. They do not depend on what a prompt says.
+- Provider and connector credentials are encrypted at rest with AES-256-GCM under a
+  master key (`ORBIT_MASTER_KEY`). The API accepts them but never returns them, and they
+  are kept out of logs and events.
+- The control plane never runs agent work. Runs execute on workers, and in production in
+  isolated containers or Kubernetes Jobs.
+- Content an agent reads from outside is treated as untrusted. Trusted instructions
+  travel separately and every input carries its provenance.
+- `.env.example` contains development-only keys and tokens. Replace all of them before
+  ORBIT is reachable by anyone else.
+
+Please do not report a suspected vulnerability in a public issue. Contact the maintainers
+privately first.
+
+## Development
+
+[Run ORBIT locally](./docs/development/local.md) explains how to run the API, a worker
+and the web app without containers. [`CONTRIBUTING.md`](./CONTRIBUTING.md) describes how
+to propose a change, and [`AGENTS.md`](./AGENTS.md) is the operating manual for
+contributors and coding agents: the rules that are not negotiable, how to add a harness,
+provider or connector, and which tests a change needs.
+
+The checks CI runs:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+ORBIT_TEST_DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit cargo test --workspace
+pnpm --filter @orbit/web typecheck && pnpm --filter @orbit/web test && pnpm --filter @orbit/web build
+pnpm api:generate --check
+helm lint deploy/helm/orbit
+```
+
+Rust 1.100 is pinned in `rust-toolchain.toml` (minimum supported version 1.94). The web
+app needs Node 20 or newer and the pnpm version pinned in `package.json` (`corepack enable`
+installs it).
+
+```
+apps/web/               Next.js web app (App Router, React, Tailwind)
+packages/api-client/    OpenAPI document and generated TypeScript client
+packages/contracts/     Zod schemas shared by web and a future mobile app
+services/api/           orbit-api: the control plane's HTTP server
+services/worker/        orbit-worker: runs harnesses, brokers tools
+services/launcher/      Starts and stops workers on Docker and Kubernetes
+services/mcp-broker/    MCP endpoint that exposes brokered tools to a harness
+services/license-cli/   Issues and inspects offline licenses
+crates/orbit-*/         domain · contracts · store · events · security · harness · kubernetes · api
+deploy/                 Dockerfiles, Compose stacks and the Helm chart
+docs/                   Guide, architecture, decision records, security, development
+```
+
+## Editions and license
+
+The source code is licensed under [Apache-2.0](./LICENSE). ORBIT runs as the community
+edition by default, with no account, activation or outbound call. An offline enterprise
+license unlocks custom roles, access teams and resource sharing; see
+[licensing](./docs/guide/licensing.md). The ORBIT name and logo are covered by the
+[trademark policy](./TRADEMARK.md).

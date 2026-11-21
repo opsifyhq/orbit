@@ -1,6 +1,7 @@
 # 0011 — Multi-team access model
 
-Status: **Accepted** (implementation in progress). Epic: #32.
+Status: **Accepted** and implemented (access teams at `/api/v1/teams`, sharing at
+`/api/v1/sharing/*`, ownership and visibility columns, license gating). Epic: #32.
 
 ## Decision
 
@@ -66,3 +67,9 @@ blocked.
 - Per-field ACLs
 - Replacing Agent Teams / workflows
 - Sharing databases or worker credentials across organizations
+
+## Amendment (2026-11-21)
+The decision above is what the code does. Resource tables carry `owner_user_id`,
+`owner_team_id` and `visibility`, and the access predicate is applied in the store and
+handlers. This note only records that the "implementation in progress" status is
+obsolete.
