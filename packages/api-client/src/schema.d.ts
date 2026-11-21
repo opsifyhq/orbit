@@ -552,7 +552,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/docs/{path}": {
+    "/api/v1/docs/{*path}": {
         parameters: {
             query?: never;
             header?: never;
@@ -563,7 +563,8 @@ export interface paths {
          * One documentation page, or an embedded asset when the path starts with `assets/`.
          * @description A single route serves both so that a page slug such as `assets/brand` and the
          *     asset tree cannot shadow each other: an exact asset match wins, otherwise the path
-         *     is looked up as a page slug.
+         *     is looked up as a page slug. The `{*path}` catch-all matches nested slugs; keep the
+         *     annotation in sync with the route in `routes.rs`.
          */
         get: operations["get_doc"];
         put?: never;
@@ -2448,6 +2449,8 @@ export interface components {
             placement: string;
             /** Format: uuid */
             requestedBy?: string | null;
+            /** Format: date-time */
+            runningStartedAt?: string | null;
             sessionRef?: string | null;
             skills: string[];
             /** Format: date-time */
@@ -3029,6 +3032,8 @@ export interface components {
             slug: string;
         };
         TeamRun: {
+            /** Format: date-time */
+            advanceClaimedAt?: string | null;
             /** Format: date-time */
             archivedAt?: string | null;
             /** Format: date-time */
@@ -4494,8 +4499,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Page slug from the index (e.g. `architecture/overview`), or `assets/…` for an embedded image */
-                path: string;
+                /** @description Page slug (e.g. `architecture/overview`) or asset path under `assets/...` */
+                "*path": string;
             };
             cookie?: never;
         };

@@ -847,6 +847,81 @@ async fn running_executions_past_timeout_and_grace_are_ended_on_a_live_worker() 
 }
 
 #[tokio::test]
+async fn timeout_reaper_counts_from_running_not_dispatch() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Timeout From Running Agent"))
+        .await
+        .unwrap();
+
+    let dispatch_old_just_started = {
+        let execution = queued_execution(&store, org, user, &agent, &version).await;
+        store
+            .claim_execution(execution.id, "worker-dispatch-old")
+            .await
+            .unwrap();
+        store
+            .mark_execution_running(execution.id, Some("s"))
+            .await
+            .unwrap();
+        // Simulate a long checkout: dispatched/started long ago, but only just entered running.
+        sqlx::query(
+            "UPDATE executions \
+             SET started_at = now() - interval '15 minutes', \
+                 running_started_at = now() \
+             WHERE id = $1",
+        )
+        .bind(execution.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        execution
+    };
+
+    let running_past_deadline = {
+        let execution = queued_execution(&store, org, user, &agent, &version).await;
+        store
+            .claim_execution(execution.id, "worker-running-old")
+            .await
+            .unwrap();
+        store
+            .mark_execution_running(execution.id, Some("s"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE executions \
+             SET started_at = now() - interval '20 minutes', \
+                 running_started_at = now() - interval '10 minutes' \
+             WHERE id = $1",
+        )
+        .bind(execution.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        execution
+    };
+
+    let reaped = store
+        .reap_timed_out_executions(Some(org), 300)
+        .await
+        .unwrap();
+    assert_eq!(reaped.len(), 1);
+    assert_eq!(reaped[0].id, running_past_deadline.id);
+    assert_eq!(
+        store
+            .get_execution(org, dispatch_old_just_started.id)
+            .await
+            .unwrap()
+            .status,
+        "running",
+        "a run that only just started running must not be timed out for old dispatch time"
+    );
+}
+
+#[tokio::test]
 async fn single_execution_mode_can_take_a_dispatched_execution() {
     let Some(store) = test_store().await else {
         return;

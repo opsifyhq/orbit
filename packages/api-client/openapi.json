@@ -1554,19 +1554,19 @@
         }
       }
     },
-    "/api/v1/docs/{path}": {
+    "/api/v1/docs/{*path}": {
       "get": {
         "tags": [
           "docs"
         ],
         "summary": "One documentation page, or an embedded asset when the path starts with `assets/`.",
-        "description": "A single route serves both so that a page slug such as `assets/brand` and the\nasset tree cannot shadow each other: an exact asset match wins, otherwise the path\nis looked up as a page slug.",
+        "description": "A single route serves both so that a page slug such as `assets/brand` and the\nasset tree cannot shadow each other: an exact asset match wins, otherwise the path\nis looked up as a page slug. The `{*path}` catch-all matches nested slugs; keep the\nannotation in sync with the route in `routes.rs`.",
         "operationId": "get_doc",
         "parameters": [
           {
-            "name": "path",
+            "name": "*path",
             "in": "path",
-            "description": "Page slug from the index (e.g. `architecture/overview`), or `assets/…` for an embedded image",
+            "description": "Page slug (e.g. `architecture/overview`) or asset path under `assets/...`",
             "required": true,
             "schema": {
               "type": "string"
@@ -6903,6 +6903,13 @@
             ],
             "format": "uuid"
           },
+          "runningStartedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "sessionRef": {
             "type": [
               "string",
@@ -8786,6 +8793,13 @@
           "updatedAt"
         ],
         "properties": {
+          "advanceClaimedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "archivedAt": {
             "type": [
               "string",

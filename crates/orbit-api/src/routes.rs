@@ -527,7 +527,7 @@ mod tests {
             rest = &rest[start + ".route(".len()..];
             let open = rest.find('"').expect("route path");
             let close = open + 1 + rest[open + 1..].find('"').expect("route path end");
-            let path = rest[open + 1..close].replace("{*path}", "{path}");
+            let path = rest[open + 1..close].to_string();
             // The handler expression runs to the parenthesis that closes `.route(`.
             let mut depth = 1usize;
             let mut end = close + 1;

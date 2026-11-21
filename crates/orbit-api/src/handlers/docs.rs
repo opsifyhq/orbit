@@ -90,13 +90,14 @@ pub async fn index(
 ///
 /// A single route serves both so that a page slug such as `assets/brand` and the
 /// asset tree cannot shadow each other: an exact asset match wins, otherwise the path
-/// is looked up as a page slug.
+/// is looked up as a page slug. The `{*path}` catch-all matches nested slugs; keep the
+/// annotation in sync with the route in `routes.rs`.
 #[utoipa::path(
     get,
-    path = "/api/v1/docs/{path}",
+    path = "/api/v1/docs/{*path}",
     tag = "docs",
     params(
-        ("path" = String, Path, description = "Page slug from the index (e.g. `architecture/overview`), or `assets/…` for an embedded image"),
+        ("*path" = String, Path, description = "Page slug (e.g. `architecture/overview`) or asset path under `assets/...`"),
         DocsQuery
     ),
     responses(

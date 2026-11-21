@@ -10,10 +10,13 @@
 //
 //   pnpm api:generate            regenerate both files
 //   pnpm api:generate --check    exit 1 if schema.d.ts does not match openapi.json
+//
+// ORBIT_OPENAPI_SPEC=<file> uses an existing document (for example the one written by
+// scripts/dump-openapi.sh) instead of running the Rust example.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
 const clientDir = join(root, "packages/api-client");
@@ -50,10 +53,13 @@ if (check) {
   }
   console.log("API client types match the OpenAPI document.");
 } else {
-  const spec = run("cargo", ["run", "--quiet", "-p", "orbit-api", "--example", "openapi"], {
-    cwd: root,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const provided = process.env.ORBIT_OPENAPI_SPEC;
+  const spec = provided
+    ? readFileSync(resolve(provided), "utf8")
+    : run("cargo", ["run", "--quiet", "-p", "orbit-api", "--example", "openapi"], {
+        cwd: root,
+        maxBuffer: 64 * 1024 * 1024,
+      });
   writeFileSync(specPath, spec.endsWith("\n") ? spec : `${spec}\n`);
   generateTypes(schemaPath);
   console.log("Updated packages/api-client/openapi.json and src/schema.d.ts.");

@@ -160,6 +160,9 @@ from it. Both files are committed. CI fails when either is stale: a Rust test co
 `openapi.json` with the code (and the router with the document), and the web job
 compares `schema.d.ts` with `openapi.json`.
 
+`./scripts/dump-openapi.sh [file]` writes the same document through the `openapi_parity`
+test; `ORBIT_OPENAPI_SPEC=<file> pnpm api:generate` generates from such a file.
+
 ## Useful commands
 
 ```bash

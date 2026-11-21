@@ -177,6 +177,7 @@ pub async fn add_member(
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::FEATURE_TEAMS)?;
     state.store.get_access_team(auth.org_id, team_id).await?;
+    state.store.get_user(auth.org_id, body.user_id).await?;
     let member = state
         .store
         .upsert_team_member(team_id, body.user_id, &body.role)
