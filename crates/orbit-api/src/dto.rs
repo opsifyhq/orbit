@@ -51,6 +51,81 @@ pub struct ArchiveListQuery {
     pub archived: Option<bool>,
 }
 
+/// Team access overview query. `type` is a shareable resource key from
+/// `orbit_store::sharing::SHAREABLE_RESOURCES`; omit it to list every type.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct TeamResourceQuery {
+    #[serde(rename = "type")]
+    pub resource_type: Option<String>,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRoleCounts {
+    pub lead: i64,
+    pub member: i64,
+    pub viewer: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamResourceCounts {
+    pub total: i64,
+    pub agents: i64,
+    pub skills: i64,
+    pub connections: i64,
+    pub providers: i64,
+    pub worker_profiles: i64,
+    pub agent_teams: i64,
+    pub triggers: i64,
+    pub tool_policies: i64,
+    pub env_mappings: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamAccessSummary {
+    /// Member counts by team role. Decimal role names avoid colliding with reserved words.
+    pub roles: TeamRoleCounts,
+    /// Visible resources relevant to this team, grouped by resource type.
+    pub resources: TeamResourceCounts,
+    /// Team-owned resources with organization visibility (everyone can see them when
+    /// strict team isolation is disabled).
+    pub org_visible_count: i64,
+    /// Whether the caller may change this team's membership.
+    pub can_manage_team: bool,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamResourceItem {
+    pub id: Uuid,
+    pub resource_type: String,
+    pub name: String,
+    /// Display name of the owning user, or `None` when the resource has no user owner.
+    pub owner_name: Option<String>,
+    pub owner_team_id: Option<Uuid>,
+    /// Whether this team is the resource's owning team.
+    pub is_owner_team: bool,
+    pub visibility: String,
+    /// Effective access for the calling principal: `view`, `use` and/or `manage`.
+    pub effective_access: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamResourcesPage {
+    pub items: Vec<TeamResourceItem>,
+    pub next_cursor: Option<String>,
+    pub total: i64,
+    pub summary: TeamAccessSummary,
+}
+
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]

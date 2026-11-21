@@ -3448,6 +3448,63 @@
         }
       }
     },
+    "/api/v1/teams/{team_id}/resources": {
+      "get": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Access overview for one access team. The whole page (summary + first page of resources)\nis one request; every resource is filtered by the caller's `AccessScope` before it is\nreturned, so a team member never sees another team's resources through this endpoint.",
+        "operationId": "resources",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamResourcesPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tool-policies": {
       "get": {
         "tags": [
@@ -8806,6 +8863,34 @@
           }
         }
       },
+      "TeamAccessSummary": {
+        "type": "object",
+        "required": [
+          "roles",
+          "resources",
+          "orgVisibleCount",
+          "canManageTeam"
+        ],
+        "properties": {
+          "canManageTeam": {
+            "type": "boolean",
+            "description": "Whether the caller may change this team's membership."
+          },
+          "orgVisibleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Team-owned resources with organization visibility (everyone can see them when\nstrict team isolation is disabled)."
+          },
+          "resources": {
+            "$ref": "#/components/schemas/TeamResourceCounts",
+            "description": "Visible resources relevant to this team, grouped by resource type."
+          },
+          "roles": {
+            "$ref": "#/components/schemas/TeamRoleCounts",
+            "description": "Member counts by team role. Decimal role names avoid colliding with reserved words."
+          }
+        }
+      },
       "TeamMember": {
         "type": "object",
         "required": [
@@ -8953,6 +9038,170 @@
           },
           "slug": {
             "type": "string"
+          }
+        }
+      },
+      "TeamResourceCounts": {
+        "type": "object",
+        "required": [
+          "total",
+          "agents",
+          "skills",
+          "connections",
+          "providers",
+          "workerProfiles",
+          "agentTeams",
+          "triggers",
+          "toolPolicies",
+          "envMappings"
+        ],
+        "properties": {
+          "agentTeams": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "agents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "connections": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "envMappings": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "providers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skills": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toolPolicies": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "triggers": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workerProfiles": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TeamResourceItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "resourceType",
+          "name",
+          "isOwnerTeam",
+          "visibility",
+          "effectiveAccess",
+          "updatedAt"
+        ],
+        "properties": {
+          "effectiveAccess": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Effective access for the calling principal: `view`, `use` and/or `manage`."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "isOwnerTeam": {
+            "type": "boolean",
+            "description": "Whether this team is the resource's owning team."
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name of the owning user, or `None` when the resource has no user owner."
+          },
+          "ownerTeamId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "resourceType": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
+      },
+      "TeamResourcesPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "summary"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamResourceItem"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "$ref": "#/components/schemas/TeamAccessSummary"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TeamRoleCounts": {
+        "type": "object",
+        "required": [
+          "lead",
+          "member",
+          "viewer"
+        ],
+        "properties": {
+          "lead": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "member": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "viewer": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

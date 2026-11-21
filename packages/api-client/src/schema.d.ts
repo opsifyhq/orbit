@@ -1247,6 +1247,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/teams/{team_id}/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Access overview for one access team. The whole page (summary + first page of resources)
+         *     is one request; every resource is filtered by the caller's `AccessScope` before it is
+         *     returned, so a team member never sees another team's resources through this endpoint.
+         */
+        get: operations["resources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tool-policies": {
         parameters: {
             query?: never;
@@ -3051,6 +3072,20 @@ export interface components {
             intervalSeconds?: number | null;
             task?: string | null;
         };
+        TeamAccessSummary: {
+            /** @description Whether the caller may change this team's membership. */
+            canManageTeam: boolean;
+            /**
+             * Format: int64
+             * @description Team-owned resources with organization visibility (everyone can see them when
+             *     strict team isolation is disabled).
+             */
+            orgVisibleCount: number;
+            /** @description Visible resources relevant to this team, grouped by resource type. */
+            resources: components["schemas"]["TeamResourceCounts"];
+            /** @description Member counts by team role. Decimal role names avoid colliding with reserved words. */
+            roles: components["schemas"]["TeamRoleCounts"];
+        };
         TeamMember: {
             /** Format: date-time */
             createdAt: string;
@@ -3096,6 +3131,60 @@ export interface components {
         TeamRequest: {
             name: string;
             slug: string;
+        };
+        TeamResourceCounts: {
+            /** Format: int64 */
+            agentTeams: number;
+            /** Format: int64 */
+            agents: number;
+            /** Format: int64 */
+            connections: number;
+            /** Format: int64 */
+            envMappings: number;
+            /** Format: int64 */
+            providers: number;
+            /** Format: int64 */
+            skills: number;
+            /** Format: int64 */
+            toolPolicies: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            triggers: number;
+            /** Format: int64 */
+            workerProfiles: number;
+        };
+        TeamResourceItem: {
+            /** @description Effective access for the calling principal: `view`, `use` and/or `manage`. */
+            effectiveAccess: string[];
+            /** Format: uuid */
+            id: string;
+            /** @description Whether this team is the resource's owning team. */
+            isOwnerTeam: boolean;
+            name: string;
+            /** @description Display name of the owning user, or `None` when the resource has no user owner. */
+            ownerName?: string | null;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
+            resourceType: string;
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: string;
+        };
+        TeamResourcesPage: {
+            items: components["schemas"]["TeamResourceItem"][];
+            nextCursor?: string | null;
+            summary: components["schemas"]["TeamAccessSummary"];
+            /** Format: int64 */
+            total: number;
+        };
+        TeamRoleCounts: {
+            /** Format: int64 */
+            lead: number;
+            /** Format: int64 */
+            member: number;
+            /** Format: int64 */
+            viewer: number;
         };
         TeamRun: {
             /** Format: date-time */
@@ -5941,6 +6030,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    resources: {
+        parameters: {
+            query?: {
+                type?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                team_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamResourcesPage"];
+                };
             };
         };
     };

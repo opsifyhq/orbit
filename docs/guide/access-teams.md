@@ -11,11 +11,11 @@ Teams (workflows); see [agent-teams.md](agent-teams.md).
   resources belong to it.
 - Org owners and admins see and manage every team's resources. Team leads manage the
   resources their team owns.
-- Creating, renaming and deleting teams and changing their members need the
-  `settings:write` permission (`POST/PATCH/DELETE /api/v1/teams`, `/teams/{id}/members`).
-  The built-in Admin and Operator roles do not have it, and a team lead does not get it
-  from the team role, so in practice owners (or a custom role with `settings:write`)
-  manage membership. See [roles](rbac.md).
+- Creating, renaming and deleting teams need the `settings:write` permission
+  (`POST/PATCH/DELETE /api/v1/teams`). Changing members needs `members:read` plus team lead
+  or organization owner/admin (`/teams/{id}/members`). The built-in Admin role has the
+  owner/admin bypass; a team lead gets membership management from the team role without
+  `settings:write`. See [roles](rbac.md).
 - Team management is an enterprise feature (`teams`). Community installs keep the single
   Default team and org-wide visibility.
 
@@ -64,3 +64,33 @@ remain visible while non-default teams stay isolated.
 
 Organization owner/admin bypass these checks. Use/run is enforced when starting an
 execution with a team-owned agent or connection.
+
+## Team access overview
+
+Open a team from **Teams** (or visit `/teams/{id}`) to see its access overview. The page uses
+`GET /api/v1/teams/{team_id}/resources?type=...&cursor=...&limit=...`, one read endpoint that
+returns the summary and a page of rows together. Do not assemble this view from the resource
+list endpoints: the server applies `AccessScope` to every row.
+
+- **Overview**: member counts by role (lead/member/viewer) and visible resource counts by type.
+  A warning counts resources owned by this team but marked `org` visibility — wider than the
+  team intended.
+- **Resources**: rows grouped by agents, skills, connections, providers, worker profiles,
+  Agent Teams, triggers, tool policies and environment mappings. Each row shows the owner user,
+  owning team, visibility, whether this team owns it, its last update, and the caller's effective
+  `view`/`use`/`manage` level. Leads and org owners/admins can open the same access editor used on
+  the resource page from the row's **Access** action.
+- **Members**: existing membership management plus an explanation of what each role implies.
+  Adding or removing members requires team lead or org owner/admin.
+- **How access works**: how `private`/`team`/`org` visibility and team role combine, and how strict
+  team isolation narrows organization visibility.
+
+The endpoint returns `404` to non-members and to callers from another organization; team viewers
+can read it. It never returns a resource whose owning team is different from the requested team,
+and it applies the same visibility predicate as resource lists, so strict team isolation and
+invisible resources are respected. Org owners/admins see the same team-scoped set, not a global
+matrix.
+
+Outputs are intentionally absent: they are delivery records attached to an agent or Agent Team,
+with no `owner_team_id` or `visibility` column, so they are not shareable resources. The UI states
+this rather than showing invented ownership or access data.

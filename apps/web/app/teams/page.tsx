@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal, Plus, Trash2, UserMinus, Users } from "lucide-react";
@@ -207,7 +208,12 @@ export default function TeamsPage() {
             >
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="truncate text-sm font-medium">{team.name}</p>
+                  <Link
+                    href={`/teams/${team.id}`}
+                    className="truncate text-sm font-medium hover:underline"
+                  >
+                    {team.name}
+                  </Link>
                   {team.slug === "default" ? <Badge variant="secondary">Default</Badge> : null}
                 </div>
                 <p className="mt-0.5 flex flex-wrap items-baseline gap-x-3 text-[13px] text-muted-foreground">
