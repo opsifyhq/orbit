@@ -8,6 +8,8 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-21
+
 ### Added
 
 - `POST /agents/{id}/executions` accepts `placement` for that run (`auto`, `local`, `docker`,
