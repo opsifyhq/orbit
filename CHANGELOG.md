@@ -10,6 +10,12 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- Output delivery history: `GET /api/v1/outputs/{id}/deliveries` (newest first, with the
+  status, HTTP status, error and attempts, and the run when the caller may see it), and
+  `lastDelivery` on each output in `GET /api/v1/outputs`. The output page lists recent
+  deliveries, and the Outputs list shows the last delivery and marks an output whose last
+  message was refused or gave up as **Failing**. Migration `0055` indexes deliveries by
+  output.
 - `POST /agents/{id}/executions` accepts `placement` for that run (`auto`, `local`, `docker`,
   `kubernetes`), and Start work sends the "Where" choice it always asked for.
 - `PATCH /agents/{id}` accepts `expectedVersion`: an edit that started from an older version
@@ -33,10 +39,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 ### Changed
 
 - Outputs use the same patterns as Agents and Connectors: a registry list (search, **All /
-  On / Off / Cannot send** filter, status, what each output sends, count), Output Studio at
-  `/outputs/new` and `/outputs/<id>/edit` (Destination, Trigger, Message with an example of
-  the message), and an output page with **Send test**, **Edit**, turn on/off and delete.
-  `/outputs/new?agent=<id>` or `?team=<id>` preselects what it applies to.
+  On / Failing / Off / Cannot send** filter, status, what each output sends, count), Output
+  Studio at `/outputs/new` and `/outputs/<id>/edit` (Destination, Trigger, Message with an
+  example of the message), and an output page with **Send test**, **Edit**, turn on/off and
+  delete. `/outputs/new?agent=<id>` or `?team=<id>` preselects what it applies to.
 - Documentation brought in line with the code: the README and the local setup guide have a
   Compose quick start that works (`--env-file .env`, worker token issued after the API is
   up), the API, event, domain-model, harness and connector pages match the current
@@ -82,6 +88,8 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Creating an output with `enabled: false` (or **On** unticked in the form) created it on;
+  it now starts off.
 - Outputs now add their note (`template`) under the run summary, as the form always said;
   it was stored but never sent. Agent run messages break the line after the task instead of
   showing a literal `\n`, and generic webhooks report team runs as `team_run.<status>`

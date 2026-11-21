@@ -19,7 +19,16 @@ import {
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
 import { Status } from "@/components/ui/status";
-import { OUTPUT_STATUS, eventsLabel, kindLabel, outputProblem, outputState, type OutputState } from "@/lib/output-meta";
+import {
+  OUTPUT_STATUS,
+  deliveryFailed,
+  deliveryReason,
+  eventsLabel,
+  kindLabel,
+  outputProblem,
+  outputState,
+  type OutputState,
+} from "@/lib/output-meta";
 import type { OutputView } from "@/lib/outputs";
 import { useAgentTeams, useAllAgents, useOutputs } from "@/lib/queries";
 import { relativeTime } from "@/lib/utils";
@@ -30,9 +39,31 @@ type Filter = "all" | OutputState;
 const FILTER_LABEL: Record<Filter, string> = {
   all: "All",
   sending: "On",
+  failing: "Failing",
   off: "Off",
   incomplete: "Cannot send",
 };
+
+/** "Delivered 5 minutes ago", "Failed 2 hours ago · HTTP 404" or "Nothing sent yet". */
+function lastDeliveryText(output: OutputView): string {
+  const last = output.lastDelivery;
+  if (!last) return "Nothing sent yet";
+  const when = relativeTime(last.updatedAt);
+  const reason = deliveryReason(last);
+  switch (last.status) {
+    case "succeeded":
+      return `Delivered ${when}`;
+    case "failed":
+    case "dead":
+      return `Failed ${when}${reason ? ` · ${reason}` : ""}`;
+    case "pending":
+      return last.attempts > 0 ? `Retrying${reason ? ` · ${reason}` : ""}` : "Queued";
+    case "sending":
+      return "Sending now";
+    default:
+      return `Skipped ${when}`;
+  }
+}
 
 export default function OutputsPage() {
   const outputs = useOutputs();
@@ -54,7 +85,7 @@ export default function OutputsPage() {
 
   const all = useMemo(() => outputs.data ?? [], [outputs.data]);
   const counts = useMemo(() => {
-    const result: Record<Filter, number> = { all: all.length, sending: 0, off: 0, incomplete: 0 };
+    const result: Record<Filter, number> = { all: all.length, sending: 0, failing: 0, off: 0, incomplete: 0 };
     for (const output of all) result[outputState(output)] += 1;
     return result;
   }, [all]);
@@ -113,6 +144,7 @@ export default function OutputsPage() {
               const problem = outputProblem(output);
               const target = appliesTo(output);
               const when = eventsLabel(output.events);
+              const last = lastDeliveryText(output);
               return (
                 <ListRow
                   key={output.id}
@@ -130,7 +162,7 @@ export default function OutputsPage() {
                       <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
                         {problem ? <span>{target}</span> : null}
                         <span>{when}</span>
-                        <span>{relativeTime(output.updatedAt)}</span>
+                        <span className={deliveryFailed(output.lastDelivery) ? "text-destructive" : undefined}>{last}</span>
                       </p>
                     </>
                   }
@@ -138,9 +170,15 @@ export default function OutputsPage() {
                   details={
                     <>
                       <p className="truncate">{when}</p>
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {output.teamId ? "One message per team run" : "One message per run"}
-                        {output.template ? " · with a note" : ""}
+                      <p
+                        className={
+                          deliveryFailed(output.lastDelivery)
+                            ? "mt-0.5 truncate text-xs text-destructive"
+                            : "mt-0.5 truncate text-xs text-muted-foreground"
+                        }
+                        title={output.lastDelivery?.error ?? undefined}
+                      >
+                        {last}
                       </p>
                     </>
                   }

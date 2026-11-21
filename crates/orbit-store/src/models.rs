@@ -720,6 +720,25 @@ pub struct OutputDeliveryJob {
     pub claim_token: Uuid,
 }
 
+/// One delivery of an output, for showing its history. `task` and `agent_name` come from
+/// the run it reports on (absent once that run is deleted).
+#[derive(Debug, Clone, FromRow)]
+pub struct OutputDelivery {
+    pub id: Uuid,
+    pub output_id: Uuid,
+    pub execution_id: Option<Uuid>,
+    pub team_run_id: Option<Uuid>,
+    pub status: String,
+    pub attempts: i32,
+    pub response_status: Option<i32>,
+    pub last_error: Option<String>,
+    pub next_attempt_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub task: Option<String>,
+    pub agent_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessTeam {

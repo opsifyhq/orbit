@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ellipsis, Pause, Pencil, Play, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { DeliveryHistory } from "@/components/outputs/delivery-history";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +23,15 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Status } from "@/components/ui/status";
-import { OUTPUT_STATUS, eventsLabel, kindLabel, outputInput, outputProblem, outputState } from "@/lib/output-meta";
+import {
+  OUTPUT_STATUS,
+  deliveryReason,
+  eventsLabel,
+  kindLabel,
+  outputInput,
+  outputProblem,
+  outputState,
+} from "@/lib/output-meta";
 import { deleteOutput, testOutput, updateOutput } from "@/lib/outputs";
 import { useAgentTeams, useAllAgents, useOutputs } from "@/lib/queries";
 import { formatDateTime, relativeTime } from "@/lib/utils";
@@ -86,6 +95,7 @@ export default function OutputPage() {
 
   const data = output;
   const problem = outputProblem(data);
+  const lastReason = data.lastDelivery ? deliveryReason(data.lastDelivery) : null;
   const agent = data.agentId ? agents.data?.items.find((item) => item.id === data.agentId) : undefined;
   const team = data.teamId ? teams.data?.find((item) => item.id === data.teamId) : undefined;
   const appliesTo = data.teamId ? (
@@ -186,6 +196,21 @@ export default function OutputPage() {
         >
           It cannot send anything until this is fixed.
         </Callout>
+      ) : outputState(data) === "failing" && data.lastDelivery ? (
+        <Callout
+          tone="danger"
+          title={`The last message did not arrive${lastReason ? ` (${lastReason})` : ""}`}
+          action={
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/outputs/${data.id}/edit#destination`}>Check the URL</Link>
+            </Button>
+          }
+        >
+          {data.lastDelivery.status === "dead"
+            ? "ORBIT retried five times and gave up."
+            : "The destination refused it, so ORBIT did not retry."}{" "}
+          Fix the webhook URL or the receiving end, then use Send test.
+        </Callout>
       ) : !data.enabled ? (
         <Callout
           tone="info"
@@ -201,35 +226,38 @@ export default function OutputPage() {
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start [&>*]:min-w-0">
-        <Card>
-          <CardHeader>
-            <CardTitle>What it sends</CardTitle>
-            <p className="text-[13px] text-muted-foreground">
-              ORBIT writes a summary of the run: its task and up to 3,000 characters of its output or error.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <DescriptionList
-              items={[
-                { label: "Applies to", value: appliesTo },
-                { label: "Sends when a run", value: eventsLabel(data.events) },
-              ]}
-            />
-            <div className="space-y-1.5">
-              <p className="text-[13px] font-medium">Note under the summary</p>
-              {data.template ? (
-                <p className="whitespace-pre-wrap rounded-lg border bg-subtle p-3 text-[13px]">{data.template}</p>
-              ) : (
-                <p className="text-[13px] text-muted-foreground">
-                  None.{" "}
-                  <Link href={`/outputs/${data.id}/edit#message`} className="font-medium text-primary underline-offset-4 hover:underline">
-                    Add a note
-                  </Link>
-                </p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>What it sends</CardTitle>
+              <p className="text-[13px] text-muted-foreground">
+                ORBIT writes a summary of the run: its task and up to 3,000 characters of its output or error.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <DescriptionList
+                items={[
+                  { label: "Applies to", value: appliesTo },
+                  { label: "Sends when a run", value: eventsLabel(data.events) },
+                ]}
+              />
+              <div className="space-y-1.5">
+                <p className="text-[13px] font-medium">Note under the summary</p>
+                {data.template ? (
+                  <p className="whitespace-pre-wrap rounded-lg border bg-subtle p-3 text-[13px]">{data.template}</p>
+                ) : (
+                  <p className="text-[13px] text-muted-foreground">
+                    None.{" "}
+                    <Link href={`/outputs/${data.id}/edit#message`} className="font-medium text-primary underline-offset-4 hover:underline">
+                      Add a note
+                    </Link>
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+          <DeliveryHistory outputId={data.id} />
+        </div>
 
         <Card>
           <CardHeader>

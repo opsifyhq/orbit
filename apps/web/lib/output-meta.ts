@@ -1,4 +1,4 @@
-import type { OutputInput, OutputView } from "./outputs";
+import type { OutputDelivery, OutputInput, OutputView } from "./outputs";
 
 /** Pure helpers for showing outputs; no runtime imports, so `node --test` can load it. */
 
@@ -25,19 +25,66 @@ export function eventsLabel(events: string[]): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-export type OutputState = "sending" | "off" | "incomplete";
+export type OutputState = "sending" | "failing" | "off" | "incomplete";
 
-/** Whether an output will send: on, off, or missing what it needs to send. */
-export function outputState(output: Pick<OutputView, "enabled" | "hasWebhook" | "events">): OutputState {
-  if (!output.hasWebhook || output.events.length === 0) return "incomplete";
-  return output.enabled ? "sending" : "off";
+type Meta = {
+  label: string;
+  tone: "success" | "neutral" | "warning" | "danger" | "info";
+  shape: "solid" | "slash" | "alert" | "cross" | "dashed" | "orbiting" | "paused";
+};
+
+/** A delivery that ended without the message arriving. */
+export function deliveryFailed(delivery?: Pick<OutputDelivery, "status"> | null): boolean {
+  return delivery?.status === "failed" || delivery?.status === "dead";
 }
 
-export const OUTPUT_STATUS: Record<OutputState, { label: string; tone: "success" | "neutral" | "warning"; shape: "solid" | "slash" | "alert" }> = {
+/**
+ * Whether an output will send: missing what it needs, off, on but its last delivery
+ * did not arrive, or on.
+ */
+export function outputState(
+  output: Pick<OutputView, "enabled" | "hasWebhook" | "events" | "lastDelivery">,
+): OutputState {
+  if (!output.hasWebhook || output.events.length === 0) return "incomplete";
+  if (!output.enabled) return "off";
+  return deliveryFailed(output.lastDelivery) ? "failing" : "sending";
+}
+
+export const OUTPUT_STATUS: Record<OutputState, Meta> = {
   sending: { label: "On", tone: "success", shape: "solid" },
+  failing: { label: "Failing", tone: "danger", shape: "cross" },
   off: { label: "Off", tone: "neutral", shape: "slash" },
   incomplete: { label: "Cannot send", tone: "warning", shape: "alert" },
 };
+
+/** Status of one delivery, in the words of the output page. */
+export function deliveryStatus(delivery: Pick<OutputDelivery, "status" | "attempts">): Meta {
+  switch (delivery.status) {
+    case "succeeded":
+      return { label: "Delivered", tone: "success", shape: "solid" };
+    case "failed":
+      return { label: "Refused", tone: "danger", shape: "cross" };
+    case "dead":
+      return { label: "Gave up", tone: "danger", shape: "alert" };
+    case "sending":
+      return { label: "Sending", tone: "info", shape: "orbiting" };
+    case "skipped":
+      return { label: "Skipped", tone: "neutral", shape: "slash" };
+    case "pending":
+      return delivery.attempts > 0
+        ? { label: "Retrying", tone: "warning", shape: "paused" }
+        : { label: "Queued", tone: "neutral", shape: "dashed" };
+    default:
+      return { label: delivery.status, tone: "neutral", shape: "dashed" };
+  }
+}
+
+/** Why a delivery did not arrive, short enough for a list row: "HTTP 404" or the error. */
+export function deliveryReason(delivery: Pick<OutputDelivery, "responseStatus" | "error" | "status">): string | null {
+  if (delivery.status === "succeeded") return null;
+  if (delivery.responseStatus) return `HTTP ${delivery.responseStatus}`;
+  return delivery.error?.trim() || null;
+}
 
 /** What is missing before an output can send, or null. */
 export function outputProblem(output: Pick<OutputView, "hasWebhook" | "events">): string | null {

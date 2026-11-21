@@ -1,6 +1,6 @@
 //! Execution result outputs (Slack/Mattermost/webhook) and delivery.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -10,7 +10,9 @@ use uuid::Uuid;
 use orbit_domain::ValidationIssue;
 use orbit_security::{new_secret_ref, AuthContext, Permission, SecretValue};
 use orbit_store::outputs::DeliveryOutcome;
-use orbit_store::{ExecutionRecord, Output, OutputDeliveryJob, StoreError, TeamRun};
+use orbit_store::{
+    ExecutionRecord, Output, OutputDelivery, OutputDeliveryJob, StoreError, TeamRun,
+};
 
 use crate::audit;
 use crate::error::ApiError;
@@ -54,6 +56,75 @@ pub struct OutputView {
     pub has_webhook: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// The newest delivery, without run details. Only in list responses, and only once the
+    /// output has delivered (or tried to).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_delivery: Option<OutputDeliveryView>,
+}
+
+/// One delivery of an output: whether the message arrived, and why not.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputDeliveryView {
+    pub id: Uuid,
+    /// `pending` (waiting, or retrying after an error), `sending`, `succeeded`, `failed`
+    /// (refused, not retried), `dead` (retries used up) or `skipped` (output off or deleted).
+    pub status: String,
+    pub attempts: i32,
+    /// HTTP status of the last attempt, when the destination answered.
+    pub response_status: Option<i32>,
+    /// Why the last attempt failed. Never contains the webhook URL.
+    pub error: Option<String>,
+    /// When a pending delivery is tried next.
+    pub next_attempt_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The run it reports on, only when the caller may see it.
+    pub execution_id: Option<Uuid>,
+    pub team_run_id: Option<Uuid>,
+    pub task: Option<String>,
+    pub agent_name: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl OutputDeliveryView {
+    fn from_delivery(delivery: OutputDelivery, with_run: bool) -> Self {
+        Self {
+            id: delivery.id,
+            next_attempt_at: (delivery.status == "pending").then_some(delivery.next_attempt_at),
+            status: delivery.status,
+            attempts: delivery.attempts,
+            response_status: delivery.response_status,
+            error: delivery.last_error.as_deref().map(redact_urls),
+            execution_id: delivery.execution_id.filter(|_| with_run),
+            team_run_id: delivery.team_run_id.filter(|_| with_run),
+            task: delivery.task.filter(|_| with_run),
+            agent_name: delivery.agent_name.filter(|_| with_run),
+            created_at: delivery.created_at,
+            updated_at: delivery.updated_at,
+        }
+    }
+}
+
+/// Replace every http(s) URL in an error with `<url>`. Send errors already drop the
+/// webhook URL; this also covers rows recorded before that, since the URL is a secret.
+fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>' | ','))
+            .unwrap_or(tail.len());
+        out.push_str("<url>");
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 impl From<Output> for OutputView {
@@ -70,6 +141,7 @@ impl From<Output> for OutputView {
             has_webhook: !output.secret_ref.is_empty(),
             created_at: output.created_at,
             updated_at: output.updated_at,
+            last_delivery: None,
         }
     }
 }
@@ -203,13 +275,63 @@ pub async fn list(
 ) -> Result<Json<Vec<OutputView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let mut latest: std::collections::HashMap<Uuid, OutputDelivery> = state
+        .store
+        .latest_output_deliveries(auth.org_id)
+        .await?
+        .into_iter()
+        .map(|delivery| (delivery.output_id, delivery))
+        .collect();
     let mut visible = Vec::new();
     for output in state.store.list_outputs(auth.org_id).await? {
         if access.is_privileged() || output_target_visible(&state, &auth, &access, &output).await {
-            visible.push(OutputView::from(output));
+            let last = latest.remove(&output.id);
+            let mut view = OutputView::from(output);
+            view.last_delivery =
+                last.map(|delivery| OutputDeliveryView::from_delivery(delivery, false));
+            visible.push(view);
         }
     }
     Ok(Json(visible))
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct DeliveriesQuery {
+    /// How many deliveries to return, newest first (1–200, default 50).
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/outputs/{output_id}/deliveries",
+    tag = "outputs",
+    params(("output_id" = Uuid, Path), DeliveriesQuery),
+    responses((status = 200, body = [OutputDeliveryView]), (status = 404))
+)]
+pub async fn deliveries(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(output_id): Path<Uuid>,
+    Query(query): Query<DeliveriesQuery>,
+) -> Result<Json<Vec<OutputDeliveryView>>, ApiError> {
+    auth.require(Permission::SettingsRead)?;
+    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let output = state.store.get_output(auth.org_id, output_id).await?;
+    if !access.is_privileged() && !output_target_visible(&state, &auth, &access, &output).await {
+        return Err(ApiError::not_found("output"));
+    }
+    // An agent or team output only reports on runs of a target the caller can see. An
+    // organisation-wide one reports on every agent's runs, so only an admin sees which.
+    let with_run = access.is_privileged() || output.agent_id.is_some() || output.team_id.is_some();
+    let rows = state
+        .store
+        .list_output_deliveries(auth.org_id, output_id, query.limit.unwrap_or(50))
+        .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|delivery| OutputDeliveryView::from_delivery(delivery, with_run))
+            .collect(),
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/outputs", tag = "outputs", request_body = OutputRequest, responses((status = 201, body = OutputView)))]
@@ -255,6 +377,7 @@ pub async fn create(
             &events,
             &secret_ref,
             body.template.as_deref(),
+            body.enabled,
         )
         .await
     {
@@ -686,6 +809,24 @@ mod tests {
                 Some("  Ping #release  ")
             ),
             "Agent succeeded — task\nDone\n\nPing #release"
+        );
+    }
+
+    #[test]
+    fn urls_are_redacted_from_errors() {
+        assert_eq!(
+            super::redact_urls(
+                "error sending request for url (https://hooks.slack.com/services/T/B/secret): timed out"
+            ),
+            "error sending request for url (<url>): timed out"
+        );
+        assert_eq!(
+            super::redact_urls("a http://x/1 and https://y/2"),
+            "a <url> and <url>"
+        );
+        assert_eq!(
+            super::redact_urls("webhook returned HTTP 404"),
+            "webhook returned HTTP 404"
         );
     }
 

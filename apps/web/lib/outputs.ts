@@ -14,6 +14,24 @@ export interface OutputView {
   hasWebhook: boolean;
   createdAt: string;
   updatedAt: string;
+  /** The newest delivery, without run details (list responses only). */
+  lastDelivery?: OutputDelivery | null;
+}
+
+/** One delivery of an output. Run fields are null when the caller may not see the run. */
+export interface OutputDelivery {
+  id: string;
+  status: "pending" | "sending" | "succeeded" | "failed" | "dead" | "skipped" | (string & {});
+  attempts: number;
+  responseStatus?: number | null;
+  error?: string | null;
+  nextAttemptAt?: string | null;
+  executionId?: string | null;
+  teamRunId?: string | null;
+  task?: string | null;
+  agentName?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OutputInput {
@@ -29,6 +47,10 @@ export interface OutputInput {
 
 export function listOutputs(): Promise<OutputView[]> {
   return request<OutputView[]>("/api/v1/outputs");
+}
+
+export function listOutputDeliveries(id: string, limit = 25): Promise<OutputDelivery[]> {
+  return request<OutputDelivery[]>(`/api/v1/outputs/${id}/deliveries?limit=${limit}`);
 }
 
 export function createOutput(body: OutputInput): Promise<OutputView> {

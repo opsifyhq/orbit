@@ -128,7 +128,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/connectors` | connector registry and manifests |
 | `GET/POST /api/v1/connections`, `PATCH/DELETE /api/v1/connections/{id}` | connections |
 | `POST /api/v1/connections/{id}/test` | check a connection; `supported: false` when the connector has no probe |
-| `GET/POST /api/v1/outputs`, `PATCH/DELETE /api/v1/outputs/{id}`, `POST …/test` | outputs (webhook, Slack, Mattermost) |
+| `GET/POST /api/v1/outputs`, `PATCH/DELETE /api/v1/outputs/{id}`, `POST …/test`, `GET …/deliveries` | outputs (webhook, Slack, Mattermost) |
 | `GET/POST /api/v1/env-mappings`, `PATCH/DELETE /api/v1/env-mappings/{id}` | environment mappings |
 | **Infrastructure** | |
 | `GET /api/v1/workers` | live worker heartbeats |

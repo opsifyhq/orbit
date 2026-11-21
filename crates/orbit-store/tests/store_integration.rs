@@ -1266,6 +1266,7 @@ async fn team_output_enqueue_uses_the_partial_unique_index() {
             &["succeeded".to_string()],
             "secret://output/team",
             None,
+            true,
         )
         .await
         .unwrap();
@@ -1302,6 +1303,133 @@ async fn team_output_enqueue_uses_the_partial_unique_index() {
 }
 
 #[tokio::test]
+async fn output_delivery_history_lists_newest_first_with_the_run_task() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_agent_team(
+            org,
+            &format!("Team {}", uuid::Uuid::now_v7()),
+            "history",
+            &serde_json::json!({ "steps": [] }),
+            Some(user),
+        )
+        .await
+        .unwrap();
+    let output = store
+        .create_output(
+            org,
+            &format!("history-{}", uuid::Uuid::now_v7()),
+            "webhook",
+            None,
+            Some(team.id),
+            &["succeeded".to_string()],
+            "secret://output/history",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    let quiet = store
+        .create_output(
+            org,
+            &format!("quiet-{}", uuid::Uuid::now_v7()),
+            "slack",
+            None,
+            Some(team.id),
+            &["failed".to_string()],
+            "secret://output/quiet",
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    for task in ["first", "second"] {
+        let run = store
+            .create_team_run(
+                org,
+                team.id,
+                &serde_json::json!({ "task": task }),
+                Some(user),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_team_run(
+                run.id,
+                "succeeded",
+                Some(&serde_json::json!({ "ok": true })),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.enqueue_team_output_deliveries().await.unwrap(), 1);
+    }
+    // Make the order unambiguous and record a failure on the newest delivery, the way
+    // `finish_output_delivery` would.
+    sqlx::query(
+        "UPDATE output_deliveries d SET created_at = now() - interval '1 minute' \
+         FROM team_runs t WHERE t.id = d.team_run_id AND d.output_id = $1 AND t.input->>'task' = 'first'",
+    )
+    .bind(output.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE output_deliveries d SET status = 'failed', attempts = 1, response_status = 404, \
+         last_error = 'webhook returned HTTP 404' \
+         FROM team_runs t WHERE t.id = d.team_run_id AND d.output_id = $1 AND t.input->>'task' = 'second'",
+    )
+    .bind(output.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    let history = store
+        .list_output_deliveries(org, output.id, 20)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].task.as_deref(), Some("second"));
+    assert_eq!(history[0].status, "failed");
+    assert_eq!(history[0].response_status, Some(404));
+    assert_eq!(
+        history[0].last_error.as_deref(),
+        Some("webhook returned HTTP 404")
+    );
+    assert!(history[0].team_run_id.is_some() && history[0].execution_id.is_none());
+    assert_eq!(history[1].task.as_deref(), Some("first"));
+    assert_eq!(
+        store
+            .list_output_deliveries(org, output.id, 1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Another organisation sees nothing.
+    let (other_org, _) = seed_org(&store).await;
+    assert!(store
+        .list_output_deliveries(other_org, output.id, 20)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let latest = store.latest_output_deliveries(org).await.unwrap();
+    assert_eq!(
+        latest.len(),
+        1,
+        "an output without deliveries has no latest one"
+    );
+    assert_eq!(latest[0].output_id, output.id);
+    assert_eq!(latest[0].status, "failed");
+    assert!(latest.iter().all(|delivery| delivery.output_id != quiet.id));
+}
+
+#[tokio::test]
 async fn env_mappings_and_outputs_round_trip() {
     let Some(store) = test_store().await else {
         return;
@@ -1333,6 +1461,7 @@ async fn env_mappings_and_outputs_round_trip() {
             &["succeeded".to_string(), "failed".to_string()],
             "secret://output/test",
             Some("release finished"),
+            true,
         )
         .await
         .expect("output");
@@ -3071,6 +3200,7 @@ async fn hard_deleting_an_agent_removes_its_history_but_not_team_run_history() {
             &["succeeded".to_string()],
             &secret_ref,
             None,
+            true,
         )
         .await
         .unwrap();
@@ -3149,6 +3279,7 @@ async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
             &["succeeded".to_string()],
             &first,
             None,
+            true,
         )
         .await
         .unwrap();
