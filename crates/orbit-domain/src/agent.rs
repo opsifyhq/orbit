@@ -772,6 +772,14 @@ spec:
         assert!(spec.connectors.is_empty());
         assert!(spec.validate().is_valid(), "{:?}", spec.validate());
     }
+
+    #[test]
+    fn archived_agents_can_be_activated() {
+        assert!(AgentStatus::Archived.can_activate());
+        assert!(AgentStatus::Draft.can_activate());
+        assert!(AgentStatus::Paused.can_activate());
+        assert!(!AgentStatus::Active.can_activate());
+    }
 }
 
 /// Agent lifecycle state.
@@ -804,8 +812,9 @@ impl AgentStatus {
         })
     }
 
+    /// Archived agents are restored by activating them; the store clears `archived_at`.
     pub fn can_activate(&self) -> bool {
-        matches!(self, Self::Draft | Self::Paused)
+        matches!(self, Self::Draft | Self::Paused | Self::Archived)
     }
 
     pub fn can_pause(&self) -> bool {

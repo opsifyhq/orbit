@@ -385,8 +385,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   `settings` field the API rejects for that kind.
 - An agent's default task was dropped on save because the shared schema did not know
   `runDefaults`.
-- "Restore" on an archived agent always failed (the API has no such transition); the
-  button is gone and the archive dialog now says archiving cannot be undone.
+- "Restore" on an archived agent failed with `400` because activation was restricted to
+  drafts and paused agents. Activating an archived agent now restores it to active, clears
+  `archived_at`, and is available again from the agent list, detail view and archive dialog.
 - Start work no longer offers options it does not act on (event and connector starts,
   auto-approve, keep running); they are disabled and say so.
 - New agent teams no longer save a hardcoded repository and description nobody typed.

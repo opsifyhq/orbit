@@ -360,7 +360,9 @@ impl Store {
         sqlx::query_as::<_, Agent>(
             r#"
             UPDATE agents
-            SET status = $3, archived_at = COALESCE($4, archived_at), updated_at = now()
+            SET status = $3,
+                archived_at = CASE WHEN $3 = 'active' THEN NULL ELSE COALESCE($4, archived_at) END,
+                updated_at = now()
             WHERE org_id = $1 AND id = $2 AND status = $5
             RETURNING *
             "#,
