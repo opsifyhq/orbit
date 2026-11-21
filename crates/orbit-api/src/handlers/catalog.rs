@@ -145,6 +145,7 @@ pub async fn create_provider(
             kind.as_str(),
             &config,
             secret_ref.as_deref(),
+            body.enabled.unwrap_or(true),
         )
         .await
     {

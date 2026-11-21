@@ -88,11 +88,12 @@ impl Store {
         kind: &str,
         config: &Value,
         secret_ref: Option<&str>,
+        enabled: bool,
     ) -> StoreResult<Provider> {
         sqlx::query_as::<_, Provider>(
             r#"
-            INSERT INTO providers (id, org_id, name, kind, config, secret_ref)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO providers (id, org_id, name, kind, config, secret_ref, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             "#,
         )
@@ -102,6 +103,7 @@ impl Store {
         .bind(kind)
         .bind(config)
         .bind(secret_ref)
+        .bind(enabled)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {

@@ -660,6 +660,87 @@ async fn every_provider_kind_can_be_saved() {
 }
 
 #[tokio::test]
+async fn provider_can_be_created_disabled() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/providers",
+            json!({
+                "name": format!("Off {}", Uuid::now_v7()),
+                "kind": "harness_managed",
+                "config": { "harness": "opencode" },
+                "enabled": false
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["enabled"], false, "{body}");
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/providers",
+            json!({ "name": format!("On {}", Uuid::now_v7()), "kind": "harness_managed", "config": { "harness": "opencode" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["enabled"], true, "enabled is the default");
+}
+
+#[tokio::test]
+async fn tested_endpoint_provider_can_still_be_edited() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/providers",
+            json!({
+                "name": format!("Tested {}", Uuid::now_v7()),
+                "kind": "openai_compatible",
+                "config": { "baseUrl": "http://10.1.2.3:9999/v1", "model": "qwen" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    // What a successful Test stores: the discovered catalog under `settings.models`.
+    let tested = json!({
+        "baseUrl": "http://10.1.2.3:9999/v1",
+        "model": "qwen",
+        "settings": { "models": ["qwen", "llama"] }
+    });
+    app.store
+        .update_provider(app.org_id, id, None, Some(&tested), None, None)
+        .await
+        .unwrap();
+
+    // The form sends the stored config back with one field changed.
+    let mut edited = tested.clone();
+    edited["model"] = json!("llama");
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/providers/{id}"),
+            json!({ "config": edited }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"]["model"], "llama");
+    assert_eq!(
+        body["config"]["settings"]["models"],
+        json!(["qwen", "llama"])
+    );
+}
+
+#[tokio::test]
 async fn provider_credentials_are_write_only() {
     let Some(app) = test_app(true).await else {
         return;
@@ -1068,6 +1149,7 @@ async fn private_resources_are_hidden_from_other_users() {
             "openai_compatible",
             &json!({ "baseUrl": "http://127.0.0.1:9/v1" }),
             None,
+            true,
         )
         .await
         .unwrap();
@@ -1079,6 +1161,7 @@ async fn private_resources_are_hidden_from_other_users() {
             "openai_compatible",
             &json!({ "baseUrl": "http://127.0.0.1:9/v1" }),
             None,
+            true,
         )
         .await
         .unwrap();
@@ -3271,6 +3354,7 @@ async fn provider_fixture() -> Option<ProviderFixture> {
             "openai_compatible",
             &json!({ "baseUrl": "http://127.0.0.1:9/v1", "model": "m" }),
             Some(&reference),
+            true,
         )
         .await
         .unwrap();
@@ -5577,6 +5661,7 @@ async fn agent_specs_require_use_of_referenced_connections_and_providers() {
             "openai_compatible",
             &json!({ "baseUrl": "http://127.0.0.1:9/v1" }),
             None,
+            true,
         )
         .await
         .unwrap();
@@ -6043,6 +6128,7 @@ async fn export_checks_the_read_permission_of_the_resource_kind() {
             "openai_compatible",
             &json!({ "baseUrl": "http://127.0.0.1:9/v1" }),
             None,
+            true,
         )
         .await
         .unwrap();
@@ -6810,6 +6896,7 @@ async fn provider_probe_requires_manage_and_refuses_metadata_addresses() {
             "openai_compatible",
             &json!({ "baseUrl": "http://169.254.169.254/v1", "model": "m" }),
             None,
+            true,
         )
         .await
         .unwrap();

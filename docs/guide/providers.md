@@ -15,8 +15,8 @@ ORBIT supports three provider kinds:
 
 ## Known OpenAI-compatible endpoints
 
-These providers expose an OpenAI-compatible API and need no extra ORBIT adapter. On the
-**Model providers** page, choose a preset in the provider form or enter the base URL
+These providers expose an OpenAI-compatible API and need no extra ORBIT adapter. Under
+**Model providers → Add provider**, pick one under **Start from** or enter the base URL
 directly:
 
 | Provider | Base URL | Credential |
@@ -31,13 +31,33 @@ Model ids are not bundled: use the provider's `/models` discovery or type the id
 v1 accepts the key as a bearer token; do not use the legacy deployment-specific URL unless
 you know your provider endpoint expects it.
 
+## In the app
+
+**Model providers** lists every provider like the other registries: search by name, URL or
+model, a filter by type with counts, status (**Enabled**, **Disabled**, or **Test failed**
+after a failed test in this session), the default model and catalog size, and row checkboxes
+for **Change access**. Each provider has a page with **Test**, **Edit**, and **Disable**,
+**Export as YAML** and **Delete** under ⋯.
+
+**Add provider** and **Edit** open Provider Studio, one section at a time:
+
+- **Type**: OpenAI-compatible, Anthropic or Harness-managed (fixed after creation), and for
+  OpenAI-compatible a preset to start from.
+- **Connection**: name, base URL (or the harness and its provider name), the write-only
+  credential, **Test connection**, and **Enabled**.
+- **Models**: the catalog (one per line) and the default model. OpenAI-compatible and
+  Anthropic providers need a default model.
+- **Limits**: context window (at least 128), max output tokens and, for OpenAI-compatible,
+  what the endpoint supports. Not shown for harness-managed providers.
+- **Access control**.
+
 ## Models
 
-`config.settings.models` is the model catalog used by agent and worker selectors. In the
-provider form, **Test and fetch** (and **Test** on a saved provider's card) probes
-`/models` (when `compat.modelsEndpoint` is enabled), fills the catalog and default model,
-and saved providers persist the discovered list.
-Endpoints without `/models` can use a free-text model.
+`config.settings.models` is the model catalog used by agent and worker selectors; every
+provider kind accepts it. **Test connection** in the form probes `/models` (when
+`compat.modelsEndpoint` is enabled) and fills an empty catalog and default model; **Test**
+on a saved provider also stores the discovered list. Endpoints without `/models` can use a
+free-text model.
 
 ## Credentials and the base URL
 
