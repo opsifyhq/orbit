@@ -10561,6 +10561,8 @@ async fn concurrent_agent_creates_cannot_race_past_the_limit() {
         return;
     };
     // Derive the limit from the current installation-wide count: one slot is available.
+    // Five connections for six contenders is intentional: failed try-lock attempts must
+    // release their transaction before sleeping, or the lock holder cannot finish.
     let store = Store::connect(&url, 5).await.unwrap();
     let current = store.count_agents_installation().await.unwrap();
     let Some(app) =
