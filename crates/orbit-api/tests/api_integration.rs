@@ -9155,6 +9155,48 @@ async fn d2_fixture(app: &TestApp) -> D2Fixture {
     }
 }
 
+/// App whose router sees an enterprise license, so premium role endpoints reach their
+/// permission checks instead of stopping at the feature gate. The key is registered only
+/// for this test binary; no production key or secret is involved.
+async fn licensed_test_app() -> Option<TestApp> {
+    let mut app = test_app(true).await?;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let signing = SigningKey::from_bytes(&[202u8; 32]);
+    let kid = "orbit-test-role-grants";
+    let public_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes());
+    std::env::set_var(
+        "ORBIT_LICENSE_PUBLIC_KEYS",
+        json!({ kid: public_key }).to_string(),
+    );
+    let encode = |value: Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&value).expect("license JSON"))
+    };
+    let header = encode(json!({ "alg": "EdDSA", "kid": kid }));
+    let claims = encode(json!({
+        "v": 1,
+        "id": "orbit-test-role-grants",
+        "customer": "Test",
+        "plan": "enterprise",
+        "features": ["custom_roles"],
+        "issued_at": "2020-01-01T00:00:00Z",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "grace_days": 0,
+    }));
+    let signed = format!("{header}.{claims}");
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(signing.sign(signed.as_bytes()).to_bytes());
+    app.state.license = orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
+        token: Some(format!("{signed}.{signature}")),
+        file: None,
+    });
+    // The router keeps its own clone of the state, so rebuild it with the licensed one.
+    app.router = orbit_api::build_router(app.state.clone());
+    Some(app)
+}
+
 #[tokio::test]
 async fn settings_write_holder_cannot_touch_other_teams_worker_objects() {
     let Some(app) = test_app(true).await else {
@@ -9689,4 +9731,263 @@ async fn agent_instances_listing_is_scoped_like_agents() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn settings_write_holder_cannot_grant_beyond_own_permissions_in_roles() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+
+    // An Owner holds every permission, so the wildcard itself is legal for them. This
+    // also proves the licensed router reaches the role handlers (not the feature gate).
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/roles",
+            "test-token",
+            json!({
+                "name": format!("owner-grant-{}", Uuid::now_v7()),
+                "permissions": ["*"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Mallory has settings:write but lacks `*`, audit:read and providers:write.
+    let owner_permissions: Vec<String> = orbit_security::Permission::all_for(UserRole::Owner)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for (label, permissions) in [
+        ("wildcard", json!(["*"])),
+        ("unheld audit read", json!(["agents:read", "audit:read"])),
+        (
+            "unheld providers write",
+            json!(["agents:read", "providers:write"]),
+        ),
+        ("owner's full set", json!(owner_permissions.clone())),
+    ] {
+        let name = format!("grant-{}-{}", label.replace(' ', "-"), Uuid::now_v7());
+        let (status, body) = send(
+            &app.router,
+            auth_post(
+                "/api/v1/roles",
+                m,
+                json!({ "name": name, "permissions": permissions }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{label}: {body}");
+        assert_eq!(body["error"]["code"], "forbidden", "{body}");
+        assert!(
+            app.store
+                .custom_role_permissions(app.org_id, &name)
+                .await
+                .unwrap()
+                .is_none(),
+            "{label}: role was created"
+        );
+    }
+
+    // A role made only of permissions she actually holds is still allowed.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/roles",
+            m,
+            json!({
+                "name": format!("delegated-{}", Uuid::now_v7()),
+                "permissions": ["agents:read", "settings:write"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Updating someone else's role is bounded the same way.
+    let target = app
+        .store
+        .create_custom_role(
+            app.org_id,
+            &format!("target-{}", Uuid::now_v7()),
+            &["agents:read".into()],
+        )
+        .await
+        .unwrap();
+    for (label, permissions) in [
+        ("wildcard", json!(["*"])),
+        ("unheld", json!(["agents:read", "audit:read"])),
+        ("owner's full set", json!(owner_permissions)),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            auth_patch(
+                &format!("/api/v1/roles/{}", target.id),
+                m,
+                json!({ "name": target.name, "permissions": permissions }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{label}: {body}");
+    }
+    let unchanged = app
+        .store
+        .get_custom_role(app.org_id, target.id)
+        .await
+        .unwrap();
+    assert_eq!(unchanged.permissions, vec!["agents:read".to_string()]);
+
+    // Editing the role she holds herself is refused even without new permissions.
+    // `fx.mallory` predates the role assignment, so read the current role name back.
+    let held_role = app
+        .store
+        .get_user(app.org_id, fx.mallory.id)
+        .await
+        .unwrap()
+        .role;
+    let own = app
+        .store
+        .list_custom_roles(app.org_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|role| role.name == held_role)
+        .expect("mallory's custom role");
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/roles/{}", own.id),
+            m,
+            json!({ "name": own.name, "permissions": own.permissions.clone() }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        body["error"]["message"], "you cannot edit your own role",
+        "{body}"
+    );
+
+    // The Owner may still grant the wildcard through an update.
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/roles/{}", target.id),
+            "test-token",
+            json!({ "name": target.name, "permissions": ["*"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn settings_write_holder_cannot_become_or_assign_owner() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+    let victim = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("victim-{}@test.local", Uuid::now_v7()),
+            "Victim",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+
+    // Built-in role names stay reserved in both create and update, so a custom role
+    // cannot be used as an alias for Owner.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/roles",
+            m,
+            json!({ "name": "owner", "permissions": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let target = app
+        .store
+        .create_custom_role(
+            app.org_id,
+            &format!("target-{}", Uuid::now_v7()),
+            &["agents:read".into()],
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/roles/{}", target.id),
+            m,
+            json!({ "name": "owner", "permissions": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let unchanged = app
+        .store
+        .get_custom_role(app.org_id, target.id)
+        .await
+        .unwrap();
+    assert_eq!(unchanged.name, target.name);
+
+    // Neither self-promotion nor promotion of another user to Owner is allowed.
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/users/{}", fx.mallory.id),
+            m,
+            json!({ "role": "owner" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/users/{}", victim.id),
+            m,
+            json!({ "role": "owner" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        app.store
+            .get_user(app.org_id, victim.id)
+            .await
+            .unwrap()
+            .role,
+        "viewer"
+    );
+
+    // An Owner can still assign Owner.
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/users/{}", victim.id),
+            "test-token",
+            json!({ "role": "owner" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        app.store
+            .get_user(app.org_id, victim.id)
+            .await
+            .unwrap()
+            .role,
+        "owner"
+    );
 }
