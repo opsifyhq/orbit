@@ -13,6 +13,7 @@ the end of this page would pass.
 | Store | `ORBIT_TEST_DATABASE_URL=… cargo test -p orbit-store` | CRUD, organization scoping, optimistic version conflicts, execution claim compare-and-set, OIDC identity linking (`crates/orbit-store/tests/`) |
 | API | `ORBIT_TEST_DATABASE_URL=… cargo test -p orbit-api` | Router with `tower::ServiceExt::oneshot`: authentication, error envelope, pagination, agent lifecycle, executions, SSE replay, access isolation, portable export and import (`crates/orbit-api/tests/`) |
 | OpenAPI drift | part of `cargo test -p orbit-api` | See "OpenAPI drift gates" below |
+| Documentation consistency | `pnpm docs:check` | See "Documentation consistency" below; needs only Node |
 | Web unit tests | `pnpm --filter @orbit/web test` (or `pnpm test`) | Pure helpers in `apps/web/lib/*.test.ts`, run with `node --test` |
 | Web types and build | `pnpm --filter @orbit/web typecheck`, `pnpm --filter @orbit/web build` | Type-safe API use on every page and build-time correctness |
 | Helm | `helm lint deploy/helm/orbit`, `helm template …`, `make helm-lint` | Chart validity, required values, probes, external PostgreSQL and NATS |
@@ -56,6 +57,26 @@ A harness adapter is only called "available" after these tests have passed again
 real CLI. The OpenCode adapter is tested against OpenCode v2.3.0 and the Pi adapter
 against Pi v1.5.2 (see [the runtime contract](../architecture/runtime-contract.md)).
 Claude Code and the generic adapter are registered as planned and fail closed.
+
+## Documentation consistency
+
+`pnpm docs:check` runs `scripts/check-docs.mjs` (Node 20+, no dependencies, no network).
+It fails with a sorted list of problems when:
+
+- a relative Markdown link or image, including a reference definition, points to a missing
+  file or a heading that does not exist;
+- `docs/navigation.yaml` lists a missing or duplicate page, or omits a served page
+  (`docs/planning/` is intentionally unlisted, like the embedded docs);
+- a repository path written in inline code no longer exists. Only unambiguous paths are
+  checked: root-anchored paths (for example `crates/orbit-api/src/docs.rs`), common
+  `apps/web`-relative paths and root files. Glob, placeholder and runtime-generated paths
+  are skipped.
+
+The Rust tests in `crates/orbit-api/src/docs.rs` cover links and navigation inside the
+embedded handbook; this check also covers root Markdown, the changelog and planning drafts,
+and runs without the Rust toolchain. It is not a CI gate yet: add `pnpm docs:check` to the
+Web job in `.github/workflows/ci.yml`, next to the API client check, to make future drift
+fail pull requests.
 
 ## OpenAPI drift gates
 
@@ -101,4 +122,5 @@ tags; see [releasing.md](releasing.md). Images are not scanned for vulnerabiliti
 | API | A handler test in `crates/orbit-api/tests`, then `pnpm api:generate` |
 | Harness | Contract tests, and real-harness evidence from the opt-in suites above |
 | UI | `pnpm typecheck`, `pnpm test`, `pnpm build`, and the matching flow in the UI test plan at 360px width |
+| Docs | `pnpm docs:check`; add a new page to `docs/navigation.yaml` |
 | Chart | `make helm-lint` |

@@ -55,7 +55,7 @@ API process never executes agent work.
 - **Model providers.** OpenAI-compatible endpoints, Anthropic, or the harness's own
   provider configuration.
 - **Live runs and history.** A streaming timeline per run, schedules, skills, per-agent
-  memory and outputs to webhooks, Slack and Mattermost.
+  memory and outputs to webhooks, Slack, Mattermost and Telegram.
 - **Administration.** OIDC single sign-on, roles and permissions, API tokens and an audit
   log.
 - **Built to be operated.** A responsive web app that works on a phone, a documented
@@ -71,7 +71,7 @@ ORBIT is pre-1.0. Minor releases may change the API and the database schema; rea
 |---|---|---|
 | Harnesses | Mock, OpenCode (tested with v2.3.0), Pi (tested with v1.5.2) | Claude Code, generic harness |
 | Starting a run | Manual, cron schedule, issue queue of an agent team | Event and webhook triggers (they can be saved but do not fire) |
-| Connectors | GitHub, GitLab and Kubernetes through the tool broker; X post search | Telegram, generic webhook, OAuth sign-in flows for connectors |
+| Connectors | GitHub, GitLab and Kubernetes through the tool broker; X post search and posting | Telegram connector invocation, generic webhook, OAuth sign-in flows for connectors |
 | Where runs execute | A local worker, Docker, Kubernetes (long-lived workers or a Job per run) | |
 | Enterprise features | Custom roles, access teams, resource sharing ([licensed](#editions-and-license)) | Shared connections, quotas, marketplace |
 

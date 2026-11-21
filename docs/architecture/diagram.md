@@ -11,12 +11,12 @@ A PNG export is available at [`orbit-overview.png`](orbit-overview.png) (may lag
 | **Agent Experience** | Web UI (and future Expo app). Configuration, monitoring, approvals. No business logic or durable state. |
 | **Control Plane** | `orbit-api`: auth, agents and immutable versions, providers, connections, executions, approvals, audit, SSE. PostgreSQL is the durable source of truth. NATS JetStream accelerates events; DB polling is the recovery path. |
 | **Execution Plane** | `orbit-worker` (mock), `orbit-worker-opencode` (OpenCode v2.3.0), `orbit-worker-pi` (Pi v1.5.2), plus the optional launcher that starts workers. Workers claim only their configured harnesses. The policy-enforcing tool broker runs per execution; see [Execution Plane](execution-plane.md). |
-| **External systems** | GitHub, X, GitLab, webhooks and model providers. All actions go through the broker; credentials never reach the harness. |
+| **External systems** | GitHub, X, GitLab, webhooks and model providers. Agent tool actions go through the broker and result outputs are delivered by the API; credentials never reach the harness. |
 
 | Status | Components |
 |---|---|
-| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration, SSE, audit, encrypted secrets, tool broker and tool policies, GitHub, GitLab and Kubernetes (read-only) connectors, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), continuous agent runtime, memory, launcher and K8s Jobs, OIDC, custom roles, access teams and sharing, outputs, offline licensing, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
-| **Planned** | Inbound webhooks (webhook and event triggers are stored but never fire), X posting, Telegram and webhook connector invocation, large-scale simulation runs, Claude Code adapter |
+| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration and posting, SSE, audit, encrypted secrets, tool broker and tool policies, GitHub and GitLab connectors (approval-gated writes), read-only Kubernetes connector, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), continuous agent runtime, memory, launcher and K8s Jobs, OIDC, custom roles, access teams and sharing, webhook/Slack/Mattermost/Telegram outputs, offline licensing, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
+| **Planned** | Inbound webhooks (webhook and event triggers are stored but never fire), Telegram and webhook connector invocation, large-scale simulation runs, Claude Code adapter |
 
 ## System context
 
@@ -65,6 +65,7 @@ flowchart LR
   MCP <-->|"loopback + execution token"| Broker
   Broker -->|"HTTPS + leased credentials"| GitHub
   Broker -->|"HTTPS + leased credentials"| More
+  Broker -->|"X posts.create"| X
   OCWorker -->|"X read hydration"| X
   Broker -.->|"approvals, events, audit (via API)"| API
 ```
@@ -87,7 +88,7 @@ sequenceDiagram
   User->>Web: Run agent + task
   Web->>API: POST /agents/{id}/executions
   API->>DB: insert execution (queued, idempotency key)
-  API->>Bus: publish execution.requested
+  API->>Bus: publish orbit.execution.requested
   API-->>Web: 202 Accepted
   Web->>API: GET /executions/{id}/events/stream (SSE)
   W->>API: claim execution (queued → dispatched)
@@ -109,7 +110,7 @@ sequenceDiagram
   B-->>OC: tool result
   OC-->>W: NDJSON text/tool/usage events
   W->>API: persist events, complete execution
-  API->>Bus: publish execution.updated
+  API->>Bus: publish orbit.execution.updated
   API-->>Web: SSE snapshot + events + done
 ```
 

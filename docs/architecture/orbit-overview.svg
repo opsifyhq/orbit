@@ -68,11 +68,12 @@
 
   <rect x="346" y="344" width="244" height="130" rx="10" class="card"/>
   <text x="364" y="366" class="box-title">NATS JetStream</text>
-  <text x="364" y="384" class="box-line">execution &amp; trigger events</text>
-  <text x="364" y="400" class="box-line">execution.requested / updated</text>
-  <text x="364" y="416" class="box-line">trigger.fired / connector.event</text>
-  <text x="364" y="438" class="box-muted">at-least-once; DB polling</text>
-  <text x="364" y="453" class="box-muted">is the crash-recovery path</text>
+  <text x="364" y="384" class="box-line">orbit.execution.requested</text>
+  <text x="364" y="400" class="box-line">orbit.execution.updated</text>
+  <text x="364" y="416" class="box-line">orbit.trigger.fired</text>
+  <text x="364" y="432" class="box-line">orbit.connector.event</text>
+  <text x="364" y="450" class="box-muted">at-least-once; DB polling</text>
+  <text x="364" y="465" class="box-muted">is the crash-recovery path</text>
 
   <!-- Execution plane -->
   <rect x="640" y="196" width="520" height="330" rx="14" class="layer"/>
@@ -117,13 +118,13 @@
 
   <rect x="324" y="592" width="210" height="82" rx="9" class="card"/>
   <text x="342" y="614" class="box-title">X</text>
-  <text x="342" y="632" class="box-line">posts.search (implemented)</text>
-  <text x="342" y="649" class="box-muted">posting / writes: planned</text>
+  <text x="342" y="632" class="box-line">posts.search · posts.create</text>
+  <text x="342" y="649" class="box-muted">hydration · gated posting</text>
 
   <rect x="554" y="592" width="210" height="82" rx="9" class="card"/>
   <text x="572" y="614" class="box-title">GitLab</text>
   <text x="572" y="632" class="box-line">issues · pipelines · merge requests</text>
-  <text x="572" y="649" class="box-muted">manifest ready; invocation planned</text>
+  <text x="572" y="649" class="box-muted">through the policy tool broker</text>
 
   <rect x="784" y="592" width="160" height="82" rx="9" class="card"/>
   <text x="802" y="614" class="box-title">Webhooks</text>

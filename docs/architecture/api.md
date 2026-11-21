@@ -134,7 +134,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/connectors` | connector registry and manifests |
 | `GET/POST /api/v1/connections`, `PATCH/DELETE /api/v1/connections/{id}` | connections |
 | `POST /api/v1/connections/{id}/test` | check a connection; `supported: false` when the connector has no probe |
-| `GET/POST /api/v1/outputs`, `PATCH/DELETE /api/v1/outputs/{id}`, `POST …/test`, `GET …/deliveries` | outputs (webhook, Slack, Mattermost) |
+| `GET/POST /api/v1/outputs`, `PATCH/DELETE /api/v1/outputs/{id}`, `POST …/test`, `GET …/deliveries` | outputs (webhook, Slack, Mattermost, Telegram) |
 | `GET/POST /api/v1/env-mappings`, `PATCH/DELETE /api/v1/env-mappings/{id}` | environment mappings |
 | **Infrastructure** | |
 | `GET /api/v1/workers` | live worker heartbeats |
@@ -148,6 +148,7 @@ validated with field-level `details` and recorded in the audit log.
 | **Admin** | |
 | `GET/POST /api/v1/roles`, `PATCH/DELETE /api/v1/roles/{id}` | custom roles (licensed) |
 | `GET/POST /api/v1/teams`, `PATCH/DELETE /api/v1/teams/{id}` | access teams (licensed) |
+| `GET /api/v1/teams/{id}/resources` | team access overview: summary and a page of visible resources (licensed) |
 | `GET/POST /api/v1/teams/{id}/members`, `DELETE …/members/{user_id}` | access team members |
 | `GET/PATCH /api/v1/sharing/{resource}/{id}`, `PATCH /api/v1/sharing/{resource}/bulk` | owner and visibility of a resource (licensed) |
 | `GET/PUT /api/v1/settings/{oidc,harness,approvals,access}` | organization settings (PUT merges; absent fields are kept) |
