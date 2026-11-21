@@ -257,6 +257,8 @@ pub struct ExecutionRecord {
     pub team_step_index: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub running_started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
