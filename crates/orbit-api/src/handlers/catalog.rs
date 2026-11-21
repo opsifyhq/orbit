@@ -534,10 +534,7 @@ pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Resu
             continue;
         }
         if let Err(error) = orbit_security::check_outbound_url(value, &policy).await {
-            issues.push(orbit_domain::ValidationIssue::new(
-                field,
-                error.to_string(),
-            ));
+            issues.push(orbit_domain::ValidationIssue::new(field, error.to_string()));
         }
     }
     if issues.is_empty() {

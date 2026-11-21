@@ -1378,23 +1378,25 @@ mod tests {
         let mut usage = Usage::default();
         let mut text = String::new();
         let mut error = None;
-        let mut feed = |line: &str| {
-            map_open_code_event(
-                &serde_json::from_str(line).unwrap(),
-                &mut usage,
-                &mut text,
-                &mut error,
-            )
-        };
-        feed(r#"{"type":"text","part":{"text":"Let me look around first."}}"#);
-        feed(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"running"}}}"#);
-        feed(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"completed"}}}"#);
-        feed(r#"{"type":"text","part":{"text":"The answer"}}"#);
-        feed(r#"{"type":"text","part":{"text":"is 42."}}"#);
+        macro_rules! feed {
+            ($line:expr) => {
+                map_open_code_event(
+                    &serde_json::from_str($line).unwrap(),
+                    &mut usage,
+                    &mut text,
+                    &mut error,
+                )
+            };
+        }
+        feed!(r#"{"type":"text","part":{"text":"Let me look around first."}}"#);
+        feed!(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"running"}}}"#);
+        feed!(r#"{"type":"tool_use","part":{"tool":"read","state":{"status":"completed"}}}"#);
+        feed!(r#"{"type":"text","part":{"text":"The answer"}}"#);
+        feed!(r#"{"type":"text","part":{"text":"is 42."}}"#);
         assert_eq!(final_answer(&text), "The answer\nis 42.");
 
         // Ending on a tool call keeps the last thing said instead of returning nothing.
-        feed(r#"{"type":"tool_use","part":{"tool":"todowrite","state":{"status":"completed"}}}"#);
+        feed!(r#"{"type":"tool_use","part":{"tool":"todowrite","state":{"status":"completed"}}}"#);
         assert_eq!(final_answer(&text), "The answer\nis 42.");
         assert_eq!(final_answer(""), "");
         assert!(error.is_none());
