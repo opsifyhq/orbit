@@ -70,7 +70,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/workers", label: "Workers", icon: Server, keywords: "profiles launches docker kubernetes" },
       { href: "/harnesses", label: "Harnesses", icon: Cpu, keywords: "adapters opencode pi mock claude" },
-      { href: "/environment-mappings", label: "Environments", icon: Terminal, keywords: "env variables environments" },
+      { href: "/environments", label: "Environments", icon: Terminal, keywords: "env variables environments" },
     ],
   },
   {

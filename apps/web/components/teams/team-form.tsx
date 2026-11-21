@@ -911,7 +911,7 @@ export function TeamForm({
                 empty={
                   <>
                     No environment mappings yet.{" "}
-                    <Link href="/environment-mappings" className="text-primary hover:underline">
+                    <Link href="/environments" className="text-primary hover:underline">
                       Add one
                     </Link>
                     .

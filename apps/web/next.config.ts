@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  // Environments used to live at /environment-mappings; keep old links and bookmarks working.
+  async redirects() {
+    return [{ source: "/environment-mappings", destination: "/environments", permanent: true }];
+  },
   async headers() {
     return [
       {

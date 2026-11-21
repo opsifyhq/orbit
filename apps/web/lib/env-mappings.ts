@@ -1,6 +1,10 @@
 "use client";
 
+import { useMemo } from "react";
+import { useQueries } from "@tanstack/react-query";
+
 import { request } from "./http";
+import { useEnvMappings, useWorkerProfiles } from "./queries";
 
 export interface EnvMappingEntry {
   envVar: string;
@@ -49,4 +53,45 @@ export function updateEnvMapping(
     method: "PATCH",
     body: JSON.stringify(body),
   });
+}
+
+// ---------------------------------------------------------------------------- hooks
+
+/** One environment, found in the list (the API has no single GET). */
+export function useEnvMapping(id: string) {
+  const mappings = useEnvMappings();
+  return { ...mappings, data: mappings.data?.find((mapping) => mapping.id === id) };
+}
+
+/**
+ * Which worker profiles use each environment. The API answers per profile, so this asks
+ * each one; there are only ever a handful. `known` is false until every answer is in.
+ */
+export function useEnvMappingUsage() {
+  const profiles = useWorkerProfiles();
+  const queries = useQueries({
+    queries: (profiles.data ?? []).map((profile) => ({
+      queryKey: ["worker-profile-env-mappings", profile.id],
+      queryFn: () => workerProfileEnvMappings(profile.id),
+      staleTime: 30_000,
+    })),
+  });
+  const known = profiles.isSuccess && queries.every((query) => query.isSuccess);
+  // The query results change identity every render; their data timestamps do not.
+  const stamp = queries.map((query) => query.dataUpdatedAt).join(",");
+  const usedBy = useMemo(() => {
+    const result = new Map<string, Array<{ id: string; name: string }>>();
+    (profiles.data ?? []).forEach((profile, index) => {
+      for (const mapping of queries[index]?.data ?? []) {
+        result.set(mapping.id, [...(result.get(mapping.id) ?? []), { id: profile.id, name: profile.name }]);
+      }
+    });
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles.data, stamp]);
+  const allProfiles = useMemo(
+    () => (profiles.data ?? []).map((profile) => ({ id: profile.id, name: profile.name })),
+    [profiles.data],
+  );
+  return { usedBy, known, profiles: allProfiles };
 }

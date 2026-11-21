@@ -8,6 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Environments follow the Agents pattern and live at `/environments` (the old
+  `/environment-mappings` redirects): a registry list (search, **All / In use / Unused /
+  Needs attention** filter with counts, status, the worker profiles that use each one, bulk
+  **Change access**, count), a page per environment with its variables, **Used by** and
+  attach, Edit, Duplicate and Delete, and Environment Studio (`/environments/new`,
+  `/environments/<id>/edit`: Details, Variables, Access control) instead of the dialog. An
+  environment whose variable would be empty (connection removed or without a credential) is
+  marked **Needs attention**.
+
 ## [0.26.0] - 2026-11-21
 
 ### Added

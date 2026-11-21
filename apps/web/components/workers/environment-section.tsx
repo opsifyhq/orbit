@@ -109,7 +109,7 @@ export function EnvironmentFields({
           <p id="wp-reusable-mappings" className="text-sm font-medium">
             Reusable mappings
           </p>
-          <Link href="/environment-mappings" className="text-[13px] text-primary hover:underline">
+          <Link href="/environments" className="text-[13px] text-primary hover:underline">
             Manage mappings
           </Link>
         </div>
