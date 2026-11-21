@@ -19,16 +19,22 @@ apps/web/              Next.js + React + Tailwind web app (App Router)
 packages/api-client/   Generated OpenAPI document and TypeScript client (do not hand-edit openapi.json or schema.d.ts)
 packages/contracts/    Zod schemas shared by web and future mobile app
 services/api/          orbit-api binary (control plane HTTP)
-services/worker/       orbit-worker binary (execution plane supervisor)
+services/worker/       orbit-worker binary (execution plane supervisor; also `orbit-worker mcp-broker`)
+services/launcher/     orbit-launcher binary (starts worker pods, Jobs and containers for the API)
+services/mcp-broker/   orbit-mcp-broker binary (MCP stdio bridge to the tool broker; dev scripts use it)
+services/license-cli/  orbit-license-cli (vendor-side licence signing tool, not in runtime images)
 crates/orbit-domain/   Pure domain types + validation + autonomy policy
 crates/orbit-contracts/ Harness/provider/connector/event contracts (traits + DTOs)
 crates/orbit-store/    PostgreSQL repositories + SQL migrations
 crates/orbit-events/   Event bus (memory + NATS JetStream)
+crates/orbit-kubernetes/ Kubernetes connector client (read-only cluster access for agents)
 crates/orbit-security/ Auth abstractions, permissions, secret encryption
 crates/orbit-harness/  Harness registry + adapters (mock, opencode and pi available)
 crates/orbit-api/      HTTP router, handlers, OpenAPI, SSE
 deploy/                Compose, Docker files, Helm chart, seed data
-docs/                  Architecture, ADRs, development and deployment docs (sidebar: docs/navigation.yaml)
+scripts/               Image build/push, deploy, version bump/check, OpenAPI and dev-worker scripts
+docs/                  Handbook (guide/), architecture, ADRs, development, security and deployment
+                       docs (sidebar: docs/navigation.yaml)
 ```
 
 ## Commands
@@ -49,11 +55,16 @@ sqlx migrate run --source crates/orbit-store/migrations
 pnpm install
 pnpm --filter @orbit/web dev
 pnpm --filter @orbit/web typecheck
+pnpm --filter @orbit/web test        # web unit tests (node --test lib/*.test.ts); `pnpm test` runs all packages
 pnpm --filter @orbit/web build
 pnpm api:generate            # openapi.json + schema.d.ts from the Rust code (no running API needed)
+pnpm api:generate --check    # what CI runs for schema.d.ts
+./scripts/check-versions.sh  # Rust, Node and chart versions must match (CI gate)
+cargo audit                  # CI also runs pnpm audit --audit-level=high
 
 # containers + Kubernetes (mkd.local conventions)
-docker compose -f deploy/compose/compose.yaml up --build
+# Compose needs --env-file .env and ORBIT_WORKER_TOKEN; see docs/development/local.md
+docker compose --env-file .env -f deploy/compose/compose.yaml up --build
 TAG=0.1.0 ./scripts/build-images.sh
 PUSH_REGISTRY=registry.mdk.local:5000 TAG=0.1.0 ./scripts/push-images.sh
 KUBE_CONTEXT=microk8s NAMESPACE=orbit TAG=0.1.0 ./scripts/deploy.sh
@@ -97,9 +108,9 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 |---|---|---|
 | 0 | Foundation, contracts, DB, API, worker, docs, containers, Helm | Complete (deployed and smoke-tested on microk8s at http://orbit.mdk.local) |
 | 1 | Agent CRUD/Studio, OpenCode adapter verified, executions | OpenCode v2.3.0 + Pi v1.5.2 verified; platform-provider mapping done |
-| 2 | Connectors invocation, Telegram/GitLab, webhooks, approvals, Claude Code | GitHub read + approvals + broker done; writes need live E2E; other connectors pending |
+| 2 | Connectors invocation, Telegram/GitLab, webhooks, approvals, Claude Code | GitHub, GitLab and Kubernetes run through the tool broker with approvals; GitHub writes need live verification; Telegram and generic webhook are manifest-only; inbound webhooks not started; Claude Code planned |
 | 3 | Long-running agents, Pi, memory, scheduling hardening | Pi + skills + worker profiles + memory + scheduling hardening + K8s Jobs mode done |
-| 4 | Enterprise RBAC, shared connections, quotas, marketplace | Not started |
+| 4 | Enterprise RBAC, shared connections, quotas, marketplace | Custom roles, access teams, sharing and offline licensing done; shared connections, quotas and marketplace not started |
 
 ## Adding a harness
 
@@ -140,7 +151,7 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 ## Local requirements
 
 - Rust 1.100.0 (pinned in `rust-toolchain.toml`; CI and Docker use the same version; MSRV is 1.94). Bump all three together
-- Node >= 20 and pnpm 10+ (`corepack enable`)
+- Node >= 20 and pnpm 12 (pinned by `packageManager`; `corepack enable`)
 - Docker + Compose v2
 - Helm 3 and (for cluster validation) kubectl + kind/k3d
 

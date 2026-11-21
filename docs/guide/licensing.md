@@ -4,9 +4,6 @@ ORBIT runs as **community** by default. An enterprise license unlocks premium fe
 raises usage limits. Licensing is **offline**: no activation call, no installation ID and
 no outbound request. The license is a signed file that ORBIT verifies locally.
 
-> Availability: licensing is on `main` and ships in **0.10.0**. It is not in the 0.9.1
-> images.
-
 ## Community vs enterprise
 
 | | Community | Enterprise |
@@ -58,7 +55,9 @@ helm upgrade orbit deploy/helm/orbit -n orbit --reuse-values \
 ```
 
 The chart mounts the file at `/etc/orbit-license.jwt`. For Docker/Compose, mount the file
-and set `ORBIT_LICENSE_FILE`, or set `ORBIT_LICENSE` to the token.
+and set `ORBIT_LICENSE_FILE`, or set `ORBIT_LICENSE` to the token. If `ORBIT_LICENSE_FILE`
+is unset, ORBIT reads `/etc/orbit/license.jwt` when that file exists. When both
+`ORBIT_LICENSE` and a file are present, the inline token is used.
 
 No restart is needed when the license is delivered as a mounted file: ORBIT re-reads it
 about every 60 seconds. If you use `license.value` / `ORBIT_LICENSE`, restart the API or
@@ -97,13 +96,15 @@ A license problem never prevents ORBIT from starting.
 | `workers` | enabled worker profiles | creating a worker profile |
 | `executions_per_day` | executions in the last 24h | creating an execution or team run |
 
-Warnings appear at 80% in **Settings → License** and `GET /api/v1/license`. At 100% the
-create is rejected with `402 license_limit`.
+Warnings appear at 80% in **Settings → Platform → License** and `GET /api/v1/license`. At
+100% the create is rejected with `402 license_limit`. Using a feature the license does not include
+(for example creating an access team without `teams`) is rejected with
+`402 license_required`.
 
 ## Where to see the status
 
-- **Settings → License**: tier, customer, expiry, days/grace left, features, usage and
-  warnings.
+- **Settings → Platform → License**: tier, customer, expiry, days/grace left, features,
+  usage and warnings ([settings](settings.md)).
 - `GET /api/v1/license` for scripts.
 - `GET /api/v1/meta` also includes a compact license block.
 

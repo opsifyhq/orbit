@@ -13,10 +13,16 @@ ORBIT supports three provider kinds:
 `https://api.anthropic.com/v1`; model discovery probes `/models` with `x-api-key` and
 `anthropic-version`. The key is still encrypted, write-only and sent only to that base URL.
 
+> **Known issue:** a provider of kind `anthropic` cannot be saved yet. Creating one fails
+> with a 500, because the database constraint `providers_kind_check` (migration 0007) only
+> allows `openai_compatible` and `harness_managed`. Until a migration widens it, use an
+> `openai_compatible` or `harness_managed` provider instead.
+
 ## Known OpenAI-compatible endpoints
 
-These providers expose an OpenAI-compatible API and need no extra ORBIT adapter. Use the
-Models page presets or enter the base URL directly:
+These providers expose an OpenAI-compatible API and need no extra ORBIT adapter. On the
+**Model providers** page, choose a preset in the provider form or enter the base URL
+directly:
 
 | Provider | Base URL | Credential |
 |---|---|---|
@@ -24,7 +30,7 @@ Models page presets or enter the base URL directly:
 | DeepSeek | `https://api.deepseek.com` | DeepSeek API key |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini API key |
 | Azure OpenAI (v1) | `https://<resource>.openai.azure.com/openai/v1` | Azure OpenAI key |
-| Anthropic (native Messages API) | `https://api.anthropic.com/v1` | Anthropic API key, kind `anthropic` |
+| Anthropic (native Messages API) | `https://api.anthropic.com/v1` | Anthropic API key, kind `anthropic` (cannot be saved yet, see the known issue above) |
 
 Model ids are not bundled: use the provider's `/models` discovery or type the id. Azure
 v1 accepts the key as a bearer token; do not use the legacy deployment-specific URL unless
@@ -32,9 +38,10 @@ you know your provider endpoint expects it.
 
 ## Models
 
-`settings.models` is the model catalog used by agent and worker selectors. The provider
-**Test connection** button probes `/models` (when `compat.modelsEndpoint` is enabled),
-fills the catalog and default model, and saved providers persist the discovered list.
+`config.settings.models` is the model catalog used by agent and worker selectors. In the
+provider form, **Test and fetch** (and **Test** on a saved provider's card) probes
+`/models` (when `compat.modelsEndpoint` is enabled), fills the catalog and default model,
+and saved providers persist the discovered list.
 Endpoints without `/models` can use a free-text model.
 
 ## Credentials and the base URL
@@ -44,7 +51,7 @@ The stored API key is only ever sent to the provider's `baseUrl`. To keep it tha
 new `credential` in the same update**; otherwise the API answers `422` ("re-enter the API
 key when changing the base URL"). The old key is never sent to the new host.
 
-**Test connection** sends the stored key to the endpoint and saves the discovered models,
+Testing a saved provider sends the stored key to the endpoint and saves the discovered models,
 so it requires the right to manage the provider, not just to view it.
 
 ## Outbound network policy

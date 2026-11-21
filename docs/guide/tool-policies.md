@@ -6,8 +6,12 @@ never grant a capability.
 
 ## Rules
 
-`GET/POST /api/v1/tool-policies`, `PATCH/DELETE /api/v1/tool-policies/{id}` (settings
-write). Rules are scoped to the org and optionally an agent; agent rules extend org rules.
+`GET/POST /api/v1/tool-policies`, `PATCH/DELETE /api/v1/tool-policies/{id}`. Listing needs
+`settings:read`; creating, changing and deleting need `settings:write`. There is no screen
+for tool policies in the web app: manage them through the API or an
+[import](portable-export-import.md). Rules are scoped to the org and optionally an agent
+(`agentId`); agent rules extend org rules. A rule has a `name`, `priority`, `enabled`,
+`action`, `matcher`, and an optional `reason` and `impact` (shown in the approval).
 
 | Matcher | Example |
 |---|---|
@@ -20,6 +24,11 @@ write). Rules are scoped to the org and optionally an agent; agent rules extend 
 
 All configured fields must match. Empty matchers match everything (use for a default
 `require_approval`).
+
+The `capability` and `connection` matchers only apply to connector tools. Native harness
+tools (`bash`, `edit` and so on) carry no capability or connection, so a rule that sets
+either never matches them, even a `deny` rule. Use `tool`, `effect`, `pathGlob` or
+`commandRegex` for native tools.
 
 ### Matching rules and fail-closed behaviour
 
@@ -61,8 +70,8 @@ require approval at L3/Auto and are denied for writes at L1/L2. Add an explicit
 ## Enforcement
 
 The worker broker evaluates rules for connector tools and exposes `POST /policy` for
-native hooks. Approvals are durable, scoped to the execution, expire with it, and record
-the rule, reason, impact and arguments. Every deny/approval is audited and appears as a
+native hooks. Approvals (see [Approvals](approvals.md)) are durable, scoped to the
+execution, expire with it, and record the rule, reason, impact and arguments. Every deny/approval is audited and appears as a
 `tool_call` execution event. See `docs/architecture/runtime-contract.md` and the launcher docs.
 
 ### Native tools (`POST /policy`)
@@ -73,9 +82,8 @@ The broker does not trust the caller's metadata. The effect is derived from the 
 
 | Effect | Tools |
 |---|---|
-| `read` | `read`, `grep`, `glob`, `list`, `ls`, `find` |
-| `external_side_effect` | `bash`, `shell`, `webfetch`, `websearch` |
 | `read` | `read`, `grep`, `glob`, `list`, `ls`, `find`, `task`, `subagent` |
+| `external_side_effect` | `bash`, `shell`, `webfetch`, `websearch` |
 | `write` | `edit`, `write`, `patch`, `multiedit`, `apply_patch` and **any unknown tool** |
 
 The platform decision comes from `evaluate_capability` with the agent's autonomy level and

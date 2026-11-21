@@ -1,6 +1,6 @@
 # 0012 — Decouple agents from harnesses
 
-Status: **Accepted** (implementation pending). Tracking issue: #51.
+Status: **Accepted**, partly implemented (see the amendment at the end). Tracking issue: #51.
 
 ## Decision
 
@@ -48,3 +48,12 @@ Capability negotiation runs before queueing:
 - Harness-specific config cannot silently leak into the agent definition.
 - The execution plane must resolve harness + profile consistently.
 - Agent Teams native mode becomes a harness capability check, not an agent property.
+
+## Amendment (2026-11-21): what the code does today
+Execution and team-run requests accept `harness` (and `harnessOverride` as a legacy
+alias). `AgentSpec.harness` still exists as a deprecated field that new versions omit, and
+resolution is: explicit request or team `harness`, then the deprecated `spec.harness` of
+an old version, then the organization default harness (`GET/PUT /api/v1/settings/harness`).
+A run with no resolvable harness is rejected with a validation error. The "worker
+profile's harness" step and the removal of the agent-level fallback described above are
+not implemented.

@@ -5,12 +5,24 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 
 ## UI
 
-The Work wizard's **Then** step lists outputs configured for the selected agent/team before
-the run is created.
+The Work wizard's **Then** section ([Start work](start-work.md)) lists the enabled outputs
+that apply to the selected agent or team before the run is created.
 
-**Outputs → New output**: name, kind, optional agent, events, incoming webhook URL,
-optional template and enabled toggle. **Test** sends a sample notification; edit leaves the
-URL blank to keep the existing one.
+To create one, open **Outputs → New output** and fill in:
+
+- **Name**
+- **Destination**: Slack, Mattermost or Webhook
+- **Webhook URL**: stored encrypted and never shown again. When editing, leave it blank
+  to keep the current URL.
+- **Applies to**: "All agents", "One agent" or "One agent team". An agent sends one
+  message per execution; a team sends one message when its whole run finishes.
+- **Send when a run is**: Succeeded, Failed and Cancelled (choose at least one)
+- **Note**: optional. It is stored with the output, but ORBIT does not add it to
+  messages yet; delivered messages contain only the run summary.
+- **Enabled**
+
+Each output has an On/Off switch, **Send test**, **Edit** and a menu. **Send test** sends a
+sample notification. Creating, changing, deleting and testing outputs needs `settings:write`.
 
 ## Create via API
 
@@ -23,20 +35,24 @@ curl -X POST "$API/api/v1/outputs" \
     "kind": "slack",
     "agentId": null,
     "events": ["succeeded", "failed"],
-    "webhookUrl": "https://hooks.slack.com/services/...",
-    "template": "Release finished"
+    "webhookUrl": "https://hooks.slack.com/services/..."
   }'
 ```
 
 - `kind`: `slack`, `mattermost` or `webhook`
-- `agentId`: one agent, or `null` together with `teamId` for all executions
-- `teamId`: one Agent Team; fires once when the team run finishes (not per child execution)
+- `agentId` or `teamId`: set one, not both (the API returns a validation error for
+  both). With neither, the output applies to every execution in the organization, and only
+  an owner or admin may create or change it.
+- `teamId` fires once when the team run finishes, not per child execution.
 - `events`: `succeeded`, `failed`, `cancelled` (default: all three)
 - `webhookUrl`: write-only; encrypted at rest and never returned
+- `template`: stored and returned, but not used when messages are built yet
 
 For Slack/Mattermost use an **incoming webhook URL**. The body is `{"text": "..."}`.
 
-For `webhook`, ORBIT POSTs JSON with `event`, `text` and an `execution` object.
+For `webhook`, ORBIT POSTs JSON with `event` (`execution.<status>`), `deliveryId`, `text`,
+an `execution` object (`id`, `agentName`, `status`, `output`, `error`) and, for a team run,
+a `teamRun` object (`id`, `teamId`, `status`, `output`, `error`).
 
 ## Test
 
@@ -75,5 +91,8 @@ Delivery is **at-least-once** and driven by a background outbox loop on every AP
 
 - List outputs: `GET /api/v1/outputs`; update/delete via `PATCH/DELETE /api/v1/outputs/{id}`.
 
-Not yet implemented: HMAC signing for generic webhooks, SSRF/private-network blocking,
-team scoping, a delivery-log UI, and template rendering beyond the built-in summary.
+Not yet implemented: HMAC signing for generic webhooks, a delivery-log UI, and message
+templates (the `template` field, shown as "Note", is stored only).
+
+Outputs that name an agent or team need manage access to it; an organization-wide output
+is visible to everyone with `settings:read`.

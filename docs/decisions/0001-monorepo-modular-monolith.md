@@ -19,3 +19,10 @@ deployment artifacts, plus a future mobile app that must share contracts.
 - One build/test pipeline; contract changes are atomic across frontend and backend.
 - Microservices can be extracted later along existing crate boundaries.
 - The worker is independently scalable and is the only place runtime adapters run.
+
+## Amendment (2026-11-21): additional binaries
+The workspace now builds more than the two binaries named above: `orbit-launcher`
+(`services/launcher`, starts workers), `orbit-mcp-broker` (`services/mcp-broker`, an MCP
+stdio bridge) and `orbit-license-cli` (`services/license-cli`, offline license signing). The
+control plane is still one deployable (`orbit-api`) and the worker the only place harness
+adapters run. See [Execution Plane](../architecture/execution-plane.md).

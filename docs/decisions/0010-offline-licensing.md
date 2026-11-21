@@ -50,7 +50,6 @@ Status: **Accepted**. Scope: the licensing part of #15 / #25.
     "custom_roles",
     "teams",
     "resource_permissions",
-    "resource_permissions",
     "shared_connections",
     "quotas",
     "marketplace"

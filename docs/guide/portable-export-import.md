@@ -5,14 +5,14 @@ imported again, into the same ORBIT or another one. Use it to back up definition
 them between environments, review them in Git, or hand them to a colleague.
 
 This is about *definitions*. Who may see or change a resource is access control and lives
-in the resource's **Access** settings ([access-teams.md](access-teams.md)); an import never
-carries access settings, the importer becomes the owner like for any other create.
+in the resource's **Access control** section ([access-teams.md](access-teams.md)); an
+import never carries access settings, the importer becomes the owner like for any other create.
 
 ## What can be exported
 
 | Resource | `kind` | File | Notes |
 |---|---|---|---|
-| Agent | `Agent` | `agent.yaml` | The agent definition (`spec` is the same as in Agent Studio's YAML) |
+| Agent | `Agent` | `agent.yaml` | The agent definition (`spec` is the same as Agent Studio saves and `POST /api/v1/agents` accepts) |
 | Skill | `Skill` | `SKILL.md`, or YAML with files | `SKILL.md` carries the instructions; scripts and references need the YAML form |
 | Connection | `Connection` | YAML | Credentials are not included |
 | Model provider | `Provider` | YAML | API key is not included |
@@ -21,11 +21,12 @@ carries access settings, the importer becomes the owner like for any other creat
 | Trigger | `Trigger` | YAML | API only (no page lists triggers on their own) |
 | Tool policy | `ToolPolicy` | YAML | API only |
 
-In the web app: **Export** in the overflow menu of the agent page and of the Skills,
-Connectors, Model providers, Agent teams and Worker profiles lists, and **Import** in the
-header of Agents, Skills, Connectors, Model providers, Agent teams and Workers. The import
-dialog validates the file first and shows what would be created or updated, conflicts and
-missing references before anything is written.
+In the web app, **Export as YAML** is in the menu of the agent page, the skill page, the
+connection page, the agent team page, the provider card on **Model providers**, and the
+worker profile card on **Workers**. **Import** is in the header of Agents, Skills,
+Connectors, Model providers, Agent teams and Workers. The import dialog validates the file
+first and shows what would be created or updated, conflicts and missing references before
+anything is written.
 
 ```bash
 # portable YAML (default JSON is the legacy wrapper: { resource, id, exportedAt, data })
@@ -186,6 +187,9 @@ spec:
     GITHUB_TOKEN: <set-on-import> # names only; values never leave
     LOG_LEVEL: <set-on-import>
   resources: { ... }
+  allowWebSearch: false
+  allowWebFetch: false
+  allowGlab: false
   allowGh: true
   nativeToolPermissions: { bash: ask }
 ```
@@ -234,7 +238,9 @@ spec:
 ```
 
 Importing an identical trigger conflicts in `create` mode; in `update`/`upsert` mode it
-only sets `enabled`. A webhook trigger needs its secret set after import.
+only sets `enabled`. A webhook trigger needs its secret set after import. Only `schedule`
+and `manual` triggers start runs today; `event` and `webhook` triggers are stored but never
+fire ([agents](agents.md#triggers)).
 
 ### Tool policy
 
@@ -344,4 +350,6 @@ because of conflicts or validation, and `import.failed` if applying stopped midw
 - Access settings (visibility, owner team) of exported resources.
 - Credentials of any kind, by design.
 - OpenCode-style agent/skill Markdown is a separate importer
-  (`POST /api/v1/import/opencode`); SKILL.md files also work with `POST /api/v1/import`.
+  (`POST /api/v1/import/opencode`; the "Import agent .md" and "Import SKILL.md" buttons on
+  Agents and Skills). SKILL.md files with `name` frontmatter also work with
+  `POST /api/v1/import`.

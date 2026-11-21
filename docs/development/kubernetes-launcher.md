@@ -14,28 +14,18 @@ workers; tokens exist for custom/external workers only.
 
 ## How authentication works
 
-### 1. Kubeconfig (default)
+### 1. In-cluster service account (Helm chart, recommended)
 
-The launcher container mounts a kubeconfig file:
+When the launcher runs inside the cluster, `kubectl` uses the pod's mounted service
+account token (`/var/run/secrets/kubernetes.io/serviceaccount/token`). The Helm chart
+works this way: it creates a launcher ServiceAccount and the Role below, and mounts no
+kubeconfig. No further setup is needed.
 
-```yaml
-volumeMounts:
-  - name: kubeconfig
-    mountPath: /home/orbit/.kube
-```
+### 2. Kubeconfig (launcher outside the cluster)
 
-`kubectl` automatically picks up `~/.kube/config` (or the `KUBECONFIG` env var).
-
-### 2. In-cluster service account (recommended for production)
-
-If the launcher runs inside the cluster, it uses the pod's mounted service account
-token automatically:
-
-```
-/var/run/secrets/kubernetes.io/serviceaccount/token
-```
-
-No kubeconfig needed — kubectl detects the in-cluster environment.
+When you run the launcher yourself outside the cluster, point `kubectl` at a kubeconfig:
+mount it at `~/.kube/config` (for example `/home/orbit/.kube` in the launcher image) or
+set `KUBECONFIG`. The chart does not do this.
 
 ## RBAC requirements
 
@@ -74,14 +64,23 @@ The launcher adds `imagePullSecrets` to every pod it creates.
 
 ## Key environment variables
 
-| Variable | Purpose |
-|---|---|
-| `ORBIT_LAUNCHER_KUBECTL` | Path to kubectl (default `kubectl`) |
-| `ORBIT_LAUNCHER_NAMESPACE` | Target namespace for worker pods (default `orbit`) |
-| `ORBIT_LAUNCHER_IMAGE_PULL_SECRET` | Secret name for registry auth |
-| `ORBIT_LAUNCHER_IMAGE_ALIASES` | Rewrite registry hosts (e.g. `registry.example.com:5000=registry.example.com:5000`) |
-| `ORBIT_WORKER_AUTH_SECRETS` | Allowlist for `authSecretName`: comma-separated exact names or `prefix*` patterns (default `orbit-opencode-auth*,orbit-pi-auth*`; empty allows none). Read by both the API (rejects on save) and the launcher (refuses at launch). Helm: `launcher.authSecrets`. |
-| `ORBIT_LAUNCHER_TOKEN` | Bearer token the API uses to authenticate to the launcher. The Helm chart generates it and reuses it from the release Secret when `launcher.token` is empty; set the value explicitly for GitOps. |
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORBIT_LAUNCHER_TOKEN` | required | Bearer token the API uses to authenticate to the launcher. The Helm chart generates it and reuses it from the release Secret when `launcher.token` is empty; set the value explicitly for GitOps. |
+| `ORBIT_LAUNCHER_ADDR` | `0.0.0.0:8090` | Listen address. |
+| `ORBIT_LAUNCHER_NAMESPACE` | `orbit` | Target namespace for worker workloads. |
+| `ORBIT_LAUNCHER_KUBECTL` | `kubectl` | Path to kubectl. |
+| `ORBIT_LAUNCHER_DOCKER` | `docker` | Path to the Docker CLI (Docker launches). |
+| `ORBIT_LAUNCHER_IMAGE_PULL_SECRET` | unset | Secret name for registry auth. |
+| `ORBIT_LAUNCHER_IMAGE_ALIASES` | unset | Rewrite registry hosts, as comma-separated `from=to` pairs (for example `192.168.1.201:5000=registry.mdk.local:5000`). |
+| `ORBIT_LAUNCHER_JOB_DEADLINE_SECONDS` | `7200` | Job deadline when the API sends no timeout. |
+| `ORBIT_LAUNCHER_DOCKER_RETENTION` | `1h` | How long exited single-execution Docker containers are kept. |
+| `ORBIT_MAX_APPROVAL_WAIT_SECONDS` | `3600` | Approval budget added to the Job deadline; set it identically on workers. |
+| `ORBIT_WORKER_AUTH_SECRETS` | `orbit-opencode-auth*,orbit-pi-auth*` | Allowlist for `authSecretName`: comma-separated exact names or `prefix*` patterns (empty allows none). Read by both the API (rejects on save) and the launcher (refuses at launch). Helm: `launcher.authSecrets`. |
+| `ORBIT_OPENCODE_AUTH_EXPORT` | unset | Path of the OpenCode auth export inside the launcher container (Docker launches). |
+| `ORBIT_OPENCODE_AUTH_HOST_PATH` | unset | The same file as the Docker daemon sees it on the **host**; the daemon mounts this path into worker containers. |
+| `ORBIT_PI_AGENT_DIR` | unset | Pi agent directory inside the launcher container (Docker launches). |
+| `ORBIT_PI_AGENT_HOST_DIR` | unset | The same directory as the Docker daemon sees it on the host. |
 
 ## Security model
 

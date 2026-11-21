@@ -21,3 +21,9 @@ platform's core value.
 - Runtime-specific configuration remains opaque JSON, validated by the adapter.
 - The worker is the trust boundary between control plane and untrusted agent tasks.
 - A runtime can be unavailable without breaking agent management.
+
+## Terminology note (2026-11-21)
+ADR 0008 renamed "runtime" to "harness". Read `RuntimeAdapter` as `HarnessAdapter`,
+`RuntimeKind` as `HarnessKind` and `orbit-runtime` as `crates/orbit-harness`. The boundary
+itself is unchanged: adapters run only in the worker, and `orbit-api` never executes agent
+logic.

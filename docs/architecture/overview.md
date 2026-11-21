@@ -15,22 +15,27 @@ contract.
                 │ REST /api/v1 + SSE (OpenAPI contract)
 ┌───────────────┴──────────────────────────────────────────────────────┐
 │ B. Control Plane                                                     │
-│    orbit-api (axum)  ── authn/z, agents, executions, policies, audit  │
-│    orbit-worker      ── event routing, harness dispatch, tracking     │
+│    orbit-api (axum)  ── authn/z, agents, executions, policies, audit, │
+│                         scheduler and other background loops          │
 │    PostgreSQL        ── durable state                                 │
-│    NATS JetStream    ── durable events (dev: in-memory bus)           │
+│    NATS JetStream    ── event notifications (dev: in-memory bus)      │
 └───────────────▲──────────────────────────────────────────────────────┘
-                │ HarnessAdapter contract (crates/orbit-contracts)
+                │ worker API (/api/v1/worker/*, scoped worker token)
 ┌───────────────┴──────────────────────────────────────────────────────┐
 │ C. Execution Plane                                                   │
-│    Isolated harness workers / containers / Kubernetes Jobs            │
+│    orbit-worker      ── claims executions, runs a harness adapter,    │
+│                         brokers connector tools                       │
+│    orbit-launcher    ── starts and stops workers (Docker, Kubernetes) │
 │    opencode · pi · mock (available) · claude-code / generic (planned) │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-The control plane never embeds an agent loop. The worker owns adapter instances; in
-local development the mock harness runs in-process in `orbit-worker`, and production
-harnesses are launched as isolated containers/Jobs (`HarnessDispatcher`).
+The control plane never embeds an agent loop. The worker owns the adapter instances
+(`HarnessAdapter`, `crates/orbit-contracts`): the mock harness runs in-process in
+`orbit-worker`, OpenCode and Pi run as supervised subprocesses in a per-execution
+workspace. Workers themselves run as a local process, a container or a Kubernetes pod,
+started by hand or by the launcher (`services/launcher`); the worker's own container
+dispatcher (`services/worker/src/dispatch.rs`) can start one container per execution.
 
 ## 2. Harness topology (MVP)
 
@@ -52,13 +57,20 @@ ORBIT is a Rust workspace with a Next.js frontend:
 | Directory | Purpose |
 |---|---|
 | `crates/orbit-domain` | Domain types, validation, autonomy policy |
-| `crates/orbit-contracts` | Cross-boundary traits (harness, provider, connector) |
+| `crates/orbit-contracts` | Cross-boundary traits and DTOs (harness, provider, connector, events) |
 | `crates/orbit-store` | PostgreSQL repositories and migrations |
-| `crates/orbit-api` | HTTP API (handlers, routes, OpenAPI) |
-| `crates/orbit-harness` | Harness adapters (mock, OpenCode, Pi) |
-| `services/api` | Control-plane binary |
-| `services/worker` | Execution-plane binary |
+| `crates/orbit-events` | Event bus (in-memory and NATS JetStream) |
+| `crates/orbit-security` | Authentication, permissions, secret encryption, licensing |
+| `crates/orbit-harness` | Harness adapters (mock, OpenCode, Pi), process supervision, workspace confinement |
+| `crates/orbit-kubernetes` | Read-only Kubernetes client behind the Kubernetes connector |
+| `crates/orbit-api` | HTTP API (handlers, routes, OpenAPI, background loops) |
+| `services/api` | `orbit-api`: the control-plane binary |
+| `services/worker` | `orbit-worker`: the execution-plane binary and its tool broker |
+| `services/launcher` | `orbit-launcher`: starts and stops workers; the only component with the Docker socket or workload RBAC |
+| `services/mcp-broker` | MCP stdio bridge that exposes the worker's tool broker to a harness |
+| `services/license-cli` | Offline license signing tool (ADR 0010) |
 | `apps/web` | Next.js web app |
+| `packages/api-client`, `packages/contracts` | Generated API client and shared Zod schemas |
 
 See `AGENTS.md` in the repository root for the full repository map.
 
@@ -69,10 +81,11 @@ Manual execution:
 1. `POST /api/v1/agents/{id}/executions` validates agent state, autonomy and quotas.
 2. A row in `executions` is inserted with status `queued` and an idempotency key.
 3. `orbit.execution.requested` is published on the event bus.
-4. The worker claims the execution (`queued → dispatched`, compare-and-set), resolves
-   the harness adapter, creates/resumes a session and streams events.
-5. Events are persisted in `execution_events`; execution status transitions are
-   persisted and published as `orbit.execution.updated`.
+4. A worker polls the API and claims the execution (`queued → dispatched`,
+   compare-and-set), resolves the harness adapter, creates or resumes a session and posts
+   events back to the API.
+5. The API persists events in `execution_events`; status transitions are persisted and
+   published as `orbit.execution.updated`.
 6. The frontend stream (`GET /api/v1/executions/{id}/events/stream`) replays persisted
    events and then tails new ones (SSE, `Last-Event-ID` supported).
 
@@ -80,8 +93,8 @@ Scheduled and team-driven executions use the same queued path. Background loops 
 `orbit-api`: the scheduler claims due cron triggers and stores their next run atomically (`FOR UPDATE SKIP LOCKED`), the team
 advancer moves pipeline runs forward, the work-source dispatcher enqueues issues, and the
 reaper fails orphaned executions. A worker only needs `ORBIT_API_URL` and a scoped
-`ORBIT_WORKER_TOKEN` — no database, bus or master-key access. Retention and deduplication
-live in PostgreSQL (`processed_events`, unique `idempotency_key`), not in memory.
+`ORBIT_WORKER_TOKEN` — no database, bus or master-key access. Deduplication lives in
+PostgreSQL (the compare-and-set claim and the unique `idempotency_key`), not in memory.
 
 ## 5. Isolation & security
 

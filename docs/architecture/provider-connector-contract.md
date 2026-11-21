@@ -11,7 +11,13 @@ endpoint.
 | Kind | Use |
 |---|---|
 | `openai_compatible` | vLLM, LiteLLM, APISIX/AI gateway, OpenRouter-style, any `/v1` endpoint |
+| `anthropic` | Anthropic's native Messages API (`ModelProtocol::AnthropicMessages`) |
 | `harness_managed` | harness owns auth/inventory (OpenCode Go, Claude Code subscription, Pi) |
+
+**Known issue:** saving a provider of kind `anthropic` currently fails with a 500. The
+`providers_kind_check` constraint (migration 0007) allows only `openai_compatible` and
+`harness_managed`, and no later migration adds `anthropic`. The Rust code for the kind
+(validation, probe, worker resolution) exists, so the fix is a new migration.
 
 OpenCode Go is **not** a harness and not a generic provider: it is represented as a
 `harness_managed` provider whose credential is stored in `secret_ref` and handed to the
@@ -20,24 +26,54 @@ domain; both are discovered from the provider registry.
 
 ### `openai_compatible` configuration
 
+Config documents use camelCase keys and reject unknown fields (`deny_unknown_fields`).
+
 ```jsonc
 {
-  "base_url": "https://gateway.example.com/v1",
+  "baseUrl": "https://gateway.example.com/v1",   // http(s), no trailing slash
   "model": "qwen3-coder",
-  "secret_ref": "provider/9f0c…",          // never returned by the API
-  "headers": { "X-Tenant": "orbit" },       // optional, non-secret custom headers
-  "request_params": { "temperature": 0.2 }, // optional, adapter passthrough
-  "context_window": 131072,
-  "max_output_tokens": 16384,
+  "secretRef": "provider/9f0c…",                 // never returned by the API
+  "headers": { "X-Tenant": "orbit" },            // optional, non-secret custom headers
+  "requestParams": { "temperature": 0.2 },       // optional, adapter passthrough
+  "contextWindow": 131072,
+  "maxOutputTokens": 16384,
   "compat": {
-    "chat_completions": true,
-    "responses_api": false,
+    "chatCompletions": true,
+    "responsesApi": false,
     "tools": true,
     "streaming": true,
-    "json_mode": false,
+    "jsonMode": false,
     "vision": false,
-    "models_endpoint": true
+    "embeddings": false,
+    "modelsEndpoint": true
   }
+}
+```
+
+`Authorization` and `X-Api-Key` headers are rejected in `headers`; configure them as a
+credential instead.
+
+### `anthropic` configuration
+
+```jsonc
+{
+  "baseUrl": "https://api.anthropic.com/v1",   // optional, this is the default
+  "model": "claude-…",
+  "secretRef": "provider/9f0c…",
+  "contextWindow": 200000,
+  "maxOutputTokens": 8192
+}
+```
+
+### `harness_managed` configuration
+
+```jsonc
+{
+  "harness": "opencode",         // required: the harness that owns the provider
+  "provider": "opencode-go",     // provider name as the harness knows it, not validated
+  "model": "…",
+  "secretRef": "provider/9f0c…",
+  "settings": {}
 }
 ```
 
@@ -112,14 +148,16 @@ transport option (`mcp` capability provider), not the only connector mechanism.
 
 ### Implemented scope
 
-- **Manifests** seeded for `mock`, `telegram`, `github`, `gitlab`, `x`, `webhook`.
+- **Manifests** seeded for `mock`, `telegram`, `github`, `gitlab`, `kubernetes`, `x`,
+  `webhook` (see the table below).
 - **Connections** stored with encrypted credentials; create / list / update / delete.
   The API never returns the credential (`hasCredential` only).
-- **GitHub** through the tool broker: `issues.list`, `issues.get`, `issues.comment`,
-  `issues.create`, `issues.update`, `pulls.list`, `pulls.get`, `pulls.create`,
-  `checks.list` (reads implemented, writes approval-gated and needing live E2E).
-- **GitLab** through the tool broker: `projects.list`, `group_issues.list`,
-  `boards.list`, `issues.*`, `merge_requests.*`, `pipelines.status`. API-token auth.
+- **GitHub** through the tool broker (reads implemented; writes are approval-gated and
+  still need live end-to-end verification).
+- **GitLab** through the tool broker.
+- **Kubernetes** through the tool broker: read-only inspection using a ServiceAccount
+  token or a static kubeconfig (client in `crates/orbit-kubernetes`; see
+  [the Kubernetes connector guide](../guide/kubernetes-connector.md)).
 - **X read hydration**: before an execution, the worker resolves `x` bindings with the
   `posts.search` capability, loads the connection's bearer token, calls
   `GET /2/tweets/search/recent`, and injects up to 10 posts into the harness input as
@@ -130,6 +168,27 @@ transport option (`mcp` capability provider), not the only connector mechanism.
   the child process only.
 - **Capability enforcement**: the broker evaluates `evaluate_capability` (autonomy ×
   effect × grant) before every call; writes below L4 create approvals.
+
+### Connector status and capabilities
+
+Capability lists are taken from `builtin_manifests()` in
+`crates/orbit-api/src/connectors.rs`. The tool broker serves only `github`, `gitlab` and
+`kubernetes` bindings (`services/worker/src/broker.rs`). A manifest-only connector can be
+selected and given a connection, but no code invokes its capabilities.
+
+| Connector | Status | Auth | Capabilities (effect) |
+|---|---|---|---|
+| `github` | invokable through the broker | `api_token` | read: `issues.list`, `issues.get`, `pulls.list`, `pulls.get`, `checks.list`, `repo.checkout`; write: `issues.comment`, `issues.create`, `issues.update`, `pulls.create`, `repo.commit`; external side effect: `repo.push` |
+| `gitlab` | invokable through the broker | `oauth2`, `api_token` (API token implemented) | read: `projects.list`, `group_issues.list`, `boards.list`, `issues.list`, `issues.get`, `merge_requests.list`, `merge_requests.get`, `pipelines.status`, `repo.checkout`; write: `issues.create`, `issues.update`, `issues.comment`, `merge_requests.comment`, `repo.commit`; external side effect: `merge_requests.create`, `merge_requests.approve`, `merge_requests.merge`, `repo.push` |
+| `kubernetes` | invokable through the broker | `api_token` | read: `namespaces.list`, `pods.list`, `pods.get`, `pods.logs`, `deployments.list`, `deployments.get`, `events.list` |
+| `x` | read hydration only (a pre-execution step, not a broker tool) | `oauth2`, `api_token` | read: `posts.search` |
+| `mock` | manifest only | none | read: `notes.list`; write: `notes.create` |
+| `telegram` | manifest only | `api_token` | read: `messages.list`; external side effect: `messages.send` |
+| `webhook` | manifest only | `hmac_webhook`, `none` | external side effect: `request.send` |
+
+`repo.checkout` is performed by the worker before the harness starts and is not exposed
+as a model tool. Outbound result delivery uses Outputs (`/api/v1/outputs`), not the
+`webhook` connector.
 
 Not yet implemented: X posting, Telegram `messages.send` invocation, OAuth flows, webhook
 verification, and a third-party connector SDK.

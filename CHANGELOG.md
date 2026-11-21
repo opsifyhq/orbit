@@ -32,6 +32,12 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
+- Documentation brought in line with the code: the README and the local setup guide have a
+  Compose quick start that works (`--env-file .env`, worker token issued after the API is
+  up), the API, event, domain-model, harness and connector pages match the current
+  behaviour, and the guide gained pages for Start work, Executions, Approvals, Connections
+  and Settings plus an architecture page for the execution plane. New `CONTRIBUTING.md`.
+  `scripts/bump-version.sh` now also updates the version in the README install example.
 - Archived agents can be restored (activate), as ADR 0013 already said: Restore is offered on
   the agent page and in the Archived filter.
 - Worker profile `env` is write-only: responses list variable names with `hasValue`, never
@@ -83,8 +89,8 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   them (#201).
 - Object-level access checks behind `settings:write`: worker tokens, profiles and launches,
   outputs, agent-team steps and sharing targets. Roles cannot grant permissions their editor
-  lacks, only an Owner assigns Owner, and API tokens are revocable by their owner or an admin
-  (#202). Lists of outputs, worker tokens and API tokens are scoped to what the caller may
+  lacks, only an Owner assigns Owner, and revoking an API token needs `settings:write` (a
+  holder who is not an owner or admin can revoke only their own) (#202). Lists of outputs, worker tokens and API tokens are scoped to what the caller may
   see (#218).
 - OIDC discovery and JWKS are cached and refreshed at a bounded rate, so unauthenticated
   requests can no longer be turned into a stream of calls to the identity provider (#218).
