@@ -331,6 +331,10 @@ pub fn build_router(state: AppState) -> Router {
             patch(handlers::access_teams::update).delete(handlers::access_teams::delete),
         )
         .route(
+            "/api/v1/teams/{team_id}/resources",
+            get(handlers::access_teams::resources),
+        )
+        .route(
             "/api/v1/teams/{team_id}/members",
             get(handlers::access_teams::list_members).post(handlers::access_teams::add_member),
         )

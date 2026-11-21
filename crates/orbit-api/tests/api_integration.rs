@@ -9271,7 +9271,7 @@ async fn licensed_test_app() -> Option<TestApp> {
         "id": "orbit-test-role-grants",
         "customer": "Test",
         "plan": "enterprise",
-        "features": ["custom_roles"],
+        "features": ["custom_roles", "teams"],
         "issued_at": "2020-01-01T00:00:00Z",
         "expires_at": "2099-01-01T00:00:00Z",
         "grace_days": 0,
@@ -10081,4 +10081,336 @@ async fn settings_write_holder_cannot_become_or_assign_owner() {
             .role,
         "owner"
     );
+}
+
+async fn seed_overview_agent(
+    app: &TestApp,
+    owner_id: Uuid,
+    name: &str,
+    team_id: Option<Uuid>,
+    visibility: &str,
+    updated_seconds_ahead: i32,
+) -> Uuid {
+    let mut def: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).expect("definition");
+    def.metadata.name = name.into();
+    let (agent, _) = app
+        .store
+        .create_agent(app.org_id, Some(owner_id), &def)
+        .await
+        .unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "agents", agent.id, visibility, team_id)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE agents SET updated_at = now() + ($2 * interval '1 second') WHERE id = $1")
+        .bind(agent.id)
+        .bind(updated_seconds_ahead)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    agent.id
+}
+
+#[tokio::test]
+async fn team_resource_overview_enforces_scope_and_isolation() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let owner = owner_user(&app).await;
+    let lead = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-lead@test.local",
+            "Overview Lead",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let member = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-member@test.local",
+            "Overview Member",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let viewer = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-viewer@test.local",
+            "Overview Viewer",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    let outsider = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-outsider@test.local",
+            "Overview Outsider",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let admin = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-admin@test.local",
+            "Overview Admin",
+            UserRole::Admin,
+        )
+        .await
+        .unwrap();
+    let extra = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "overview-extra@test.local",
+            "Overview Extra",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+
+    app.store
+        .set_platform_setting(
+            "team_isolation",
+            &json!({ "enabled": true }),
+            Some(owner.id),
+        )
+        .await
+        .unwrap();
+
+    let team_a = app
+        .store
+        .create_access_team(
+            app.org_id,
+            "Overview A",
+            &format!("overview-a-{}", Uuid::now_v7()),
+            None,
+        )
+        .await
+        .unwrap();
+    let team_b = app
+        .store
+        .create_access_team(
+            app.org_id,
+            "Overview B",
+            &format!("overview-b-{}", Uuid::now_v7()),
+            None,
+        )
+        .await
+        .unwrap();
+    for (user, role) in [(&lead, "lead"), (&member, "member"), (&viewer, "viewer")] {
+        app.store
+            .upsert_team_member(team_a.id, user.id, role)
+            .await
+            .unwrap();
+    }
+
+    seed_overview_agent(&app, owner.id, "Team agent one", Some(team_a.id), "team", 3).await;
+    seed_overview_agent(&app, owner.id, "Team agent two", Some(team_a.id), "team", 2).await;
+    let skill = app
+        .store
+        .create_skill(
+            app.org_id,
+            &format!("overview-skill-{}", Uuid::now_v7()),
+            "Team skill org",
+            "",
+            "# skill",
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "skills", skill.id, "org", Some(team_a.id))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE skills SET updated_at = now() + interval '1 second' WHERE id = $1")
+        .bind(skill.id)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    seed_overview_agent(&app, owner.id, "Org shared agent", None, "org", 0).await;
+    // Invisible to this overview: another team's resource and a personal private resource.
+    seed_overview_agent(
+        &app,
+        owner.id,
+        "SECRET other team",
+        Some(team_b.id),
+        "org",
+        5,
+    )
+    .await;
+    seed_overview_agent(&app, lead.id, "SECRET personal", None, "private", 4).await;
+
+    let lead_token = token_for(&app.store, app.org_id, lead.id, "overview-lead").await;
+    let member_token = token_for(&app.store, app.org_id, member.id, "overview-member").await;
+    let viewer_token = token_for(&app.store, app.org_id, viewer.id, "overview-viewer").await;
+    let outsider_token = token_for(&app.store, app.org_id, outsider.id, "overview-outsider").await;
+    let admin_token = token_for(&app.store, app.org_id, admin.id, "overview-admin").await;
+    let url = format!("/api/v1/teams/{}/resources", team_a.id);
+
+    // Team lead: full page, summary and management hint.
+    let (status, body) = send(&app.router, auth_get(&url, &lead_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 4, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 4, "{body}");
+    assert_eq!(body["summary"]["roles"]["lead"], 1, "{body}");
+    assert_eq!(body["summary"]["roles"]["member"], 1, "{body}");
+    assert_eq!(body["summary"]["roles"]["viewer"], 1, "{body}");
+    assert_eq!(body["summary"]["resources"]["agents"], 3, "{body}");
+    assert_eq!(body["summary"]["resources"]["skills"], 1, "{body}");
+    assert_eq!(body["summary"]["orgVisibleCount"], 1, "{body}");
+    assert_eq!(body["summary"]["canManageTeam"], true, "{body}");
+    assert!(body["items"].to_string().contains("Team skill org"));
+    assert!(!body.to_string().contains("SECRET"), "{body}");
+    let names: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Team agent one",
+            "Team agent two",
+            "Team skill org",
+            "Org shared agent"
+        ],
+        "{body}"
+    );
+    let team_owned = &body["items"][0];
+    assert_eq!(team_owned["ownerTeamId"], team_a.id.to_string());
+    assert_eq!(team_owned["isOwnerTeam"], true);
+    assert_eq!(team_owned["visibility"], "team");
+    assert_eq!(
+        team_owned["effectiveAccess"],
+        json!(["view", "use", "manage"]),
+        "{body}"
+    );
+
+    // Team viewer: can read, but cannot use or manage team-owned resources, and cannot
+    // change membership.
+    let (status, body) = send(&app.router, auth_get(&url, &viewer_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["summary"]["canManageTeam"], false, "{body}");
+    assert_eq!(body["total"], 4, "{body}");
+    assert_eq!(
+        body["items"][0]["effectiveAccess"],
+        json!(["view"]),
+        "{body}"
+    );
+    let (status, denied) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/teams/{}/members", team_a.id),
+            &viewer_token,
+            json!({ "userId": extra.id, "role": "viewer" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"]["code"], "forbidden");
+
+    // Team member: use but not manage.
+    let (status, body) = send(&app.router, auth_get(&url, &member_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["items"][0]["effectiveAccess"],
+        json!(["view", "use"]),
+        "{body}"
+    );
+    assert_eq!(body["summary"]["canManageTeam"], false, "{body}");
+    let (status, denied) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/teams/{}/members", team_a.id),
+            &member_token,
+            json!({ "userId": extra.id, "role": "viewer" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+
+    // Non-member: no existence leak, even with a valid team id.
+    let (status, body) = send(&app.router, auth_get(&url, &outsider_token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "not_found", "{body}");
+
+    // Org admin: same team-scoped view, never another team's resources.
+    let (status, body) = send(&app.router, auth_get(&url, &admin_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 4, "{body}");
+    assert_eq!(body["summary"]["canManageTeam"], true, "{body}");
+    assert!(!body.to_string().contains("SECRET"), "{body}");
+    assert!(body["items"][0]["effectiveAccess"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("manage")));
+
+    // Type filter and keyset pagination keep the same visibility rules.
+    let (status, body) = send(
+        &app.router,
+        auth_get(&format!("{url}?type=skills"), &member_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+    assert_eq!(body["items"][0]["resourceType"], "skills", "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        auth_get(&format!("{url}?limit=2"), &member_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 2, "{body}");
+    let cursor = body["nextCursor"].as_str().unwrap().to_string();
+    assert!(!cursor.is_empty());
+    let (status, body) = send(
+        &app.router,
+        auth_get(&format!("{url}?limit=2&cursor={cursor}"), &member_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 2, "{body}");
+    assert!(body["nextCursor"].is_null(), "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        auth_get(&format!("{url}?type=outputs"), &member_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    // Team lead and org admin may change membership; API enforces it independently of UI.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/teams/{}/members", team_a.id),
+            &lead_token,
+            json!({ "userId": extra.id, "role": "viewer" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/teams/{}/members", team_a.id),
+            &admin_token,
+            json!({ "userId": outsider.id, "role": "member" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

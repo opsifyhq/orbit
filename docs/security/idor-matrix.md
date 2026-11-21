@@ -24,6 +24,7 @@ Enforced by `crates/orbit-api/src/access.rs` (`AccessScope`). Invisible resource
 | Approvals | via execution → agent | — | decision inherits execution | — |
 | Dashboard summary | agent/execution/approval/connection/trigger counts, recent executions and usage filtered in SQL (`ResourceAccess`, joined via agent) | — | — | pending approvals via execution → agent |
 | Access teams | member list | member | lead/owner/admin | — |
+| Team access overview (`GET /api/v1/teams/{team_id}/resources`) | caller must be a member/viewer of that team or org owner/admin; rows filtered by the same `AccessScope` predicate as resource lists, then restricted to resources owned by that team or with no owning team and `org` visibility | `404` for non-members and other orgs | membership changes remain lead/owner/admin; the overview only reports the caller's effective level | `view`/`use`/`manage` derived from `can_view`/`can_use`/`can_manage` |
 | Agent Team queue | team **view** | team **view** | team **use** (enqueue/run/retry/requeue/cancel) | — |
 | Sharing | — | view | manage + license | — |
 | Export | per-kind read permission + view | — | — | — |
@@ -41,6 +42,12 @@ licence and the audit log. Lists of API tokens show every token to owners and ad
 only the caller's own tokens to everyone else. Granting rules (who may hand out which
 role or permission) are in the same page.
 
+The team overview deliberately excludes outputs: output rows have no `owner_team_id` or
+`visibility` column and are not in `SHAREABLE_RESOURCES`, so they are delivery records rather
+than resources that can be owned by or shared with an access team. The web UI says so instead
+of inventing access data. Team membership reads now require the same team visibility check as
+the overview; writes require team lead or org owner/admin via `AccessScope`, not just a global
+settings permission.
 
 ## Approvals and secret references (#144)
 
