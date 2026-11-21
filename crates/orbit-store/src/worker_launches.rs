@@ -342,4 +342,18 @@ impl Store {
         .fetch_all(&self.pool)
         .await?)
     }
+
+    /// Installation-wide count of workers actually in flight. Disabled/enabled profiles
+    /// are configuration, not running workers, so they do not consume worker seats.
+    pub async fn count_active_worker_launches_installation(&self) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM worker_launches
+            WHERE archived_at IS NULL
+              AND status IN ('pending', 'starting', 'running')
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?)
+    }
 }

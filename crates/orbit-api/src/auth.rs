@@ -192,8 +192,9 @@ async fn resolve_oidc(state: &AppState, token: Option<&str>) -> Result<AuthConte
                     "your identity is not provisioned in this ORBIT instance",
                 ));
             }
-            let seats = state.store.count_active_users(state.default_org_id).await?;
-            state.enforce_limit("seats", seats)?;
+            // The only API path that provisions new users. Count all orgs and hold the
+            // lock until the insert so concurrent first logins cannot exceed the seats.
+            let _seat_limit = state.seat_limit_guard().await?;
             let link_by_email =
                 may_link_by_email(identity.email_verified, oidc.require_verified_email);
             match state

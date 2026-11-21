@@ -580,6 +580,15 @@ impl Store {
         .fetch_one(&self.pool)
         .await?)
     }
+
+    /// Installation-wide agent count used for the license limit.
+    pub async fn count_agents_installation(&self) -> StoreResult<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status <> 'archived'")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
 }
 
 /// Translate the FK violation raised by an agent delete into an actionable conflict.

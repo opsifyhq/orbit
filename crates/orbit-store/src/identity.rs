@@ -387,4 +387,13 @@ impl Store {
             .await?,
         )
     }
+
+    /// Installation-wide seat count. Licenses are bought per installation, not per org.
+    pub async fn count_active_users_installation(&self) -> StoreResult<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE status = 'active'")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
 }

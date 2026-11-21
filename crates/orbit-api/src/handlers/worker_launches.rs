@@ -375,6 +375,9 @@ pub(crate) async fn launch_profile_internal(
             return Ok(existing);
         }
     }
+    // Count running workers installation-wide. Held through the launch insert so two
+    // concurrent launches (manual, team run or dispatcher) cannot exceed the seat count.
+    let _worker_limit = state.worker_limit_guard().await?;
     let issued =
         crate::handlers::worker_profiles::issue_profile_token(state, auth.org_id, &profile, false)
             .await?;

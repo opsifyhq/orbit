@@ -2682,15 +2682,30 @@ export interface components {
             warnings: string[];
         };
         LicenseStatus: {
+            /** @description Signed flags backed by shipped functionality. This is what the API/UI advertises. */
+            availableFeatures?: string[];
             customer?: string | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Whole days until expiry; negative once the expiry date has passed.
+             */
             daysRemaining?: number | null;
             error?: string | null;
             /** Format: date-time */
             expiresAt?: string | null;
+            /**
+             * @description Raw signed flags. Reserved flags remain here because the verifier accepts them and
+             *     existing gates still read them; use [`LicenseStatus::available_features`] for display.
+             */
             features?: string[];
             /** @description True while inside the post-expiry grace window. */
             grace?: boolean;
+            /**
+             * Format: date-time
+             * @description End of the grace window. Set for signed licenses so the UI can show a positive
+             *     "grace ends in X days" countdown instead of negative expiry days.
+             */
+            graceEndsAt?: string | null;
             /** Format: date-time */
             issuedAt?: string | null;
             licenseId?: string | null;
@@ -2703,6 +2718,10 @@ export interface components {
             /** @description False for community, invalid, or fully expired licenses. */
             valid?: boolean;
         };
+        /**
+         * @description Counts are installation-wide (all organizations) because licenses are installed once
+         *     per ORBIT installation, not per organization.
+         */
         LicenseUsage: {
             /** Format: int64 */
             agents: number;

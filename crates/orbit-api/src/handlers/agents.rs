@@ -81,7 +81,8 @@ pub async fn create_agent(
     crate::extract::ApiJson(definition): crate::extract::ApiJson<AgentDefinition>,
 ) -> Result<(StatusCode, Json<AgentDetail>), ApiError> {
     auth.require(Permission::AgentsWrite)?;
-    state.enforce_limit("agents", state.store.count_agents(auth.org_id).await?)?;
+    // Installation-wide check and insert are serialised across API replicas.
+    let _agent_limit = state.agent_limit_guard().await?;
     let report = state
         .store
         .validate_agent_references(auth.org_id, &definition)

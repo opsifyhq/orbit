@@ -831,6 +831,9 @@ pub(crate) async fn start_step(
     step_index: usize,
     previous_output: Option<&serde_json::Value>,
 ) -> Result<TeamStep, ApiError> {
+    // Every team step creates an execution. Enforce here so manual runs, scheduled/queue
+    // starts and the work-source dispatcher's auto-run all share the same atomic check.
+    let _execution_limit = state.execution_limit_guard().await?;
     let step = definition
         .steps
         .get(step_index)
@@ -1052,14 +1055,8 @@ pub async fn create_run(
             "autoApprove requires the approvals:decide permission",
         ));
     }
-    let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    state.enforce_limit(
-        "executions_per_day",
-        state
-            .store
-            .count_all_executions_since(auth.org_id, since)
-            .await?,
-    )?;
+    // executions_per_day is enforced in start_step, which creates the step execution for
+    // manual, queued and dispatcher auto-run starts alike.
     // Running a team needs use (not just view) on the team, its step agents' connections
     // and providers, and the team's shared connections (#140).
     let team = state.store.get_agent_team(auth.org_id, team_id).await?;

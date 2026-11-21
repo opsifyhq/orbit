@@ -87,6 +87,12 @@ impl StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
+/// Holds an advisory lock until dropped. See [`Store::license_limit_guard`].
+pub struct LicenseLimitGuard<'a> {
+    // Kept alive for its drop side effect (rollback releases the advisory lock).
+    _tx: Transaction<'a, Postgres>,
+}
+
 /// Shared database handle. Cloning is cheap (`PgPool` is an `Arc` internally).
 #[derive(Clone)]
 pub struct Store {
@@ -134,6 +140,21 @@ impl Store {
 
     pub async fn begin(&self) -> StoreResult<Transaction<'_, Postgres>> {
         Ok(self.pool.begin().await?)
+    }
+
+    /// Serialise a check-then-create sequence for one installation-wide license limit.
+    ///
+    /// The guard holds a transaction-scoped advisory lock; dropping it rolls the (otherwise
+    /// empty) transaction back and releases the lock, including on early returns and errors.
+    /// Every path that creates a resource counted by a license limit must hold the matching
+    /// guard across both the count and the insert.
+    pub async fn license_limit_guard(&self, limit: &str) -> StoreResult<LicenseLimitGuard<'_>> {
+        let mut tx = self.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), 0)")
+            .bind(limit)
+            .execute(&mut *tx)
+            .await?;
+        Ok(LicenseLimitGuard { _tx: tx })
     }
 
     pub(crate) fn cipher(&self) -> StoreResult<&SecretCipher> {

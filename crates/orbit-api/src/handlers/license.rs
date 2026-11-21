@@ -5,11 +5,13 @@ use axum::Extension;
 use axum::Json;
 use serde::Serialize;
 
-use orbit_security::{AuthContext, LicenseStatus, Permission};
+use orbit_security::{AuthContext, LicenseStatus, Permission, RESERVED_FEATURES};
 
 use crate::error::ApiError;
 use crate::state::AppState;
 
+/// Counts are installation-wide (all organizations) because licenses are installed once
+/// per ORBIT installation, not per organization.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseUsage {
@@ -35,19 +37,29 @@ pub async fn overview(
     auth.require(Permission::SettingsRead)?;
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let usage = LicenseUsage {
-        seats: state.store.count_active_users(auth.org_id).await?,
-        agents: state.store.count_agents(auth.org_id).await?,
+        seats: state.store.count_active_users_installation().await?,
+        agents: state.store.count_agents_installation().await?,
         workers: state
             .store
-            .count_enabled_worker_profiles(auth.org_id)
+            .count_active_worker_launches_installation()
             .await?,
         executions_today: state
             .store
-            .count_all_executions_since(auth.org_id, since)
+            .count_all_executions_since_installation(since)
             .await?,
     };
     let license = state.license_status();
     let mut warnings = Vec::new();
+    if license.valid
+        && license
+            .features
+            .iter()
+            .any(|feature| RESERVED_FEATURES.contains(&feature.as_str()))
+    {
+        warnings.push(
+            "license contains flags for features that are not available in this release".into(),
+        );
+    }
     for (key, current) in [
         ("seats", usage.seats),
         ("agents", usage.agents),

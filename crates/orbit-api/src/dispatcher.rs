@@ -191,7 +191,8 @@ async fn auto_run_pending(
             break;
         }
         // `start_queue_item` claims the item atomically and, on failure, records the error
-        // and returns the item to a retryable state itself.
+        // and returns the item to a retryable state itself. It enforces executions/day via
+        // `start_step`, so dispatcher auto-run cannot bypass the license limit.
         if let Err(error) = start_queue_item(state, &auth, team, &item).await {
             tracing::warn!(
                 error = %error,
