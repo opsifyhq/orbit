@@ -8,6 +8,13 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-21
+
+### Added
+
+- Read-only access overview for a team at `/teams/{id}` and `GET /api/v1/teams/{team_id}/resources`: owner, visibility, effective access and last update, with server-side filtering so a caller never sees resources they cannot read (#231).
+- `pnpm docs:check` (`scripts/check-docs.mjs`) validates documentation links, anchors, `docs/navigation.yaml` coverage and repository paths (#16).
+
 ### Changed
 
 - Model providers follow the Agents pattern: a registry list (search, type filter with
@@ -17,6 +24,14 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   connection**, Models, Limits, Access control) instead of the dialog. Test results are
   shared between the list and the page for the session. The catalog can now be edited and
   saved for every provider kind.
+- License usage is installation-wide across organizations for seats, agents, workers and
+  24-hour executions, enforced with transaction-scoped advisory locks; grace shows a
+  countdown, and signed-but-unshipped feature flags are no longer advertised (#27).
+- Unauthenticated routes are rate limited per source IP (`ORBIT_ANON_RATE_LIMIT_PER_MINUTE`,
+  default 120) with the standard `rate_limited` error envelope and `Retry-After` (#218).
+- MCP stdio bridges dispatch each JSON-RPC request in its own task, so an approval wait no
+  longer blocks `ping`/`tools/list`; cancellation aborts the matching request and duplicate
+  ids are not executed twice (#217).
 - Environments follow the Agents pattern and live at `/environments` (the old
   `/environment-mappings` redirects): a registry list (search, **All / In use / Unused /
   Needs attention** filter with counts, status, the worker profiles that use each one, bulk
@@ -32,6 +47,8 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   with "unknown field `settings`": Test stores the discovered models in
   `config.settings.models`, which those kinds rejected. Every kind now accepts `settings`.
 - Creating a provider with `enabled: false` created it enabled.
+- Documentation drift from the current code: X posting, Telegram outputs, team resources,
+  event subjects, the worker connector list and the new docs check now match what ships (#16).
 
 ## [0.26.0] - 2026-11-21
 
