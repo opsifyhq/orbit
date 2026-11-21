@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use orbit_events::EventBus;
 use orbit_harness::HarnessRegistry;
 use orbit_security::{AuthConfig, JwtValidator, LicenseHandle, LicenseStatus};
-use orbit_store::Store;
+use orbit_store::{LicenseLimitGuard, Store};
 use uuid::Uuid;
 
 use crate::metrics::Metrics;
@@ -64,6 +65,51 @@ impl AppState {
 
     pub fn license_status(&self) -> LicenseStatus {
         self.license.status()
+    }
+
+    /// Guard + installation-wide seat count. Keep the returned guard alive until the user
+    /// row is written so concurrent provisions cannot race past the seat limit.
+    pub async fn seat_limit_guard(&self) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+        let guard = self.store.license_limit_guard("seats").await?;
+        self.enforce_limit("seats", self.store.count_active_users_installation().await?)?;
+        Ok(guard)
+    }
+
+    /// Guard + installation-wide agent count. Hold until the agent is inserted.
+    pub async fn agent_limit_guard(&self) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+        let guard = self.store.license_limit_guard("agents").await?;
+        self.enforce_limit("agents", self.store.count_agents_installation().await?)?;
+        Ok(guard)
+    }
+
+    /// Guard + installation-wide rolling 24h execution count. Hold until the execution
+    /// (or the team run's first step execution) is inserted.
+    pub async fn execution_limit_guard(
+        &self,
+    ) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+        let guard = self.store.license_limit_guard("executions_per_day").await?;
+        let since = Utc::now() - chrono::Duration::hours(24);
+        self.enforce_limit(
+            "executions_per_day",
+            self.store
+                .count_all_executions_since_installation(since)
+                .await?,
+        )?;
+        Ok(guard)
+    }
+
+    /// Guard + installation-wide running-worker count. Hold until the launch is inserted.
+    pub async fn worker_limit_guard(
+        &self,
+    ) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+        let guard = self.store.license_limit_guard("workers").await?;
+        self.enforce_limit(
+            "workers",
+            self.store
+                .count_active_worker_launches_installation()
+                .await?,
+        )?;
+        Ok(guard)
     }
 
     /// Reject a create when the license limit for that resource is reached.

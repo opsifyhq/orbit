@@ -1087,6 +1087,14 @@ function PlatformTab() {
 
 function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicense>["data"]> }) {
   const { license, usage, warnings } = data;
+  // Show a positive countdown to the end of grace, not negative expiry days.
+  const graceDays = license.graceEndsAt
+    ? Math.max(
+        0,
+        Math.ceil((Date.parse(license.graceEndsAt) - Date.now()) / (24 * 60 * 60 * 1000)),
+      )
+    : null;
+  const advertisedFeatures = license.availableFeatures ?? license.features;
 
   if (!license.valid) {
     return (
@@ -1119,9 +1127,20 @@ function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicen
                 label: "Expires",
                 value: license.expiresAt ? formatDate(license.expiresAt) : "Never",
               },
-              typeof license.daysRemaining === "number"
-                ? { label: "Days remaining", value: license.daysRemaining }
-                : null,
+              license.grace
+                ? {
+                    label: "Grace ends",
+                    value:
+                      graceDays === null
+                        ? "Grace period"
+                        : `in ${graceDays} ${graceDays === 1 ? "day" : "days"}`,
+                  }
+                : typeof license.daysRemaining === "number"
+                  ? {
+                      label: "Days remaining",
+                      value: Math.max(0, license.daysRemaining),
+                    }
+                  : null,
             ]}
           />
         </Card>
@@ -1146,9 +1165,9 @@ function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicen
       </div>
       <div className="space-y-1.5">
         <h3 className="text-[13px] font-medium text-muted-foreground">Licensed features</h3>
-        {license.features.length ? (
+        {advertisedFeatures.length ? (
           <ul className="flex flex-wrap gap-1.5">
-            {license.features.map((feature) => (
+            {advertisedFeatures.map((feature) => (
               <li key={feature}>
                 <Badge variant="outline">{humanize(feature)}</Badge>
               </li>
@@ -1157,6 +1176,12 @@ function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicen
         ) : (
           <p className="text-[13px] text-muted-foreground">None.</p>
         )}
+        {license.features.length > advertisedFeatures.length ? (
+          <p className="text-[13px] text-muted-foreground">
+            The license also contains flags for features that are not available in this release.
+            They are not shown as available.
+          </p>
+        ) : null}
       </div>
     </div>
   );

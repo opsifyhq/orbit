@@ -7625,6 +7625,13 @@
           "tier"
         ],
         "properties": {
+          "availableFeatures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Signed flags backed by shipped functionality. This is what the API/UI advertises."
+          },
           "customer": {
             "type": [
               "string",
@@ -7636,7 +7643,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Whole days until expiry; negative once the expiry date has passed."
           },
           "error": {
             "type": [
@@ -7655,11 +7663,20 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Raw signed flags. Reserved flags remain here because the verifier accepts them and\nexisting gates still read them; use [`LicenseStatus::available_features`] for display."
           },
           "grace": {
             "type": "boolean",
             "description": "True while inside the post-expiry grace window."
+          },
+          "graceEndsAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "End of the grace window. Set for signed licenses so the UI can show a positive\n\"grace ends in X days\" countdown instead of negative expiry days."
           },
           "issuedAt": {
             "type": [
@@ -7704,6 +7721,7 @@
       },
       "LicenseUsage": {
         "type": "object",
+        "description": "Counts are installation-wide (all organizations) because licenses are installed once\nper ORBIT installation, not per organization.",
         "required": [
           "seats",
           "agents",

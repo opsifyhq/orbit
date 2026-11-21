@@ -98,8 +98,10 @@ export interface LicenseOverview {
     customer?: string | null;
     plan?: string | null;
     features: string[];
+    availableFeatures?: string[];
     limits: Record<string, number | null | undefined>;
     expiresAt?: string | null;
+    graceEndsAt?: string | null;
     daysRemaining?: number | null;
     grace: boolean;
     valid: boolean;

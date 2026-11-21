@@ -13,14 +13,18 @@ no outbound request. The license is a signed file that ORBIT verifies locally.
 | Audit log, exports, backups | Yes | Yes |
 | Custom roles | — | `custom_roles` |
 | Multi-team access (teams, members, team ownership) | — | `teams` |
-| Resource sharing (private / team / organization visibility) | — | `resource_permissions` |
+| Resource sharing (private / team / organization visibility) | — | requires the `resource_permissions` signed flag |
 | Shared connections | — | planned |
 | Quotas | — | planned |
 | Marketplace | — | planned |
 
-Only features that actually exist are gated. Planned features are not sold as available.
+Only features that actually exist are gated. The verifier still accepts the signed flags
+`resource_permissions`, `shared_connections`, `quotas` and `marketplace` for forward
+compatibility, but they are **not advertised as available**: the API returns them in the raw
+`features` list and exposes only shipped flags in `availableFeatures`.
 
 Enterprise licenses also carry limits: **seats, agents, workers, executions per day**.
+Limits apply to the whole installation (all organizations), not per organization.
 
 ## What a license looks like
 
@@ -30,7 +34,7 @@ A small signed token (Ed25519 JWS) containing:
 {
   "customer": "Acme",
   "plan": "enterprise",
-  "features": ["custom_roles", "teams", "resource_permissions"],
+  "features": ["custom_roles", "teams"],
   "limits": { "seats": 50, "agents": 500, "workers": 25, "executions_per_day": 10000 },
   "issued_at": "2026-11-01T00:00:00Z",
   "expires_at": "2027-11-01T00:00:00Z",
@@ -80,7 +84,7 @@ kubectl -n orbit create secret generic orbit-license \
 
 - Before `expires_at`: everything works.
 - During the **grace period** (`grace_days`, default 30): premium features still work; the
-  UI shows a renewal warning.
+  UI shows a positive "Grace ends in X days" countdown instead of negative expiry days.
 - After grace: premium **writes and configuration changes** are blocked, but reads,
   exports, backups, logins and **running executions continue**. Existing premium data is
   never deleted and remains readable.
@@ -91,15 +95,16 @@ A license problem never prevents ORBIT from starting.
 
 | Limit | Counted as | Checked when |
 |---|---|---|
-| `seats` | active users | a new user is provisioned (e.g. first OIDC login) |
-| `agents` | non-archived agents | creating an agent |
-| `workers` | enabled worker profiles | creating a worker profile |
-| `executions_per_day` | executions in the last 24h | creating an execution or team run |
+| `seats` | active users in all orgs | a new user is provisioned (e.g. first OIDC login) |
+| `agents` | non-archived agents in all orgs | creating an agent |
+| `workers` | running worker launches in all orgs | launching a worker (manual, team or dispatcher) |
+| `executions_per_day` | executions in the last 24h in all orgs | creating an execution or a team step (including dispatcher auto-run) |
 
-Warnings appear at 80% in **Settings → Platform → License** and `GET /api/v1/license`. At
-100% the create is rejected with `402 license_limit`. Using a feature the license does not include
-(for example creating an access team without `teams`) is rejected with
-`402 license_required`.
+Checks and inserts share a database advisory lock, so concurrent API replicas cannot pass
+the limit together. Warnings appear at 80% in **Settings → Platform → License** and
+`GET /api/v1/license`. At 100% the create is rejected with `402 license_limit`. Using a
+feature the license does not include (for example creating an access team without `teams`)
+is rejected with `402 license_required`.
 
 ## Where to see the status
 

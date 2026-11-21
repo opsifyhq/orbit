@@ -761,6 +761,19 @@ impl Store {
         .fetch_one(&self.pool)
         .await?)
     }
+
+    /// Installation-wide daily execution count used for the license limit.
+    pub async fn count_all_executions_since_installation(
+        &self,
+        since: DateTime<Utc>,
+    ) -> StoreResult<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM executions WHERE created_at >= $1")
+                .bind(since)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
 }
 
 impl Store {

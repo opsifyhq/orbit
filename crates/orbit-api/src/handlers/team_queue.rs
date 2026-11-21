@@ -97,14 +97,7 @@ pub async fn run_item(
     Path((team_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<(StatusCode, Json<crate::handlers::teams::TeamRunDetail>), ApiError> {
     auth.require(Permission::ExecutionsCreate)?;
-    let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    state.enforce_limit(
-        "executions_per_day",
-        state
-            .store
-            .count_all_executions_since(auth.org_id, since)
-            .await?,
-    )?;
+    // The limit is checked atomically in start_step, which also serves dispatcher auto-run.
     let team = crate::handlers::teams::require_team_use(&state, &auth, team_id).await?;
     let item = state
         .store

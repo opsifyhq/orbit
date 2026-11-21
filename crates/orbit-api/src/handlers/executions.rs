@@ -224,14 +224,8 @@ pub async fn execute_agent(
     crate::extract::ApiJson(body): crate::extract::ApiJson<CreateExecutionRequest>,
 ) -> Result<(StatusCode, Json<ExecutionRecord>), ApiError> {
     auth.require(Permission::ExecutionsCreate)?;
-    let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    state.enforce_limit(
-        "executions_per_day",
-        state
-            .store
-            .count_all_executions_since(auth.org_id, since)
-            .await?,
-    )?;
+    // Held until create_execution below: the check and insert cannot race with replicas.
+    let _execution_limit = state.execution_limit_guard().await?;
 
     let agent = state.store.get_agent(auth.org_id, agent_id).await?;
     if agent.status == "archived" {
@@ -639,14 +633,8 @@ pub async fn rerun_execution(
             "agent concurrency limit reached; retry after a running execution finishes",
         ));
     }
-    let since = chrono::Utc::now() - chrono::Duration::hours(24);
-    state.enforce_limit(
-        "executions_per_day",
-        state
-            .store
-            .count_all_executions_since(auth.org_id, since)
-            .await?,
-    )?;
+    // Held until the rerun execution is inserted below.
+    let _execution_limit = state.execution_limit_guard().await?;
     let mut input = original.input.clone();
     // #194: an approval override only survives a rerun by someone who may decide approvals.
     if !auth.can(Permission::ApprovalsDecide) {

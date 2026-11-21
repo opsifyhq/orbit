@@ -49,6 +49,9 @@ pub async fn initialize(
 
     let dev_identity = match config.auth.mode {
         AuthMode::Dev => {
+            // Bootstrap identity is intentionally exempt from seat limits: without an
+            // owner there is nobody to install a license. Runtime user creation is gated
+            // in auth::resolve_oidc with the installation-wide seat check.
             let user = store
                 .ensure_user(
                     organization.id,

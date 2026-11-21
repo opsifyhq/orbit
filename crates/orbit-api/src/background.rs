@@ -22,9 +22,15 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
     handles.push(supervise("license", &state, |license_state| async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut previous = license_phase(&license_state.license_status());
         loop {
             ticker.tick().await;
             license_state.license.reload();
+            let current = license_phase(&license_state.license_status());
+            if current != previous {
+                audit_license_transition(&license_state, previous, current).await;
+                previous = current;
+            }
         }
     }));
 
@@ -164,6 +170,53 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
     ));
     handles.extend(spawn_audit_retention(&state));
     handles
+}
+
+/// Lifecycle phase derived from the verified status. `expired` is distinct from an
+/// unusable license (`invalid`) and from no license at all (`community`).
+fn license_phase(status: &orbit_security::LicenseStatus) -> &'static str {
+    if !status.valid {
+        return match status.error.as_deref() {
+            Some(error) if error.contains("expired") => "expired",
+            Some(_) => "invalid",
+            None => "community",
+        };
+    }
+    if status.grace {
+        "grace"
+    } else {
+        "active"
+    }
+}
+
+/// Record active → grace → expired (and renew/install) transitions in the audit log.
+/// The license itself is installation-wide, so it is logged against the default org with
+/// a system actor. No credential or signed token is written.
+pub async fn audit_license_transition(state: &AppState, from: &str, to: &str) {
+    let license = state.license_status();
+    tracing::info!(from, to, "license phase changed");
+    if let Err(error) = state
+        .store
+        .append_audit_log(
+            state.default_org_id,
+            "system",
+            None,
+            None,
+            "license.phase_changed",
+            Some("license"),
+            None,
+            serde_json::json!({
+                "from": from,
+                "to": to,
+                "licenseId": license.license_id,
+            }),
+            None,
+            None,
+        )
+        .await
+    {
+        tracing::error!(%error, from, to, "failed to audit license phase change");
+    }
 }
 
 /// Parse `ORBIT_AUDIT_RETENTION_DAYS`. Unset, empty, `0` or invalid -> keep audit logs
@@ -1049,7 +1102,8 @@ async fn advance_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::audit_retention_days;
+    use super::{audit_retention_days, license_phase};
+    use orbit_security::LicenseStatus;
 
     #[test]
     fn audit_retention_parsing() {
@@ -1058,5 +1112,22 @@ mod tests {
         assert_eq!(audit_retention_days(Some("90")), Some(90));
         assert_eq!(audit_retention_days(Some("0")), None);
         assert_eq!(audit_retention_days(Some("abc")), None);
+    }
+
+    #[test]
+    fn license_phases_distinguish_grace_expiry_and_invalid() {
+        let status = LicenseStatus::community();
+        assert_eq!(license_phase(&status), "community");
+
+        let mut status = LicenseStatus::community();
+        status.valid = true;
+        assert_eq!(license_phase(&status), "active");
+        status.grace = true;
+        assert_eq!(license_phase(&status), "grace");
+        status.valid = false;
+        status.error = Some("license expired".into());
+        assert_eq!(license_phase(&status), "expired");
+        status.error = Some("license signature is invalid".into());
+        assert_eq!(license_phase(&status), "invalid");
     }
 }

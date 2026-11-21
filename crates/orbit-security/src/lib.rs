@@ -18,4 +18,5 @@ pub use secrets::*;
 
 pub use license::{
     LicenseHandle, LicenseLimits, LicenseSource, LicenseStatus, LicenseVerifier, FEATURE_TEAMS,
+    RESERVED_FEATURES,
 };

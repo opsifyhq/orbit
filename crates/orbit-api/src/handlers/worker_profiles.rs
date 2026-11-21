@@ -550,13 +550,8 @@ pub async fn create_profile(
         &body.env_mapping_ids,
     )
     .await?;
-    state.enforce_limit(
-        "workers",
-        state
-            .store
-            .count_enabled_worker_profiles(auth.org_id)
-            .await?,
-    )?;
+    // Worker seats are consumed by running launches, not by enabled profile definitions;
+    // launch_profile_internal enforces the limit when a worker is actually started.
     let harness = HarnessKind::from_str_compat(&body.harness_kind)?;
     if !matches!(body.target.as_str(), "local" | "docker" | "kubernetes") {
         return Err(ApiError::validation(vec![ValidationIssue::new(
@@ -699,13 +694,8 @@ pub async fn update_profile(
         .map(|mapping| mapping.id)
         .collect();
     attached_before.sort();
-    state.enforce_limit(
-        "workers",
-        state
-            .store
-            .count_enabled_worker_profiles(auth.org_id)
-            .await?,
-    )?;
+    // Worker seats are consumed by running launches, not by enabled profile definitions;
+    // launch_profile_internal enforces the limit when a worker is actually started.
     let harness = HarnessKind::from_str_compat(&body.harness_kind)?;
     if !matches!(body.target.as_str(), "local" | "docker" | "kubernetes") {
         return Err(ApiError::validation(vec![ValidationIssue::new(

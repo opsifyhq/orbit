@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
+use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
 use orbit_api::{
     build_router, config::DEFAULT_ANON_RATE_LIMIT_PER_MINUTE, rate_limit::RateLimiter, AppState,
@@ -12,7 +13,9 @@ use orbit_api::{
 use orbit_domain::UserRole;
 use orbit_events::{EventBusError, MemoryEventBus};
 use orbit_harness::HarnessRegistry;
-use orbit_security::{AuthConfig, AuthMode, DevAuthConfig, SecretCipher};
+use orbit_security::{
+    AuthConfig, AuthMode, DevAuthConfig, LicenseHandle, LicenseStatus, SecretCipher,
+};
 use orbit_store::Store;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -58,6 +61,13 @@ struct TestApp {
 }
 
 async fn test_app(allow_anonymous: bool) -> Option<TestApp> {
+    test_app_with_license(allow_anonymous, None).await
+}
+
+async fn test_app_with_license(
+    allow_anonymous: bool,
+    license: Option<LicenseStatus>,
+) -> Option<TestApp> {
     let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
     let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
@@ -141,9 +151,11 @@ async fn test_app(allow_anonymous: bool) -> Option<TestApp> {
         ca_secret_key: "ca-bundle.crt".into(),
         archive_after_days: None,
         shutdown: shutdown.clone(),
-        license: orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
-            token: None,
-            file: None,
+        license: license.map(LicenseHandle::from_status).unwrap_or_else(|| {
+            orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
+                token: None,
+                file: None,
+            })
         }),
     };
     // In this test harness anonymous is controlled by auth_config.dev.allow_anonymous;
@@ -180,6 +192,51 @@ fn definition() -> Value {
             "resources": { "timeoutSeconds": 30, "maxConcurrentExecutions": 1 }
         }
     })
+}
+
+fn licensed(features: &[&str], limits: Value) -> LicenseStatus {
+    let now = Utc::now();
+    let features: Vec<String> = features.iter().map(|value| value.to_string()).collect();
+    let available_features = features
+        .iter()
+        .filter(|feature| {
+            !orbit_security::RESERVED_FEATURES
+                .iter()
+                .any(|reserved| reserved == feature)
+        })
+        .cloned()
+        .collect();
+    LicenseStatus {
+        tier: "enterprise".into(),
+        customer: Some("Test customer".into()),
+        plan: Some("enterprise".into()),
+        license_id: Some("lic_test".into()),
+        org_slug: None,
+        features,
+        available_features,
+        limits: serde_json::from_value(limits).unwrap(),
+        issued_at: Some(now - Duration::days(1)),
+        expires_at: Some(now + Duration::days(30)),
+        days_remaining: Some(30),
+        grace: false,
+        grace_ends_at: Some(now + Duration::days(60)),
+        valid: true,
+        trial: false,
+        error: None,
+    }
+}
+
+fn expired_license() -> LicenseStatus {
+    let mut status = licensed(&["custom_roles", "teams"], json!({}));
+    status.valid = false;
+    status.tier = "community".into();
+    status.features.clear();
+    status.available_features.clear();
+    status.expires_at = Some(Utc::now() - Duration::days(40));
+    status.days_remaining = Some(-40);
+    status.grace = false;
+    status.error = Some("license expired".into());
+    status
 }
 
 async fn create_demo_agent(store: &Store, org_id: Uuid, user_id: Uuid) -> Uuid {
@@ -10413,4 +10470,256 @@ async fn team_resource_overview_enforces_scope_and_isolation() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn license_usage_counts_every_organization() {
+    let generous = json!({
+        "seats": 1_000_000,
+        "agents": 1_000_000,
+        "workers": 1_000_000,
+        "executionsPerDay": 1_000_000
+    });
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], generous))).await else {
+        return;
+    };
+    let (status, before) = send(&app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+
+    let slug = format!("license-org-{}", Uuid::now_v7());
+    let org = app
+        .store
+        .create_organization(
+            &slug,
+            "Second org",
+            orbit_domain::OrganizationMode::Personal,
+        )
+        .await
+        .unwrap();
+    app.store
+        .ensure_user(org.id, "second@test.local", "Second", UserRole::Owner)
+        .await
+        .unwrap();
+    let definition: orbit_domain::AgentDefinition = serde_json::from_value(definition()).unwrap();
+    let (agent, _) = app
+        .store
+        .create_agent(org.id, None, &definition)
+        .await
+        .unwrap();
+    let _ = agent;
+
+    let (status, after) = send(&app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert!(
+        after["usage"]["seats"].as_i64().unwrap() > before["usage"]["seats"].as_i64().unwrap(),
+        "seats must aggregate all orgs: {before} -> {after}"
+    );
+    assert!(
+        after["usage"]["agents"].as_i64().unwrap() > before["usage"]["agents"].as_i64().unwrap(),
+        "agents must aggregate all orgs: {before} -> {after}"
+    );
+}
+
+#[tokio::test]
+async fn zero_limits_reject_creates_with_402() {
+    let Some(app) = test_app_with_license(
+        true,
+        Some(licensed(&[], json!({ "agents": 0, "executionsPerDay": 0 }))),
+    )
+    .await
+    else {
+        return;
+    };
+
+    let (status, body) = send(&app.router, post("/api/v1/agents", definition())).await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_limit");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("agents"));
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{}/executions", app.agent_id),
+            json!({ "task": "blocked by license" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_limit");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("executions_per_day"));
+}
+
+#[tokio::test]
+async fn concurrent_agent_creates_cannot_race_past_the_limit() {
+    let Some(url) = std::env::var("ORBIT_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    // Derive the limit from the current installation-wide count: one slot is available.
+    // Five connections for six contenders is intentional: failed try-lock attempts must
+    // release their transaction before sleeping, or the lock holder cannot finish.
+    let store = Store::connect(&url, 5).await.unwrap();
+    let current = store.count_agents_installation().await.unwrap();
+    let Some(app) =
+        test_app_with_license(true, Some(licensed(&[], json!({ "agents": current + 1 })))).await
+    else {
+        return;
+    };
+
+    let mut tasks = Vec::new();
+    for index in 0..6 {
+        let router = app.router.clone();
+        let mut body = definition();
+        body["metadata"]["name"] = json!(format!("Concurrent agent {index}"));
+        tasks.push(tokio::spawn(async move {
+            send(&router, post("/api/v1/agents", body)).await
+        }));
+    }
+    let mut created = 0;
+    let mut limited = 0;
+    for task in tasks {
+        let (status, body) = task.await.unwrap();
+        if status == StatusCode::CREATED {
+            created += 1;
+        } else {
+            assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+            assert_eq!(body["error"]["code"], "license_limit");
+            limited += 1;
+        }
+    }
+    assert!(
+        created <= 1,
+        "at most one create may pass the lock: {created}"
+    );
+    assert!(
+        limited >= 1,
+        "the remaining creates must be refused: {limited}"
+    );
+}
+
+#[tokio::test]
+async fn reserved_license_flags_are_not_advertised() {
+    let flags = [
+        "custom_roles",
+        "teams",
+        "resource_permissions",
+        "shared_connections",
+        "quotas",
+        "marketplace",
+    ];
+    let Some(app) = test_app_with_license(true, Some(licensed(&flags, json!({})))).await else {
+        return;
+    };
+
+    let (status, body) = send(&app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["license"]["features"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        body["license"]["availableFeatures"],
+        json!(["custom_roles", "teams"])
+    );
+    assert!(body["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("not available")));
+
+    // Airgapped startup: no activation call or vendor network client is involved; /meta
+    // exposes the same checked status to the web app.
+    let (status, meta) = send(&app.router, get("/api/v1/meta")).await;
+    assert_eq!(status, StatusCode::OK, "{meta}");
+    assert_eq!(
+        meta["license"]["availableFeatures"],
+        json!(["custom_roles", "teams"])
+    );
+}
+
+#[tokio::test]
+async fn premium_feature_returns_402_without_the_flag() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/roles",
+            json!({ "name": format!("lic-role-{}", Uuid::now_v7()), "permissions": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_required");
+}
+
+#[tokio::test]
+async fn grace_allows_premium_writes_and_expiry_rejects_them() {
+    let mut grace = licensed(&["custom_roles"], json!({}));
+    grace.grace = true;
+    grace.expires_at = Some(Utc::now() - Duration::days(1));
+    grace.days_remaining = Some(-1);
+    grace.grace_ends_at = Some(Utc::now() + Duration::days(5));
+    let Some(grace_app) = test_app_with_license(true, Some(grace)).await else {
+        return;
+    };
+    let (status, body) = send(&grace_app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["license"]["grace"], true);
+    assert!(body["license"]["graceEndsAt"].is_string());
+    assert!(body["license"]["daysRemaining"].as_i64().unwrap() <= 0);
+    let (status, body) = send(
+        &grace_app.router,
+        post(
+            "/api/v1/roles",
+            json!({ "name": format!("grace-role-{}", Uuid::now_v7()), "permissions": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let Some(expired_app) = test_app_with_license(true, Some(expired_license())).await else {
+        return;
+    };
+    let (status, body) = send(&expired_app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["license"]["valid"], false);
+    assert_eq!(body["license"]["tier"], "community");
+    assert_eq!(body["license"]["grace"], false);
+    let (status, body) = send(
+        &expired_app.router,
+        post(
+            "/api/v1/roles",
+            json!({ "name": format!("expired-role-{}", Uuid::now_v7()), "permissions": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_required");
+}
+
+#[tokio::test]
+async fn license_phase_transitions_are_audited() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for (from, to) in [("active", "grace"), ("grace", "expired")] {
+        orbit_api::background::audit_license_transition(&app.state, from, to).await;
+    }
+    let (entries, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("license.phase_changed"))
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].metadata["from"], "grace");
+    assert_eq!(entries[0].metadata["to"], "expired");
+    assert_eq!(entries[1].metadata["from"], "active");
+    assert_eq!(entries[1].metadata["to"], "grace");
 }

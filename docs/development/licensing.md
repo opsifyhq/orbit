@@ -43,10 +43,12 @@ setup. With the chart, always restart. The same applies to an inline value
   "tier": "enterprise",
   "customer": "Acme",
   "features": ["custom_roles", "quotas"],
+  "availableFeatures": ["custom_roles"],
   "limits": { "seats": 50, "agents": 500 },
   "expiresAt": "2027-11-01T00:00:00Z",
   "daysRemaining": 350,
   "grace": false,
+  "graceEndsAt": "2027-12-01T00:00:00Z",
   "valid": true
 }
 ```
@@ -90,7 +92,7 @@ mkdir -p /tmp/orbit-license && cd /tmp/orbit-license   # outside the repo
 ../path/to/target/debug/orbit-license-cli keygen --out key.json --kid orbit-local-test
 cat > claims.json <<'JSON'
 { "v": 1, "id": "local-test", "customer": "Local test", "plan": "enterprise", "trial": true,
-  "features": ["custom_roles", "teams", "resource_permissions"],
+  "features": ["custom_roles", "teams"],
   "limits": { "seats": 50, "agents": 500, "workers": 25, "executions_per_day": 10000 },
   "issued_at": "2026-11-19T00:00:00Z", "expires_at": "2027-11-19T00:00:00Z" }
 JSON
@@ -122,29 +124,39 @@ The private signing key is vendor-side only (offline/HSM) and must never be comm
 
 ## What a licence enables today
 
-The signed `features` list can name six features. Three are enforced by the API; a
-request that needs a feature the licence lacks is refused:
+The signed `features` list can name six flags. Two are advertised as available today and
+gated by the API; the remaining four are accepted and verified for forward compatibility but
+are not advertised as shipped product features.
 
-| Feature | Enforced for |
-|---|---|
-| `custom_roles` | Creating, changing and deleting custom roles, and assigning one to a user |
-| `teams` | Access teams and their members (`/api/v1/teams`) and OIDC group-to-team sync |
-| `resource_permissions` | Changing sharing: owner, team and visibility of a resource (`/api/v1/sharing/...`) |
-| `shared_connections` | Not enforced yet |
-| `quotas` | Not enforced yet |
-| `marketplace` | Not enforced yet |
+| Feature | Enforced for | Advertised |
+|---|---|---|
+| `custom_roles` | Creating, changing and deleting custom roles, and assigning one to a user | Yes |
+| `teams` | Access teams and their members (`/api/v1/teams`) and OIDC group-to-team sync | Yes |
+| `resource_permissions` | Existing sharing endpoints (`/api/v1/sharing/...`) still require this flag | No |
+| `shared_connections` | Not enforced yet | No |
+| `quotas` | Not enforced yet | No |
+| `marketplace` | Not enforced yet | No |
+
+`settings:write` custom role creation/update/deletion and custom-role assignment require
+`custom_roles`; access-team writes require `teams`. Reserved flags stay in the raw `features`
+array so existing gates keep working, but they are omitted from `availableFeatures`, which is
+what the API/UI advertises. A request that needs a feature the licence lacks is refused with
+`402 license_required`.
 
 Reading shared resources, exports, running executions and everything in the community
 tier stay available without a licence.
 
-Numeric `limits` in a licence are enforced too. When a limit is reached the API answers
-`402` with code `license_limit`:
+Numeric `limits` in a licence are enforced too. Counts are installation-wide (all
+organizations), and the check and insert for each counted resource share a Postgres advisory
+lock so concurrent API replicas cannot race past a limit. When a limit is reached the API
+answers `402` with code `license_limit`:
 
-| Limit | Checked when |
-|---|---|
-| `seats` | A new user is auto-provisioned at OIDC login |
-| `agents` | An agent is created |
-| `workers` | A worker profile is created or enabled |
-| `executions_per_day` | An execution, a team run or a team queue item is started |
+| Limit | Counted as | Checked when |
+|---|---|---|
+| `seats` | Active users in all orgs | A new user is auto-provisioned at OIDC login |
+| `agents` | Non-archived agents in all orgs | An agent is created |
+| `workers` | Running worker launches in all orgs | A worker is launched (manual, team or dispatcher) |
+| `executions_per_day` | Executions in the last 24h in all orgs | An execution or team step is started |
 
-A licence without a limit leaves that resource unlimited.
+A licence without a limit leaves that resource unlimited. `graceEndsAt` lets the UI show a
+positive grace countdown when `daysRemaining` has gone negative.

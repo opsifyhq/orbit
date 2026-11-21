@@ -22,6 +22,17 @@ pub const FEATURE_SHARED_CONNECTIONS: &str = "shared_connections";
 pub const FEATURE_QUOTAS: &str = "quotas";
 pub const FEATURE_MARKETPLACE: &str = "marketplace";
 
+/// Feature flags that are signed and verified, but have no shipped product feature yet.
+/// They are kept in the verifier for forward compatibility and must not be advertised as
+/// available. Gating that exists today uses [`FEATURE_TEAMS`] and
+/// [`FEATURE_CUSTOM_ROLES`].
+pub const RESERVED_FEATURES: &[&str] = &[
+    FEATURE_RESOURCE_PERMISSIONS,
+    FEATURE_SHARED_CONNECTIONS,
+    FEATURE_QUOTAS,
+    FEATURE_MARKETPLACE,
+];
+
 /// Public verification keys shipped in the official build. Replace the `{}` with a JSON
 /// object of `kid -> base64url raw public key` before issuing licenses. Public keys are
 /// not secret; never add a private key here.
@@ -87,19 +98,29 @@ pub struct LicenseStatus {
     pub license_id: Option<String>,
     #[serde(default)]
     pub org_slug: Option<String>,
+    /// Raw signed flags. Reserved flags remain here because the verifier accepts them and
+    /// existing gates still read them; use [`LicenseStatus::available_features`] for display.
     #[serde(default)]
     pub features: Vec<String>,
+    /// Signed flags backed by shipped functionality. This is what the API/UI advertises.
+    #[serde(default)]
+    pub available_features: Vec<String>,
     #[serde(default)]
     pub limits: LicenseLimits,
     #[serde(default)]
     pub issued_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// Whole days until expiry; negative once the expiry date has passed.
     #[serde(default)]
     pub days_remaining: Option<i64>,
     /// True while inside the post-expiry grace window.
     #[serde(default)]
     pub grace: bool,
+    /// End of the grace window. Set for signed licenses so the UI can show a positive
+    /// "grace ends in X days" countdown instead of negative expiry days.
+    #[serde(default)]
+    pub grace_ends_at: Option<DateTime<Utc>>,
     /// False for community, invalid, or fully expired licenses.
     #[serde(default)]
     pub valid: bool,
@@ -118,11 +139,13 @@ impl LicenseStatus {
             license_id: None,
             org_slug: None,
             features: Vec::new(),
+            available_features: Vec::new(),
             limits: LicenseLimits::default(),
             issued_at: None,
             expires_at: None,
             days_remaining: None,
             grace: false,
+            grace_ends_at: None,
             valid: false,
             trial: false,
             error: None,
@@ -131,6 +154,28 @@ impl LicenseStatus {
 
     pub fn has_feature(&self, feature: &str) -> bool {
         self.valid && self.features.iter().any(|value| value == feature)
+    }
+
+    /// Feature flags safe to present as available. Reserved flags stay in `features` so
+    /// verifier and gate behaviour do not change, but are never advertised to users.
+    pub fn available_features(&self) -> Vec<String> {
+        if !self.valid {
+            return Vec::new();
+        }
+        self.features
+            .iter()
+            .filter(|feature| !RESERVED_FEATURES.iter().any(|reserved| reserved == feature))
+            .cloned()
+            .collect()
+    }
+
+    /// Whole days left in the grace window, clamped at zero. `None` outside grace.
+    pub fn grace_days_remaining(&self) -> Option<i64> {
+        if !self.grace {
+            return None;
+        }
+        self.grace_ends_at
+            .map(|end| (end - Utc::now()).num_days().max(0))
     }
 
     pub fn limit(&self, limit: &str) -> Option<u64> {
@@ -268,6 +313,16 @@ impl LicenseVerifier {
         } else {
             None
         };
+        let features = claims.features;
+        let available_features = if valid {
+            features
+                .iter()
+                .filter(|feature| !RESERVED_FEATURES.iter().any(|reserved| reserved == feature))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         Ok(LicenseStatus {
             tier: if valid {
@@ -279,12 +334,14 @@ impl LicenseVerifier {
             plan: claims.plan,
             license_id: claims.id,
             org_slug: claims.org_slug,
-            features: claims.features,
+            features,
+            available_features,
             limits: claims.limits,
             issued_at: Some(claims.issued_at),
             expires_at: Some(claims.expires_at),
             days_remaining: Some(days_remaining),
             grace: in_grace,
+            grace_ends_at: Some(grace_end),
             valid,
             trial: claims.trial,
             error,
@@ -375,6 +432,18 @@ impl LicenseHandle {
         Self {
             status: std::sync::Arc::new(RwLock::new(status)),
             source,
+        }
+    }
+
+    /// Build a handle from an already verified status. Used by tests and by callers that
+    /// obtain a status from another trusted source; no network or file access is performed.
+    pub fn from_status(status: LicenseStatus) -> Self {
+        Self {
+            status: std::sync::Arc::new(RwLock::new(status)),
+            source: LicenseSource {
+                token: None,
+                file: None,
+            },
         }
     }
 
@@ -499,6 +568,79 @@ mod tests {
         assert!(!status.valid);
         assert_eq!(status.tier, "community");
         assert!(!status.has_feature(FEATURE_CUSTOM_ROLES));
+    }
+
+    #[test]
+    fn reserved_flags_are_verified_but_not_advertised() {
+        let signing = SigningKey::from_bytes(&[11u8; 32]);
+        let mut claims = claims(30, 30);
+        claims["features"] = serde_json::json!([
+            "custom_roles",
+            "teams",
+            "resource_permissions",
+            "shared_connections",
+            "quotas",
+            "marketplace"
+        ]);
+        let status = verifier_for(&signing, "test").verify(&token_for(&signing, "test", claims));
+        assert!(status.valid);
+        assert_eq!(status.features.len(), 6);
+        assert_eq!(status.available_features, ["custom_roles", "teams"]);
+        // Gates keep reading signed flags; advertising does not.
+        assert!(status.has_feature(FEATURE_QUOTAS));
+    }
+
+    #[test]
+    fn grace_countdown_is_positive_while_expiry_days_are_negative() {
+        let signing = SigningKey::from_bytes(&[12u8; 32]);
+        let status =
+            verifier_for(&signing, "test").verify(&token_for(&signing, "test", claims(-1, 30)));
+        assert!(status.valid);
+        assert!(status.grace);
+        assert!(status.days_remaining.expect("days") <= 0);
+        assert!(status.grace_ends_at.is_some());
+        let days = status.grace_days_remaining().expect("grace days");
+        assert!(
+            (1..=30).contains(&days),
+            "unexpected grace countdown: {days}"
+        );
+    }
+
+    #[test]
+    fn expired_license_has_no_grace_or_advertised_features() {
+        let signing = SigningKey::from_bytes(&[13u8; 32]);
+        let status =
+            verifier_for(&signing, "test").verify(&token_for(&signing, "test", claims(-40, 30)));
+        assert!(!status.valid);
+        assert!(!status.grace);
+        assert_eq!(status.grace_days_remaining(), None);
+        assert!(status.days_remaining.expect("days") < 0);
+        assert!(status.available_features.is_empty());
+        assert_eq!(status.tier, "community");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn inline_license_loads_without_network_or_a_mounted_file() {
+        let signing = SigningKey::from_bytes(&[14u8; 32]);
+        let token = token_for(&signing, "offline-test", claims(30, 30));
+        // Debug builds accept a runtime key for tests; verification still uses only local
+        // keys and no HTTP client or file access.
+        std::env::set_var(
+            "ORBIT_LICENSE_PUBLIC_KEYS",
+            serde_json::json!({
+                "offline-test": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(signing.verifying_key().to_bytes())
+            })
+            .to_string(),
+        );
+        let source = LicenseSource {
+            token: Some(token),
+            file: None,
+        };
+        let status = source.load();
+        std::env::remove_var("ORBIT_LICENSE_PUBLIC_KEYS");
+        assert!(status.valid, "{status:?}");
     }
 
     #[cfg(not(debug_assertions))]
