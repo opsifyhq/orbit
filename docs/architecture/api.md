@@ -19,6 +19,12 @@ an overview.
   OIDC access tokens; automation uses `orbit_sk_…` API tokens, workers use `orbit_wk_…`
   worker tokens.
 - Every response carries `X-Request-Id`; errors include it as `requestId`.
+- Unauthenticated/public routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger)
+  are limited per source IP to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
+  window (default 120). Excess requests return `429 rate_limited` in the standard
+  envelope with `Retry-After`. Authenticated API routes and worker-protocol routes are
+  not affected; behind an L7 proxy the peer address is the proxy, so enforce client-IP
+  limits there as well.
 - Idempotent execution creation: send an `Idempotency-Key` header or an `idempotencyKey`
   body field. Keys are scoped to the organization; a repeated key returns the execution
   that was already created.

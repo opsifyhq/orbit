@@ -1,10 +1,14 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
 use http_body_util::BodyExt;
-use orbit_api::{build_router, AppState, DevIdentity};
+use orbit_api::{
+    build_router, config::DEFAULT_ANON_RATE_LIMIT_PER_MINUTE, rate_limit::RateLimiter, AppState,
+    DevIdentity,
+};
 use orbit_domain::UserRole;
 use orbit_events::{EventBusError, MemoryEventBus};
 use orbit_harness::HarnessRegistry;
@@ -128,6 +132,7 @@ async fn test_app(allow_anonymous: bool) -> Option<TestApp> {
         public_base_url: "http://localhost".into(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
         max_body_bytes: 2 * 1024 * 1024,
+        rate_limiter: Arc::new(RateLimiter::new(DEFAULT_ANON_RATE_LIMIT_PER_MINUTE)),
         cors_origins: vec!["*".into()],
         launcher_url: None,
         launcher_token: None,
@@ -232,6 +237,50 @@ async fn public_endpoints_and_meta() {
     let (status, body) = send(&app.router, get("/api/v1/openapi.json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["paths"]["/api/v1/agents"].is_object());
+}
+
+#[tokio::test]
+async fn public_routes_return_429_above_configured_rate_per_ip() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.rate_limiter = Arc::new(RateLimiter::new(2));
+    let router = build_router(state);
+
+    let request_from = |octet: u8, path: &str| {
+        Request::builder()
+            .uri(path)
+            .extension(ConnectInfo(SocketAddr::from(([203, 0, 113, octet], 5000))))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    for _ in 0..2 {
+        let (status, body) = send(&router, request_from(10, "/api/v1/auth/oidc/config")).await;
+        assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    }
+    let (status, body) = send(&router, request_from(10, "/api/v1/auth/oidc/config")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "rate_limited", "{body}");
+    assert!(
+        !body["error"]["requestId"].as_str().unwrap_or("").is_empty(),
+        "{body}"
+    );
+
+    // The bucket is shared by the whole public surface, not one handler.
+    let (status, _) = send(&router, request_from(10, "/healthz")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // A different source IP has an independent bucket.
+    let (status, body) = send(&router, request_from(11, "/api/v1/auth/oidc/config")).await;
+    assert_ne!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+
+    // Protected routes are untouched, including dev-auth anonymous mode.
+    for _ in 0..3 {
+        let (status, body) = send(&router, get("/api/v1/agents")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
 }
 
 #[tokio::test]
