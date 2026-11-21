@@ -134,11 +134,11 @@ pub trait Connector: Send + Sync {
 }
 ```
 
-**Current implementation note:** the built-in GitHub and GitLab connectors are invoked by
-the worker's policy-enforcing tool broker (`services/worker/src/broker.rs`) through the
-`github.rs` / `gitlab.rs` clients rather than as `Connector` trait objects. The trait
-remains the target contract for third-party connectors. X read hydration is a separate
-pre-execution step.
+**Current implementation note:** the built-in GitHub, GitLab and X connectors are invoked
+by the worker's policy-enforcing tool broker (`services/worker/src/broker.rs`) through the
+`github.rs` / `gitlab.rs` / `x.rs` clients rather than as `Connector` trait objects. The
+trait remains the target contract for third-party connectors. X `posts.search` read
+hydration is a separate pre-execution step; X `posts.create` is a broker tool.
 
 `ConnectorContext` contains only platform-approved grants; the connector SDK enforces
 that `call.capability` is in the grant list before executing. MCP servers are one
@@ -160,7 +160,13 @@ transport option (`mcp` capability provider), not the only connector mechanism.
   `posts.search` capability, loads the connection's bearer token, calls
   `GET /2/tweets/search/recent`, and injects up to 10 posts into the harness input as
   `externalContext` with `provenance.trusted=false`. The query comes from
-  `payload.query`, then `connection.config.query`, then the task text.
+  `payload.query`, then `connection.config.query`, then the task text. App-only bearer
+  tokens are sufficient for this read.
+- **X posting**: `posts.create` is the tool `x_posts_create`, served only for `x` bindings.
+  It calls `POST /2/tweets` with the connection credential as a user-context bearer token,
+  accepts `text` plus `replyTo` / `reply.in_reply_to_tweet_id`, and has the
+  `external_side_effect` effect so autonomy and approvals apply. 401/403 returns an
+  actionable `user-context`/`tweet.write` error. See [the X connector guide](../guide/x-connector.md).
 - **Repository tools** (`repo.checkout`, `repo.commit`, `repo.push`) run in the worker
   over a per-execution workspace; git credentials are injected through `GIT_ASKPASS` in
   the child process only.
@@ -170,16 +176,18 @@ transport option (`mcp` capability provider), not the only connector mechanism.
 ### Connector status and capabilities
 
 Capability lists are taken from `builtin_manifests()` in
-`crates/orbit-api/src/connectors.rs`. The tool broker serves only `github`, `gitlab` and
-`kubernetes` bindings (`services/worker/src/broker.rs`). A manifest-only connector can be
-selected and given a connection, but no code invokes its capabilities.
+`crates/orbit-api/src/connectors.rs`. The tool broker serves `github`, `gitlab`,
+`kubernetes` and `x` bindings (`services/worker/src/broker.rs`); X only exposes
+`posts.create` as a tool because `posts.search` stays pre-execution hydration. A
+manifest-only connector can be selected and given a connection, but no code invokes its
+capabilities.
 
 | Connector | Status | Auth | Capabilities (effect) |
 |---|---|---|---|
 | `github` | invokable through the broker | `api_token` | read: `issues.list`, `issues.get`, `pulls.list`, `pulls.get`, `checks.list`, `repo.checkout`; write: `issues.comment`, `issues.create`, `issues.update`, `pulls.create`, `repo.commit`; external side effect: `repo.push` |
 | `gitlab` | invokable through the broker | `oauth2`, `api_token` (API token implemented) | read: `projects.list`, `group_issues.list`, `boards.list`, `issues.list`, `issues.get`, `merge_requests.list`, `merge_requests.get`, `pipelines.status`, `repo.checkout`; write: `issues.create`, `issues.update`, `issues.comment`, `merge_requests.comment`, `repo.commit`; external side effect: `merge_requests.create`, `merge_requests.approve`, `merge_requests.merge`, `repo.push` |
 | `kubernetes` | invokable through the broker | `api_token` | read: `namespaces.list`, `pods.list`, `pods.get`, `pods.logs`, `deployments.list`, `deployments.get`, `events.list` |
-| `x` | read hydration only (a pre-execution step, not a broker tool) | `oauth2`, `api_token` | read: `posts.search` |
+| `x` | read hydration + broker posting | `oauth2`, `api_token` (user-context token required for writes) | read: `posts.search`; external side effect: `posts.create` |
 | `mock` | manifest only | none | read: `notes.list`; write: `notes.create` |
 | `telegram` | manifest only | `api_token` | read: `messages.list`; external side effect: `messages.send` |
 | `webhook` | manifest only | `hmac_webhook`, `none` | external side effect: `request.send` |
@@ -188,5 +196,6 @@ selected and given a connection, but no code invokes its capabilities.
 as a model tool. Outbound result delivery uses Outputs (`/api/v1/outputs`), not the
 `webhook` connector.
 
-Not yet implemented: X posting, Telegram `messages.send` invocation, OAuth flows, webhook
-verification, and a third-party connector SDK.
+Not yet implemented: Telegram `messages.send` invocation, OAuth flows, webhook
+verification, and a third-party connector SDK. X posting is implemented and covered by
+mock-server tests; the live X check is opt-in because it publishes a real post.

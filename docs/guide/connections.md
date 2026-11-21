@@ -14,7 +14,7 @@ prompt. Open **Connectors** in the Connect group of the sidebar (`/connections`)
 | GitHub | Works through ORBIT's tool broker: issues, pull requests, checks, checkout, commit and push |
 | GitLab | Works through the tool broker: projects, group issues and boards, issues, merge requests, pipelines, checkout, commit and push |
 | Kubernetes | Works through the tool broker, read-only; see [Kubernetes connector](kubernetes-connector.md) |
-| X | Read-only: before a run starts, a bound `posts.search` capability fetches recent posts and adds them to the run's input as untrusted context. Agents cannot post |
+| X | `posts.search` hydrates recent posts as untrusted context before a run; `posts.create` publishes posts and replies through the tool broker with a user-context token. See [X connector](x-connector.md) |
 | Mock | A stand-in for development and tests that talks to nothing |
 | Telegram | Listed with `messages.list` and `messages.send`, but the worker has no implementation for it yet, so an agent cannot use it |
 | Generic webhook | Listed with `request.send`, but the worker has no implementation for it yet. A connection can be created and tested, not used by an agent |
@@ -82,6 +82,15 @@ a connection whose status is `expired` or `revoked` is refused when an agent tri
 it, and a test never changes those two statuses. Test
 requests go through the outbound network policy
 ([Providers](providers.md#outbound-network-policy)).
+
+## X search vs posting auth
+
+X recent search (`posts.search`) works with an app-only bearer token. Publishing
+(`posts.create`) does not: posting and replies require a **user-context** token with the
+`tweet.write` scope (OAuth 2.0 user context or OAuth 1.0a user context). Store the user
+access token as the connection credential; if X returns 401/403, ORBIT reports that a
+user-context token with `tweet.write` is required and never echoes the credential. See
+[X connector](x-connector.md) for setup and the opt-in live check.
 
 ## Find connections
 
