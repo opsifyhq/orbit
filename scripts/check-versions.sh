@@ -31,6 +31,9 @@ app_version = re.search(r'(?m)^appVersion:\s*"?([^"\s]+)"?', chart)
 versions["Chart.yaml version"] = version.group(1) if version else "missing"
 versions["Chart.yaml appVersion"] = app_version.group(1) if app_version else "missing"
 
+readme = re.search(r"(?m)^ORBIT_VERSION=(\S+)$", pathlib.Path("README.md").read_text())
+versions["README.md install example"] = readme.group(1) if readme else "missing"
+
 unique = set(versions.values())
 for name, value in versions.items():
     print(f"{name}: {value}")

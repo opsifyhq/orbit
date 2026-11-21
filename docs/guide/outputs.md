@@ -5,8 +5,8 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 
 ## UI
 
-The Work wizard's **Then** step lists outputs configured for the selected agent/team before
-the run is created.
+The Work wizard's **Then** section ([Start work](start-work.md)) lists the enabled outputs
+that apply to the selected agent or team before the run is created.
 
 **Outputs** lists every output with whether it will send: **On**, **Off**, or **Cannot
 send** (no webhook URL or no events). **New output** opens Output Studio:
@@ -21,6 +21,8 @@ send** (no webhook URL or no events). **New output** opens Output Studio:
 `/outputs/new?agent=<id>` or `?team=<id>` starts with that agent or team chosen. The output
 page has **Send test** (a test message, with the note), **Edit**, and **Turn off/on** and
 **Delete** under ⋯. Runs that finish while an output is off are not sent later.
+
+Creating, changing, deleting and testing outputs needs `settings:write`.
 
 ## Create via API
 
@@ -39,8 +41,10 @@ curl -X POST "$API/api/v1/outputs" \
 ```
 
 - `kind`: `slack`, `mattermost` or `webhook`
-- `agentId`: one agent, or `null` together with `teamId` for all executions
-- `teamId`: one Agent Team; fires once when the team run finishes (not per child execution)
+- `agentId` or `teamId`: set one, not both (the API returns a validation error for
+  both). With neither, the output applies to every execution in the organization, and only
+  an owner or admin may create or change it.
+- `teamId` fires once when the team run finishes, not per child execution.
 - `events`: `succeeded`, `failed`, `cancelled` (default: all three)
 - `webhookUrl`: write-only; encrypted at rest and never returned
 - `template`: an optional note added under the run summary (plain text, no placeholders)
@@ -51,7 +55,9 @@ The text is `<agent> <status> — <task>` (or `Agent team run <status> — <task
 3,000 characters of the output or error, then the note after a blank line.
 
 For `webhook`, ORBIT POSTs JSON with `event` (`execution.<status>`, `team_run.<status>` or
-`test`), `deliveryId`, `text`, and an `execution` or `teamRun` object.
+`test`), `deliveryId`, `text`, an `execution` object (`id`, `agentName`, `status`, `output`,
+`error`) and, for a team run, a `teamRun` object (`id`, `teamId`, `status`, `output`,
+`error`).
 
 ## Test
 
@@ -92,3 +98,6 @@ Delivery is **at-least-once** and driven by a background outbox loop on every AP
 
 Not yet implemented: HMAC signing for generic webhooks, a delivery log in the UI, and
 placeholders in the note.
+
+Outputs that name an agent or team need manage access to it; an organization-wide output
+is visible to everyone with `settings:read`.

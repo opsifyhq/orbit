@@ -14,8 +14,10 @@ Agent Team ──ordered agents───────────────┘
   by many agents.
 - **Agent connector binding**: the connector, `connectionId` and capability allowlist
   stored on the agent version. This is where a connection is attached.
-- **Agent Team**: orchestration only. It has no connection field. Each step inherits the
-  connections and capabilities of its agent.
+- **Agent Team**: orchestration. Each step inherits the connections and capabilities of
+  its agent. The team can additionally share connections with every step through
+  `connectionIds`, and its work source connection is added when the work source is
+  enabled (see "Team definition fields").
 - **Team skills and instruction**: shared by every step. Agent-level instructions define
   the role. The first agent is the primary agent; later agents are subagents.
 - **Team repository**: optional `repository` and `branch` are structured checkout
@@ -38,6 +40,25 @@ Agent Team ──ordered agents───────────────┘
   layout; multiple repositories clone into their declared `path` subdirectories. Paths
   are validated so nothing can escape the workspace. Git tools accept a `repository`
   argument (`repo.commit`, `repo.push`, `pulls.create`, `merge_requests.create`).
+
+## Team definition fields
+
+The team `definition` (`TeamDefinition` in `crates/orbit-api/src/handlers/teams.rs`):
+
+| Field | Meaning |
+|---|---|
+| `mode` | `pipeline` (default) or `native` |
+| `instructions` | team goal, configured system context for every step |
+| `steps` | ordered agents, each with an optional `model` override |
+| `skills` | skill slugs materialized for every step |
+| `harness` | harness for the steps; a run may override it with `harnessOverride`, and the fallbacks are the agent's legacy harness, then the organization default |
+| `model` | team-level model override |
+| `connectionIds` | connections injected into every step in addition to the agents' own bindings |
+| `envMappingIds` | environment mappings injected into every step |
+| `repository`, `branch`, `repositories[]` | checkout settings (see Model) |
+| `workSource` | automatic issue discovery (see Work source and queue) |
+| `workerProfileId`, `autoLaunch` | when `autoLaunch` is true, the API launches a worker from the profile for each step's execution |
+| `timeoutSeconds` | wall-clock timeout per step, 1 to 86400, default 3600 |
 
 ## Attaching a connection
 
@@ -153,11 +174,43 @@ issue through the connector:
 
 The queue item records `succeeded`, `failed` or `cancelled` accordingly, and failures
 respect `maxAttempts`. Operators can retry, requeue or cancel an item from the UI or
-`POST …/queue/{item_id}/{retry|requeue|cancel}`.
+`POST …/queue/{item_id}/{retry|requeue|cancel}`:
+
+| Action | Allowed from | Effect |
+|---|---|---|
+| `retry` | `failed`, `cancelled`, and only while `attempts < maxAttempts` | back to `pending`, consumes an attempt |
+| `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items |
+| `cancel` | `pending`, `running`, `failed` | `cancelled`, detaches the run link |
+
+Item status is limited to `pending`, `running`, `succeeded`, `failed` and `cancelled`
+(a CHECK constraint since migration 0041).
+
+## Run advancement and recovery
+
+Every API replica runs the team-run loop every 2 seconds. These rules keep it safe and
+bounded:
+
+- **Advance lease.** A replica must hold a per-run lease (`team_runs.advance_claimed_at`)
+  to advance a run. The lease expires after 120 seconds, so a crashed replica never
+  strands a run, and a holder whose lease was taken over cannot release the new holder's
+  lease.
+- **Step-start retry window.** When the next step cannot be started because of a server
+  error, the finished step stays `succeeded` and the next tick retries. After 300 seconds
+  since the finished step the run fails with "could not start step N". A client-class
+  refusal (access lost, harness unavailable, quota) fails the run immediately instead.
+- **Stale queue claims.** A queue item that is `running` but has no run attached for more
+  than 600 seconds (for example the API died between claiming and creating the run)
+  returns to `pending` with the error "start interrupted; re-queued". The same loop also
+  re-applies run outcomes to queue items that were never closed.
+- **Rerun.** `POST /api/v1/executions/{id}/rerun` replays one terminal execution. It
+  returns 409 for a team step (an execution with a team run or team context), because
+  replaying it would hand the team's connections, mappings and subagents to anyone who
+  can view the execution. There is no team-run rerun endpoint; start a new run with
+  `POST /api/v1/agent-teams/{id}/runs`.
 
 ## Current limitations
 
-- Connections are attached per **agent**, not per team.
+- Connections are attached per **agent**; `connectionIds` on the team adds shared ones.
 - Parallel subagents are not supported; pipeline steps are sequential.
 - Inbound webhook verification and X posting are still pending.
 - GitHub/GitLab writes require a token and may require approvals depending on autonomy.

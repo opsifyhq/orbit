@@ -40,15 +40,14 @@ Source: `orbit_contracts::events::subjects`.
 
 ```
 orbit.execution.requested      execution accepted, awaiting dispatch
-orbit.execution.dispatched     worker claimed the execution
-orbit.execution.updated        status transition (also drives the UI tail)
+orbit.execution.updated        status transition
 orbit.execution.event          individual harness event
 orbit.execution.cancel         cancellation requested
-orbit.trigger.fired            schedule/webhook/connector event matched a trigger
-orbit.connector.event          normalized inbound connector event
-orbit.agent.event              agent-emitted event (reserved for agent-to-agent flows)
-orbit.worker.heartbeat         worker liveness
 ```
+
+Five more subjects are defined but nothing publishes them yet:
+`orbit.execution.dispatched`, `orbit.trigger.fired`, `orbit.connector.event`,
+`orbit.agent.event` and `orbit.worker.heartbeat`.
 
 Envelope (`OrbitEvent`):
 
@@ -69,15 +68,39 @@ Envelope (`OrbitEvent`):
 
 ## Reliability
 
-- At-least-once delivery; consumers are idempotent.
-- `processed_events(event_id PRIMARY KEY)` records handled events; duplicate inserts are
-  ignored and the message acked.
-- Execution claiming is a SQL compare-and-set (`queued → dispatched`), so duplicate
-  delivery cannot double-run an execution.
-- Orphan reaping: the API marks `running` executions whose worker heartbeat is older
-  than 90 seconds as `failed` with a `worker_lost` diagnostic and publishes
-  `orbit.execution.updated`. Expired approvals on that execution are marked `expired`.
+- PostgreSQL is the source of truth. A lost or duplicated bus message changes nothing,
+  because workers claim work by polling the API and the browser reads events from the
+  database.
+- Execution claiming is a SQL compare-and-set (`queued → dispatched`), so an execution
+  cannot run twice. Creating an execution is idempotent per organization on
+  `idempotency_key`.
+- Published events carry their idempotency key as `Nats-Msg-Id`; JetStream drops a
+  duplicate that arrives within its two-minute duplicate window.
 - Terminal states are never overwritten.
+- The `processed_events` table from the first migration is reserved for future durable
+  consumers. Nothing reads or writes it today.
+
+### Execution reaper
+
+Every 15 seconds the API ends executions that can no longer finish on their own. Each
+pass is a conditional update, so several API replicas can run it and a worker that
+reports in at the same moment wins.
+
+| Pass | Condition | Result |
+|---|---|---|
+| Worker lost | `dispatched`, `running` or `awaiting_approval`, and the worker's heartbeat is older than 90 seconds | `failed` with `worker_lost`; open approvals on the execution become `expired` |
+| Never started | `dispatched` and nothing has happened on it (claim, cancel request or event) for 600 seconds, or for 60 seconds after a cancel request | `failed` with `worker_did_not_start`, or `cancelled` |
+| Timed out | `running` for longer than `timeout_seconds` plus a grace period | `timed_out` |
+
+The timeout clock starts when the harness reports `running` (`running_started_at`), not at
+dispatch, so repository checkout and worker start-up do not consume it. Time spent
+waiting for an approval is added to the deadline. The grace period is
+`ORBIT_EXECUTION_TIMEOUT_GRACE_SECONDS` (default 300); it leaves the worker room to
+enforce the timeout itself and report the result. Each reaped execution gets an error
+event and an `orbit.execution.updated` message.
+
+The same loop deletes worker heartbeat rows that have been silent for
+`ORBIT_WORKER_STALE_RETENTION_HOURS` (default 24).
 
 ## Scheduling and dispatch
 
@@ -86,15 +109,41 @@ database or the event bus directly.
 
 - **Scheduler** (`background::scheduler_tick`, every 15s) claims due `schedule` triggers
   with `FOR UPDATE SKIP LOCKED`, so multiple API replicas cannot double-fire one trigger.
-  Each run creates an execution and publishes `orbit.execution.requested`. Failures
-  increment `consecutive_failures`; a trigger is auto-disabled after `max_failures`.
-- **Team run advance** (every 2s) advances pipeline team runs after a step finishes.
+  Each run creates an execution and publishes `orbit.execution.requested`. A firing is
+  skipped when the agent is not `active` or already runs its maximum number of concurrent
+  executions. Failures increment `consecutive_failures`; a trigger is auto-disabled after
+  `max_failures`.
+- **Team run advance** (every 2s) advances team runs after a step finishes.
 - **Work-source dispatcher** (every 15s) polls GitHub/GitLab issues for Agent Teams with
   an enabled work source, takes a per-team advisory lock, claims issues via labels, and
   enqueues deduplicated `team_queue_items`.
+- **Agent runtimes** (every 5s) start the next run of each continuous runtime when its
+  interval has passed; see [domain model](domain-model.md).
+- **Outputs** (every 5s) deliver the results of finished executions to their outputs.
+- **Execution reaper** (every 15s): see above.
+- **Worker image updates** (every 60s) relaunch workers whose profile follows the
+  platform version after an upgrade: the old token is revoked, running executions drain,
+  then the launcher replaces the worker.
+- **License** (every 60s) reloads the installed license.
 - **Memory pruner** (hourly) deletes expired agent memory entries.
 - **Retention** (every 6h) archives terminal executions, team runs and worker launches
   older than `ORBIT_ARCHIVE_AFTER_DAYS` (default 30, `0` disables).
 - **Audit retention** (daily) deletes `audit_logs` rows older than
   `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0`, the default, keeps them forever).
-- **Execution reaper** (every 15s) marks orphaned running executions failed.
+
+Every loop runs under a supervisor that restarts it after a panic and stops it on
+shutdown.
+
+## Triggers
+
+A trigger has one of four kinds. Only two of them start executions today:
+
+| Kind | State |
+|---|---|
+| `manual` | Works: a run started from the web app or the API. |
+| `schedule` | Works: a cron expression evaluated by the scheduler. |
+| `webhook` | Can be created and stored, but never fires: there is no inbound webhook endpoint. |
+| `event` | Can be created and stored, but never fires: nothing consumes the event bus. |
+
+Agent teams can also be fed from a GitHub or GitLab issue queue (the work-source
+dispatcher above); that path does not use triggers.

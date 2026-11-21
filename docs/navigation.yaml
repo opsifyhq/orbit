@@ -19,6 +19,18 @@ sections:
       - path: development/local.md
         title: Run ORBIT locally
 
+  # The sidebar's first group (Overview, Executions, Approvals) has no label, and Start
+  # work is its button, so these three pages share one section.
+  - id: work
+    title: Run work
+    pages:
+      - path: guide/start-work.md
+        title: Start work
+      - path: guide/executions.md
+        title: Executions
+      - path: guide/approvals.md
+        title: Approvals
+
   - id: build
     title: Build
     pages:
@@ -38,6 +50,8 @@ sections:
   - id: connect
     title: Connect
     pages:
+      - path: guide/connections.md
+        title: Connectors
       - path: guide/providers.md
         title: Model providers
       - path: guide/outputs.md
@@ -60,6 +74,8 @@ sections:
     pages:
       - path: guide/access-teams.md
         title: Access teams and sharing
+      - path: guide/settings.md
+        title: Settings
       - path: guide/rbac.md
         title: Roles and permissions
       - path: development/oidc.md
@@ -102,6 +118,8 @@ sections:
         title: Events and triggers
       - path: architecture/runtime-contract.md
         title: Harness adapter contract
+      - path: architecture/execution-plane.md
+        title: Execution plane
       - path: architecture/provider-connector-contract.md
         title: Provider and connector contracts
       - path: architecture/agent-teams.md

@@ -10,14 +10,13 @@ A PNG export is available at [`orbit-overview.png`](orbit-overview.png) (may lag
 |---|---|
 | **Agent Experience** | Web UI (and future Expo app). Configuration, monitoring, approvals. No business logic or durable state. |
 | **Control Plane** | `orbit-api`: auth, agents and immutable versions, providers, connections, executions, approvals, audit, SSE. PostgreSQL is the durable source of truth. NATS JetStream accelerates events; DB polling is the recovery path. |
-| **Execution Plane** | `orbit-worker` (mock/scheduler), `orbit-worker-opencode` (OpenCode v2.3.0), `orbit-worker-pi` (Pi v1.5.2). Workers claim only their configured harnesses. The policy-enforcing tool broker runs per execution. |
+| **Execution Plane** | `orbit-worker` (mock), `orbit-worker-opencode` (OpenCode v2.3.0), `orbit-worker-pi` (Pi v1.5.2), plus the optional launcher that starts workers. Workers claim only their configured harnesses. The policy-enforcing tool broker runs per execution; see [Execution Plane](execution-plane.md). |
 | **External systems** | GitHub, X, GitLab, webhooks and model providers. All actions go through the broker; credentials never reach the harness. |
 
 | Status | Components |
 |---|---|
-| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration, SSE, audit, encrypted secrets, tool broker, GitHub capabilities, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), memory, K8s Jobs, OIDC, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
-| **In progress** | Inbound webhook verification, long-running instance mode |
-| **Planned** | X posting, large-scale simulation runs, Claude Code adapter |
+| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration, SSE, audit, encrypted secrets, tool broker and tool policies, GitHub, GitLab and Kubernetes (read-only) connectors, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), continuous agent runtime, memory, launcher and K8s Jobs, OIDC, custom roles, access teams and sharing, outputs, offline licensing, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
+| **Planned** | Inbound webhooks (webhook and event triggers are stored but never fire), X posting, Telegram and webhook connector invocation, large-scale simulation runs, Claude Code adapter |
 
 ## System context
 
@@ -35,36 +34,39 @@ flowchart LR
   end
 
   subgraph Execution["Execution Plane"]
-    Worker["orbit-worker<br/>mock · scheduler"]
+    Launcher["launcher<br/>(optional)"]
+    Worker["orbit-worker<br/>mock"]
     OCWorker["orbit-worker-opencode"]
     PiWorker["orbit-worker-pi"]
     Harness["OpenCode / Pi CLI<br/>(isolated workspace)"]
+    MCP["mcp-broker<br/>(stdio bridge)"]
     Broker["Policy-enforcing<br/>tool broker"]
   end
 
   subgraph External["External systems"]
     GitHub["GitHub API"]
     X["X API"]
-    More["GitLab · Telegram · webhooks ·<br/>model providers"]
+    More["GitLab · Kubernetes API ·<br/>model providers"]
   end
 
   Web -->|"REST /api/v1 + SSE"| API
   Mobile -.->|"same API"| API
   API <--> DB
-  API <--> Bus
-  Bus --> Worker
-  Bus --> OCWorker
-  Bus --> PiWorker
-  Worker <--> DB
-  OCWorker <--> DB
-  PiWorker <--> DB
+  API -.->|"publish events"| Bus
+  API -->|"launch / stop"| Launcher
+  Launcher -.->|"starts workers and Jobs"| Worker
+  Launcher -.-> OCWorker
+  Launcher -.-> PiWorker
+  Worker -->|"worker API + token"| API
+  OCWorker -->|"worker API + token"| API
+  PiWorker -->|"worker API + token"| API
   OCWorker -->|"spawn per execution"| Harness
-  Harness <-->|"MCP tools"| Broker
+  Harness <-->|"MCP stdio"| MCP
+  MCP <-->|"loopback + execution token"| Broker
   Broker -->|"HTTPS + leased credentials"| GitHub
-  Broker -->|"HTTPS + leased credentials"| X
-  Broker -->|"HTTPS"| More
-  API -.->|"approvals / audit"| DB
-  Broker -.->|"approval requests, events, audit"| DB
+  Broker -->|"HTTPS + leased credentials"| More
+  OCWorker -->|"X read hydration"| X
+  Broker -.->|"approvals, events, audit (via API)"| API
 ```
 
 ## Execution sequence (manual run with a GitHub write)
@@ -88,26 +90,26 @@ sequenceDiagram
   API->>Bus: publish execution.requested
   API-->>Web: 202 Accepted
   Web->>API: GET /executions/{id}/events/stream (SSE)
-  W->>DB: claim execution (queued → dispatched)
-  W->>DB: mark running, append events
+  W->>API: claim execution (queued → dispatched)
+  W->>API: report running, append events
   W->>B: start execution-scoped broker (token, allowlist)
   W->>OC: opencode run --standalone --format json
   OC->>B: MCP tools/list
   B-->>OC: allowed GitHub tools only
   OC->>B: tools/call github_issues_comment
-  B->>DB: policy = require approval, create approval
-  B->>DB: append tool_call event
+  B->>API: policy = require approval, create approval
+  B->>API: append tool_call event
   Web->>API: GET /approvals (pending)
   User->>Web: Approve
   Web->>API: POST /approvals/{id}/approve
   API->>DB: decision + audit
-  B->>DB: poll decision → approved
-  B->>GH: POST comment (credential leased here only)
+  B->>API: wait for decision → approved
+  B->>GH: POST comment (credential leased from the API for this call)
   GH-->>B: 201 Created
   B-->>OC: tool result
   OC-->>W: NDJSON text/tool/usage events
-  W->>DB: persist events, finish execution
-  W->>Bus: publish execution.updated
+  W->>API: persist events, complete execution
+  API->>Bus: publish execution.updated
   API-->>Web: SSE snapshot + events + done
 ```
 
@@ -139,15 +141,20 @@ erDiagram
   ORGANIZATION ||--o{ AGENT : owns
   ORGANIZATION ||--o{ PROVIDER : configures
   ORGANIZATION ||--o{ CONNECTION : authorizes
-  ORGANIZATION ||--o{ POLICY : enforces
+  ORGANIZATION ||--o{ TOOL_POLICY : enforces
+  ORGANIZATION ||--o{ CUSTOM_ROLE : defines
+  ORGANIZATION ||--o{ ACCESS_TEAM : groups
+  ORGANIZATION ||--o{ OUTPUT : delivers_to
+  ORGANIZATION ||--o{ ENV_MAPPING : maps
 
   AGENT ||--o{ AGENT_VERSION : versions
-  AGENT ||--o{ AGENT_INSTANCE : deploys
+  AGENT ||--o| AGENT_RUNTIME : keeps_running
+  AGENT ||--o{ TOOL_POLICY : narrows
+  AGENT ||--o{ OUTPUT : reports_via
   AGENT ||--o{ TRIGGER : has
   AGENT ||--o{ EXECUTION : runs
 
   AGENT_VERSION ||--o{ EXECUTION : snapshot
-  HARNESS ||--o{ AGENT_INSTANCE : provides
   CONNECTOR ||--o{ CONNECTION : instantiates
 
   EXECUTION ||--o{ EXECUTION_EVENT : emits
@@ -162,6 +169,7 @@ erDiagram
   ORGANIZATION ||--o{ SKILL : owns
   ORGANIZATION ||--o{ WORKER_PROFILE : defines
   WORKER_PROFILE ||--o{ WORKER_LAUNCH : launches
+  WORKER_PROFILE }o--o{ ENV_MAPPING : uses
   AGENT ||--o{ AGENT_MEMORY : remembers
 
   ORGANIZATION {
@@ -241,6 +249,38 @@ erDiagram
     text target
     jsonb env_mappings
   }
+  AGENT_RUNTIME {
+    uuid id
+    text status
+    text task
+    int interval_seconds
+    timestamptz next_run_at
+    int consecutive_failures
+  }
+  TOOL_POLICY {
+    uuid id
+    uuid agent_id
+    text action
+    jsonb matcher
+  }
+  CUSTOM_ROLE {
+    uuid id
+    text name
+  }
+  ACCESS_TEAM {
+    uuid id
+    text slug
+  }
+  OUTPUT {
+    uuid id
+    text kind
+    text secret_ref
+  }
+  ENV_MAPPING {
+    uuid id
+    text name
+    jsonb mappings
+  }
 ```
 
 ## Deployment topology
@@ -250,15 +290,16 @@ flowchart TB
   subgraph Local["Local / Docker Compose"]
     LWeb["web :3000"] --> LApi["api :8080"]
     LWorker["worker (mock)"]
+    LLauncher["launcher<br/>(Docker socket)"]
     LOpencode["worker-opencode"]
     LDb[("postgres")]
     LNats{{"nats -js"}}
     LApi <--> LDb
     LApi <--> LNats
-    LWorker <--> LDb
-    LWorker <--> LNats
-    LOpencode <--> LDb
-    LOpencode <--> LNats
+    LWorker -->|"worker API"| LApi
+    LOpencode -->|"worker API"| LApi
+    LApi --> LLauncher
+    LLauncher -.-> LOpencode
   end
 
   subgraph K8s["Kubernetes (Helm)"]
@@ -269,16 +310,17 @@ flowchart TB
     WorkerD["Deployment: worker<br/>ORBIT_WORKER_HARNESSES=mock"]
     OpencodeD["Deployment: worker-opencode<br/>ORBIT_WORKER_HARNESSES=opencode"]
     PiD["Deployment: worker-pi<br/>ORBIT_WORKER_HARNESSES=pi"]
+    LauncherD["Deployment: launcher<br/>(namespaced workload RBAC)"]
     Pg[("PostgreSQL<br/>bundled or external")]
     Nats[("NATS<br/>bundled or external")]
     Secret["Secrets: DB URL, master key,<br/>OIDC, OpenCode auth export"]
     ApiD <--> Pg
     ApiD <--> Nats
-    WorkerD <--> Pg
-    OpencodeD <--> Pg
-    OpencodeD <--> Nats
-    PiD <--> Pg
-    PiD <--> Nats
+    WorkerD -->|"worker API"| SvcApi
+    OpencodeD -->|"worker API"| SvcApi
+    PiD -->|"worker API"| SvcApi
+    SvcApi --> LauncherD
+    LauncherD -.->|"creates worker Deployments and Jobs"| OpencodeD
     OpencodeD -.-> Secret
   end
 ```

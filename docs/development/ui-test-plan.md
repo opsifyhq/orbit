@@ -9,7 +9,8 @@ fastest environment available:
 Use a fresh database for the full flow (`docker compose ... down -v` locally). Dev auth is
 enabled, so the browser needs no login; the web container injects the dev token server-side.
 
-Time: ~25 minutes for flows 1–5, plus ~25 minutes for flows 6–14.
+Time: ~25 minutes for flows 1–5, plus ~25 minutes for flows 6–14 and ~25 minutes for
+flows 15–19.
 
 ---
 
@@ -249,17 +250,68 @@ approvals UI is still being finished.
 | Step | Expected |
 |---|---|
 | `/outputs` | Same layout as Agents: search, **All / On / Off / Cannot send** filter with counts, columns Output · Status · Sends · Updated, count under the list; the whole row opens the output |
-| New output | Output Studio with Destination / Trigger / Message; Create with no name or URL jumps to Destination and lists both; a loopback URL is refused by the server and Destination shows why |
+| New output | Output Studio with Destination / Trigger / Message; Create with no name or URL jumps to Destination and lists both |
 | Trigger | **Every agent / One agent / One agent team**; choosing one shows its picker; no events chosen blocks saving |
 | Message | The example updates with the note; for **Webhook** it shows the JSON body |
 | Output page | Status On, **Send test**, **Edit**, ⋯ **Turn off** (status Off and a callout with **Turn on**), **Delete output** returns to the list |
 | Edit | The URL field says a URL is stored; saving with it empty keeps it |
 | 360 px | Rows collapse to name, status and one meta line; Save is pinned above the tab bar |
+| A URL that points at `http://169.254.169.254/` | Refused; Destination shows the server's reason (cloud-metadata addresses are always blocked) |
+| An organisation-wide output as a non-admin | Refused: only an owner or admin may manage it |
+
+## Flow 16 — Access teams, sharing and roles (5 min)
+
+Needs a licence with `teams`, `resource_permissions` and `custom_roles` (see
+[licensing.md](licensing.md), “Local test license”). Without one the checks below show the
+licence messages instead.
+
+| Step | Expected |
+|---|---|
+| `/teams` without a licence | A notice “More teams need a license”; the Default team exists |
+| `/teams` with a licence → New team | Name and slug; the team appears in the list |
+| Add a member | Choose a user and a role: Lead (manages), Member (uses) or Viewer (sees) |
+| **Agents** list → tick rows → **Change access** | Dialog “Change access for N selected”: owner, team and visibility (private, team, organisation) |
+| Open the same agent as a member of another team | The agent is not listed and its URL shows “not found”, not “no access” |
+| Settings → **Members and roles** → new custom role | Permissions are picked from the catalogue; you cannot add one you do not hold |
+| Change a user's role | The audit log shows `user.role_changed`; you cannot change your own role |
+
+## Flow 17 — Harnesses and the in-app handbook (3 min)
+
+| Step | Expected |
+|---|---|
+| `/harnesses` | Harnesses grouped as Available (mock, OpenCode, Pi) and Planned (Claude Code, generic); a “Workers reporting in” section lists which harnesses each connected worker offers |
+| `/documentation` | The handbook opens without network access, with the sidebar from `docs/navigation.yaml` |
+| Open a page and use a link between pages | Navigates inside the handbook; no page is missing from the sidebar |
+
+## Flow 18 — Export and import (4 min)
+
+| Step | Expected |
+|---|---|
+| Agent page → **Export as YAML** | A YAML file downloads; it holds the agent spec and no secret values |
+| Skill page → **Export SKILL.md** and **Export with files (YAML)** | Both download |
+| Agents list → **Import** | Dialog “Import from file” with a mode (Create only, Create or update, Update only); choosing a file runs a dry run that lists each item before anything is written |
+| Import the exported agent again with **Create only** | The dry run reports a conflict for the existing name; with **Create or update** it reports an update |
+| Tool policies | Managed through the API (`/api/v1/tool-policies`) or an import (kind Tool policy); there is no screen for them |
+
+## Flow 19 — Bulk archive and delete (3 min)
+
+| Step | Expected |
+|---|---|
+| Agents list → tick two agents | A selection bar with **Change access**, archive and delete |
+| **Archive** | A preview explains mixed selections (already archived, in use) before you confirm; archived agents leave the list |
+| **Archived** filter → **Restore agent** on the agent page | The agent returns as before |
+| **Delete permanently** | Names the agents and says execution history is kept; a partial failure leaves the failed ids selected |
+| Skills list → select a skill an agent uses → delete | The confirmation names the agents and teams that use it |
+| Change the filter or search with rows ticked | Only ticked rows that are still on screen are counted and acted on |
+
+---
 
 ## Negative and security checks
 
 - No secret value appears in HTML, JSON responses, execution events, logs, or tool output.
-- Viewer-style access cannot mutate (when RBAC UI lands); dev mode is owner.
+- Read-only access cannot mutate: start the API with `ORBIT_DEV_USER_ROLE=viewer` and check
+  that create, edit, run and delete controls are absent or refused with a clear message
+  (dev mode is owner by default).
 - Validation errors return field paths; the form highlights the section.
 - Invalid cron, empty instructions, unknown harness/provider are rejected.
 - Idempotency: double-click **Run agent** in the run dialog with the same key creates one execution.

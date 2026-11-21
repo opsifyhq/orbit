@@ -10,7 +10,7 @@ in-cluster launcher; the API mints a scoped token per launch and revokes it on s
 |---|---|
 | `harnessKind` | Harness the worker claims (`mock`, `opencode`, `pi`, …) |
 | `image` / `imageTag` | Execution-plane image. Empty tag defaults to `ORBIT_IMAGE_TAG`, which the chart sets to the release version (never `latest` in a release install) |
-| `target` / `executionDriver` | `local`, `docker`, `kubernetes`; `process` or `docker` |
+| `target` / `executionDriver` | `local`, `docker`, `kubernetes` (default `docker`); `process` or `docker` (default `process`) |
 | `agentScope` | `all` (dynamic: new agents included) or `selected` |
 | `agentIds` | Allowlist when scope is `selected` |
 | `skillSlugs`, `agentIds` | What the worker may run |
@@ -20,6 +20,9 @@ in-cluster launcher; the API mints a scoped token per launch and revokes it on s
 | `envMappings` | Connection/secret → env mappings (inline). References only (`envVar` plus `connectionId`, `secretKey` or `secretRef`); other keys are rejected |
 | `envMappingIds` | Reusable environment mappings shared across profiles |
 | `resources` | CPU/memory requests + limits and workspace size |
+| `allowWebSearch` / `allowWebFetch` | Allow OpenCode's built-in web search and web fetch tools. Both are off by default for headless runs |
+| `allowGlab` / `allowGh` | Inject GitLab or GitHub CLI tokens; see [CLI tools](cli-tools.md) |
+| `nativeToolPermissions` | OpenCode per-tool `allow`/`ask`/`deny` map; see [below](#native-opencode-tool-permissions) |
 | `enabled` | Only enabled profiles launch |
 
 ## Updating `env`
@@ -30,6 +33,10 @@ Send `env` as a map of name to value on create and update:
 - `null` keeps the stored value (a `null` for a name with no stored value is a 422 on
   `env.<NAME>`);
 - a name you leave out is removed.
+
+The Workers editor cannot add static variables: its Environment section only offers
+mappings, and saving keeps the variables a profile already has. Set static values through
+the API or an import.
 
 Values are stored unencrypted in the `worker_profiles.env` column (they are not in the
 encrypted secret store); the API only keeps them from being read back. Prefer an env
@@ -49,12 +56,47 @@ Validated as Kubernetes quantities, request ≤ limit; defaults are applied when
 The launcher sets container resources on the Deployment/Job and `--cpus/--memory` for the
 Docker driver. **Worker CPU/memory belong here, not in the agent definition.**
 
-## Reusable environment mappings
+## Environments
 
-Environment mappings can be created once under **Library → Environments** and
-attached to many worker profiles. Inline mappings override attached mappings for the same
-env var. Changes to a mapping or to a profile require a worker relaunch; the Workers UI
-asks whether to relaunch now or save only (running agents may be interrupted).
+Reusable environment mappings are sets of environment variables for worker processes. Each
+value comes from a connection's credential or a stored secret, so no value is typed in
+plain text. Manage them under **Environments** in the Infrastructure group of the sidebar
+(`/environment-mappings`).
+
+To create one, choose **New mapping**, enter a **Name** and an optional **Description**,
+and for each variable choose **Add variable**: enter the **Variable name** (for example
+`GITLAB_TOKEN`) and a source, either **Connection** (pick a connection) or **Secret** (the
+key of a stored secret). A mapping needs at least one variable.
+
+Attach a mapping to many worker profiles in the worker editor's Environment section, or to
+an agent team ([agent teams](agent-teams.md)). Inline mappings on a profile override
+attached mappings for the same env var. Changes to a mapping or to a profile require a
+worker relaunch; the Workers UI asks whether to relaunch now or save only (running agents
+may be interrupted). API: `GET/POST /api/v1/env-mappings`,
+`PATCH/DELETE /api/v1/env-mappings/{id}`. Changing them needs `settings:write`.
+
+## Workers page
+
+**Workers** in the Infrastructure group has three parts:
+
+- **Profiles**: one card per profile, with **Launch** (or **Relaunch**), a menu with
+  "Bootstrap by hand", Export as YAML, enable or disable, and delete (a profile must be
+  disabled first). **New profile** opens the worker editor; **Import** loads a profile from
+  YAML. The editor has the sections Runtime, Model and auth, Agents and skills,
+  Permissions, Environment, Resources and Access control, and asks before you leave with
+  unsaved changes.
+- **Launches**: worker instances started from a profile by the launcher, with an
+  "Active" / "History" switch. Each launch shows its status and, when it failed, the
+  error. **Stop** ends a running launch, **Launch again** starts a fresh one, and **Logs**
+  shows its container log. A launch marked "Relaunch required" runs an older version of
+  its profile.
+- **Live workers**: workers that have reported a heartbeat, marked Live or Stale. A
+  worker is stale when its heartbeat stops.
+
+Launches that are old enough are archived automatically (see
+[Executions](executions.md#statuses-and-retention)); the UI has no archive button, but
+`POST /api/v1/worker-launches/{id}/archive` exists. Creating, changing, launching and
+stopping profiles needs `settings:write`.
 
 ## Launch lifecycle
 

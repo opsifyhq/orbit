@@ -13,6 +13,11 @@ Enforced by `crates/orbit-api/src/access.rs` (`AccessScope`). Invisible resource
 | Connections | yes | yes | yes | **use** required on every run path (see preflight) |
 | Providers | yes | yes | yes | **use** required when an agent binds it, in both platform- and harness-managed models (incl. team subagents); the worker context re-checks the run principal before returning the credential |
 | Worker profiles | yes | yes | yes | claims scoped by owning team |
+| Worker launches (`/worker-launches`) | visibility of the launch's worker profile | same (404 when invisible; owner/admin only if the profile was deleted) | launch, stop and archive need manage on the profile | — |
+| Agent teams (`/agent-teams`) | yes | view (404) | manage; create, change and delete also need `settings:write` | running needs **use**; the agents, worker profiles and environment mappings a team names must be visible to the caller |
+| Team runs (`/team-runs`, `/agent-teams/{id}/runs`) | via agent team | via agent team | — | follow their agent team |
+| Environment mappings (`/env-mappings`) | yes | view | manage (`settings:write`) | **use** required to attach one to a worker profile |
+| Outputs (`/outputs`) | visibility of the target agent or team | same (404 when the target is invisible) | manage the target agent or team; an output with no target (organization-wide) is owner/admin only | — |
 | Triggers | yes | yes | yes | create needs **use** on the target agent and its spec references; fire re-checks the owner |
 | Tool policies | yes | yes | yes | — |
 | Executions | via agent | via agent | cancel via agent | events/SSE via agent |
@@ -29,6 +34,12 @@ reachable by org/profile scope until they finish. Tokens shared by several worke
 one profile token for a pool, or Docker-driver child containers) are one principal.
 
 Owner/admin bypass is intentional and documented in ADR 0011.
+
+Organization-level objects have no owner or visibility and are checked by permission
+only (see [rbac.md](../development/rbac.md)): settings, roles, users, API tokens, the
+licence and the audit log. Lists of API tokens show every token to owners and admins and
+only the caller's own tokens to everyone else. Granting rules (who may hand out which
+role or permission) are in the same page.
 
 
 ## Approvals and secret references (#144)

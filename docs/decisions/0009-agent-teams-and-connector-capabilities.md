@@ -1,6 +1,6 @@
 # ADR-0009: Agent teams, execution-level skills and connector capabilities
 
-**Status:** Accepted; initial implementation in progress (pre-0.6.0)
+**Status:** Accepted and implemented; see the amendment at the end for where the code differs.
 
 ## Context
 
@@ -84,3 +84,12 @@ issues, so a coding agent could not complete a repository loop.
   credentials are not written into remote URLs.
 - Team execution requires the selected worker image to provide the harness and `git`
   where repository capabilities are used.
+
+## Amendment (2026-11-21)
+- A team definition can also carry `connectionIds`, `envMappingIds`, `harness` and
+  `timeoutSeconds`, and an enabled work source adds its own connection to every step. The
+  statement "Agent Teams do not own connections" therefore holds only for the agents'
+  bindings; see [Agent Teams](../architecture/agent-teams.md).
+- Retries exist for work-queue items (`maxAttempts`, retry and requeue actions), not for
+  individual steps. Parallel steps and conditions are still not implemented.
+- The Kubernetes connector (read-only) was added after this decision.

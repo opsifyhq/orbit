@@ -2,22 +2,36 @@
 
 ## Images
 
+Releases publish six images to `ghcr.io/opsifyhq/orbit` for `linux/amd64`. Each release
+also attaches the Helm chart (`orbit-<version>.tgz`) and the worker binary
+(`orbit-worker-linux-amd64`) to the GitHub release.
+
 | Image | Dockerfile | Notes |
 |---|---|---|
-| `ghcr.io/opsifyhq/orbit/orbit-api` | `deploy/docker/api.Dockerfile` | multi-stage, non-root, embedded migrations |
-| `ghcr.io/opsifyhq/orbit/orbit-worker` | `deploy/docker/worker.Dockerfile` | non-root, harness adapters |
-| `ghcr.io/opsifyhq/orbit/orbit-web` | `deploy/docker/web.Dockerfile` | Next.js standalone output, non-root |
+| `orbit-api` | `deploy/docker/api.Dockerfile` | Control plane. Multi-stage, non-root, embedded migrations |
+| `orbit-web` | `deploy/docker/web.Dockerfile` | Next.js standalone output, non-root |
+| `orbit-worker` | `deploy/docker/worker.Dockerfile` | Execution plane with the mock harness; base for the two images below |
+| `orbit-worker-opencode` | `deploy/docker/worker-opencode.Dockerfile` | `orbit-worker` plus the OpenCode CLI |
+| `orbit-worker-pi` | `deploy/docker/worker-pi.Dockerfile` | `orbit-worker` plus Node and the Pi CLI |
+| `orbit-launcher` | `deploy/docker/launcher.Dockerfile` | Starts worker pods, Jobs or containers for the API |
+
+Tags are `X.Y.Z`, `X.Y`, `latest` and the full commit SHA; there is no `vX.Y.Z` image
+tag (see [releasing.md](releasing.md)). Build locally with `scripts/build-images.sh`,
+which builds all six; the two harness images need the base worker image first.
 
 ```bash
 docker build -f deploy/docker/api.Dockerfile -t orbit-api:dev .
 docker build -f deploy/docker/worker.Dockerfile -t orbit-worker:dev .
 docker build -f deploy/docker/web.Dockerfile -t orbit-web:dev .
+docker build -f deploy/docker/launcher.Dockerfile -t orbit-launcher:dev .
 ```
 
 ## Compose
 
-`deploy/compose/compose.yaml` — full stack (db, nats, api, worker, web).
-`deploy/compose/compose.dev.yaml` — infrastructure only (db, nats).
+`deploy/compose/compose.yaml` is the full local stack: `db`, `nats`, `api`, `worker`,
+`launcher` and `web`. `deploy/compose/compose.dev.yaml` starts only `db` and `nats`.
+Compose is for local use; see [local.md](local.md) for the startup sequence. The full
+stack needs `--env-file .env` and an `ORBIT_WORKER_TOKEN`.
 
 ## Helm
 
@@ -28,33 +42,62 @@ The default values assume a private registry and an nginx ingress:
 - default namespace `orbit`, ingress class `nginx`, ingress host `orbit.example.com`
   (override with `--set ingress.host=…`)
 
+To install a release from GitHub, use the chart attached to it. The images default to the
+chart's `appVersion`, so no tags need to be set:
+
 ```bash
-# 1. Build (linux/amd64) and push images to your registry
-TAG=<version> ./scripts/build-images.sh
-PUSH_REGISTRY=registry.example.com:5000 TAG=<version> ./scripts/push-images.sh
-
-# 2. Deploy. The launcher is enabled by default and the API mints worker tokens per
-#    launch, so no worker token is needed.
-KUBE_CONTEXT=your-cluster NAMESPACE=orbit TAG=<version> ./scripts/deploy.sh
-
-# Equivalent explicit Helm command
-helm --kube-context your-cluster upgrade --install orbit deploy/helm/orbit \
+helm upgrade --install orbit \
+  https://github.com/opsifyhq/orbit/releases/download/vX.Y.Z/orbit-X.Y.Z.tgz \
   --namespace orbit --create-namespace \
-  -f deploy/helm/orbit/values.yaml \
-  --set imageRegistry=registry.example.com:5000 \
-  --set api.tag=<version> --set worker.tag=<version> --set web.tag=<version> \
-  --set auth.acknowledgeInsecureDev=true
+  -f values-prod.yaml          # start from deploy/helm/orbit/values-prod.example.yaml
 ```
 
-After the API is up it seeds one launchable mock worker profile and the launcher starts
+To install from a checkout with your own images:
+
+```bash
+helm upgrade --install orbit deploy/helm/orbit \
+  --namespace orbit --create-namespace \
+  -f deploy/helm/orbit/values-prod.example.yaml \
+  --set imageRegistry=registry.example.com:5000 \
+  --set api.tag=<version> --set worker.tag=<version> --set web.tag=<version> \
+  --set launcher.tag=<version> --set opencodeWorker.tag=<version> \
+  --set piWorker.tag=<version>
+```
+
+The launcher is enabled by default and the API mints a worker token per launch, so no
+worker token is needed. For a throwaway test cluster the default `values.yaml` also works
+if you add `--set auth.acknowledgeInsecureDev=true`.
+
+### `scripts/deploy.sh` is a development helper
+
+`scripts/deploy.sh` wraps `helm upgrade --install` for the maintainers' microk8s test
+cluster. It always sets `platform.environment=development`,
+`auth.acknowledgeInsecureDev=true` (dev auth behind the ingress),
+`postgresql.storageClassName=hostpath` and `nats.storageClassName=hostpath`, and it
+defaults `INGRESS_HOST` to `orbit.mdk.local` and `REGISTRY` to `192.168.1.201:5000`. It
+does not set `piWorker.tag`. Use it for local clusters only. Its companion scripts take
+the same `REGISTRY` and `TAG` variables, so set them for all three:
+
+```bash
+REGISTRY=registry.example.com:5000 TAG=<version> ./scripts/build-images.sh
+PUSH_REGISTRY=registry.example.com:5000 REGISTRY=registry.example.com:5000 TAG=<version> \
+  ./scripts/push-images.sh
+KUBE_CONTEXT=your-cluster NAMESPACE=orbit REGISTRY=registry.example.com:5000 \
+  TAG=<version> INGRESS_HOST=orbit.example.com ./scripts/deploy.sh
+```
+
+For production use the explicit Helm commands above.
+
+With any install path, once the API is up it seeds one launchable mock worker profile and the launcher starts
 it from **Workers → Launch**. Tokens are only needed for a fixed worker Deployment
 (`worker.enabled=true` + `worker.token`) or a custom/external worker
 (`POST /api/v1/worker-tokens`).
 
 ### Worker launcher (default worker path)
 
-`launcher.enabled=true` is the default. The chart creates a namespaced Pod
-Role/RoleBinding for the launcher only; `orbit-api` never gets workload RBAC.
+`launcher.enabled=true` is the default. The chart creates a namespaced
+Role and RoleBinding for the launcher only (the rules are listed in
+[kubernetes-launcher.md](kubernetes-launcher.md)); `orbit-api` never gets workload RBAC.
 `launcher.token` is generated by the chart and reused from the release Secret across
 upgrades; set it explicitly for GitOps, or disable the launcher and use fixed workers /
 profile bootstrap manifests instead.
@@ -67,8 +110,10 @@ helm upgrade orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
 ```
 
 Launch images must be pullable by the cluster. Each launch sets `ORBIT_API_URL` and the
-profile's worker token: long-lived profiles run as a Deployment (Kubernetes recreates them after node
-maintenance/eviction), single-execution launches run as a Job with a TTL for cleanup. Harness auth is mounted from a Secret when configured.
+profile's worker token. Long-lived profiles run as a Deployment (Kubernetes recreates
+them after node maintenance or eviction); single-execution launches run as a Job with a
+TTL for cleanup. Harness auth is mounted from a Secret when configured, and the Secret's
+name must match the `launcher.authSecrets` allowlist.
 
 Ingress routes: `/docs`, `/healthz`, `/readyz` → `orbit-api`; `/api` → `orbit-web`
 (the web container proxies `/api/*` to the API at runtime, injecting the dev token
@@ -92,27 +137,43 @@ allowed terminal. As a temporary workaround, forward the API through a loopback 
 started by an allowed interpreter (`127.0.0.1:16444` → `KUBE_API_IP:16443`) and use a
 kubeconfig whose server is `https://127.0.0.1:16444`; kubectl then only needs loopback.
 
-Key values:
-- `externalDatabase.enabled` / `postgresql.enabled` — the chart can bundle a
-  single-replica PostgreSQL for test clusters; production should use a managed database.
-  `externalDatabase.existingSecret` accepts an operator-managed Secret (for example a
-  CNPG application Secret with `host`, `port`, `dbname`, `user`, `password`); the API
-  composes the connection URL from those fields, so the password never has to be copied
-  into values. Set `externalDatabase.urlKey=uri` to use a pre-composed URL instead.
-- `externalNats.enabled` / `nats.enabled`.
-- `auth.mode` / `auth.oidc.*` — `dev` or `oidc`; issuer, client id, scopes and JWKS URL.
-  OIDC can also be configured at runtime under Settings.
-- `secrets.existingSecret` — chart does not manage secret material in production;
-  `ORBIT_MASTER_KEY`, `ORBIT_DATABASE_URL`, OIDC client secret live there.
-- `worker.*` / `opencodeWorker.*` / `piWorker.*` — optional fixed worker Deployments
-  (disabled by default); each needs a scoped worker token when enabled.
-- `launcher.*` — worker launcher (default path; creates worker Pods/Jobs in-cluster and
-  receives a per-launch token from the API).
-- `platform.seedWorkerProfile` — seed one launchable mock profile when a launcher is
-  configured (default `true`).
-- `caCertificates.*` — mount a private CA bundle into every workload and set
-  `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS`.
-- `ingress.*` — nginx annotations keep SSE buffering disabled.
+Key values (all in `deploy/helm/orbit/values.yaml`):
+
+| Value | Default | Meaning |
+|---|---|---|
+| `imageRegistry` | `ghcr.io/opsifyhq/orbit` | Prefix for every image, including the repository segment. Also passed to the API as `ORBIT_IMAGE_PREFIX` for worker profile defaults |
+| `<component>.tag` | empty (`appVersion`) | Image tag per component: `api`, `web`, `worker`, `opencodeWorker`, `piWorker`, `launcher` |
+| `imagePullSecrets` | `[]` | Pull secrets for the chart's own workloads |
+| `postgresql.enabled` | `true` | Bundled single-replica PostgreSQL for test clusters; use a managed database in production |
+| `externalDatabase.*` | disabled | `enabled`, `url`, or `existingSecret` with `hostKey`, `portKey`, `databaseKey`, `userKey`, `passwordKey` (a CNPG application Secret works as is). `urlKey=uri` reads a ready-made URL. `sslMode` defaults to `require` |
+| `nats.enabled` / `externalNats.*` | bundled NATS | JetStream is required |
+| `auth.mode` | `dev` | `dev` or `oidc` |
+| `auth.acknowledgeInsecureDev` | `false` | Required to render dev auth with anonymous access behind the ingress |
+| `auth.oidc.*` | empty | `issuer`, `audience`, `clientId`, `redirectUri`, `jwksUrl` (required in oidc mode), `scopes`, `autoProvision`, `defaultRole`, `roleClaim`, `emailClaim`, `groupRoles`, `teamGroups`, `autoCreateTeams`, `requireMappedGroup`, `syncRoles`, `requireVerifiedEmail`. See [oidc.md](oidc.md). OIDC can also be configured under Settings |
+| `secrets.existingSecret` | empty | Operator-managed Secret. Required keys `database-url` and `master-key`; optional `launcher-token`, `oidc-client-secret`, `worker-token` |
+| `secrets.masterKey` | development key | Replace it; the chart refuses the development key when `platform.environment=production` |
+| `worker.*`, `opencodeWorker.*`, `piWorker.*` | disabled | Optional fixed worker Deployments. Each needs a scoped worker token when enabled |
+| `launcher.enabled` | `true` | Worker launcher: starts worker Deployments and Jobs and receives a per-launch token from the API |
+| `launcher.token` | generated | Shared bearer token between API and launcher, reused across upgrades |
+| `launcher.authSecrets` | `orbit-opencode-auth*,orbit-pi-auth*` | Secret names (exact or `prefix*`) a worker profile may mount as `authSecretName`. Empty allows none. Sets `ORBIT_WORKER_AUTH_SECRETS` on the API and the launcher |
+| `launcher.imagePullSecret` | empty | Pull secret added to every pod the launcher creates |
+| `networkPolicy.enabled` | `false` | Restricts ingress to the launcher (port 8090) to the API pods. Needs a CNI that enforces NetworkPolicy. Egress is not restricted |
+| `outbound.allowPrivate` | `true` | Allow provider, output and work-source URLs that resolve to private ranges. Loopback, link-local and cloud-metadata addresses are always blocked |
+| `outbound.allowedHosts` | empty | Comma-separated hostnames, IPs or CIDRs exempt from the block (never metadata addresses) |
+| `license.*` | empty | `existingSecret` and `key`, or an inline `value`. See [licensing.md](licensing.md) |
+| `maxApprovalWaitSeconds` | `3600` | Most time a run may spend waiting for approvals; sets `ORBIT_MAX_APPROVAL_WAIT_SECONDS` on the launcher and workers |
+| `platform.environment` | `development` | `production` makes the chart reject dev auth and default secrets |
+| `platform.seedDemo` | `true` | Seed demo data |
+| `platform.seedWorkerProfile` | `true` | Seed one launchable mock worker profile when a launcher is configured |
+| `platform.corsOrigins`, `platform.publicBaseUrl` | `http://orbit.example.com` | Use `https://` in production |
+| `platform.logFormat` | `json` | `json` or `text` |
+| `platform.bodyLimitBytes` | `2097152` | Maximum request body size |
+| `platform.archiveAfterDays` | `30` | See below; `0` disables |
+| `platform.auditRetentionDays` | `0` | See below |
+| `caCertificates.*` | disabled | Mount a private CA bundle into every workload and set `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` |
+| `extraEnv` | `[]` | Extra environment variables for the backend workloads (a list of env objects) |
+| `ingress.*` | enabled, `nginx`, host `orbit.example.com` | Annotations keep SSE buffering disabled. `ingress.tls.enabled` with `ingress.tls.secretName` turns on TLS |
+| `vault.*` | disabled | Sets `VAULT_ADDR` only; no component reads it yet |
 
 The chart requires no cluster-admin permissions and creates a namespaced ServiceAccount.
 
@@ -161,27 +222,30 @@ Image tags default to the chart `appVersion`, so `--version <version>` pulls `or
 `--set api.tag=…`, `worker.tag`, `web.tag`, `launcher.tag`, `opencodeWorker.tag` or
 `piWorker.tag`.
 
-The chart requires no cluster-admin permissions: it creates a namespaced ServiceAccount
-with token automounting disabled and namespaced Deployments/Services/Ingress only.
+The chart requires no cluster-admin permissions. It creates namespaced resources only: a
+ServiceAccount with token automounting disabled for the API, web and workers, and a
+separate ServiceAccount with a Role for the launcher.
 Vault integration is env wiring only (`VAULT_ADDR`); the Vault secret backend lands in a
 later phase.
 
-## Kubernetes job-per-execution
+## Kubernetes workloads per launch
 
-The optional launcher (`launcher.enabled=true`) creates workloads in the target
-namespace:
+The launcher (`launcher.enabled=true`) creates workloads in the release namespace:
 
-- **Long-lived worker profiles** are started as a `Pod` (one worker per launch).
-- **Single-execution launches** are started as a `Job` with `restartPolicy: Never`,
+- **Long-lived worker profiles** start as a `Deployment` (one worker per launch), so
+  Kubernetes recreates the pod after eviction or node maintenance.
+- **Single-execution launches** start as a `Job` with `restartPolicy: Never`,
   `backoffLimit: 0` and `ttlSecondsAfterFinished: 300`, so the pod is isolated per
   execution and cleaned up automatically.
 
-The launcher only needs `get/list/create/delete` on `pods` and `get` on `secrets` in its
-namespace (see [kubernetes-launcher.md](kubernetes-launcher.md)). The control plane
-never receives cluster credentials.
+Each launch also gets a Secret (`<workload>-env`) that holds the worker token and the
+profile's environment values; it is owned by the workload and deleted with it. The
+launcher's Role (pods, pods/log, deployments, jobs and write-only access to secrets) is
+listed in [kubernetes-launcher.md](kubernetes-launcher.md). The control plane never
+receives cluster credentials.
 
 The base worker can also run the harness in a local Docker container per execution
-(`ORBIT_EXECUTION_DRIVER=docker`).
+(`ORBIT_EXECUTION_DRIVER=docker`, with `ORBIT_EXECUTION_IMAGE`).
 
 ## Building a custom worker image
 
@@ -218,8 +282,8 @@ ENTRYPOINT ["/usr/local/bin/orbit-worker"]
 |---|---|---|
 | `ORBIT_API_URL` | yes | Control plane URL (e.g. `http://orbit-api:8080`) |
 | `ORBIT_WORKER_TOKEN` | yes | Worker auth token. Platform workers get one per launch; custom workers use `POST /api/v1/worker-tokens` or a profile bootstrap manifest. |
-| `ORBIT_WORKER_HARNESSES` | yes | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`) |
-| `ORBIT_WORKER_TARGET` | yes | `local`, `docker`, or `kubernetes` (must match agent placement) |
+| `ORBIT_WORKER_HARNESSES` | no | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`). Default: all kinds; set it explicitly |
+| `ORBIT_WORKER_TARGET` | no | `local` (default), `docker`, or `kubernetes` (must match agent placement) |
 | `ORBIT_WORKSPACE_ROOT` | no | Writable scratch dir (default `/tmp/orbit-workspaces`) |
 | `ORBIT_WORKER_POLL_MS` | no | Poll interval in ms (default `1000`) |
 | `ORBIT_WORKER_CONCURRENCY` | no | Max concurrent executions (default `4`) |
@@ -230,8 +294,7 @@ ENTRYPOINT ["/usr/local/bin/orbit-worker"]
 
 Pre-built binaries are attached to every GitHub release:
 
-- `orbit-worker-linux-amd64` — x86_64 Linux
-- `orbit-worker-linux-arm64` — ARM64 Linux
+- `orbit-worker-linux-amd64` (x86_64 Linux). No other platform is built.
 
 Or build from source:
 
@@ -248,19 +311,114 @@ will be claimed automatically.
 
 ## Production checklist
 
-The default Compose file and `values.yaml` are for local/test use. Before exposing ORBIT
-on a reachable host or cluster, override at least:
+The default Compose file and `values.yaml` are for local and test use. Before exposing
+ORBIT on a reachable host or cluster, override at least:
 
 | Area | Required override |
 |---|---|
-| Auth | `auth.mode=oidc` with issuer/audience (see `values-prod.example.yaml`); never `dev` auth or `allowAnonymous`. The chart fails to render dev + anonymous + ingress unless `auth.acknowledgeInsecureDev=true` (throwaway clusters only). |
-| Environment | `platform.environment=production`; the chart then rejects `auth.mode=dev` and the default bundled Postgres password. |
-| Database | `externalDatabase.enabled=true` (preferred), or a non-default `postgresql.password` for the bundled instance. |
-| Launcher | A random `launcher.token` / `launcher-token` key in the existing Secret (`openssl rand -base64 36`). In Compose set `ORBIT_LAUNCHER_TOKEN`; the launcher port is not published. |
-| Ingress | `ingress.tls.enabled=true` with a valid certificate Secret; `https://` in `platform.corsOrigins` and `platform.publicBaseUrl`. |
-| Master key | Provide your own `secrets.masterKey` / `ORBIT_MASTER_KEY` (see issue #107 and ADR 0004; unchanged by this checklist). |
-| Seed data | `platform.seedDemo=false`. |
+| Auth | `auth.mode=oidc` with issuer, audience and `jwksUrl` (see `values-prod.example.yaml`); never `dev` auth or `allowAnonymous`. The chart fails to render dev auth with anonymous access behind the ingress unless `auth.acknowledgeInsecureDev=true` (throwaway clusters only) |
+| Environment | `platform.environment=production`. The chart then rejects `auth.mode=dev`, the published development master key and the default bundled Postgres password. The API itself refuses `ORBIT_AUTH_MODE=dev`, the development master key and the in-memory event bus when `ORBIT_ENV=production` |
+| Database | `externalDatabase.enabled=true` (preferred), or a non-default `postgresql.password` for the bundled instance |
+| Master key | Your own `secrets.masterKey` or `master-key` in `secrets.existingSecret` (`openssl rand -base64 32`; see ADR 0004) |
+| Launcher | A random `launcher.token` or `launcher-token` key in the existing Secret (`openssl rand -base64 36`). In Compose set `ORBIT_LAUNCHER_TOKEN`; the launcher port is not published |
+| Launcher exposure | `networkPolicy.enabled=true` on a CNI that enforces it, so only the API pods reach the launcher (port 8090) |
+| Worker secrets | Keep `launcher.authSecrets` as narrow as your auth Secret names allow. Profiles may mount only matching Secrets |
+| Outbound URLs | `outbound.allowPrivate=false` unless you run private model servers, and list the exceptions in `outbound.allowedHosts` |
+| Ingress | `ingress.tls.enabled=true` with a valid certificate Secret; `https://` in `platform.corsOrigins` and `platform.publicBaseUrl` |
+| Seed data | `platform.seedDemo=false` |
+| Retention | Decide `platform.archiveAfterDays` and `platform.auditRetentionDays` |
 
-Compose is not a production target: it binds every published port to `127.0.0.1`
-(Postgres 5432, NATS 4222, API 8080, web 3000) and does not publish the NATS monitor or
-the launcher. Do not rebind them to other interfaces while dev defaults are in use.
+Compose is not a production target. It binds only Postgres (5432) and NATS (4222) to
+`127.0.0.1`. The API (8080) and the web app (3000) listen on all interfaces and run dev
+auth, because worker containers started by the launcher reach the API through
+`host.docker.internal`. The NATS monitor and the launcher are not published. Do not run
+the Compose stack on a host reachable from an untrusted network.
+
+## Environment variables
+
+The Helm chart sets these for you; set them directly for Compose or a native run. The
+Compose files and `.env.example` in the repository root show working development values.
+Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explained in
+[oidc.md](oidc.md).
+
+### API (`orbit-api`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORBIT_ENV` | `development` | `production` enables the refusals listed in the checklist and JSON logs |
+| `ORBIT_HTTP_ADDR` | `0.0.0.0:8080` | Listen address |
+| `ORBIT_DATABASE_URL` | local development URL | PostgreSQL connection URL. Alternatively `ORBIT_DATABASE_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` and `_SSLMODE` (default `require`) |
+| `ORBIT_DB_MAX_CONNECTIONS` | `10` | Pool size |
+| `ORBIT_DB_AUTO_MIGRATE` | `true` | Apply migrations at startup |
+| `ORBIT_MASTER_KEY` | development key | Base64 32-byte key that encrypts stored credentials. Required in production |
+| `ORBIT_EVENTS_DRIVER` | `memory` | `nats` or `memory`. `memory` is refused in production |
+| `ORBIT_NATS_URL` | `nats://localhost:4222` | NATS server |
+| `ORBIT_NATS_STREAM` | `ORBIT` | JetStream stream name |
+| `ORBIT_NATS_STREAM_MAX_BYTES` | 1 GiB | Stream size cap in bytes; `-1` removes the cap |
+| `ORBIT_EVENTS_MEMORY_CAPACITY` | `4096` | Buffer size of the in-memory event bus |
+| `ORBIT_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `ORBIT_PUBLIC_BASE_URL` | `http://localhost:8080` | Externally visible URL |
+| `ORBIT_BODY_LIMIT_BYTES` | `2097152` | Maximum request body |
+| `ORBIT_SEED_DEMO` | `true` | Seed demo data |
+| `ORBIT_SEED_WORKER_PROFILE` | `true` | Seed a launchable mock worker profile |
+| `ORBIT_DEFAULT_ORG_SLUG`, `ORBIT_DEFAULT_ORG_NAME` | `orbit`, `ORBIT` | Default organization |
+| `ORBIT_WORKER_API_URL` | `http://orbit-api:8080` | API URL that launched workers use |
+| `ORBIT_LAUNCHER_URL`, `ORBIT_LAUNCHER_TOKEN` | unset | Launcher address and shared bearer token. Without a URL, launching is unavailable |
+| `ORBIT_IMAGE_PREFIX`, `ORBIT_IMAGE_TAG` | `ghcr.io/opsifyhq/orbit`, `latest` | Default image for worker profiles that name none |
+| `ORBIT_CA_SECRET_NAME`, `ORBIT_CA_SECRET_KEY` | unset, `ca-bundle.crt` | Custom CA Secret mounted into launched workers |
+| `ORBIT_WORKER_AUTH_SECRETS` | `orbit-opencode-auth*,orbit-pi-auth*` | Allowlist for a profile's `authSecretName` (also read by the launcher) |
+| `ORBIT_ARCHIVE_AFTER_DAYS` | `30` | Archive terminal runs older than this; `0` disables |
+| `ORBIT_AUDIT_RETENTION_DAYS` | `0` | Delete audit entries older than this; `0` keeps them |
+| `ORBIT_EXECUTION_TIMEOUT_GRACE_SECONDS` | `300` | Slack added to a run's timeout before the platform ends a run that is still `running` |
+| `ORBIT_WORKER_STALE_RETENTION_HOURS` | `24` | Hours a worker heartbeat row is kept after the worker disappears (minimum 1) |
+| `ORBIT_MAX_APPROVAL_WAIT_SECONDS` | `3600` | Most time a run may wait for approvals |
+| `ORBIT_OUTBOUND_ALLOW_PRIVATE` | `true` | Allow private address ranges in provider, output and work-source URLs |
+| `ORBIT_OUTBOUND_ALLOWED_HOSTS` | empty | Hostnames, IPs or CIDRs exempt from the outbound block |
+| `ORBIT_LICENSE`, `ORBIT_LICENSE_FILE` | unset | Licence token inline or as a file (`/etc/orbit/license.jwt` is also checked). See [licensing.md](licensing.md) |
+| `ORBIT_LOG_FORMAT` | `text` (`json` in production) | Log format |
+| `ORBIT_ALLOW_API_TOKENS` | `true` | Set `false` to reject API tokens (`orbit_sk_…`) |
+| `ORBIT_AUTH_MODE` and `ORBIT_DEV_*` | `dev` | See [local.md](local.md). `ORBIT_DEV_USER_ROLE` (default `owner`) sets the dev user's role |
+
+### Worker (`orbit-worker`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORBIT_API_URL` | `http://localhost:8080` | Control plane URL |
+| `ORBIT_WORKER_TOKEN` | required | Scoped worker token |
+| `ORBIT_WORKER_HARNESSES`, `ORBIT_WORKER_TARGET`, `ORBIT_WORKER_PROFILE_ID` | see "Required environment variables" above | Claimed harnesses, placement, profile |
+| `ORBIT_WORKER_POLL_MS` | `1000` | Poll interval (the chart and Compose set 500) |
+| `ORBIT_WORKER_CONCURRENCY` | `4` | Concurrent executions |
+| `ORBIT_WORKER_HEARTBEAT_SECONDS` | `10` | Heartbeat interval (minimum 2) |
+| `ORBIT_WORKER_SHUTDOWN_GRACE_SECONDS` | `15` | Time to report running work after SIGTERM |
+| `ORBIT_WORKSPACE_ROOT` | `/tmp/orbit-workspaces` | Scratch directory |
+| `ORBIT_EXECUTION_DRIVER` | `process` | `process` or `docker` (a container per execution) |
+| `ORBIT_EXECUTION_IMAGE`, `ORBIT_EXECUTION_IMAGE_<HARNESS>` | unset | Image for the docker driver; the per-harness form (for example `ORBIT_EXECUTION_IMAGE_OPENCODE`) wins |
+| `ORBIT_DOCKER_BIN` | `docker` | Docker CLI used by the docker driver |
+| `ORBIT_DISPATCH_REWRITE_HOSTS` | on | Set `false` to stop rewriting `localhost` to `host.docker.internal` for dispatched containers |
+| `ORBIT_MCP_BROKER_BIN` | `/usr/local/bin/orbit-worker` | Tool broker command; see [local.md](local.md) |
+| `ORBIT_MAX_APPROVAL_WAIT_SECONDS` | `3600` | Same budget as above |
+
+### Launcher (`orbit-launcher`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORBIT_LAUNCHER_TOKEN` | required | Bearer token the API presents |
+| `ORBIT_LAUNCHER_ADDR` | `0.0.0.0:8090` | Listen address |
+| `ORBIT_LAUNCHER_NAMESPACE` | `orbit` | Namespace for workloads |
+| `ORBIT_LAUNCHER_KUBECTL`, `ORBIT_LAUNCHER_DOCKER` | `kubectl`, `docker` | CLI binaries |
+| The remaining launcher variables | | Listed in [kubernetes-launcher.md](kubernetes-launcher.md) and [local.md](local.md) |
+
+### Web (`orbit-web`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORBIT_API_INTERNAL_URL` | `http://localhost:8080` | Server-side proxy target for `/api/*` |
+| `ORBIT_WEB_DEV_TOKEN` | unset | Bearer token the proxy injects in dev auth mode |
+| `NEXT_PUBLIC_ORBIT_API_URL` | empty | Browser-reachable API URL for split-domain setups; empty uses the same-origin proxy. Compiled into the bundle at build time |
+| `NEXT_PUBLIC_ORBIT_DEV_TOKEN` | unset | Development token compiled into the bundle; do not use outside local development |
+
+Some variables are set by the platform and are not for operators: the worker environment
+(`ORBIT_WORKER_ID`, `ORBIT_SINGLE_EXECUTION_ID`, `ORBIT_BROKER_URL`, `ORBIT_BROKER_TOKEN`),
+the git credential variables (`ORBIT_GIT_TOKEN`, `ORBIT_GIT_USERNAME`) and the harness
+provider variables (`ORBIT_PROVIDER_API_KEY_*`, `ORBIT_PROVIDER_HEADER_*`). Variables for
+tests are listed in [testing.md](testing.md).

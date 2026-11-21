@@ -23,12 +23,16 @@ token (inline values are not recommended for production).
 
 ## Renew
 
-1. Replace the key in the Secret (`kubectl -n orbit create secret ... --dry-run=client -o yaml | kubectl apply -f -`).
-2. Kubernetes updates the mounted file within ~60s; the API hot-reloads it. No restart
-   needed when the license is delivered as a mounted file.
+1. Replace the key in the Secret
+   (`kubectl -n orbit create secret ... --dry-run=client -o yaml | kubectl apply -f -`).
+2. Restart the API (`kubectl -n orbit rollout restart deployment/orbit-api`). The chart
+   mounts the licence file with `subPath`, and Kubernetes does not update subPath mounts
+   when a Secret changes, so the running pod keeps the old file until it is replaced.
 
-If the license was provided inline (`license.value` / `ORBIT_LICENSE`), restart the API
-or run `helm upgrade`.
+The API can reload a licence file without a restart (`LicenseStatus::reload`), but that
+only helps when the file is mounted as a directory, as in a custom Compose or Kubernetes
+setup. With the chart, always restart. The same applies to an inline value
+(`license.value` / `ORBIT_LICENSE`): restart the API or run `helm upgrade`.
 
 ## Status
 
@@ -116,8 +120,31 @@ a JSON object of `kid -> base64` for testing/custom builds.
 
 The private signing key is vendor-side only (offline/HSM) and must never be committed.
 
-## Current gating
+## What a licence enables today
 
-`settings:write` custom role creation/update/deletion and custom-role assignment require
-`custom_roles`. Other #15 features (resource permissions, shared connections, quotas,
-marketplace) are not implemented yet.
+The signed `features` list can name six features. Three are enforced by the API; a
+request that needs a feature the licence lacks is refused:
+
+| Feature | Enforced for |
+|---|---|
+| `custom_roles` | Creating, changing and deleting custom roles, and assigning one to a user |
+| `teams` | Access teams and their members (`/api/v1/teams`) and OIDC group-to-team sync |
+| `resource_permissions` | Changing sharing: owner, team and visibility of a resource (`/api/v1/sharing/...`) |
+| `shared_connections` | Not enforced yet |
+| `quotas` | Not enforced yet |
+| `marketplace` | Not enforced yet |
+
+Reading shared resources, exports, running executions and everything in the community
+tier stay available without a licence.
+
+Numeric `limits` in a licence are enforced too. When a limit is reached the API answers
+`402` with code `license_limit`:
+
+| Limit | Checked when |
+|---|---|
+| `seats` | A new user is auto-provisioned at OIDC login |
+| `agents` | An agent is created |
+| `workers` | A worker profile is created or enabled |
+| `executions_per_day` | An execution, a team run or a team queue item is started |
+
+A licence without a limit leaves that resource unlimited.

@@ -161,7 +161,7 @@ launcher:
       cpu: 500m
       memory: 256Mi
 
-# Outbound policy for provider/output/work-source URLs (see docs/guide/outbound-network-policy.md).
+# Outbound policy for provider/output/work-source URLs (see docs/guide/providers.md, "Outbound network policy").
 # Loopback, link-local and cloud-metadata addresses are always blocked unless listed in
 # `allowedHosts`; metadata addresses can never be allowed.
 outbound:

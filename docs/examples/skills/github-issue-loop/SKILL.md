@@ -1,6 +1,18 @@
+---
+name: GitHub issue loop
+slug: github-issue-loop
+description: Resolves one agent-ready GitHub issue per team run, from branch to pull request with green checks
+---
 # GitHub issue loop
 
 Use this skill when the team goal is to resolve one GitHub issue in a repository.
+
+This skill needs a native-mode agent team whose primary agent uses the OpenCode harness,
+with builder, tester and reviewer agents as the subagents. It also needs a GitHub
+connection that allows the capabilities behind the tools named below (`issues.list`,
+`issues.get`, `issues.update`, `pulls.create`, `checks.list`, `repo.commit` and
+`repo.push`). To use it, import this file as a skill (`POST /api/v1/import`, or the
+**Import** button on Skills) and attach it to the team.
 
 ## Rules
 
