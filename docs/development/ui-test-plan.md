@@ -85,11 +85,19 @@ Then:
 ## Flow 5 — Credentials, providers, and audit (4 min)
 
 ### Models
-1. **Models → Add provider**: name `Broken Gateway`, kind OpenAI-compatible,
-   base URL `https://example.invalid/v1`, model `test`, credential `sk-test`.
-2. Create → card shows `credential configured (encrypted)`; never the value.
-3. **Test** → graceful failure toast (DNS/HTTP), not a crash.
-4. Edit → replace credential; confirm it still never appears in the response or UI.
+1. **Model providers**: same layout as Agents (search, type filter with counts, status
+   column, row checkboxes with **Change access**, count).
+2. **Add provider** opens Provider Studio: type OpenAI-compatible, Connection name `Broken
+   Gateway`, base URL `https://example.invalid/v1`, credential `sk-test`. **Test
+   connection** shows "Test failed" with the reason. Saving without a default model jumps
+   to Models; set `test` and save.
+3. The provider page shows **Credential: Stored, encrypted**, never the value. **Test** →
+   status **Test failed** and a callout; the list shows the same until reload.
+4. Edit → change the default model and save (a tested provider keeps its catalog). Change
+   the base URL without a credential: Connection asks for it again. Replace the credential;
+   it never appears in the response or UI.
+5. ⋯ **Disable** → status Disabled and a callout with **Enable**. At 360 px rows show the
+   type on the meta line and Save is pinned above the tab bar.
 
 ### Connections
 5. **Connectors** list: same layout as Agents (search, **All / Connected / Check failed / Not

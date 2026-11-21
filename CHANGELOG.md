@@ -8,6 +8,23 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Model providers follow the Agents pattern: a registry list (search, type filter with
+  counts, status, default model and catalog size, bulk **Change access**, count), a page per
+  provider (`/models/<id>`) with Test, Edit, Disable, export and delete, and Provider Studio
+  (`/models/new`, `/models/<id>/edit`: Type with presets, Connection with **Test
+  connection**, Models, Limits, Access control) instead of the dialog. Test results are
+  shared between the list and the page for the session. The catalog can now be edited and
+  saved for every provider kind.
+
+### Fixed
+
+- Editing an OpenAI-compatible or Anthropic provider after a successful **Test** failed
+  with "unknown field `settings`": Test stores the discovered models in
+  `config.settings.models`, which those kinds rejected. Every kind now accepts `settings`.
+- Creating a provider with `enabled: false` created it enabled.
+
 ## [0.26.0] - 2026-11-21
 
 ### Added

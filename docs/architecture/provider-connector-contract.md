@@ -44,7 +44,8 @@ Config documents use camelCase keys and reject unknown fields (`deny_unknown_fie
     "vision": false,
     "embeddings": false,
     "modelsEndpoint": true
-  }
+  },
+  "settings": { "models": ["qwen3-coder"] }       // optional, ORBIT metadata (see below)
 }
 ```
 
@@ -59,7 +60,8 @@ credential instead.
   "model": "claude-…",
   "secretRef": "provider/9f0c…",
   "contextWindow": 200000,
-  "maxOutputTokens": 8192
+  "maxOutputTokens": 8192,
+  "settings": { "models": ["claude-…"] }   // optional, ORBIT metadata (see below)
 }
 ```
 
@@ -74,6 +76,11 @@ credential instead.
   "settings": {}
 }
 ```
+
+`settings` is ORBIT metadata that is never sent to the endpoint or the harness. Every
+kind accepts it; `settings.models` is the model catalog that agent and worker model pickers
+offer. **Test** on a saved provider writes the discovered models there, and the provider
+form edits it.
 
 Capabilities are **explicit**: adapters must not assume every OpenAI-compatible endpoint
 supports tools, streaming, JSON mode or `/models`. Unsupported features degrade

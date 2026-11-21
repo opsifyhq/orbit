@@ -34,7 +34,7 @@ export function BulkAccessDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  resource: "agents" | "agent_teams" | "skills" | "connections";
+  resource: "agents" | "agent_teams" | "skills" | "connections" | "providers";
   ids: string[];
   onDone: () => void;
 }) {

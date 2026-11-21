@@ -110,7 +110,7 @@ header row (`bg-subtle text-xs font-medium text-muted-foreground`) appears once 
 (`ExecutionListHeader`, the agents list); compact previews such as Overview's recent list omit it.
 Use cards in a grid only for a catalogue of unlike things (connectors, harnesses).
 
-**Registry lists** (Agents, Agent teams, Skills, Team runs, Connectors, Outputs) share `components/ui/resource-list.tsx`:
+**Registry lists** (Agents, Agent teams, Skills, Team runs, Connectors, Outputs, Model providers) share `components/ui/resource-list.tsx`:
 `ListToolbar` with `SearchField` (always shown, left) and a `Segmented` filter with counts;
 `SelectionBar` once a row is ticked (select all shown, bulk actions, clear) — Agents and Skills
 use `BulkActionsBar` there so archive/delete stay available; `ListCard` whose

@@ -98,6 +98,10 @@ pub struct OpenAiCompatibleConfig {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub compat: ProviderCompat,
+    /// ORBIT metadata that is never sent to the endpoint, such as the model catalog
+    /// (`settings.models`) that Test stores and model pickers read.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub settings: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -112,6 +116,10 @@ pub struct AnthropicConfig {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// ORBIT metadata that is never sent to the endpoint, such as the model catalog
+    /// (`settings.models`) that Test stores and model pickers read.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub settings: serde_json::Value,
 }
 
 fn default_anthropic_base_url() -> String {
@@ -321,6 +329,35 @@ impl ResolvedModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_configs_keep_the_model_catalog() {
+        // Test on a saved provider stores the discovered models here; an edit that sends
+        // the stored config back must still validate.
+        for (kind, config) in [
+            (
+                ProviderKind::OpenAiCompatible,
+                serde_json::json!({
+                    "baseUrl": "https://gateway.example.com/v1",
+                    "model": "qwen",
+                    "settings": { "models": ["qwen", "llama"] }
+                }),
+            ),
+            (
+                ProviderKind::Anthropic,
+                serde_json::json!({
+                    "model": "claude-sonnet-4-5",
+                    "settings": { "models": ["claude-sonnet-4-5"] }
+                }),
+            ),
+        ] {
+            let report = validate_provider_config(kind, &config);
+            assert!(report.is_valid(), "{kind:?}: {report:?}");
+        }
+        let unknown =
+            serde_json::json!({ "baseUrl": "https://g.example/v1", "model": "q", "extra": 1 });
+        assert!(!validate_provider_config(ProviderKind::OpenAiCompatible, &unknown).is_valid());
+    }
 
     #[test]
     fn rejects_secret_headers() {

@@ -372,6 +372,7 @@ async fn secrets_are_encrypted_and_org_scoped_entities_work() {
             "openai_compatible",
             &serde_json::json!({ "baseUrl": "http://localhost:8000/v1", "model": "qwen" }),
             Some(reference),
+            true,
         )
         .await
         .unwrap();
@@ -396,6 +397,7 @@ async fn secrets_are_encrypted_and_org_scoped_entities_work() {
                 "model": "deepseek-v4-pro"
             }),
             None,
+            true,
         )
         .await
         .unwrap();
