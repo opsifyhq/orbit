@@ -76,7 +76,7 @@ export default function TeamRunsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Run", "Status", "Team", "Started"]}>
+          <ListCard columns={["Run", "Status", "Team", "Started"]} selectable={false}>
             {visible.map((run) => {
               const task = String(run.input.task ?? "") || "Agent team run";
               const team = teamName(run.teamId) ?? "Agent team";

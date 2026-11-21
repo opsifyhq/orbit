@@ -32,6 +32,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
+- Outputs use the same patterns as Agents and Connectors: a registry list (search, **All /
+  On / Off / Cannot send** filter, status, what each output sends, count), Output Studio at
+  `/outputs/new` and `/outputs/<id>/edit` (Destination, Trigger, Message with an example of
+  the message), and an output page with **Send test**, **Edit**, turn on/off and delete.
+  `/outputs/new?agent=<id>` or `?team=<id>` preselects what it applies to.
 - Archived agents can be restored (activate), as ADR 0013 already said: Restore is offered on
   the agent page and in the Archived filter.
 - Worker profile `env` is write-only: responses list variable names with `hasValue`, never
@@ -70,6 +75,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   section layout and capabilities grouped by effect.
 
 ### Fixed
+
+- Outputs now add their note (`template`) under the run summary, as the form always said;
+  it was stored but never sent. Agent run messages break the line after the task instead of
+  showing a literal `\n`, and generic webhooks report team runs as `team_run.<status>`
+  instead of `test`.
 
 - Connections "Test" works: the route was missing, a passing test could not be recorded (it
   wrote a status the database rejects, so one failed check left a connection unusable for

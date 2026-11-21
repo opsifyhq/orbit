@@ -373,8 +373,11 @@ pub async fn test_output(
     auth.require(Permission::SettingsWrite)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let output = load_managed_output(&state, &auth, &access, output_id).await?;
-    let text = "ORBIT test notification — your output is configured correctly.";
-    deliver(&state, &output, text, None, None).await?;
+    let text = with_note(
+        "ORBIT test notification — your output is configured correctly.".into(),
+        output.template.as_deref(),
+    );
+    deliver(&state, &output, &text, None, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -447,7 +450,10 @@ pub async fn send(
     let client = orbit_security::guarded_client(std::time::Duration::from_secs(15));
     let payload = if output.kind == "webhook" {
         serde_json::json!({
-            "event": execution.map(|e| format!("execution.{}", e.status)).unwrap_or_else(|| "test".into()),
+            "event": execution
+                .map(|e| format!("execution.{}", e.status))
+                .or_else(|| team_run.map(|run| format!("team_run.{}", run.status)))
+                .unwrap_or_else(|| "test".into()),
             "deliveryId": delivery_id,
             "text": text,
             "execution": execution.map(|e| serde_json::json!({
@@ -572,6 +578,7 @@ async fn attempt_delivery(state: &AppState, job: &OutputDeliveryJob) -> AttemptR
         .map(summary)
         .or_else(|| team_run.as_ref().map(team_summary))
         .unwrap_or_else(|| "ORBIT run finished".into());
+    let text = with_note(text, output.template.as_deref());
     match send(
         state,
         &output,
@@ -591,6 +598,15 @@ async fn attempt_delivery(state: &AppState, job: &OutputDeliveryJob) -> AttemptR
             };
             (outcome, error.status.map(i32::from), Some(error.message))
         }
+    }
+}
+
+/// Append the output's note (stored as `template`) after the run summary, as the UI
+/// promises. A blank note adds nothing.
+fn with_note(text: String, note: Option<&str>) -> String {
+    match note.map(str::trim).filter(|note| !note.is_empty()) {
+        Some(note) => format!("{text}\n\n{note}"),
+        None => text,
     }
 }
 
@@ -636,7 +652,7 @@ fn summary(execution: &ExecutionRecord) -> String {
         .unwrap_or_else(|| "completed".into());
     let output: String = output.chars().take(3000).collect();
     format!(
-        "{} {} — {}\\n{}",
+        "{} {} — {}\n{}",
         execution.agent_name,
         execution.status,
         execution
@@ -656,4 +672,26 @@ async fn guard_webhook_url(url: &str) -> Result<(), ApiError> {
         .map_err(|error| {
             ApiError::validation(vec![ValidationIssue::new("webhookUrl", error.to_string())])
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_note;
+
+    #[test]
+    fn note_is_appended_after_the_summary() {
+        assert_eq!(
+            with_note(
+                "Agent succeeded — task\nDone".into(),
+                Some("  Ping #release  ")
+            ),
+            "Agent succeeded — task\nDone\n\nPing #release"
+        );
+    }
+
+    #[test]
+    fn blank_note_adds_nothing() {
+        assert_eq!(with_note("summary".into(), None), "summary");
+        assert_eq!(with_note("summary".into(), Some("   ")), "summary");
+    }
 }

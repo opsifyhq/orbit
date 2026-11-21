@@ -8,9 +8,19 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 The Work wizard's **Then** step lists outputs configured for the selected agent/team before
 the run is created.
 
-**Outputs → New output**: name, kind, optional agent, events, incoming webhook URL,
-optional template and enabled toggle. **Test** sends a sample notification; edit leaves the
-URL blank to keep the existing one.
+**Outputs** lists every output with whether it will send: **On**, **Off**, or **Cannot
+send** (no webhook URL or no events). **New output** opens Output Studio:
+
+- **Destination**: Slack, Mattermost or Webhook, a name, and the incoming webhook URL
+  (write-only; leave it empty when editing to keep the stored one).
+- **Trigger**: every agent, one agent, or one agent team, and which results send a message
+  (succeeded, failed, cancelled).
+- **Message**: an optional note added under the run summary, an example of the message, and
+  whether the output is on.
+
+`/outputs/new?agent=<id>` or `?team=<id>` starts with that agent or team chosen. The output
+page has **Send test** (a test message, with the note), **Edit**, and **Turn off/on** and
+**Delete** under ⋯. Runs that finish while an output is off are not sent later.
 
 ## Create via API
 
@@ -24,7 +34,7 @@ curl -X POST "$API/api/v1/outputs" \
     "agentId": null,
     "events": ["succeeded", "failed"],
     "webhookUrl": "https://hooks.slack.com/services/...",
-    "template": "Release finished"
+    "template": "@release-team please review"
   }'
 ```
 
@@ -33,10 +43,15 @@ curl -X POST "$API/api/v1/outputs" \
 - `teamId`: one Agent Team; fires once when the team run finishes (not per child execution)
 - `events`: `succeeded`, `failed`, `cancelled` (default: all three)
 - `webhookUrl`: write-only; encrypted at rest and never returned
+- `template`: an optional note added under the run summary (plain text, no placeholders)
 
 For Slack/Mattermost use an **incoming webhook URL**. The body is `{"text": "..."}`.
 
-For `webhook`, ORBIT POSTs JSON with `event`, `text` and an `execution` object.
+The text is `<agent> <status> — <task>` (or `Agent team run <status> — <task>`), then up to
+3,000 characters of the output or error, then the note after a blank line.
+
+For `webhook`, ORBIT POSTs JSON with `event` (`execution.<status>`, `team_run.<status>` or
+`test`), `deliveryId`, `text`, and an `execution` or `teamRun` object.
 
 ## Test
 
@@ -75,5 +90,5 @@ Delivery is **at-least-once** and driven by a background outbox loop on every AP
 
 - List outputs: `GET /api/v1/outputs`; update/delete via `PATCH/DELETE /api/v1/outputs/{id}`.
 
-Not yet implemented: HMAC signing for generic webhooks, SSRF/private-network blocking,
-team scoping, a delivery-log UI, and template rendering beyond the built-in summary.
+Not yet implemented: HMAC signing for generic webhooks, a delivery log in the UI, and
+placeholders in the note.

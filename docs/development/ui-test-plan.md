@@ -244,6 +244,18 @@ approvals UI is still being finished.
 | `/settings` tabs | Account, API tokens, Single sign-on, Members and roles, Platform, Audit log; the open tab is in the URL hash |
 | Execution detail | Timeline with **Story / Everything** and **Follow**; type chips, tool/action text and effect filters with URL state (`?events=tools&tool=github_issues_list`), hidden count and clear, expandable `tool × N` groups (errors/approvals expanded); filters keep applying to live events and do not reorder them; Details rail with trigger, harness, duration, tokens and IDs; Input and Output each switch between Text and JSON and can be copied |
 
+## Flow 15 — Outputs (3 min)
+
+| Step | Expected |
+|---|---|
+| `/outputs` | Same layout as Agents: search, **All / On / Off / Cannot send** filter with counts, columns Output · Status · Sends · Updated, count under the list; the whole row opens the output |
+| New output | Output Studio with Destination / Trigger / Message; Create with no name or URL jumps to Destination and lists both; a loopback URL is refused by the server and Destination shows why |
+| Trigger | **Every agent / One agent / One agent team**; choosing one shows its picker; no events chosen blocks saving |
+| Message | The example updates with the note; for **Webhook** it shows the JSON body |
+| Output page | Status On, **Send test**, **Edit**, ⋯ **Turn off** (status Off and a callout with **Turn on**), **Delete output** returns to the list |
+| Edit | The URL field says a URL is stored; saving with it empty keeps it |
+| 360 px | Rows collapse to name, status and one meta line; Save is pinned above the tab bar |
+
 ## Negative and security checks
 
 - No secret value appears in HTML, JSON responses, execution events, logs, or tool output.
