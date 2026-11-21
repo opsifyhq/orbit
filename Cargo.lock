@@ -1586,6 +1586,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "croner",
+ "ed25519-dalek",
  "futures",
  "http",
  "http-body-util",
