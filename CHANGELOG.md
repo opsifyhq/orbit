@@ -54,6 +54,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   catch-all route, browser OIDC endpoints and worker-token operations, and use the correct
   `openai_compatible` provider value. A DB-free parity test and offline spec dump keep
   `pnpm api:generate` reproducible (#207).
+- Continuous runtimes now count `timed_out` and `rejected` executions towards the failure
+  backoff and 5-failure stop instead of resetting the counter, team-run advancement pages
+  through every running run instead of starving runs past the oldest 50, and audit
+  retention deletes in bounded batches under supervision and a cluster-wide advisory lock
+  (#208).
 
 ## [0.25.0] - 2026-11-20
 

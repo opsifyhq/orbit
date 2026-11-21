@@ -155,6 +155,8 @@ default list simply hides archived runs, and the UI can switch to Active/Archive
 `platform.auditRetentionDays` (`ORBIT_AUDIT_RETENTION_DAYS`, default `0`, which keeps
 audit logs forever) deletes audit log entries older than that window once a day. Unlike
 archiving, this permanently removes rows; set `0` if compliance requires indefinite retention.
+When enabled, one replica at a time deletes in 5,000-row batches under a cluster-wide
+advisory lock, so a large first run does not create a single long transaction or IO spike.
 
 Image tags default to the chart `appVersion`, so `--version <version>` pulls `orbit-*:<version>`
 — the same tags CI publishes for that release. Override per component with

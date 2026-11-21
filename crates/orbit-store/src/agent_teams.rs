@@ -228,10 +228,29 @@ impl Store {
         Ok(result.rows_affected())
     }
 
-    pub async fn list_running_team_runs(&self) -> StoreResult<Vec<TeamRun>> {
+    /// List running team runs in bounded keyset pages. `after` is the `(created_at, id)`
+    /// of the last row of the previous page. Paging instead of taking a fixed oldest-50
+    /// slice ensures every running run is reached, while each `advance` still works under
+    /// its own short lease instead of one long, wide lock.
+    pub async fn list_running_team_runs(
+        &self,
+        after: Option<(chrono::DateTime<Utc>, Uuid)>,
+        limit: i64,
+    ) -> StoreResult<Vec<TeamRun>> {
         Ok(sqlx::query_as::<_, TeamRun>(
-            "SELECT * FROM team_runs WHERE status = 'running' ORDER BY created_at ASC LIMIT 50",
+            r#"
+            SELECT * FROM team_runs
+            WHERE status = 'running'
+              AND ($3::boolean OR created_at > $1::timestamptz
+                   OR (created_at = $1::timestamptz AND id > $2::uuid))
+            ORDER BY created_at ASC, id ASC
+            LIMIT $4::bigint
+            "#,
         )
+        .bind(after.map(|(created_at, _)| created_at))
+        .bind(after.map(|(_, id)| id))
+        .bind(after.is_some())
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?)
     }

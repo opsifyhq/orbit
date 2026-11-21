@@ -67,16 +67,34 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            match team_state.store.list_running_team_runs().await {
-                Ok(runs) => {
-                    for run in runs {
-                        if let Err(error) = crate::handlers::teams::advance(&team_state, run).await
-                        {
-                            tracing::warn!(%error, "team run advance failed");
-                        }
+            // Walk every running run in bounded keyset pages. A fixed page of the oldest
+            // runs would starve newer runs as soon as more than TEAM_RUN_PAGE_SIZE of them
+            // were still running. Each run is still advanced under its own lease.
+            let mut cursor: Option<(chrono::DateTime<Utc>, uuid::Uuid)> = None;
+            loop {
+                let runs = match team_state
+                    .store
+                    .list_running_team_runs(cursor, TEAM_RUN_PAGE_SIZE)
+                    .await
+                {
+                    Ok(runs) => runs,
+                    Err(error) => {
+                        tracing::warn!(%error, "team run polling failed");
+                        break;
+                    }
+                };
+                if runs.is_empty() {
+                    break;
+                }
+                for run in &runs {
+                    if let Err(error) =
+                        crate::handlers::teams::advance(&team_state, run.clone()).await
+                    {
+                        tracing::warn!(%error, "team run advance failed");
                     }
                 }
-                Err(error) => tracing::warn!(%error, "team run polling failed"),
+                let last = runs.last().expect("page is not empty");
+                cursor = Some((last.created_at, last.id));
             }
             if let Err(error) = crate::handlers::teams::reconcile_team_outcomes(&team_state).await {
                 tracing::warn!(%error, "team outcome reconciliation failed");
@@ -151,9 +169,14 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
             }
         },
     ));
-    spawn_audit_retention(state.clone());
+    if let Some(handle) = spawn_audit_retention(&state) {
+        handles.push(handle);
+    }
     handles
 }
+
+/// Number of running team runs fetched (and advanced) per query in one tick.
+const TEAM_RUN_PAGE_SIZE: i64 = 50;
 
 /// Parse `ORBIT_AUDIT_RETENTION_DAYS`. Unset, empty, `0` or invalid -> keep audit logs
 /// forever (`None`). Deleting audit history is opt-in so an upgrade never prunes it.
@@ -174,27 +197,47 @@ fn audit_retention_days(raw: Option<&str>) -> Option<u32> {
     }
 }
 
-/// Delete audit log rows older than `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0` keeps
-/// everything). Runs daily; the delete is idempotent so multiple API replicas are safe.
-fn spawn_audit_retention(state: AppState) {
-    let Some(days) =
-        audit_retention_days(std::env::var("ORBIT_AUDIT_RETENTION_DAYS").ok().as_deref())
-    else {
-        return;
-    };
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(24 * 3600));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let cutoff = Utc::now() - chrono::Duration::days(days as i64);
-            match state.store.prune_audit_logs(cutoff).await {
-                Ok(0) => {}
-                Ok(count) => tracing::info!(count, days, "pruned old audit log entries"),
-                Err(error) => tracing::warn!(%error, "audit log pruning failed"),
+/// Start the daily audit retention loop when retention is enabled. It is supervised like
+/// every other loop: a panic is logged and restarted, and shutdown cancels it.
+fn spawn_audit_retention(state: &AppState) -> Option<JoinHandle<()>> {
+    let days = audit_retention_days(std::env::var("ORBIT_AUDIT_RETENTION_DAYS").ok().as_deref())?;
+    Some(supervise(
+        "audit_retention",
+        state,
+        move |retention_state| {
+            async move {
+                // Run shortly after start, then daily.
+                let mut ticker = tokio::time::interval(Duration::from_secs(24 * 3600));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    ticker.tick().await;
+                    audit_retention_tick(&retention_state, days).await;
+                }
             }
+        },
+    ))
+}
+
+/// Prune old audit rows under the cluster-wide advisory lock. Only one replica deletes
+/// at a time; the store deletes in bounded batches.
+async fn audit_retention_tick(state: &AppState, days: u32) {
+    let mut lock = match state.store.try_lock_audit_retention().await {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            tracing::debug!("audit log pruning skipped: another replica holds the lock");
+            return;
         }
-    });
+        Err(error) => {
+            tracing::warn!(%error, "audit log retention lock failed");
+            return;
+        }
+    };
+    let cutoff = Utc::now() - chrono::Duration::days(days as i64);
+    match lock.prune(cutoff).await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, days, "pruned old audit log entries"),
+        Err(error) => tracing::warn!(%error, "audit log pruning failed"),
+    }
 }
 
 /// Archive terminal executions, team runs and worker launches older than the configured
@@ -734,6 +777,35 @@ fn runtime_tick_key(runtime_id: uuid::Uuid, last_execution_id: Option<uuid::Uuid
     }
 }
 
+/// Why a terminal execution counts as a runtime failure. Only successes and explicit
+/// cancellations are non-failures: `timed_out` and `rejected` must count towards the stop
+/// threshold just like `failed`, or a stuck runtime keeps burning quota forever.
+fn runtime_failure_reason(status: &str, error: Option<&serde_json::Value>) -> Option<String> {
+    let parsed = ExecutionStatus::parse(status)?;
+    if !parsed.is_terminal()
+        || matches!(
+            parsed,
+            ExecutionStatus::Succeeded | ExecutionStatus::Cancelled
+        )
+    {
+        return None;
+    }
+    let detail = error.map(|error| error.to_string());
+    let reason = match parsed {
+        ExecutionStatus::Failed => detail.unwrap_or_else(|| "execution failed".into()),
+        ExecutionStatus::TimedOut => match detail {
+            Some(detail) => format!("execution timed out: {detail}"),
+            None => "execution timed out".into(),
+        },
+        ExecutionStatus::Rejected => match detail {
+            Some(detail) => format!("execution rejected: {detail}"),
+            None => "execution rejected".into(),
+        },
+        other => format!("execution finished with status {}", other.as_str()),
+    };
+    Some(reason)
+}
+
 /// Advance continuous agent runtimes: create the next execution when the previous one
 /// is terminal, and stop runtimes whose agent is no longer active. Every runtime is
 /// handled independently: a failure is recorded on that runtime (with backoff, or a stop
@@ -840,19 +912,15 @@ async fn advance_runtime(
     else {
         return Ok(());
     };
-    let last_failed = last
-        .as_ref()
-        .filter(|execution| execution.status == "failed");
-    if let Some(failed) = last_failed {
+    let last_failure = last.as_ref().and_then(|execution| {
+        runtime_failure_reason(&execution.status, execution.error.as_ref())
+            .map(|reason| (execution.id, reason))
+    });
+    if let Some((failed_id, reason)) = &last_failure {
         // First time this failure is seen: count it and back off. Once accounted for, the
         // next due tick falls through and creates a new execution.
-        if runtime.failed_execution_id != Some(failed.id) {
+        if runtime.failed_execution_id != Some(*failed_id) {
             let failures = runtime.consecutive_failures.saturating_add(1);
-            let reason = failed
-                .error
-                .as_ref()
-                .map(|error| error.to_string())
-                .unwrap_or_else(|| "execution failed".into());
             let (stop, message, next_run_at) = if failures >= RUNTIME_MAX_CONSECUTIVE_FAILURES {
                 (
                     true,
@@ -862,7 +930,7 @@ async fn advance_runtime(
             } else {
                 (
                     false,
-                    reason,
+                    reason.clone(),
                     chrono::Utc::now()
                         + runtime_failure_backoff(runtime.interval_seconds, failures),
                 )
@@ -872,7 +940,7 @@ async fn advance_runtime(
                 .record_agent_runtime_failure(
                     runtime.id,
                     stop,
-                    failed.id,
+                    *failed_id,
                     failures,
                     &message,
                     next_run_at,
@@ -1018,7 +1086,7 @@ async fn advance_runtime(
         .record_agent_runtime_launch(
             runtime.id,
             execution.id,
-            last_failed.is_none(),
+            last_failure.is_none(),
             chrono::Utc::now() + chrono::Duration::seconds(runtime.interval_seconds as i64),
         )
         .await?;
@@ -1034,7 +1102,7 @@ async fn advance_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::audit_retention_days;
+    use super::{audit_retention_days, runtime_failure_reason};
 
     #[test]
     fn audit_retention_parsing() {
@@ -1043,5 +1111,40 @@ mod tests {
         assert_eq!(audit_retention_days(Some("90")), Some(90));
         assert_eq!(audit_retention_days(Some("0")), None);
         assert_eq!(audit_retention_days(Some("abc")), None);
+    }
+
+    #[test]
+    fn runtime_counts_timeouts_and_rejections_as_failures() {
+        let boom = serde_json::json!("boom");
+        assert_eq!(
+            runtime_failure_reason("failed", Some(&boom)).as_deref(),
+            Some("\"boom\"")
+        );
+        assert_eq!(
+            runtime_failure_reason("timed_out", None).as_deref(),
+            Some("execution timed out")
+        );
+        assert!(runtime_failure_reason("timed_out", Some(&boom))
+            .unwrap()
+            .contains("execution timed out"));
+        assert_eq!(
+            runtime_failure_reason("rejected", None).as_deref(),
+            Some("execution rejected")
+        );
+    }
+
+    #[test]
+    fn runtime_does_not_count_successes_or_in_flight_runs_as_failures() {
+        for status in [
+            "succeeded",
+            "cancelled",
+            "queued",
+            "dispatched",
+            "running",
+            "awaiting_approval",
+            "unknown",
+        ] {
+            assert_eq!(runtime_failure_reason(status, None), None, "{status}");
+        }
     }
 }

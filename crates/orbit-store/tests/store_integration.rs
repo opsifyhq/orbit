@@ -1342,6 +1342,59 @@ async fn team_output_enqueue_uses_the_partial_unique_index() {
 }
 
 #[tokio::test]
+async fn all_running_team_runs_are_reachable_by_keyset_pages() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_agent_team(
+            org,
+            &format!("Paged Team {}", uuid::Uuid::now_v7()),
+            "keyset pagination",
+            &serde_json::json!({ "steps": [] }),
+            Some(user),
+        )
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for step in 0..60 {
+        let run = store
+            .create_team_run(
+                org,
+                team.id,
+                &serde_json::json!({ "step": step }),
+                Some(user),
+            )
+            .await
+            .unwrap();
+        expected.push(run.id);
+    }
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = store.list_running_team_runs(cursor, 17).await.unwrap();
+        assert!(page.len() <= 17);
+        if page.is_empty() {
+            break;
+        }
+        let last = page.last().expect("page is not empty");
+        cursor = Some((last.created_at, last.id));
+        seen.extend(page.into_iter().map(|run| run.id));
+        pages += 1;
+        assert!(pages < 100, "keyset pagination must terminate");
+    }
+    for id in expected {
+        assert!(
+            seen.contains(&id),
+            "running team run {id} was never returned"
+        );
+    }
+}
+
+#[tokio::test]
 async fn env_mappings_and_outputs_round_trip() {
     let Some(store) = test_store().await else {
         return;
@@ -2273,6 +2326,76 @@ async fn prune_audit_logs_removes_only_rows_older_than_cutoff() {
     let (rows, _) = store.list_audit_logs(org, 10, None, None).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].action, "test.recent");
+}
+
+#[tokio::test]
+async fn prune_audit_logs_deletes_in_bounded_batches() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, _) = seed_org(&store).await;
+    let mut old_ids = Vec::new();
+    for i in 0..5 {
+        store
+            .append_audit_log(
+                org,
+                "system",
+                None,
+                None,
+                &format!("test.batch.{i}"),
+                None,
+                None,
+                serde_json::json!({}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let (rows, _) = store.list_audit_logs(org, 10, None, None).await.unwrap();
+    old_ids.extend(rows.into_iter().take(4).map(|row| row.id));
+    for id in &old_ids {
+        sqlx::query("UPDATE audit_logs SET created_at = now() - interval '2 days' WHERE id = $1")
+            .bind(*id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+
+    // Batch size 2 means two full batches plus a final partial one.
+    let removed = store
+        .prune_audit_logs_in_batches(chrono::Utc::now() - chrono::Duration::days(1), 2)
+        .await
+        .unwrap();
+    assert_eq!(removed, 4);
+    let (rows, _) = store.list_audit_logs(org, 10, None, None).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "test.batch.4");
+}
+
+#[tokio::test]
+async fn audit_retention_lock_is_exclusive_and_released_on_drop() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let Some(lock) = store.try_lock_audit_retention().await.unwrap() else {
+        eprintln!("skipping: another process holds the audit retention lock");
+        return;
+    };
+    assert!(store.try_lock_audit_retention().await.unwrap().is_none());
+    drop(lock);
+
+    let reacquired = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(lock) = store.try_lock_audit_retention().await.unwrap() {
+                return lock;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("lock is released when the guard is dropped");
+    drop(reacquired);
 }
 
 fn schedule_config(cron: &str, timezone: Option<&str>) -> serde_json::Value {

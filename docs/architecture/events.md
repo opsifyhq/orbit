@@ -81,17 +81,24 @@ Envelope (`OrbitEvent`):
 All background loops run in `orbit-api`; workers are token-only and never touch the
 database or the event bus directly.
 
+- **Continuous runtimes** (every 5s) launch the next execution once the previous one is
+  terminal. `failed`, `timed_out` and `rejected` all count towards backoff and the
+  5-failure stop; only successes (and explicit cancellations) reset the counter.
 - **Scheduler** (`background::scheduler_tick`, every 15s) claims due `schedule` triggers
   with `FOR UPDATE SKIP LOCKED`, so multiple API replicas cannot double-fire one trigger.
   Each run creates an execution and publishes `orbit.execution.requested`. Failures
   increment `consecutive_failures`; a trigger is auto-disabled after `max_failures`.
-- **Team run advance** (every 2s) advances pipeline team runs after a step finishes.
+- **Team run advance** (every 2s) advances pipeline team runs after a step finishes. It
+  walks all running runs in bounded keyset pages under the existing per-run lease, so a
+  backlog of more than one page cannot starve newer runs.
 - **Work-source dispatcher** (every 15s) polls GitHub/GitLab issues for Agent Teams with
   an enabled work source, takes a per-team advisory lock, claims issues via labels, and
   enqueues deduplicated `team_queue_items`.
 - **Memory pruner** (hourly) deletes expired agent memory entries.
 - **Retention** (every 6h) archives terminal executions, team runs and worker launches
   older than `ORBIT_ARCHIVE_AFTER_DAYS` (default 30, `0` disables).
-- **Audit retention** (daily) deletes `audit_logs` rows older than
-  `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0`, the default, keeps them forever).
+- **Audit retention** (daily, opt-in) deletes `audit_logs` rows older than
+  `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0`, the default, keeps them forever). Deletions
+  run in 5,000-row batches under supervision, and a cluster-wide advisory lock keeps only
+  one API replica pruning at a time.
 - **Execution reaper** (every 15s) marks orphaned running executions failed.

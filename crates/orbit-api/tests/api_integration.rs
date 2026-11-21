@@ -1742,6 +1742,113 @@ async fn runtime_stops_after_consecutive_failures() {
     )));
 }
 
+async fn stop_runtime_with_statuses(
+    app: &TestApp,
+    agent_id: Uuid,
+    runtime_id: Uuid,
+    statuses: &[&str],
+) -> orbit_store::agent_runtimes::AgentRuntime {
+    let pool = raw_pool().await;
+    let limit = orbit_api::background::RUNTIME_MAX_CONSECUTIVE_FAILURES as usize;
+    assert_eq!(statuses.len(), limit);
+    for (round, status) in statuses.iter().enumerate() {
+        make_runtime_due(&pool, runtime_id).await;
+        orbit_api::background::runtime_tick(&app.state)
+            .await
+            .unwrap();
+        let execution_id = runtime_row(app, agent_id).await.last_execution_id.unwrap();
+        let error: Option<serde_json::Value> = match *status {
+            "timed_out" => None,
+            "rejected" => Some(serde_json::json!("denied")),
+            _ => Some(serde_json::json!("boom")),
+        };
+        sqlx::query(
+            "UPDATE executions SET status = $1, error = $2, finished_at = now() WHERE id = $3",
+        )
+        .bind(*status)
+        .bind(error)
+        .bind(execution_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        make_runtime_due(&pool, runtime_id).await;
+        orbit_api::background::runtime_tick(&app.state)
+            .await
+            .unwrap();
+        let row = runtime_row(app, agent_id).await;
+        assert_eq!(
+            row.consecutive_failures,
+            round as i32 + 1,
+            "{status} did not count as a failure"
+        );
+        if round + 1 < limit {
+            assert_eq!(row.status, "running");
+        }
+    }
+    runtime_row(app, agent_id).await
+}
+
+async fn setup_runtime_app() -> Option<(TestApp, Uuid, Uuid)> {
+    let app = test_app(false).await?;
+    let user = app
+        .store
+        .ensure_user(app.org_id, "api@test.local", "API Test", UserRole::Owner)
+        .await
+        .unwrap();
+    let agent_id = create_demo_agent(&app.store, app.org_id, user.id).await;
+    let runtime = app
+        .store
+        .create_agent_runtime(app.org_id, agent_id, "t", "mock", 60, None)
+        .await
+        .unwrap();
+    Some((app, agent_id, runtime.id))
+}
+
+#[tokio::test]
+async fn runtime_stops_after_consecutive_timeouts() {
+    let Some((app, agent_id, runtime_id)) = setup_runtime_app().await else {
+        return;
+    };
+    let _serial = RUNTIME_TICK_LOCK.lock().await;
+    let row = stop_runtime_with_statuses(
+        &app,
+        agent_id,
+        runtime_id,
+        &[
+            "timed_out",
+            "timed_out",
+            "timed_out",
+            "timed_out",
+            "timed_out",
+        ],
+    )
+    .await;
+    assert_eq!(row.status, "stopped");
+    let error = row.last_error.as_deref().unwrap();
+    assert!(
+        error.contains("stopped after 5 consecutive failed executions"),
+        "{error}"
+    );
+    assert!(error.contains("execution timed out"), "{error}");
+}
+
+#[tokio::test]
+async fn runtime_counts_alternating_failures_and_timeouts() {
+    let Some((app, agent_id, runtime_id)) = setup_runtime_app().await else {
+        return;
+    };
+    let _serial = RUNTIME_TICK_LOCK.lock().await;
+    let row = stop_runtime_with_statuses(
+        &app,
+        agent_id,
+        runtime_id,
+        &["failed", "timed_out", "rejected", "timed_out", "failed"],
+    )
+    .await;
+    assert_eq!(row.status, "stopped");
+    assert!(row.last_error.as_deref().unwrap().contains("\"boom\""));
+}
+
 async fn new_execution(app: &TestApp, agent_id: Uuid) -> Uuid {
     let (status, execution) = send(
         &app.router,
