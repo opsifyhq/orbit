@@ -8,7 +8,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
 use http_body_util::BodyExt;
-use orbit_api::{build_router, AppState, DevIdentity};
+use orbit_api::{
+    build_router, config::DEFAULT_ANON_RATE_LIMIT_PER_MINUTE, rate_limit::RateLimiter, AppState,
+    DevIdentity,
+};
 use orbit_domain::UserRole;
 use orbit_events::MemoryEventBus;
 use orbit_harness::HarnessRegistry;
@@ -110,6 +113,7 @@ async fn env() -> Option<Env> {
         public_base_url: "http://localhost".into(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
         max_body_bytes: 2 * 1024 * 1024,
+        rate_limiter: Arc::new(RateLimiter::new(DEFAULT_ANON_RATE_LIMIT_PER_MINUTE)),
         cors_origins: vec!["*".into()],
         launcher_url: None,
         launcher_token: None,

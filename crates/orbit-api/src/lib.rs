@@ -20,6 +20,7 @@ pub mod images;
 pub mod metrics;
 pub mod openapi;
 pub mod preflight;
+pub mod rate_limit;
 pub mod request_id;
 pub mod routes;
 pub mod state;

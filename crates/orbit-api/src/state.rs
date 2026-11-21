@@ -7,6 +7,7 @@ use orbit_store::Store;
 use uuid::Uuid;
 
 use crate::metrics::Metrics;
+use crate::rate_limit::RateLimiter;
 
 #[derive(Debug, Clone)]
 pub struct DevIdentity {
@@ -31,6 +32,8 @@ pub struct AppState {
     pub public_base_url: String,
     pub metrics: Arc<Metrics>,
     pub max_body_bytes: usize,
+    /// Per-source-IP limiter for public/unauthenticated routes only.
+    pub rate_limiter: Arc<RateLimiter>,
     pub cors_origins: Vec<String>,
     pub launcher_url: Option<String>,
     pub launcher_token: Option<String>,

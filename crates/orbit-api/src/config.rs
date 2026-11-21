@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use orbit_security::AuthConfig;
 
+pub const DEFAULT_ANON_RATE_LIMIT_PER_MINUTE: u32 = 120;
+
 #[derive(Clone, Debug)]
 pub struct ApiConfig {
     pub environment: String,
@@ -19,6 +21,8 @@ pub struct ApiConfig {
     pub default_org_name: String,
     pub public_base_url: String,
     pub body_limit_bytes: usize,
+    /// Requests per 60-second window allowed per source IP on public/unauthenticated routes.
+    pub anon_rate_limit_per_minute: u32,
     pub auth: AuthConfig,
     pub master_key: String,
     pub launcher_url: Option<String>,
@@ -62,6 +66,13 @@ impl ApiConfig {
             body_limit_bytes: env_or("ORBIT_BODY_LIMIT_BYTES", "2097152")
                 .parse()
                 .unwrap_or(2 * 1024 * 1024),
+            anon_rate_limit_per_minute: parse_positive_u32(
+                &env_or(
+                    "ORBIT_ANON_RATE_LIMIT_PER_MINUTE",
+                    &DEFAULT_ANON_RATE_LIMIT_PER_MINUTE.to_string(),
+                ),
+                DEFAULT_ANON_RATE_LIMIT_PER_MINUTE,
+            ),
             auth,
             master_key,
             launcher_url: std::env::var("ORBIT_LAUNCHER_URL")
@@ -226,6 +237,17 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Invalid or non-positive values fall back to the default instead of disabling the
+/// anonymous rate limit by accident.
+fn parse_positive_u32(value: &str, default: u32) -> u32 {
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 fn env_bool(key: &str, default: bool) -> bool {
     std::env::var(key)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
@@ -282,6 +304,25 @@ mod tests {
         )
         .expect("composed");
         assert_eq!(url, "postgres://orbit@db:5432/orbit?sslmode=disable");
+    }
+
+    #[test]
+    fn anonymous_rate_limit_uses_positive_values_only() {
+        assert_eq!(
+            parse_positive_u32("3", DEFAULT_ANON_RATE_LIMIT_PER_MINUTE),
+            3
+        );
+        assert_eq!(
+            parse_positive_u32(" 25 ", DEFAULT_ANON_RATE_LIMIT_PER_MINUTE),
+            25
+        );
+        for invalid in ["0", "-1", "abc", ""] {
+            assert_eq!(
+                parse_positive_u32(invalid, DEFAULT_ANON_RATE_LIMIT_PER_MINUTE),
+                DEFAULT_ANON_RATE_LIMIT_PER_MINUTE,
+                "value {invalid}"
+            );
+        }
     }
 
     #[test]

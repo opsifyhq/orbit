@@ -448,7 +448,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/meta", get(handlers::health::meta))
         .route("/api/v1/auth/oidc/config", get(handlers::auth_oidc::config))
         .route("/api/v1/auth/oidc/token", post(handlers::auth_oidc::token))
-        .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", ApiDoc::openapi()));
+        .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", ApiDoc::openapi()))
+        // Anonymous surface only: protected and worker-protocol routes keep their
+        // existing auth behaviour (including dev anonymous mode).
+        .layer(middleware::from_fn_with_state(
+            state.rate_limiter.clone(),
+            crate::rate_limit::enforce,
+        ));
 
     Router::new()
         .merge(public)

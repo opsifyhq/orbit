@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use orbit_api::{build_router, initialize, telemetry, ApiConfig, AppState};
+use orbit_api::{
+    build_router, initialize, rate_limit::RateLimiter, telemetry, ApiConfig, AppState,
+};
 use orbit_events::{connect as connect_bus, EventBusConfig};
 use orbit_harness::HarnessRegistry;
 use orbit_security::{JwtValidator, LicenseHandle, LicenseSource, SecretCipher};
@@ -76,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         public_base_url: config.public_base_url.clone(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
         max_body_bytes: config.body_limit_bytes,
+        rate_limiter: Arc::new(RateLimiter::new(config.anon_rate_limit_per_minute)),
         cors_origins: config.cors_origins.clone(),
         launcher_url: config.launcher_url.clone(),
         launcher_token: config.launcher_token.clone(),
