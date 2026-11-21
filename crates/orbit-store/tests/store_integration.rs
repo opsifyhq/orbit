@@ -1266,6 +1266,8 @@ async fn team_output_enqueue_uses_the_partial_unique_index() {
             &["succeeded".to_string()],
             "secret://output/team",
             None,
+            None,
+            None,
             true,
         )
         .await
@@ -1328,6 +1330,8 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             &["succeeded".to_string()],
             "secret://output/history",
             None,
+            None,
+            None,
             true,
         )
         .await
@@ -1341,6 +1345,8 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             Some(team.id),
             &["failed".to_string()],
             "secret://output/quiet",
+            None,
+            None,
             None,
             true,
         )
@@ -1461,6 +1467,8 @@ async fn env_mappings_and_outputs_round_trip() {
             &["succeeded".to_string(), "failed".to_string()],
             "secret://output/test",
             Some("release finished"),
+            None,
+            None,
             true,
         )
         .await
@@ -3200,6 +3208,8 @@ async fn hard_deleting_an_agent_removes_its_history_but_not_team_run_history() {
             &["succeeded".to_string()],
             &secret_ref,
             None,
+            None,
+            None,
             true,
         )
         .await
@@ -3279,6 +3289,8 @@ async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
             &["succeeded".to_string()],
             &first,
             None,
+            None,
+            None,
             true,
         )
         .await
@@ -3293,6 +3305,8 @@ async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
             None,
             &["succeeded".to_string()],
             Some(&second),
+            None,
+            None,
             None,
             true,
         )

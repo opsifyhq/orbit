@@ -44,12 +44,15 @@ impl Store {
         events: &[String],
         secret_ref: &str,
         template: Option<&str>,
+        telegram_chat_id: Option<&str>,
+        telegram_message_thread_id: Option<&str>,
         enabled: bool,
     ) -> StoreResult<Output> {
         sqlx::query_as::<_, Output>(
             r#"
-            INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref, template, enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref,
+                                 template, telegram_chat_id, telegram_message_thread_id, enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             "#,
         )
@@ -62,6 +65,8 @@ impl Store {
         .bind(events)
         .bind(secret_ref)
         .bind(template)
+        .bind(telegram_chat_id)
+        .bind(telegram_message_thread_id)
         .bind(enabled)
         .fetch_one(&self.pool)
         .await
@@ -90,15 +95,18 @@ impl Store {
         events: &[String],
         secret_ref: Option<&str>,
         template: Option<&str>,
+        telegram_chat_id: Option<&str>,
+        telegram_message_thread_id: Option<&str>,
         enabled: bool,
     ) -> StoreResult<Output> {
         sqlx::query_as::<_, Output>(
             r#"
             UPDATE outputs
             SET name = $3, kind = $4, agent_id = $5, team_id = $6, events = $7,
-                secret_ref = COALESCE($8, secret_ref), template = $9, enabled = $10,
-                enqueue_from = CASE WHEN $10 AND NOT enabled THEN now() ELSE enqueue_from END,
-                enqueue_cursor = CASE WHEN $10 AND NOT enabled THEN now() ELSE enqueue_cursor END,
+                secret_ref = COALESCE($8, secret_ref), template = $9,
+                telegram_chat_id = $10, telegram_message_thread_id = $11, enabled = $12,
+                enqueue_from = CASE WHEN $12 AND NOT enabled THEN now() ELSE enqueue_from END,
+                enqueue_cursor = CASE WHEN $12 AND NOT enabled THEN now() ELSE enqueue_cursor END,
                 updated_at = now()
             WHERE org_id = $1 AND id = $2
             RETURNING *
@@ -113,6 +121,8 @@ impl Store {
         .bind(events)
         .bind(secret_ref)
         .bind(template)
+        .bind(telegram_chat_id)
+        .bind(telegram_message_thread_id)
         .bind(enabled)
         .fetch_optional(&self.pool)
         .await?

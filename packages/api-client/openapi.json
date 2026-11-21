@@ -8168,6 +8168,20 @@
             ],
             "format": "uuid"
           },
+          "botToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Telegram bot token. Write-only; never returned, logged or published in events."
+          },
+          "chatId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -8179,6 +8193,13 @@
           },
           "kind": {
             "type": "string"
+          },
+          "messageThreadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional numeric Telegram forum topic id."
           },
           "name": {
             "type": "string"
@@ -8201,7 +8222,7 @@
               "string",
               "null"
             ],
-            "description": "Incoming webhook / target URL. Write-only; never returned."
+            "description": "Incoming webhook / target URL for webhook kinds. Write-only; never returned."
           }
         }
       },
@@ -8225,6 +8246,12 @@
             ],
             "format": "uuid"
           },
+          "chatId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -8239,7 +8266,8 @@
             }
           },
           "hasWebhook": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True when a webhook URL or Telegram bot token is stored. The value itself is never\nreturned."
           },
           "id": {
             "type": "string",
@@ -8257,6 +8285,12 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "messageThreadId": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "name": {

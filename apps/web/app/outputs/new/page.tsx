@@ -39,7 +39,7 @@ function NewOutput() {
       <PageHeader
         back={{ href: "/outputs", label: "Outputs" }}
         title="New output"
-        description="Post to Slack, Mattermost or a webhook when a run finishes."
+        description="Post to Slack, Mattermost, Telegram or a webhook when a run finishes."
       />
       <OutputForm
         initial={{ agentId: params.get("agent") ?? undefined, teamId: params.get("team") ?? undefined }}

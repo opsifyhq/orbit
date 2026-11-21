@@ -704,6 +704,8 @@ pub struct Output {
     pub events: Vec<String>,
     pub secret_ref: String,
     pub template: Option<String>,
+    pub telegram_chat_id: Option<String>,
+    pub telegram_message_thread_id: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -9,6 +9,7 @@ export const OUTPUT_EVENTS = ["succeeded", "failed", "cancelled"] as const;
 export const OUTPUT_KINDS: Array<{ kind: OutputKind; label: string; description: string }> = [
   { kind: "slack", label: "Slack", description: "Post to a channel through a Slack incoming webhook." },
   { kind: "mattermost", label: "Mattermost", description: "Post to a channel through a Mattermost incoming webhook." },
+  { kind: "telegram", label: "Telegram", description: "Send a Bot API message to a chat or channel topic." },
   { kind: "webhook", label: "Webhook", description: "POST JSON with the event, the run and its text to any URL." },
 ];
 
@@ -87,8 +88,8 @@ export function deliveryReason(delivery: Pick<OutputDelivery, "responseStatus" |
 }
 
 /** What is missing before an output can send, or null. */
-export function outputProblem(output: Pick<OutputView, "hasWebhook" | "events">): string | null {
-  if (!output.hasWebhook) return "No webhook URL";
+export function outputProblem(output: Pick<OutputView, "kind" | "hasWebhook" | "events">): string | null {
+  if (!output.hasWebhook) return output.kind === "telegram" ? "No bot token" : "No webhook URL";
   if (output.events.length === 0) return "No events chosen";
   return null;
 }
@@ -101,6 +102,9 @@ export function outputInput(output: OutputView, patch: Partial<OutputInput> = {}
     agentId: output.agentId ?? null,
     teamId: output.teamId ?? null,
     events: output.events,
+    ...(output.kind === "telegram"
+      ? { chatId: output.chatId ?? "", messageThreadId: output.messageThreadId ?? null }
+      : {}),
     template: output.template ?? null,
     enabled: output.enabled,
     ...patch,

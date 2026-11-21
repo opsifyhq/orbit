@@ -4455,6 +4455,8 @@ mod output_delivery {
                 &["succeeded".to_string(), "failed".to_string()],
                 &secret_ref,
                 None,
+                None,
+                None,
                 true,
             )
             .await
@@ -6853,6 +6855,8 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
             None,
             &["succeeded".to_string()],
             &secret_ref,
+            None,
+            None,
             None,
             true,
         )

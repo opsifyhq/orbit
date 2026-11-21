@@ -95,6 +95,7 @@ export default function OutputPage() {
 
   const data = output;
   const problem = outputProblem(data);
+  const needsCredential = problem === "No webhook URL" || problem === "No bot token";
   const lastReason = data.lastDelivery ? deliveryReason(data.lastDelivery) : null;
   const agent = data.agentId ? agents.data?.items.find((item) => item.id === data.agentId) : undefined;
   const team = data.teamId ? teams.data?.find((item) => item.id === data.teamId) : undefined;
@@ -121,7 +122,7 @@ export default function OutputPage() {
   async function confirmDelete() {
     const ok = await confirm({
       title: `Delete ${data.name}?`,
-      description: "Messages stop and the stored webhook URL is removed. This cannot be undone.",
+      description: "Messages stop and the stored credential is removed. This cannot be undone.",
       confirmLabel: "Delete output",
       destructive: true,
     });
@@ -147,7 +148,7 @@ export default function OutputPage() {
               onClick={() => test.mutate()}
               loading={test.isPending}
               disabled={!data.hasWebhook}
-              title={data.hasWebhook ? undefined : "Add a webhook URL first"}
+              title={data.hasWebhook ? undefined : "Add a credential first"}
             >
               <Send /> Send test
             </Button>
@@ -187,10 +188,14 @@ export default function OutputPage() {
       {problem ? (
         <Callout
           tone="warning"
-          title={problem === "No webhook URL" ? "This output has no webhook URL" : "No events are chosen"}
+          title={
+            needsCredential
+              ? `This output has no ${data.kind === "telegram" ? "bot token" : "webhook URL"}`
+              : "No events are chosen"
+          }
           action={
             <Button asChild size="sm" variant="outline">
-              <Link href={`/outputs/${data.id}/edit#${problem === "No webhook URL" ? "destination" : "trigger"}`}>Fix</Link>
+              <Link href={`/outputs/${data.id}/edit#${needsCredential ? "destination" : "trigger"}`}>Fix</Link>
             </Button>
           }
         >
@@ -202,14 +207,14 @@ export default function OutputPage() {
           title={`The last message did not arrive${lastReason ? ` (${lastReason})` : ""}`}
           action={
             <Button asChild size="sm" variant="outline">
-              <Link href={`/outputs/${data.id}/edit#destination`}>Check the URL</Link>
+              <Link href={`/outputs/${data.id}/edit#destination`}>Check the destination</Link>
             </Button>
           }
         >
           {data.lastDelivery.status === "dead"
             ? "ORBIT retried five times and gave up."
             : "The destination refused it, so ORBIT did not retry."}{" "}
-          Fix the webhook URL or the receiving end, then use Send test.
+          Fix the destination credential or the receiving end, then use Send test.
         </Callout>
       ) : !data.enabled ? (
         <Callout
@@ -267,7 +272,16 @@ export default function OutputPage() {
             <DescriptionList
               items={[
                 { label: "Destination", value: kindLabel(data.kind) },
-                { label: "Webhook URL", value: data.hasWebhook ? "Stored, encrypted" : "Not set" },
+                {
+                  label: data.kind === "telegram" ? "Bot token" : "Webhook URL",
+                  value: data.hasWebhook ? "Stored, encrypted" : "Not set",
+                },
+                ...(data.kind === "telegram"
+                  ? [
+                      { label: "Chat id", value: data.chatId ?? "Not set" },
+                      ...(data.messageThreadId ? [{ label: "Topic id", value: data.messageThreadId }] : []),
+                    ]
+                  : []),
                 { label: "Created", value: formatDateTime(data.createdAt) },
                 { label: "Updated", value: formatDateTime(data.updatedAt) },
               ]}

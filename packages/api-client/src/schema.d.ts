@@ -2856,28 +2856,40 @@ export interface components {
         OutputRequest: {
             /** Format: uuid */
             agentId?: string | null;
+            /** @description Telegram bot token. Write-only; never returned, logged or published in events. */
+            botToken?: string | null;
+            /** @description Numeric Telegram user/group/channel id (for example `-100…`). */
+            chatId?: string | null;
             enabled?: boolean;
             events?: string[];
             kind: string;
+            /** @description Optional numeric Telegram forum topic id. */
+            messageThreadId?: string | null;
             name: string;
             /** Format: uuid */
             teamId?: string | null;
             template?: string | null;
-            /** @description Incoming webhook / target URL. Write-only; never returned. */
+            /** @description Incoming webhook / target URL for webhook kinds. Write-only; never returned. */
             webhookUrl?: string | null;
         };
         OutputView: {
             /** Format: uuid */
             agentId?: string | null;
+            chatId?: string | null;
             /** Format: date-time */
             createdAt: string;
             enabled: boolean;
             events: string[];
+            /**
+             * @description True when a webhook URL or Telegram bot token is stored. The value itself is never
+             *     returned.
+             */
             hasWebhook: boolean;
             /** Format: uuid */
             id: string;
             kind: string;
             lastDelivery?: components["schemas"]["OutputDeliveryView"] | null;
+            messageThreadId?: string | null;
             name: string;
             /** Format: uuid */
             teamId?: string | null;

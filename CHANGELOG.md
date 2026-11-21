@@ -37,6 +37,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   deleted, skills can be deleted (archive is out of scope — see ADR 0013). A dry-run
   preview explains mixed selections before confirmation, partial failures keep their ids
   selected, and one audit event records each bulk operation (#249).
+- Telegram execution outputs (#268): encrypted write-only bot token, numeric chat/topic ids,
+  official Bot API delivery with guarded endpoint, long-text splitting, delivery-id footers,
+  actionable error hints and the existing outbox retry/dead-letter behaviour.
 
 ### Changed
 
