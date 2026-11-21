@@ -617,6 +617,48 @@ async fn approvals_can_be_listed_and_decided() {
     assert_eq!(body["error"]["code"], "conflict");
 }
 
+/// Every provider kind the contract defines can be stored. The database check on
+/// `providers.kind` once lagged behind the enum, which turned a valid request into a 500.
+#[tokio::test]
+async fn every_provider_kind_can_be_saved() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let cases = [
+        (
+            "openai_compatible",
+            json!({ "baseUrl": "http://localhost:9999/v1", "model": "qwen" }),
+        ),
+        (
+            "anthropic",
+            json!({ "baseUrl": "http://localhost:9998/v1", "model": "claude-sonnet-5-5" }),
+        ),
+        ("harness_managed", json!({ "harness": "opencode" })),
+    ];
+    for (kind, config) in cases {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/providers",
+                json!({ "name": format!("Kind {kind}"), "kind": kind, "config": config }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{kind}: {body}");
+        assert_eq!(body["kind"], kind, "{body}");
+    }
+
+    let (status, body) = send(&app.router, get("/api/v1/providers")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let kinds: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|provider| provider["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"anthropic"), "{kinds:?}");
+}
+
 #[tokio::test]
 async fn provider_credentials_are_write_only() {
     let Some(app) = test_app(true).await else {

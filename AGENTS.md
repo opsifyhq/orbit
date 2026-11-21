@@ -130,6 +130,8 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 3. Extend worker resolution (`services/worker/src/client.rs` and `crates/orbit-api/src/handlers/worker_api.rs`).
 4. Update the Models UI and OpenAPI schemas.
 5. Add contract tests for valid/invalid configs.
+6. Add the kind to the `providers_kind_check` database constraint with a new migration and to
+   the `every_provider_kind_can_be_saved` API test.
 
 ## Adding a connector (Phase 2+)
 

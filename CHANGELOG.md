@@ -77,6 +77,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Anthropic providers can be saved. The database check on the provider kind still listed
+  only `openai_compatible` and `harness_managed`, so creating one failed with a 500
+  (migration `0054`).
 - Connections "Test" works: the route was missing, a passing test could not be recorded (it
   wrote a status the database rejects, so one failed check left a connection unusable for
   good), and connectors without a probe are now reported as untestable instead of failed (#207).

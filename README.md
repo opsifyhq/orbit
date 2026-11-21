@@ -52,8 +52,8 @@ API process never executes agent work.
   revocable token.
 - **Brokered tools.** GitHub, GitLab and Kubernetes access goes through a tool broker on
   the worker, so credentials stay out of prompts and out of the browser.
-- **Model providers.** OpenAI-compatible endpoints or the harness's own provider
-  configuration.
+- **Model providers.** OpenAI-compatible endpoints, Anthropic, or the harness's own
+  provider configuration.
 - **Live runs and history.** A streaming timeline per run, schedules, skills, per-agent
   memory and outputs to webhooks, Slack and Mattermost.
 - **Administration.** OIDC single sign-on, roles and permissions, API tokens and an audit
@@ -72,7 +72,6 @@ ORBIT is pre-1.0. Minor releases may change the API and the database schema; rea
 | Harnesses | Mock, OpenCode (tested with v2.3.0), Pi (tested with v1.5.2) | Claude Code, generic harness |
 | Starting a run | Manual, cron schedule, issue queue of an agent team | Event and webhook triggers (they can be saved but do not fire) |
 | Connectors | GitHub, GitLab and Kubernetes through the tool broker; X post search | Telegram, generic webhook, OAuth sign-in flows for connectors |
-| Model providers | OpenAI-compatible endpoints, harness-managed providers | Anthropic (the provider kind exists but cannot be saved yet) |
 | Where runs execute | A local worker, Docker, Kubernetes (long-lived workers or a Job per run) | |
 | Enterprise features | Custom roles, access teams, resource sharing ([licensed](#editions-and-license)) | Shared connections, quotas, marketplace |
 

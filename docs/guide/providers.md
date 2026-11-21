@@ -13,11 +13,6 @@ ORBIT supports three provider kinds:
 `https://api.anthropic.com/v1`; model discovery probes `/models` with `x-api-key` and
 `anthropic-version`. The key is still encrypted, write-only and sent only to that base URL.
 
-> **Known issue:** a provider of kind `anthropic` cannot be saved yet. Creating one fails
-> with a 500, because the database constraint `providers_kind_check` (migration 0007) only
-> allows `openai_compatible` and `harness_managed`. Until a migration widens it, use an
-> `openai_compatible` or `harness_managed` provider instead.
-
 ## Known OpenAI-compatible endpoints
 
 These providers expose an OpenAI-compatible API and need no extra ORBIT adapter. On the
@@ -30,7 +25,7 @@ directly:
 | DeepSeek | `https://api.deepseek.com` | DeepSeek API key |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini API key |
 | Azure OpenAI (v1) | `https://<resource>.openai.azure.com/openai/v1` | Azure OpenAI key |
-| Anthropic (native Messages API) | `https://api.anthropic.com/v1` | Anthropic API key, kind `anthropic` (cannot be saved yet, see the known issue above) |
+| Anthropic (native Messages API) | `https://api.anthropic.com/v1` | Anthropic API key, kind `anthropic` |
 
 Model ids are not bundled: use the provider's `/models` discovery or type the id. Azure
 v1 accepts the key as a bearer token; do not use the legacy deployment-specific URL unless

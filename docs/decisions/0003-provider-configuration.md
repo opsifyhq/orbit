@@ -21,6 +21,5 @@ OpenCode Go and Claude Code manage their own model inventory and credentials.
 
 ## Terminology and amendment (2026-11-21)
 ADR 0008 renamed `runtime_managed` to `harness_managed` and "runtime" to "harness" in this
-text. `ProviderKind` also has an `anthropic` kind today (native Messages API). The
-database constraint `providers_kind_check` (migration 0007) does not allow it yet, so
-saving an `anthropic` provider fails; see the provider contract page.
+text. `ProviderKind` also has an `anthropic` kind today (native Messages API); migration 0054
+added it to the database constraint `providers_kind_check`.

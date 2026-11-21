@@ -14,10 +14,8 @@ endpoint.
 | `anthropic` | Anthropic's native Messages API (`ModelProtocol::AnthropicMessages`) |
 | `harness_managed` | harness owns auth/inventory (OpenCode Go, Claude Code subscription, Pi) |
 
-**Known issue:** saving a provider of kind `anthropic` currently fails with a 500. The
-`providers_kind_check` constraint (migration 0007) allows only `openai_compatible` and
-`harness_managed`, and no later migration adds `anthropic`. The Rust code for the kind
-(validation, probe, worker resolution) exists, so the fix is a new migration.
+The database check `providers_kind_check` must list every kind; migration 0054 added
+`anthropic`, and an API test saves one provider of each kind.
 
 OpenCode Go is **not** a harness and not a generic provider: it is represented as a
 `harness_managed` provider whose credential is stored in `secret_ref` and handed to the
