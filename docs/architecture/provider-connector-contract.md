@@ -199,6 +199,18 @@ capabilities.
 | `telegram` | manifest only | `api_token` | read: `messages.list`; external side effect: `messages.send` |
 | `webhook` | manifest only | `hmac_webhook`, `none` | external side effect: `request.send` |
 
+Connection allowlists are enforced by the worker clients before any request:
+
+| Connector | Allowlist | Empty list |
+|---|---|---|
+| `github` | `allowedRepositories` (owner/repo); `checks.list` `ref` must be a valid git ref (no `..`, `?`, `#`, `%`, leading or trailing `/`), and list `state` must be `open`, `closed` or `all` | any repository the token can reach |
+| `gitlab` | `allowedProjects` for project tools and `projects.list` results; group tools accept only `groupId` and `allowedGroups` | `allowedProjects`: any project; groups: refused unless `groupId` is set |
+| `kubernetes` | `namespaces`, `allowedResources` (`*` for all) | `namespaces`: only `defaultNamespace`; `allowedResources`: every tool refused |
+
+The Kubernetes client replaces container `env[].value` and the
+`kubectl.kubernetes.io/last-applied-configuration` annotation with `[redacted]` in pod and
+deployment results; `valueFrom` references are kept.
+
 `repo.checkout` is performed by the worker before the harness starts and is not exposed
 as a model tool. Outbound result delivery uses Outputs (`/api/v1/outputs`), not the
 `webhook` connector.
