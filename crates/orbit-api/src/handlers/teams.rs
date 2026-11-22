@@ -163,6 +163,35 @@ pub struct TeamModelOverride {
     pub management: Option<String>,
 }
 
+impl TeamModelOverride {
+    /// Apply the override to an agent's model settings. Fields the override leaves out
+    /// keep the agent's own value.
+    pub(crate) fn apply(&self, model: &mut orbit_domain::ModelSpec) {
+        if let Some(provider) = &self.provider {
+            model.provider = Some(provider.clone());
+        }
+        if let Some(value) = &self.model {
+            model.model = Some(value.clone());
+        }
+        if let Some(management) = &self.management {
+            model.management = match management.as_str() {
+                "platform" => orbit_domain::ModelManagement::Platform,
+                _ => orbit_domain::ModelManagement::Harness,
+            };
+        }
+    }
+}
+
+impl TeamDefinition {
+    /// The model override for a step: the step's own, else the team's.
+    pub(crate) fn model_override(&self, step_index: usize) -> Option<&TeamModelOverride> {
+        self.steps
+            .get(step_index)
+            .and_then(|step| step.model.as_ref())
+            .or(self.model.as_ref())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamStepDefinition {
@@ -791,13 +820,17 @@ async fn native_subagents(
     definition: &TeamDefinition,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     let mut subagents = Vec::new();
-    for step in definition.steps.iter().skip(1) {
+    for (index, step) in definition.steps.iter().enumerate().skip(1) {
         let agent = state.store.get_agent(org_id, step.agent_id).await?;
         let version = state.store.get_current_version(org_id, &agent).await?;
-        let spec: orbit_domain::AgentSpec =
-            serde_json::from_value(version.spec.clone()).map_err(|error| {
+        let mut spec: orbit_domain::AgentSpec = serde_json::from_value(version.spec.clone())
+            .map_err(|error| {
                 ApiError::internal(format!("stored agent spec is invalid: {error}"))
             })?;
+        let model_override = definition.model_override(index).cloned();
+        if let Some(override_model) = &model_override {
+            override_model.apply(&mut spec.model);
+        }
         let mut instructions = spec.instructions.system.clone();
         if !spec.instructions.constraints.is_empty() {
             instructions.push_str("\n\nConstraints:\n");
@@ -819,6 +852,7 @@ async fn native_subagents(
             "description": agent.description,
             "instructions": instructions,
             "model": model,
+            "modelOverride": model_override,
         }));
     }
     Ok(subagents)
@@ -843,24 +877,12 @@ pub(crate) async fn start_step(
     let mut spec: orbit_domain::AgentSpec = serde_json::from_value(version.spec.clone())
         .map_err(|error| ApiError::internal(format!("stored agent spec is invalid: {error}")))?;
 
-    // Apply model override from team or step definition.
-    let step_def = definition.steps.get(step_index);
-    let model_override = step_def
-        .and_then(|s| s.model.clone())
-        .or_else(|| definition.model.clone());
-    if let Some(override_model) = model_override {
-        if let Some(provider) = override_model.provider {
-            spec.model.provider = Some(provider);
-        }
-        if let Some(model) = override_model.model {
-            spec.model.model = Some(model);
-        }
-        if let Some(management) = override_model.management {
-            spec.model.management = match management.as_str() {
-                "platform" => orbit_domain::ModelManagement::Platform,
-                _ => orbit_domain::ModelManagement::Harness,
-            };
-        }
+    // Apply the step's (or the team's) model override. Preflight checks the provider of
+    // the overridden model, and the override travels with the execution so the worker
+    // runs that same model (#305).
+    let model_override = definition.model_override(step_index).cloned();
+    if let Some(override_model) = &model_override {
+        override_model.apply(&mut spec.model);
     }
     // #259: the run instruction is the single task for every step. The team goal is
     // configured system context and the previous step output is delegated context;
@@ -941,6 +963,8 @@ pub(crate) async fn start_step(
         // Delegated context for later steps; never part of the run instruction.
         "previous": previous,
         "connectionIds": definition.connection_ids,
+        // Set server-side like connectionIds; the worker context applies it (#305).
+        "modelOverride": model_override,
         "envMappingIds": definition.env_mapping_ids,
     });
     if definition.repositories.len() > 1 {
@@ -1204,6 +1228,15 @@ pub async fn get_run(
 const ADVANCE_LEASE_SECS: i64 = 120;
 /// How long a run whose next step cannot be started is retried before it is failed.
 const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
+/// How long a step held back by an hourly quota or the licence's daily execution limit is
+/// retried. Long enough for an hourly quota to clear (#305).
+const LIMITED_STEP_RETRY_WINDOW_SECS: i64 = 3_900;
+
+/// Limits that clear by themselves: the agent's `maxExecutionsPerHour` (429) and the
+/// licence's rolling daily execution limit (402).
+fn is_temporary_limit(error: &ApiError) -> bool {
+    matches!(error.code, "rate_limited" | "license_limit")
+}
 
 /// Advance a running team after its current execution reaches a terminal state.
 ///
@@ -1215,6 +1248,12 @@ const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
 /// next one exists, the next tick sees "last step succeeded, run still running" and
 /// continues from there; a run is never stranded in that state.
 pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
+    // Most ticks find the current step still working. Check that with two reads before
+    // taking the lease, which costs two writes per run per tick on every replica (#305).
+    // The claimed path re-reads everything, so a stale answer here only delays a tick.
+    if !has_work(state, &run).await? {
+        return Ok(());
+    }
     let Some((run, lease)) = state
         .store
         .claim_team_run_advance(run.id, ADVANCE_LEASE_SECS)
@@ -1227,6 +1266,25 @@ pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
         tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
     }
     result
+}
+
+/// Whether advancing `run` can change anything: false while its current step's execution
+/// is still running (or there is no step yet).
+async fn has_work(state: &AppState, run: &TeamRun) -> anyhow::Result<bool> {
+    let Some(current) = state.store.current_team_step(run.id).await? else {
+        return Ok(false);
+    };
+    if current.status != "running" {
+        return Ok(true);
+    }
+    let Some(execution_id) = current.execution_id else {
+        return Ok(false);
+    };
+    let execution = state.store.get_execution_by_id(execution_id).await?;
+    Ok(matches!(
+        orbit_domain::ExecutionStatus::parse(&execution.status),
+        Some(status) if status.is_terminal()
+    ))
 }
 
 async fn advance_claimed(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
@@ -1333,9 +1391,9 @@ async fn continue_after_success(
     }
     let created = match start_step(state, run, definition, next, finished.output.as_ref()).await {
         Ok(created) => created,
-        // Refused by the preflight (access lost, harness/quota): fail the run instead of
-        // retrying the same step every poll.
-        Err(error) if error.status.is_client_error() => {
+        // Refused by the preflight (access lost, unknown harness): fail the run instead of
+        // retrying the same step every poll. A limit that clears by itself is not a refusal.
+        Err(error) if error.status.is_client_error() && !is_temporary_limit(&error) => {
             return crate::preflight::fail_team_run(state, run, &error).await;
         }
         Err(error) => {
@@ -1346,7 +1404,19 @@ async fn continue_after_success(
                 .finished_at
                 .map(|at| (chrono::Utc::now() - at).num_seconds())
                 .unwrap_or(0);
-            if waited >= START_STEP_RETRY_WINDOW_SECS {
+            let limited = is_temporary_limit(&error);
+            let window = if limited {
+                LIMITED_STEP_RETRY_WINDOW_SECS
+            } else {
+                START_STEP_RETRY_WINDOW_SECS
+            };
+            if limited && waited < window {
+                // Waiting for an hourly quota or the daily licence limit is expected, not
+                // an error to log on every tick.
+                tracing::debug!(run_id = %run.id, step = next + 1, reason = %error.message, "team step waits for a limit");
+                return Ok(());
+            }
+            if waited >= window {
                 let message = format!("could not start step {}: {}", next + 1, error.message);
                 return finalize_run(
                     state,
