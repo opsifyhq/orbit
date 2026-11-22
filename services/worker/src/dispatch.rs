@@ -75,14 +75,12 @@ pub async fn run(
     let api_url = rewrite_host(state.client.base_url());
     let worker_token = state.client.token().to_string();
 
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        "--rm".into(),
-        "--name".into(),
-        container_name.clone(),
-        "--add-host".into(),
-        "host.docker.internal:host-gateway".into(),
-    ];
+    let mut args = dispatch_base_args(
+        &container_name,
+        &orbit_domain::DockerSandbox::from_env(),
+        &DispatchLimits::from_env(),
+        &api_url,
+    );
 
     let auth_export = std::env::var("ORBIT_OPENCODE_AUTH_EXPORT").ok();
     if execution.harness_kind == "opencode" {
@@ -230,6 +228,74 @@ pub async fn run(
     Ok(())
 }
 
+/// CPU and memory limits for per-execution containers (`ORBIT_DISPATCH_CPUS`,
+/// `ORBIT_DISPATCH_MEMORY`, in `docker run` syntax). `0` disables a limit; an invalid
+/// value keeps the default so a typo never removes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DispatchLimits {
+    cpus: Option<String>,
+    memory: Option<String>,
+}
+
+const DEFAULT_DISPATCH_CPUS: &str = "2";
+const DEFAULT_DISPATCH_MEMORY: &str = "2g";
+
+impl DispatchLimits {
+    fn from_env() -> Self {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let read = |key: &str, default: &str, valid: fn(&str) -> bool| match lookup(key)
+            .map(|value| value.trim().to_ascii_lowercase())
+        {
+            Some(value) if value == "0" => None,
+            Some(value) if valid(&value) => Some(value),
+            _ => Some(default.to_string()),
+        };
+        Self {
+            cpus: read("ORBIT_DISPATCH_CPUS", DEFAULT_DISPATCH_CPUS, |value| {
+                value
+                    .parse::<f64>()
+                    .is_ok_and(|cpus| cpus > 0.0 && cpus.is_finite())
+            }),
+            memory: read("ORBIT_DISPATCH_MEMORY", DEFAULT_DISPATCH_MEMORY, |value| {
+                let digits = value.trim_end_matches(['b', 'k', 'm', 'g']);
+                value.len() - digits.len() <= 1
+                    && !digits.is_empty()
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                    && digits.parse::<u64>().is_ok_and(|amount| amount > 0)
+            }),
+        }
+    }
+}
+
+/// Start of `docker run` for a per-execution container: the sandbox flags shared with
+/// the launcher, then CPU and memory limits.
+fn dispatch_base_args(
+    container_name: &str,
+    sandbox: &orbit_domain::DockerSandbox,
+    limits: &DispatchLimits,
+    api_url: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "--name".into(),
+        container_name.to_string(),
+    ];
+    args.extend(sandbox.args(api_url));
+    if let Some(cpus) = &limits.cpus {
+        args.push("--cpus".into());
+        args.push(cpus.clone());
+    }
+    if let Some(memory) = &limits.memory {
+        args.push("--memory".into());
+        args.push(memory.clone());
+    }
+    args
+}
+
 /// Variables whose values must not appear in the docker CLI's argv (visible in `ps`).
 /// Grace on top of timeout and approval budget for container start-up and teardown.
 const BACKSTOP_GRACE_SECONDS: u64 = 180;
@@ -292,6 +358,76 @@ mod docker_env_tests {
                 "orbit_wk_supersecret".to_string()
             )]
         );
+    }
+
+    fn limits(vars: &[(&str, &str)]) -> DispatchLimits {
+        let vars: std::collections::HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        DispatchLimits::from_lookup(|key| vars.get(key).cloned())
+    }
+
+    #[test]
+    fn dispatched_containers_are_sandboxed_and_limited() {
+        let args = dispatch_base_args(
+            "orbit-exec-x",
+            &orbit_domain::DockerSandbox::default(),
+            &limits(&[]),
+            "http://orbit-api:8080",
+        );
+        let pair = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
+        assert_eq!(pair("--cap-drop").as_deref(), Some("ALL"));
+        assert_eq!(pair("--security-opt").as_deref(), Some("no-new-privileges"));
+        assert!(pair("--pids-limit").is_some());
+        assert_eq!(pair("--user").as_deref(), Some("10001:10001"));
+        assert_eq!(pair("--cpus").as_deref(), Some("2"));
+        assert_eq!(pair("--memory").as_deref(), Some("2g"));
+        assert!(pair("--add-host").is_none());
+
+        let local = dispatch_base_args(
+            "orbit-exec-x",
+            &orbit_domain::DockerSandbox::default(),
+            &limits(&[]),
+            &rewrite_host("http://localhost:8080"),
+        );
+        assert!(local
+            .windows(2)
+            .any(|w| w == ["--add-host", "host.docker.internal:host-gateway"]));
+    }
+
+    #[test]
+    fn dispatch_limits_accept_overrides_and_reject_garbage() {
+        assert_eq!(
+            limits(&[
+                ("ORBIT_DISPATCH_CPUS", "0.5"),
+                ("ORBIT_DISPATCH_MEMORY", "512M")
+            ]),
+            DispatchLimits {
+                cpus: Some("0.5".into()),
+                memory: Some("512m".into())
+            }
+        );
+        assert_eq!(
+            limits(&[("ORBIT_DISPATCH_CPUS", "0"), ("ORBIT_DISPATCH_MEMORY", "0")]),
+            DispatchLimits {
+                cpus: None,
+                memory: None
+            }
+        );
+        for (cpus, memory) in [("-1", "1gg"), ("lots", "--privileged"), ("NaN", "g")] {
+            assert_eq!(
+                limits(&[
+                    ("ORBIT_DISPATCH_CPUS", cpus),
+                    ("ORBIT_DISPATCH_MEMORY", memory)
+                ]),
+                DispatchLimits {
+                    cpus: Some("2".into()),
+                    memory: Some("2g".into())
+                },
+                "{cpus} {memory}"
+            );
+        }
     }
 
     #[test]

@@ -28,12 +28,17 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  # Per-launch worker env Secret (worker token + profile env), created next to the
-  # workload, owner-referenced to it via patch, and deleted on relaunch. Deliberately no
-  # get/list/watch: the launcher cannot read any Secret in the namespace.
+  # Per-launch worker env Secret (worker token + profile env), created right after its
+  # workload with an owner reference to it, and deleted on relaunch. There is no
+  # get/list/watch/patch, so the launcher cannot read Secret values through the API. RBAC
+  # cannot scope `create` by name or content, though: on its own this Role would let a
+  # stolen launcher token create a pod that mounts any Secret in the namespace, or
+  # delete ORBIT's own workloads. launcher-admission.yaml closes that with admission
+  # policies (names, Secret types and pod contents); keep them enabled, or enforce the
+  # same rules with your own admission controller.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "patch", "delete"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

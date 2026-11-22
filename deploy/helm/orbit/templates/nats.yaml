@@ -48,12 +48,18 @@ spec:
         - name: nats
           image: {{ .Values.nats.image | quote }}
           imagePullPolicy: IfNotPresent
+          {{- if .Values.nats.monitoring.enabled }}
           args: ["-js", "-sd", "/data", "-m", "8222"]
+          {{- else }}
+          args: ["-js", "-sd", "/data"]
+          {{- end }}
           ports:
             - containerPort: 4222
               name: nats
+            {{- if .Values.nats.monitoring.enabled }}
             - containerPort: 8222
               name: monitoring
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /data
@@ -90,12 +96,10 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    # The monitoring port (8222) is unauthenticated and deliberately not on the Service.
     - port: 4222
       targetPort: nats
       name: nats
-    - port: 8222
-      targetPort: monitoring
-      name: monitoring
   selector:
     {{- include "orbit.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: nats

@@ -1,4 +1,53 @@
-{{- if and .Values.networkPolicy.enabled .Values.launcher.enabled }}
+{{- /*
+NetworkPolicies (issue #212). Agent and tool code runs in worker pods, so workers get the
+tightest rules: no inbound connections, outbound only to DNS, orbit-api and addresses
+outside `networkPolicy.worker.egressExcept`. The database, NATS and the launcher accept
+connections only from orbit-api. orbit-api and orbit-web serve the ingress and are not
+restricted here.
+*/ -}}
+{{- define "orbit.workerNetworkPolicySpec" -}}
+policyTypes:
+  - Ingress
+  - Egress
+ingress: []
+egress:
+  - ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+  - to:
+      - podSelector:
+          matchLabels:
+            {{- include "orbit.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: api
+    ports:
+      - protocol: TCP
+        port: {{ .Values.api.port }}
+  {{- $except := .Values.networkPolicy.worker.egressExcept | default list }}
+  {{- range .Values.networkPolicy.worker.egressCidrs }}
+  {{- $cidr := . }}
+  {{- $v6 := contains ":" $cidr }}
+  - to:
+      - ipBlock:
+          cidr: {{ $cidr }}
+          {{- $matching := list }}
+          {{- range $except }}
+          {{- if eq (contains ":" .) $v6 }}
+          {{- $matching = append $matching . }}
+          {{- end }}
+          {{- end }}
+          {{- with $matching }}
+          except:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  {{- end }}
+  {{- with .Values.networkPolicy.worker.extraEgress }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.launcher.enabled }}
 # The launcher can create workloads, so only orbit-api may reach it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -23,4 +72,95 @@ spec:
       ports:
         - protocol: TCP
           port: 8090
+---
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+# The bundled database accepts only orbit-api (its default password is not a defence).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orbit.fullname" . }}-postgresql
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "orbit.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+{{- end }}
+{{- if .Values.nats.enabled }}
+# The bundled NATS has no authentication; only orbit-api may connect, and nothing may
+# reach the monitoring port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orbit.fullname" . }}-nats
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "orbit.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 4222
+---
+{{- end }}
+# Fixed worker Deployments from this chart.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orbit.fullname" . }}-workers
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: ["worker", "worker-opencode", "worker-pi"]
+  {{- include "orbit.workerNetworkPolicySpec" . | nindent 2 }}
+---
+# Worker Deployments and Jobs started by the launcher (labelled by orbit-launcher).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orbit.fullname" . }}-launched-workers
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orbit-worker
+    matchExpressions:
+      - key: orbit.launch-id
+        operator: Exists
+  {{- include "orbit.workerNetworkPolicySpec" . | nindent 2 }}
 {{- end }}

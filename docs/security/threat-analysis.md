@@ -51,6 +51,17 @@ the API or the cluster.
 - A profile's `authSecretName` must match the installer's allowlist
   (`ORBIT_WORKER_AUTH_SECRETS`, Helm `launcher.authSecrets`), checked by the API on
   save and again by the launcher, so a profile editor cannot mount ORBIT's own Secrets.
+  Binding a new auth Secret to a profile takes an Owner or Admin; other editors may only
+  keep, clear or reuse a Secret already bound to a profile they manage, so one team
+  cannot mount another team's harness credentials.
+- The launcher's Role cannot be scoped by name, so admission policies
+  (`launcher.admissionPolicy.enabled`, Kubernetes 1.30+) limit its ServiceAccount to
+  `orbit-worker-<launch>` workloads and Opaque `-env` Secrets, and refuse pods that
+  reference platform Secrets, use projected tokens, hostPath, host namespaces or
+  privileged containers. A leaked launcher token is therefore not the master key.
+- Docker-launched and dispatched containers drop all capabilities, set
+  `no-new-privileges`, a PID limit and the non-root `orbit` user, like Kubernetes worker
+  pods, and get `host.docker.internal` only when their API URL needs it.
 - `/readyz` logs dependency errors instead of returning them.
 
 ### 2. Prompt injection
@@ -229,10 +240,11 @@ These are known gaps. They are not mitigated by ORBIT today:
 - **No vulnerability scan of container images.** CI audits dependencies and scans for
   secrets, but there is no image scanner (Trivy or similar). Scan the published images in
   your own registry pipeline.
-- **No network egress control.** An agent's `spec.resources.network` setting is
-  recorded but not enforced, and the Helm chart ships no egress NetworkPolicy. The only
-  policy it can create (`networkPolicy.enabled=true`) limits ingress to the launcher.
-  Restrict worker egress with your own NetworkPolicy.
+- **No per-agent network egress control.** An agent's `spec.resources.network` setting
+  is recorded but not enforced. The chart's NetworkPolicies (`networkPolicy.enabled=true`,
+  on in the production example) keep workers away from the database, NATS, the launcher
+  and private ranges, but every agent on a worker gets the same public egress. They are
+  off in the default values and need a CNI that enforces them.
 - **Launched workers have a writable root filesystem.** Chart workloads set
   `readOnlyRootFilesystem: true`, but pods created by the launcher set it to `false`
   (`services/launcher/src/main.rs`). Isolation relies on non-root, dropped capabilities
@@ -250,8 +262,9 @@ These are known gaps. They are not mitigated by ORBIT today:
 ## Recommendations for production
 
 1. Use OIDC authentication, not dev mode, and set `platform.environment=production`.
-2. Apply your own NetworkPolicies to restrict worker egress, and enable
-   `networkPolicy.enabled` so only the API reaches the launcher.
+2. Enable `networkPolicy.enabled` on a CNI that enforces it, so only the API reaches the
+   launcher, database and NATS and workers reach only DNS, the API and public addresses;
+   keep `launcher.admissionPolicy.enabled` on (Kubernetes 1.30+).
 3. Use per-execution isolation (Kubernetes Jobs) for untrusted work.
 4. Monitor the audit log, and set `platform.auditRetentionDays` to match your policy.
 5. Rotate worker tokens periodically; launcher-issued tokens are already per launch.
