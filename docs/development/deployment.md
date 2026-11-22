@@ -170,7 +170,7 @@ Key values (all in `deploy/helm/orbit/values.yaml`):
 | `platform.bodyLimitBytes` | `2097152` | Maximum request body size |
 | `platform.archiveAfterDays` | `30` | See below; `0` disables |
 | `platform.auditRetentionDays` | `0` | See below |
-| `caCertificates.*` | disabled | Mount a private CA bundle into every workload and set `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` |
+| `caCertificates.*` | disabled | Mount a private CA bundle into every workload and set `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO` (git in the worker images does not read `SSL_CERT_FILE`) |
 | `extraEnv` | `[]` | Extra environment variables for the backend workloads (a list of env objects) |
 | `ingress.*` | enabled, `nginx`, host `orbit.example.com` | Annotations keep SSE buffering disabled. `ingress.tls.enabled` with `ingress.tls.secretName` turns on TLS |
 | `vault.*` | disabled | Sets `VAULT_ADDR` only; no component reads it yet |

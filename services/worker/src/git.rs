@@ -107,6 +107,11 @@ fn which(binary: &str) -> bool {
 
 /// Environment variables a worker-side git child may inherit. Everything else
 /// (notably `ORBIT_WORKER_TOKEN`, `ORBIT_API_URL`, provider keys) is dropped.
+///
+/// `GIT_SSL_CAINFO` / `GIT_SSL_CAPATH` carry the custom CA bundle that the Helm chart and
+/// the launcher mount (`caCertificates`): git built against libcurl-gnutls, as in the
+/// Debian-based worker images, ignores `SSL_CERT_FILE` (#300). `GIT_SSL_NO_VERIFY` is
+/// deliberately not inherited.
 const GIT_ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
@@ -115,6 +120,8 @@ const GIT_ENV_ALLOWLIST: &[&str] = &[
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
     "CURL_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -727,6 +734,10 @@ mod tests {
         assert!(!is_git_inherited_name("ORBIT_WORKER_TOKEN"));
         assert!(!is_git_inherited_name("ORBIT_API_URL"));
         assert!(!is_git_inherited_name("ORBIT_GIT_TOKEN"));
+        // The custom CA bundle must reach git (#300); turning verification off must not.
+        assert!(is_git_inherited_name("GIT_SSL_CAINFO"));
+        assert!(is_git_inherited_name("GIT_SSL_CAPATH"));
+        assert!(!is_git_inherited_name("GIT_SSL_NO_VERIFY"));
     }
 
     #[cfg(unix)]
@@ -736,6 +747,7 @@ mod tests {
         unsafe {
             std::env::set_var("ORBIT_WORKER_TOKEN", "worker-secret");
             std::env::set_var("ORBIT_API_URL", "http://api.invalid");
+            std::env::set_var("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-bundle.crt");
         }
         let workspace = init_repo("env");
         let output = git_command(&workspace)
@@ -746,6 +758,10 @@ mod tests {
         assert!(output.status.success());
         let env = String::from_utf8_lossy(&output.stdout);
         assert!(env.contains("PATH="));
+        assert!(
+            env.contains("GIT_SSL_CAINFO=/etc/ssl/certs/ca-bundle.crt"),
+            "custom CA bundle not passed to git: {env}"
+        );
         assert!(!env.contains("ORBIT_"), "leaked: {env}");
         assert!(!env.contains("worker-secret"));
         let _ = std::fs::remove_dir_all(workspace);
