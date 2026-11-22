@@ -7031,6 +7031,90 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 }
 
+/// #303: harness settings in an agent spec are validated by the adapter, and settings
+/// that choose what the worker executes are refused.
+#[tokio::test]
+async fn agent_harness_settings_are_validated_and_restricted() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let with_harness_config = |config: Value| {
+        let mut body = definition();
+        body["metadata"]["name"] = json!(format!("harness-{}", Uuid::now_v7().simple()));
+        body["spec"]["harnessConfig"] = config;
+        body
+    };
+    for (config, path) in [
+        (
+            json!({ "opencode": { "binary": "/bin/sh" } }),
+            "spec.harnessConfig.opencode.binary",
+        ),
+        (
+            json!({ "opencode": { "extraArgs": ["--x"] } }),
+            "spec.harnessConfig.opencode.extraArgs",
+        ),
+        (
+            json!({ "opencode": { "orbitMcp": { "command": ["/bin/sh"] } } }),
+            "spec.harnessConfig.opencode.orbitMcp",
+        ),
+        (
+            json!({ "pi": { "skills": ["/etc"] } }),
+            "spec.harnessConfig.pi.skills[0]",
+        ),
+        (
+            json!({ "opencode": { "workspaceSubdir": "../other" } }),
+            "spec.harnessConfig.opencode.workspaceSubdir",
+        ),
+        (
+            json!({ "no-such-harness": {} }),
+            "spec.harnessConfig.no-such-harness",
+        ),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            post("/api/v1/agents", with_harness_config(config.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{config}: {body}");
+        assert!(
+            body["error"]["details"]
+                .as_array()
+                .is_some_and(|details| details.iter().any(|detail| detail["path"] == path)),
+            "{path} not reported: {body}"
+        );
+    }
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agents",
+            with_harness_config(json!({ "opencode": { "model": "m", "workspaceSubdir": "app" } })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["agent"]["id"]
+        .as_str()
+        .or_else(|| body["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    // Updates are validated the same way.
+    let mut update = with_harness_config(json!({ "opencode": { "binary": "/bin/sh" } }));
+    update["metadata"]["name"] = body["agent"]["name"].clone();
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/agents/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "definition": update }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
 #[tokio::test]
 async fn connection_base_urls_are_validated_on_create_and_update() {
     let Some(app) = test_app(true).await else {

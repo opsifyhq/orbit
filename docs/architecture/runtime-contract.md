@@ -113,7 +113,11 @@ and must not start the harness.
   `effect`)
 - `autonomy`: 1–4 with platform-enforced semantics
 - `resources`: timeout, memory, CPU, max output tokens, max concurrent executions
-- `harness_config`: free-form, adapter-owned JSON (validated by `validate_config`)
+- `harness_config`: adapter-owned JSON. The API validates `spec.harnessConfig.<kind>`
+  with the adapter's `validate_config` when an agent is saved, and refuses the settings
+  only the platform may set (`binary`, `extraArgs`, `orbitMcp`, `serverUrl`;
+  `orbit_contracts::PLATFORM_ONLY_HARNESS_SETTINGS`). The worker also removes them from
+  agent specs saved before that check. Pi `skills` paths must stay inside the workspace
 - `extra_env`: environment variables resolved by the control plane (for example
   environment mappings used by skill scripts); never serialized and never logged
 - `session`: session reference to resume, if any
@@ -253,13 +257,16 @@ harness tool call ──► worker broker /policy or /tools/call
 
 What is enforced for native tools today:
 
-- When the worker starts the broker for an execution (the agent has connector tools or
-  there are tool policy rules), the OpenCode adapter writes a plugin
+- The worker starts the broker for every execution of a harness with native tools
+  (OpenCode, Pi), whether or not the agent has connector tools or there are tool policy
+  rules; only the mock harness runs without one. The OpenCode adapter writes a plugin
   (`.opencode/plugins/orbit-policy.ts`) and the Pi adapter an extension
-  (`.pi/extensions/orbit-policy.ts`). Both call `POST /policy` before each native tool
-  runs and block the call on any deny, error or missing broker. OpenCode checks `read`,
-  `grep`, `glob`, `list`, `bash`, `shell`, `edit`, `write`, `patch`, `webfetch`,
-  `websearch`, `subagent`, `task` and `question`; Pi checks every tool call.
+  (`.pi/extensions/orbit-policy.ts`). Both call `POST /policy` before **every** tool call,
+  including tools they do not know by name, and block the call on any deny, error or
+  missing broker. Unknown tools count as `write`, so a new tool fails closed.
+- ORBIT's own MCP tools reach the hook under their MCP names (`orbit_<tool>`,
+  `mcp__orbit__<tool>`). `/policy` lets them through because the broker checks them when
+  they are called.
 - Claude Code is `planned`; its `PreToolUse` integration does not exist.
 
 **Autonomy baseline for native tools (enforced by the adapter, independent of the
@@ -276,8 +283,6 @@ on the broker or `/policy` being present:
 - Worker-profile `nativeToolPermissions` are merged onto the baseline and can only make a
   tool stricter (`deny` > `ask` > `allow`); they never loosen it.
 
-The broker starts only when there are connector tools or tool policy rules
-(`services/worker/src/broker.rs`). For an agent with neither, no policy hook is installed
-and native tools are limited by the autonomy baseline above, harness configuration and
-sandboxing. Approval mode therefore does not apply to native tools in that case; see
-issue #110.
+Approval mode therefore applies to native tools in every run of these harnesses, also
+for an agent without connectors or tool policy rules (#303; previously the broker only
+started when one of those existed, see #110).
