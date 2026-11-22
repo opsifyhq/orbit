@@ -140,7 +140,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/workers` | live worker heartbeats |
 | `GET/POST /api/v1/worker-profiles`, `GET/PATCH/DELETE /api/v1/worker-profiles/{id}` | worker profiles |
 | `POST /api/v1/worker-profiles/{id}/{enable,disable,token,launch}` | profile lifecycle |
-| `GET /api/v1/worker-profiles/{id}/bootstrap` | generated Docker, Compose or Kubernetes manifests |
+| `POST /api/v1/worker-profiles/{id}/bootstrap` | generated Docker, Compose or Kubernetes manifests; issues one additional worker token for the profile and leaves existing tokens alone |
 | `GET /api/v1/worker-profiles/{id}/env-mappings` | environment mappings attached to a profile |
 | `GET /api/v1/worker-launches`, `GET/DELETE /api/v1/worker-launches/{id}` | launcher-managed workers (`archived`) |
 | `POST /api/v1/worker-launches/{id}/{stop,archive}`, `GET …/logs` | stop / archive a launch, read its logs |

@@ -188,7 +188,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/worker-profiles/{profile_id}/bootstrap",
-            get(handlers::worker_profiles::bootstrap),
+            post(handlers::worker_profiles::bootstrap),
         )
         .route(
             "/api/v1/worker-profiles/{profile_id}/token",
