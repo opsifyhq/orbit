@@ -10,7 +10,7 @@ Enforced by `crates/orbit-api/src/access.rs` (`AccessScope`). Invisible resource
 | Agent export / agent executions list | — | parent visibility (404) | — | — |
 | Agent runtime / activate / pause | — | manage (404 if invisible) | manage | — |
 | Skills | yes | yes | yes | — |
-| Connections | yes | yes | yes | **use** required on every run path (see preflight) |
+| Connections | yes | yes | yes | **use** required on every run path (see preflight); `POST /connections/{id}/test` needs `connections:write` and use, because it sends the stored credential |
 | Providers | yes | yes | yes | **use** required when an agent binds it, in both platform- and harness-managed models (incl. team subagents); the worker context re-checks the run principal before returning the credential |
 | Worker profiles | yes | yes | yes | claims scoped by owning team |
 | Worker launches (`/worker-launches`) | visibility of the launch's worker profile | same (404 when invisible; owner/admin only if the profile was deleted) | launch, stop and archive need manage on the profile | — |

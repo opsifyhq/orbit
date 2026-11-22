@@ -133,13 +133,19 @@ workspace.
 
 ### 6. Server-side request forgery (outbound URLs)
 
-**Vector:** a user with write access to providers, outputs or work sources points ORBIT
-at an internal address (cloud metadata, loopback, a management interface).
+**Vector:** a user with write access to providers, connections, outputs or work sources
+points ORBIT at an internal address (cloud metadata, loopback, a management interface),
+or at a host they control to collect the stored credential.
 
 **Mitigations:**
 
-- Outbound URLs for providers, outputs and work sources are checked after DNS
-  resolution (`crates/orbit-security/src/http.rs`). Loopback, link-local, cloud-metadata,
+- Outbound URLs for providers, outputs and work sources, and the connection fields
+  `baseUrl`, `cloneBaseUrl`, `url` and `apiServer`, are checked after DNS resolution
+  (`crates/orbit-security/src/http.rs`). The Kubernetes client uses the same guard and
+  checks its API server (including a kubeconfig's `server`) before every request; its
+  errors pass on Kubernetes `Status` messages only, never other response bodies.
+- A stored credential never follows an edited endpoint: changing a provider's base URL
+  or one of the connection URL fields requires the credential in the same request. Loopback, link-local, cloud-metadata,
   unspecified, multicast and reserved addresses are blocked; metadata addresses can never
   be allowlisted.
 - Private ranges (RFC 1918, CGNAT, IPv6 ULA) are allowed by default so self-hosted model
