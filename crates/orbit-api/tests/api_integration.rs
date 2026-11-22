@@ -9306,6 +9306,105 @@ async fn d2_fixture(app: &TestApp) -> D2Fixture {
 /// App whose router sees an enterprise license, so premium role endpoints reach their
 /// permission checks instead of stopping at the feature gate. The key is registered only
 /// for this test binary; no production key or secret is involved.
+/// #324: `settings:write` alone does not reach the organization-wide access toggles, and
+/// access teams are changed only by privileged users or their own leads.
+#[tokio::test]
+async fn settings_write_has_a_ceiling_for_toggles_and_access_teams() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/access",
+            m,
+            &json!({ "teamIsolation": false }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/approvals",
+            m,
+            &json!({ "approvalsRequireDifferentApprover": false }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/oidc",
+            m,
+            &json!({ "settings": { "groupRoles": { format!("g-{}", Uuid::now_v7()): "owner" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Mallory is not a lead of Team A: she cannot rename or delete it.
+    let team_path = format!("/api/v1/teams/{}", fx.team_a);
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &team_path,
+            m,
+            json!({ "name": "Taken", "slug": format!("taken-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("DELETE")
+            .uri(&team_path)
+            .header("authorization", format!("Bearer {m}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // As a lead she can rename her own team.
+    app.store
+        .upsert_team_member(fx.team_a, fx.mallory.id, "lead")
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &team_path,
+            m,
+            json!({ "name": "Team A", "slug": format!("team-a2-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The Default team keeps its slug, so the delete guard cannot be lifted by a rename.
+    let default_team = app
+        .store
+        .ensure_default_access_team(app.org_id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/teams/{}", default_team.id),
+            "test-token",
+            json!({ "name": "Default", "slug": format!("renamed-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
 async fn licensed_test_app() -> Option<TestApp> {
     let mut app = test_app(true).await?;
     use ed25519_dalek::{Signer, SigningKey};
