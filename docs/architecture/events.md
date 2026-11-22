@@ -88,7 +88,7 @@ reports in at the same moment wins.
 
 | Pass | Condition | Result |
 |---|---|---|
-| Worker lost | `dispatched`, `running` or `awaiting_approval`, and the worker's heartbeat is older than 90 seconds | `failed` with `worker_lost`; open approvals on the execution become `expired` |
+| Worker lost | `dispatched`, `running` or `awaiting_approval`, and the worker's heartbeat is older than 90 seconds. A `dispatched` run whose worker has never sent a heartbeat is still starting (a launched container or Job pulls its image first) and is left to the next rule | `failed` with `worker_lost`; open approvals on the execution become `expired` |
 | Never started | `dispatched` and nothing has happened on it (claim, cancel request or event) for 600 seconds, or for 60 seconds after a cancel request | `failed` with `worker_did_not_start`, or `cancelled` |
 | Timed out | `running` for longer than `timeout_seconds` plus a grace period | `timed_out` |
 

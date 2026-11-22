@@ -589,6 +589,129 @@ async fn orphaned_executions_are_failed_and_approvals_expired() {
     );
 }
 
+/// #298: a launch claims its execution for the new worker id before the container or Job
+/// exists. Until that worker writes its first heartbeat the run is starting, not lost.
+#[tokio::test]
+async fn launch_claimed_executions_are_not_reaped_before_the_first_heartbeat() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Launch Reaper Agent"))
+        .await
+        .unwrap();
+    let make_execution = || {
+        let store = &store;
+        let agent = &agent;
+        let version = &version;
+        async move {
+            store
+                .create_execution(NewExecution {
+                    org_id: org,
+                    agent_id: agent.id,
+                    agent_version_id: version.id,
+                    agent_name: &agent.name,
+                    harness_kind: HarnessKind::Mock,
+                    trigger_source: TriggerSource::Manual,
+                    placement: "auto",
+                    trigger_id: None,
+                    input: serde_json::json!({ "task": "x", "payload": {}, "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() } }),
+                    session_ref: None,
+                    skills: &[],
+                    timeout_seconds: 3600,
+                    requested_by: Some(user),
+                    idempotency_key: None,
+                    team_run_id: None,
+                    team_step_index: None,
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let backdate = |id: uuid::Uuid, seconds: i32| {
+        let store = &store;
+        async move {
+            sqlx::query("UPDATE executions SET started_at = now() - make_interval(secs => $2) WHERE id = $1")
+                .bind(id)
+                .bind(seconds as f64)
+                .execute(store.pool())
+                .await
+                .unwrap();
+        }
+    };
+    let issued = orbit_security::issue_worker_token();
+    let token = store
+        .create_worker_token(org, None, "launch", &issued.prefix, &issued.hash, &[])
+        .await
+        .unwrap();
+
+    // Claimed for a launch whose pod is still pulling its image: no heartbeat row yet.
+    let starting = make_execution().await;
+    let starting_worker = format!("worker-{}", uuid::Uuid::now_v7());
+    store
+        .claim_execution_for_launch(starting.id, &starting_worker, token.id)
+        .await
+        .unwrap()
+        .expect("claimed");
+    backdate(starting.id, 120).await;
+
+    // Same, but the worker reported once and then went silent: it is gone.
+    let silent = make_execution().await;
+    let silent_worker = format!("worker-{}", uuid::Uuid::now_v7());
+    store
+        .claim_execution_for_launch(silent.id, &silent_worker, token.id)
+        .await
+        .unwrap()
+        .expect("claimed");
+    store
+        .upsert_worker_heartbeat(
+            org,
+            token.id,
+            &silent_worker,
+            &["mock".into()],
+            "docker",
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_heartbeats SET last_heartbeat_at = now() - interval '5 minutes' WHERE worker_id = $1")
+        .bind(&silent_worker)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    backdate(silent.id, 300).await;
+
+    let reaped = store
+        .reap_orphaned_executions_for_org(org, 90)
+        .await
+        .unwrap();
+    let ids: Vec<_> = reaped.iter().map(|row| row.id).collect();
+    assert_eq!(ids, vec![silent.id], "only the silent worker's run is lost");
+    assert_eq!(
+        store.get_execution(org, starting.id).await.unwrap().status,
+        "dispatched",
+        "a run whose worker is still starting must survive"
+    );
+
+    // A worker that never appears is ended by the unstarted rule instead.
+    sqlx::query("UPDATE executions SET created_at = now() - interval '700 seconds', started_at = now() - interval '700 seconds', updated_at = now() - interval '700 seconds' WHERE id = $1")
+        .bind(starting.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let unstarted = store
+        .reap_unstarted_executions(Some(org), 600, 60)
+        .await
+        .unwrap();
+    assert_eq!(unstarted.len(), 1);
+    assert_eq!(unstarted[0].id, starting.id);
+    assert_eq!(
+        unstarted[0].error.as_ref().unwrap()["code"],
+        "worker_did_not_start"
+    );
+}
+
 #[tokio::test]
 async fn unstarted_executions_on_a_live_worker_are_ended() {
     let Some(store) = test_store().await else {
