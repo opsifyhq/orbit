@@ -306,13 +306,7 @@ impl KubernetesClientConfig {
                         response.text().await.unwrap_or_default()
                     ));
                 }
-                let text = response.text().await.unwrap_or_default();
-                let truncated = text.len() > self.max_log_bytes;
-                let text = if truncated {
-                    text[text.len() - self.max_log_bytes..].to_string()
-                } else {
-                    text
-                };
+                let (text, truncated) = read_tail(response, self.max_log_bytes).await?;
                 return Ok(json!({ "logs": text, "truncated": truncated }));
             }
             "deployments.list" => {
@@ -407,9 +401,66 @@ fn validate_segment(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Read at most the last `max_bytes` of a response without holding the whole body, and
+/// cut at a character boundary (#307). A plain byte slice of a large log could split a
+/// multi-byte character and panic.
+async fn read_tail(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(String, bool), String> {
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("could not read pod logs: {error}"))?
+    {
+        buffer.extend_from_slice(&chunk);
+        if buffer.len() > max_bytes.saturating_mul(2).max(64 * 1024) {
+            let excess = buffer.len() - max_bytes;
+            buffer.drain(..excess);
+            truncated = true;
+        }
+    }
+    if buffer.len() > max_bytes {
+        let excess = buffer.len() - max_bytes;
+        buffer.drain(..excess);
+        truncated = true;
+    }
+    Ok((tail_text(&buffer), truncated))
+}
+
+/// Text of a byte tail that may start in the middle of a UTF-8 character: skip the
+/// partial character instead of producing a replacement character or panicking.
+fn tail_text(bytes: &[u8]) -> String {
+    // A UTF-8 character has at most three continuation bytes after its first byte.
+    let start = bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| is_continuation(**byte))
+        .count();
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+fn is_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_tail_never_splits_a_character() {
+        // "é" is two bytes; cutting after its first byte must not panic or garble.
+        let bytes = "aé€b".as_bytes();
+        for start in 0..bytes.len() {
+            let text = tail_text(&bytes[start..]);
+            assert!(!text.contains('\u{FFFD}'), "{start}: {text:?}");
+        }
+        assert_eq!(tail_text("€b".as_bytes()), "€b");
+        assert_eq!(tail_text(&"€b".as_bytes()[1..]), "b");
+    }
 
     #[test]
     fn service_account_requires_https_server() {

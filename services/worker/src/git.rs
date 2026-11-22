@@ -59,10 +59,25 @@ pub struct RepoSpec {
     pub repository: String,
     #[serde(default)]
     pub path: String,
-    #[serde(default)]
-    pub primary: bool,
+    // `primary` in the payload only orders the manifest; where a repository lives is
+    // decided by `repo_directory` alone.
     #[serde(default)]
     pub branch: Option<String>,
+}
+
+/// Where a repository of the workspace lives. The single rule for checkout and for the
+/// broker's repo tools, which used to disagree about a primary repository with an empty
+/// path in a multi-repository workspace (#307): the workspace root holds the repository
+/// only when it is the only one; otherwise each repository without a path gets a
+/// directory named after it.
+pub fn repo_directory(workspace: &Path, spec: &RepoSpec, single: bool) -> std::path::PathBuf {
+    if !spec.path.is_empty() {
+        workspace.join(&spec.path)
+    } else if single {
+        workspace.to_path_buf()
+    } else {
+        workspace.join(spec.repository.split('/').next_back().unwrap_or("repo"))
+    }
 }
 
 pub fn repo_specs(input: &Value) -> Vec<RepoSpec> {
@@ -472,13 +487,7 @@ pub async fn checkout_workspace(
             return Err(GitAbort::Cancelled.into());
         }
         validate_repo_path(&spec.path)?;
-        let target = if single && spec.path.is_empty() {
-            workspace.to_path_buf()
-        } else if spec.path.is_empty() {
-            workspace.join(spec.repository.split('/').next_back().unwrap_or("repo"))
-        } else {
-            workspace.join(&spec.path)
-        };
+        let target = repo_directory(workspace, spec, single);
         let connection_id = spec
             .connection_id
             .or(default_connection_id)
@@ -613,17 +622,29 @@ pub async fn commit(
     apply_git_auth(&mut command, askpass.path(), &username);
     let output = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "commit").await?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("nothing to commit") {
-            return Ok(serde_json::json!({ "status": "no_changes" }));
-        }
-        anyhow::bail!("git commit failed: {}", stderr.trim());
+        return failed_commit(&output.stdout, &output.stderr);
     }
     Ok(serde_json::json!({
         "status": "committed",
         "message": message,
         "output": String::from_utf8_lossy(&output.stdout).trim(),
     }))
+}
+
+/// The result of a `git commit` that exited non-zero. git reports "nothing to commit" on
+/// stdout, not stderr (#307), which is a normal outcome for an agent, not an error.
+fn failed_commit(stdout: &[u8], stderr: &[u8]) -> anyhow::Result<Value> {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
+        return Ok(serde_json::json!({ "status": "no_changes" }));
+    }
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    anyhow::bail!("git commit failed: {detail}")
 }
 
 /// Push the current HEAD to a branch.
@@ -824,6 +845,72 @@ mod tests {
                 .await
                 .is_err()
         );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn repo_directory_is_the_same_for_checkout_and_tools() {
+        let workspace = Path::new("/work");
+        let spec = |repository: &str, path: &str| RepoSpec {
+            connection_id: None,
+            repository: repository.into(),
+            path: path.into(),
+            branch: None,
+        };
+        // #307: a primary repository with no path in a multi-repository workspace lives in
+        // its own directory, where checkout put it, not at the workspace root.
+        assert_eq!(
+            repo_directory(workspace, &spec("acme/app", ""), false),
+            Path::new("/work/app")
+        );
+        assert_eq!(
+            repo_directory(workspace, &spec("acme/app", ""), true),
+            workspace
+        );
+        assert_eq!(
+            repo_directory(workspace, &spec("acme/app", "src/app"), false),
+            Path::new("/work/src/app")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_with_nothing_staged_reports_no_changes() {
+        // Run the real command on a clean repository and feed its output to the parser.
+        let workspace = init_repo("nochanges");
+        git(
+            &workspace,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        let output = StdCommand::new("git")
+            .current_dir(&workspace)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--no-verify",
+                "-m",
+                "nothing",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let value = failed_commit(&output.stdout, &output.stderr).unwrap();
+        assert_eq!(value["status"], "no_changes", "{value}");
+        let error = failed_commit(b"", b"fatal: something else").unwrap_err();
+        assert!(error.to_string().contains("something else"));
         let _ = std::fs::remove_dir_all(workspace);
     }
 
