@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -3233,6 +3233,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/team-runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "agent-teams"
+        ],
+        "summary": "Stop a team run: request cancellation of its live executions, mark the run\n`cancelled` and cancel the queue item it was started for, if any.",
+        "operationId": "cancel_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamRunDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "the run already ended"
           }
         }
       }

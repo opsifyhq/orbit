@@ -102,3 +102,6 @@ page shows "The run failed" with the error.
 - `POST /api/v1/executions/{id}/cancel`, `POST /api/v1/executions/{id}/rerun`.
 - `GET /api/v1/team-runs` (query `teamId`, `archived`, `limit`) and
   `GET /api/v1/team-runs/{id}`.
+- `POST /api/v1/team-runs/{id}/cancel`: stops a running team run. Its live execution is
+  asked to stop and the run's queue item, if any, is cancelled. Deleting an agent team
+  does the same for all of its runs.

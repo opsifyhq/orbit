@@ -15,7 +15,7 @@ Enforced by `crates/orbit-api/src/access.rs` (`AccessScope`). Invisible resource
 | Worker profiles | yes | yes | yes | claims scoped by owning team |
 | Worker launches (`/worker-launches`) | visibility of the launch's worker profile | same (404 when invisible; owner/admin only if the profile was deleted) | launch, stop and archive need manage on the profile | — |
 | Agent teams (`/agent-teams`) | yes | view (404) | manage; create, change and delete also need `settings:write` | running needs **use**; the agents, worker profiles and environment mappings a team names must be visible to the caller |
-| Team runs (`/team-runs`, `/agent-teams/{id}/runs`) | via agent team | via agent team | — | follow their agent team |
+| Team runs (`/team-runs`, `/agent-teams/{id}/runs`, `POST /team-runs/{id}/cancel`) | via agent team | via agent team | — | follow their agent team; cancel needs `executions:cancel` and use of the team |
 | Environment mappings (`/env-mappings`) | yes | view | manage (`settings:write`) | **use** required to attach one to a worker profile |
 | Outputs (`/outputs`) | visibility of the target agent or team | same (404 when the target is invisible) | manage the target agent or team; an output with no target (organization-wide) is owner/admin only | — |
 | Triggers | yes | yes | yes | create needs **use** on the target agent and its spec references; fire re-checks the owner |
