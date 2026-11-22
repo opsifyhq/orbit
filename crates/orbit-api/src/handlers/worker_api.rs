@@ -499,13 +499,37 @@ async fn build_context(
     let grants = resolve_grants(&state.store, org_id, &spec).await;
     let mut slugs = spec.skills.clone();
     slugs.extend(execution.skills.iter().cloned());
-    if let Some(profile) = profile {
-        slugs.extend(profile.skill_slugs.iter().cloned());
-    }
+    let profile_slugs: std::collections::BTreeSet<String> = profile
+        .map(|profile| profile.skill_slugs.iter().cloned().collect())
+        .unwrap_or_default();
+    slugs.extend(profile_slugs.iter().cloned());
     slugs.sort();
     slugs.dedup();
     let skills = state.store.skills_by_slugs(org_id, &slugs).await?;
-    let env = resolve_team_env(&state.store, org_id, execution, &spec, profile).await;
+    // Skills are referenced by slug, and a slug can name a different skill than the one
+    // the agent author chose. The run principal must be able to use every skill the
+    // agent or the run asks for; the worker profile's own skills are the profile
+    // manager's choice (#322).
+    if let Some(access) = access.as_ref() {
+        if let Some(skill) = skills.iter().find(|skill| {
+            !profile_slugs.contains(&skill.slug)
+                && !access.can_use(skill.owner_user_id, skill.owner_team_id, &skill.visibility)
+        }) {
+            return Err(ApiError::forbidden(format!(
+                "the run's principal cannot use skill '{}'",
+                skill.slug
+            )));
+        }
+    }
+    let env = resolve_team_env(
+        &state.store,
+        org_id,
+        execution,
+        &spec,
+        profile,
+        access.as_ref(),
+    )
+    .await?;
     let tool_policies = require_loaded_policies(
         execution.id,
         state
@@ -615,7 +639,8 @@ async fn resolve_team_env(
     execution: &ExecutionRecord,
     spec: &AgentSpec,
     profile: Option<&WorkerProfile>,
-) -> Vec<ResolvedEnv> {
+    access: Option<&AccessScope>,
+) -> Result<Vec<ResolvedEnv>, ApiError> {
     let mut resolved = Vec::new();
     if let Some(profile) = profile {
         // CLI credentials come from the team's shared connections *and* the agent's own
@@ -693,6 +718,20 @@ async fn resolve_team_env(
         let Ok(mapping) = store.get_env_mapping(org_id, mapping_id).await else {
             continue;
         };
+        // Checked when the team was saved, and again here: access removed since then
+        // must not keep handing the mapping's secrets to runs (#322).
+        if access.is_some_and(|access| {
+            !access.can_use(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            )
+        }) {
+            return Err(ApiError::forbidden(format!(
+                "the run's principal cannot use environment mapping '{}'",
+                mapping.name
+            )));
+        }
         let Ok(items) = serde_json::from_value::<Vec<EnvMapping>>(mapping.mappings) else {
             continue;
         };
@@ -728,7 +767,7 @@ async fn resolve_team_env(
             }
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 async fn fail_claimed(state: &AppState, execution: &ExecutionRecord, message: &str) {

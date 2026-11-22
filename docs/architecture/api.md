@@ -27,7 +27,9 @@ an overview.
   limits there as well.
 - Idempotent execution creation: send an `Idempotency-Key` header or an `idempotencyKey`
   body field. Keys are scoped to the organization; a repeated key returns the execution
-  that was already created.
+  that was already created, but only for the same agent (otherwise 409). Keys starting
+  with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved for executions ORBIT
+  creates itself and are rejected (422).
 - Keyset pagination on agents, executions, execution events, agent instances and audit
   logs: `?limit=25&cursor=<opaque>` returns `{ "items": [...], "nextCursor": null }`
   (agents also return `total`). Other lists return a plain array.
