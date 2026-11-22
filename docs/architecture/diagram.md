@@ -1,17 +1,20 @@
 # ORBIT architecture diagrams
 
-![ORBIT architecture overview](orbit-overview.svg)
+![How ORBIT runs an agent: people and API clients call orbit-api, which keeps all state in PostgreSQL; workers pull runs with a scoped token, run a harness and pass every tool call through the tool broker](orbit-overview.svg)
 
-A PNG export is available at [`orbit-overview.png`](orbit-overview.png) (may lag behind the SVG).
+The image follows the reader's light or dark colour scheme. A light PNG export is at
+[`orbit-overview.png`](orbit-overview.png); regenerate it when the SVG changes.
 
 ## Reading the diagram
 
-| Layer | Responsibility |
+| Part | What it shows |
 |---|---|
-| **Agent Experience** | Web UI (and future Expo app). Configuration, monitoring, approvals. No business logic or durable state. |
-| **Control Plane** | `orbit-api`: auth, agents and immutable versions, providers, connections, executions, approvals, audit, SSE. PostgreSQL is the durable source of truth. NATS JetStream accelerates events; DB polling is the recovery path. |
-| **Execution Plane** | `orbit-worker` (mock), `orbit-worker-opencode` (OpenCode v2.3.0), `orbit-worker-pi` (Pi v1.5.2), plus the optional launcher that starts workers. Workers claim only their configured harnesses. The policy-enforcing tool broker runs per execution; see [Execution Plane](execution-plane.md). |
-| **External systems** | GitHub, X, GitLab, webhooks and model providers. Agent tool actions go through the broker and result outputs are delivered by the API; credentials never reach the harness. |
+| **Web app, API clients** | Everything enters through the versioned REST API (`/api/v1`) with an OIDC session or an API token. Runs stream back as server-sent events. |
+| **Control plane** | `orbit-api` holds the definitions, the run queue, schedules, policy, approvals, secrets and the audit log, and runs the background loops. PostgreSQL is the source of truth. NATS JetStream carries event notifications; nothing depends on it for correctness. The API also delivers outputs and reads the issue queues that feed agent teams. |
+| **Trust boundary** | The API never calls a worker. A worker holds one scoped, revocable token and uses the worker API to claim runs, fetch what a run needs and report events. It has no database, event bus or master-key access. The API does call the launcher, to start and stop workers. |
+| **Execution plane** | `orbit-launcher` starts workers on Docker or Kubernetes. `orbit-worker` runs the harness (OpenCode, Pi, or the mock for testing) in a workspace of its own per run. The harness calls the model provider itself. Connector tools go over MCP to the tool broker, which checks the allowlist, the autonomy level and any approval, then leases the credential for that one call. See [Execution Plane](execution-plane.md). |
+| **Outside ORBIT** | Dashed boxes are systems ORBIT talks to but does not run: outputs, issue queues, model providers and connectors. |
+| **Numbers 1 to 6** | The life of one run, repeated in the strip under the diagram. |
 
 | Status | Components |
 |---|---|

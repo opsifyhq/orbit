@@ -8,6 +8,18 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- The web app shows the running ORBIT version under the logo, in the sidebar, in the phone
+  header and on the signed-out screens. It is the API's version (`GET /api/v1/meta`).
+
+### Changed
+
+- New architecture image in the README and `docs/architecture/diagram.md`, redrawn from
+  the current code: workers pull runs through the worker API instead of reading NATS, the
+  tool broker sits inside the worker, the launcher, outputs, issue queues and Anthropic
+  providers are shown, and a numbered strip follows one run. It adapts to light and dark.
+
 ## [0.27.0] - 2026-11-21
 
 ### Added
