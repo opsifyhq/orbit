@@ -34,6 +34,11 @@ pub struct ApiConfig {
     /// Days after which terminal executions, team runs and worker launches are archived.
     /// `0` disables the retention loop.
     pub archive_after_days: Option<u32>,
+    /// Dedicated listener for `/metrics` (`ORBIT_METRICS_ADDR`). When set, the main
+    /// listener no longer serves `/metrics`.
+    pub metrics_addr: Option<String>,
+    /// Bearer token a scraper must present (`ORBIT_METRICS_TOKEN`). Unset = open.
+    pub metrics_token: Option<String>,
 }
 
 impl ApiConfig {
@@ -90,6 +95,8 @@ impl ApiConfig {
                 .parse::<u32>()
                 .ok()
                 .filter(|days| *days > 0),
+            metrics_addr: env_opt("ORBIT_METRICS_ADDR"),
+            metrics_token: env_opt("ORBIT_METRICS_TOKEN"),
         })
     }
 

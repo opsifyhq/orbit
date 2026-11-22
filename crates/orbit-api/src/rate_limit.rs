@@ -9,7 +9,10 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 
@@ -32,6 +35,7 @@ const MAX_TRACKED_IPS: usize = 10_000;
 pub struct RateLimiter {
     limit: u32,
     buckets: Mutex<HashMap<IpAddr, Bucket>>,
+    rejected: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,12 +49,22 @@ impl RateLimiter {
         Self {
             limit: limit_per_minute.max(1),
             buckets: Mutex::new(HashMap::new()),
+            rejected: AtomicU64::new(0),
         }
     }
 
     /// Returns the number of seconds to wait when the caller is over its budget.
     pub fn check(&self, ip: IpAddr) -> Option<u64> {
-        self.check_at(ip, Instant::now())
+        let wait = self.check_at(ip, Instant::now());
+        if wait.is_some() {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+        }
+        wait
+    }
+
+    /// Requests rejected since start (exported as `orbit_rate_limited_total`).
+    pub fn rejected(&self) -> u64 {
+        self.rejected.load(Ordering::Relaxed)
     }
 
     fn check_at(&self, ip: IpAddr, now: Instant) -> Option<u64> {

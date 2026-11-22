@@ -146,6 +146,9 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::WorkerLost);
+        }
         Ok(rows)
     }
 
@@ -164,7 +167,7 @@ impl Store {
         silent_after_seconds: i64,
         cancel_after_seconds: i64,
     ) -> StoreResult<Vec<ExecutionRecord>> {
-        Ok(sqlx::query_as::<_, ExecutionRecord>(
+        let rows = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions e
             SET status = CASE WHEN e.cancel_requested THEN 'cancelled' ELSE 'failed' END,
@@ -198,7 +201,11 @@ impl Store {
         .bind(cancel_after_seconds as f64)
         .bind(org_id)
         .fetch_all(&self.pool)
-        .await?)
+        .await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::NeverStarted);
+        }
+        Ok(rows)
     }
 
     /// End runs stuck `running` past their deadline, regardless of worker heartbeat.
@@ -259,6 +266,9 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::TimedOut);
+        }
         Ok(rows)
     }
 

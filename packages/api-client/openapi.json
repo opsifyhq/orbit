@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -4405,10 +4405,17 @@
         "tags": [
           "system"
         ],
+        "summary": "Prometheus scrape endpoint. Open unless `ORBIT_METRICS_TOKEN` is set, in which case\nthe scraper must send it as a bearer token.",
         "operationId": "metrics",
         "responses": {
           "200": {
-            "description": "Prometheus metrics"
+            "description": "Prometheus metrics in the text exposition format (0.0.4)",
+            "content": {
+              "text/plain": {}
+            }
+          },
+          "401": {
+            "description": "A metrics token is configured and the request did not present it"
           }
         }
       }

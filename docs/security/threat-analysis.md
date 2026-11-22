@@ -170,9 +170,20 @@ Container images are **not** scanned for vulnerabilities in CI; see "Residual ri
 
 - Every API route requires authentication (dev token, API token or OIDC bearer token)
   except `/healthz`, `/readyz`, `/metrics`, `/api/v1/meta`, the two OIDC login endpoints,
-  `/docs` and the OpenAPI document. Worker routes use worker tokens. Keep `/metrics` and
+  `/docs` and the OpenAPI document. Worker routes use worker tokens. Keep
   `/api/v1/meta` (which reports the licence tier and customer) off untrusted networks if
   that matters to you.
+- `/metrics` is unauthenticated by default and reveals operational detail: the version,
+  the API's route templates and request rates, execution and worker counts, the licence
+  phase, usage and limits. It carries no organization, user, agent or execution
+  identifiers, no names and no secrets. The Helm chart's ingress does not route it. To
+  restrict it further, set `ORBIT_METRICS_TOKEN` (bearer token, compared as SHA-256
+  digests; 401 without it) and/or `ORBIT_METRICS_ADDR` (dedicated listener that serves only
+  `/metrics` and `/healthz`; the API port then returns 404 for `/metrics`), and limit the
+  port with `networkPolicy.enabled` and `monitoring.allowFrom`. The API logs a warning at
+  start when it runs in production with neither set. The dedicated listener has no rate
+  limit, so do not publish it. See
+  [Observability](../development/observability.md).
 - Dev auth mode is refused when `ORBIT_ENV=production`, and the Helm chart refuses it
   when `platform.environment=production`.
 - OIDC mode validates JWTs against the provider's JWKS. Discovery and JWKS fetches are

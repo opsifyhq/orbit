@@ -8,6 +8,29 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- Prometheus metrics for production use (#297). `GET /metrics` now covers HTTP requests
+  (by method, route template and status class, with latency histograms), executions
+  (created, started, completed, duration, queue wait, timeouts, reaped, in flight),
+  workers (online, heartbeats, claims, launches), harness availability, provider probes,
+  background loops, the database pool, the event bus and license phase, usage and limits.
+  Catalogue, example queries and scrape setup: `docs/development/observability.md`.
+- Helm `monitoring.*`: Prometheus scrape annotations, a Prometheus Operator
+  `ServiceMonitor`, a dedicated metrics port (`monitoring.port` / `ORBIT_METRICS_ADDR`),
+  a scrape token (`monitoring.token` / `ORBIT_METRICS_TOKEN`) and, with
+  `networkPolicy.enabled`, a policy limiting the metrics port to `monitoring.allowFrom`.
+- ADR 0014: metrics are scraped from the API only, in Prometheus format; workers and the
+  launcher expose none, and no OTLP metrics exporter is added.
+
+### Changed
+
+- `orbit_http_requests_total`, `orbit_executions_created_total` and
+  `orbit_provider_probes_total` carry labels (use `sum()` for the old totals),
+  `orbit_provider_probe_failures_total` is replaced by
+  `orbit_provider_probes_total{result="error"}`, and `orbit_info` is a single series with
+  `version` and `environment`.
+
 ## [0.27.0] - 2026-11-21
 
 ### Added

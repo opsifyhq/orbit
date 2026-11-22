@@ -141,6 +141,7 @@ async fn test_app_with_license(
         events_driver: "memory".into(),
         public_base_url: "http://localhost".into(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
+        metrics_access: orbit_api::MetricsAccess::default(),
         max_body_bytes: 2 * 1024 * 1024,
         rate_limiter: Arc::new(RateLimiter::new(DEFAULT_ANON_RATE_LIMIT_PER_MINUTE)),
         cors_origins: vec!["*".into()],
@@ -10722,4 +10723,369 @@ async fn license_phase_transitions_are_audited() {
     assert_eq!(entries[0].metadata["to"], "expired");
     assert_eq!(entries[1].metadata["from"], "active");
     assert_eq!(entries[1].metadata["to"], "grace");
+}
+
+// ------------------------------------------------------------------ Prometheus metrics
+
+async fn scrape(router: &axum::Router, request: Request<Body>) -> (StatusCode, String, String) {
+    let (status, headers, bytes) = send_raw(router, request).await;
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (status, content_type, String::from_utf8(bytes).unwrap())
+}
+
+/// Value of the first sample line that starts with `prefix`.
+fn sample(text: &str, prefix: &str) -> Option<f64> {
+    text.lines()
+        .find(|line| line.starts_with(prefix))
+        .and_then(|line| line.rsplit_once(' '))
+        .and_then(|(_, value)| value.parse().ok())
+}
+
+#[tokio::test]
+async fn metrics_label_requests_by_route_template_and_report_state() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let missing = Uuid::now_v7();
+    let (status, _) = send(&app.router, get("/api/v1/agents")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&app.router, get(&format!("/api/v1/agents/{missing}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app.router, get(&format!("/no/such/route/{missing}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, content_type, text) = scrape(&app.router, get("/metrics")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "text/plain; version=0.0.4");
+
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"/api/v1/agents\",status_class=\"2xx\"}"
+        ),
+        Some(1.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"/api/v1/agents/{agent_id}\",status_class=\"4xx\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"unmatched\",status_class=\"4xx\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(sample(&text, "orbit_http_errors_total"), Some(2.0));
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_request_duration_seconds_count{method=\"GET\",route=\"/api/v1/agents\"}"
+        ),
+        Some(1.0)
+    );
+    // The scrape itself is the one request still open.
+    assert_eq!(sample(&text, "orbit_http_in_flight_requests"), Some(1.0));
+
+    // Current-state gauges. The test database is shared, so counts are lower bounds.
+    assert!(text.contains(&format!(
+        "orbit_info{{version=\"{}\",environment=\"test\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"community\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"active\"}"),
+        Some(0.0)
+    );
+    assert!(!text.contains("orbit_license_limit{"));
+    assert!(sample(&text, "orbit_license_usage{resource=\"agents\"}").unwrap() >= 1.0);
+    assert!(sample(&text, "orbit_license_usage{resource=\"seats\"}").unwrap() >= 1.0);
+    for status in ["queued", "dispatched", "running", "awaiting_approval"] {
+        assert!(
+            sample(
+                &text,
+                &format!("orbit_executions_in_flight{{status=\"{status}\"}}")
+            )
+            .is_some(),
+            "{status}"
+        );
+    }
+    assert!(sample(&text, "orbit_workers_online").is_some());
+    assert!(sample(&text, "orbit_worker_launches{status=\"running\"}").is_some());
+    assert!(sample(&text, "orbit_db_pool_connections{state=\"idle\"}").is_some());
+    assert_eq!(
+        sample(&text, "orbit_harness_available{kind=\"mock\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_metrics_collect_errors_total"),
+        Some(0.0)
+    );
+
+    // No identifiers or names: not the request path, the org slug or the user.
+    assert!(!text.contains(&missing.to_string()));
+    assert!(!text.contains("api-test-"));
+    assert!(!text.contains("api@test.local"));
+}
+
+#[tokio::test]
+async fn metrics_report_license_limits_and_rate_limited_requests() {
+    let Some(app) = test_app_with_license(
+        true,
+        Some(licensed(&["teams"], json!({ "agents": 25, "seats": 10 }))),
+    )
+    .await
+    else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.rate_limiter = Arc::new(RateLimiter::new(1));
+    let router = build_router(state);
+    let from = |path: &str| {
+        Request::builder()
+            .uri(path)
+            .extension(ConnectInfo(SocketAddr::from(([203, 0, 113, 77], 5000))))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, _) = send(&router, from("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+    // `/metrics` on the public port shares the anonymous budget.
+    let (status, _, _) = scrape(&router, from("/metrics")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    let (status, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        sample(&text, "orbit_rate_limited_total"),
+        Some(1.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"active\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_limit{resource=\"agents\"}"),
+        Some(25.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_limit{resource=\"seats\"}"),
+        Some(10.0)
+    );
+    assert!(!text.contains("orbit_license_limit{resource=\"workers\"}"));
+    // The customer name on the license is never exported.
+    assert!(!text.contains("Test customer"));
+}
+
+#[tokio::test]
+async fn metrics_token_is_required_when_configured() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.metrics_access.token = Some("scrape-secret".into());
+    let router = build_router(state);
+    let with = |authorization: Option<&str>| {
+        let mut request = Request::builder().uri("/metrics");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+
+    let (status, headers, bytes) = send_raw(&router, with(None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(headers.get("www-authenticate").unwrap(), "Bearer");
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "unauthorized", "{body}");
+    assert!(!String::from_utf8_lossy(&bytes).contains("orbit_"));
+
+    for wrong in [
+        "Bearer nope",
+        "Bearer scrape-secret-and-more",
+        "scrape-secret",
+        "Basic scrape-secret",
+    ] {
+        let (status, _, _) = send_raw(&router, with(Some(wrong))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{wrong}");
+    }
+
+    let (status, _, text) = scrape(&router, with(Some("Bearer scrape-secret"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("# TYPE orbit_http_requests_total counter"));
+    assert!(!text.contains("scrape-secret"));
+}
+
+#[tokio::test]
+async fn dedicated_metrics_listener_moves_metrics_off_the_public_port() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.metrics_access.dedicated_listener = true;
+    state.metrics_access.token = Some("scrape-secret".into());
+
+    let public = build_router(state.clone());
+    let (status, body) = send(&public, get("/metrics")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, _) = send(&public, get("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let dedicated = orbit_api::build_metrics_router(state);
+    let (status, _, _) = scrape(&dedicated, get("/metrics")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let authorized = Request::builder()
+        .uri("/metrics")
+        .header("authorization", "Bearer scrape-secret")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, text) = scrape(&dedicated, authorized).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("orbit_uptime_seconds"));
+    let (status, _) = send(&dedicated, get("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+    // Nothing else is reachable on the metrics port.
+    for path in ["/api/v1/agents", "/api/v1/meta", "/docs", "/readyz"] {
+        let (status, _) = send(&dedicated, get(path)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn metrics_follow_an_execution_through_its_lifecycle() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // Wire the store to the metrics registry the way the API binary does.
+    let metrics = Arc::new(orbit_api::metrics::Metrics::new());
+    let store = app.store.clone().with_execution_observer(metrics.clone());
+    let mut state = app.state.clone();
+    state.store = store.clone();
+    state.metrics = metrics;
+    let router = build_router(state);
+
+    let create = |key: String| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agents/{}/executions", app.agent_id))
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(json!({ "task": "measure" }).to_string()))
+            .unwrap()
+    };
+    let key = Uuid::now_v7().to_string();
+    let (status, body) = send(&router, create(key.clone())).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    // An idempotent replay returns the same execution and is not counted again.
+    let (status, replay) = send(&router, create(key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
+    assert_eq!(replay["id"], body["id"]);
+
+    let (_, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_created_total{harness=\"mock\",trigger_source=\"manual\"}"
+        ),
+        Some(1.0),
+        "{text}"
+    );
+    assert!(!text.contains("orbit_executions_started_total{"));
+
+    store.claim_execution(id, "metrics-worker").await.unwrap();
+    assert!(store
+        .mark_execution_running(id, None)
+        .await
+        .unwrap()
+        .is_some());
+    store
+        .finish_execution(
+            id,
+            orbit_domain::ExecutionStatus::Succeeded,
+            Some(&json!({ "text": "done" })),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("finished");
+    // A second report for a finished run changes nothing and is not counted.
+    assert!(store
+        .finish_execution(
+            id,
+            orbit_domain::ExecutionStatus::Failed,
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    // A run cancelled while still queued completes without ever starting.
+    let (status, queued) = send(&router, create(Uuid::now_v7().to_string())).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    let queued_id = Uuid::parse_str(queued["id"].as_str().unwrap()).unwrap();
+    store
+        .request_execution_cancel(app.org_id, queued_id)
+        .await
+        .unwrap();
+
+    let (_, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_created_total{harness=\"mock\",trigger_source=\"manual\"}"
+        ),
+        Some(2.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(&text, "orbit_executions_started_total{harness=\"mock\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_completed_total{status=\"succeeded\",harness=\"mock\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_completed_total{status=\"cancelled\",harness=\"mock\"}"
+        ),
+        Some(1.0)
+    );
+    assert!(!text.contains("orbit_executions_completed_total{status=\"failed\""));
+    assert_eq!(
+        sample(&text, "orbit_execution_queue_wait_seconds_count"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_execution_duration_seconds_count{harness=\"mock\",status=\"succeeded\"}"
+        ),
+        Some(1.0)
+    );
+    assert!(!text
+        .contains("orbit_execution_duration_seconds_count{harness=\"mock\",status=\"cancelled\"}"));
+    assert_eq!(sample(&text, "orbit_execution_timeouts_total"), Some(0.0));
 }

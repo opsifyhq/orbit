@@ -79,7 +79,7 @@ validated with field-level `details` and recorded in the audit log.
 |---|---|
 | **System** | |
 | `GET /healthz`, `GET /readyz` | liveness / readiness (database gates; event bus reported as degraded) |
-| `GET /metrics` | Prometheus metrics |
+| `GET /metrics` | Prometheus metrics ([catalogue](../development/observability.md)); optional bearer token, optional dedicated port |
 | `GET /api/v1/meta` | platform version, auth mode, capabilities |
 | `GET /api/v1/docs` | embedded documentation index (sections and pages); authenticated |
 | `GET /api/v1/docs/{*path}` | one page by slug (for example `architecture/overview`): JSON with Markdown, `?format=markdown`, or HTML (`?format=html` / `Accept: text/html`); a path under `assets/` returns an embedded image |

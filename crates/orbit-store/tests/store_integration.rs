@@ -3639,3 +3639,224 @@ async fn unparseable_tool_policies_are_enforced_as_deny() {
         "unreadable scope covers every call"
     );
 }
+
+/// Records what the store reports, keyed by execution id.
+#[derive(Default)]
+struct RecordingObserver {
+    seen: std::sync::Mutex<Vec<(uuid::Uuid, String)>>,
+}
+
+impl RecordingObserver {
+    fn for_execution(&self, id: uuid::Uuid) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(seen, _)| *seen == id)
+            .map(|(_, what)| what.clone())
+            .collect()
+    }
+}
+
+impl orbit_store::observe::ExecutionObserver for RecordingObserver {
+    fn created(&self, execution: &orbit_store::ExecutionRecord) {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((execution.id, "created".into()));
+    }
+
+    fn started(&self, execution: &orbit_store::ExecutionRecord) {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((execution.id, "started".into()));
+    }
+
+    fn finished(
+        &self,
+        execution: &orbit_store::ExecutionRecord,
+        cause: orbit_store::observe::FinishCause,
+    ) {
+        self.seen.lock().unwrap().push((
+            execution.id,
+            format!("finished:{}:{cause:?}", execution.status),
+        ));
+    }
+}
+
+#[tokio::test]
+async fn execution_transitions_are_reported_once_including_reaped_runs() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let observer = Arc::new(RecordingObserver::default());
+    let store = store.with_execution_observer(observer.clone());
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Observed Agent"))
+        .await
+        .unwrap();
+    let make_execution = |key: &'static str| {
+        let store = &store;
+        let agent = &agent;
+        let version = &version;
+        async move {
+            store
+                .create_execution(NewExecution {
+                    org_id: org,
+                    agent_id: agent.id,
+                    agent_version_id: version.id,
+                    agent_name: &agent.name,
+                    harness_kind: HarnessKind::Mock,
+                    trigger_source: TriggerSource::Manual,
+                    placement: "auto",
+                    trigger_id: None,
+                    input: serde_json::json!({ "task": "x" }),
+                    session_ref: None,
+                    skills: &[],
+                    timeout_seconds: 30,
+                    requested_by: Some(user),
+                    idempotency_key: Some(key),
+                    team_run_id: None,
+                    team_step_index: None,
+                })
+                .await
+                .unwrap()
+        }
+    };
+
+    // Reported by its worker; a resume after an approval is not a second start.
+    let reported = make_execution("observed-reported").await;
+    assert_eq!(make_execution("observed-reported").await.id, reported.id);
+    store.claim_execution(reported.id, "w1").await.unwrap();
+    store
+        .mark_execution_running(reported.id, None)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE executions SET status = 'awaiting_approval', \
+         running_started_at = now() - interval '5 seconds' WHERE id = $1",
+    )
+    .bind(reported.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    assert!(store
+        .mark_execution_running(reported.id, None)
+        .await
+        .unwrap()
+        .is_some());
+    store
+        .finish_execution(
+            reported.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("finished");
+    assert_eq!(
+        observer.for_execution(reported.id),
+        ["created", "started", "finished:succeeded:Reported"]
+    );
+
+    // Cancelled while queued; cancelling again reports nothing new.
+    let cancelled = make_execution("observed-cancelled").await;
+    store
+        .request_execution_cancel(org, cancelled.id)
+        .await
+        .unwrap();
+    store
+        .request_execution_cancel(org, cancelled.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        observer.for_execution(cancelled.id),
+        ["created", "finished:cancelled:CancelledWhileQueued"]
+    );
+
+    // Lost with its worker.
+    let lost = make_execution("observed-lost").await;
+    store
+        .claim_execution(lost.id, "worker-vanished")
+        .await
+        .unwrap();
+    store.mark_execution_running(lost.id, None).await.unwrap();
+    sqlx::query("UPDATE executions SET created_at = now() - interval '1 hour', started_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(lost.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    // Taken by a live worker that never started it. The id is unique because a worker
+    // row belongs to the token that first reported it, and the database is reused.
+    let silent_worker = format!("worker-silent-{}", uuid::Uuid::now_v7());
+    let unstarted = make_execution("observed-unstarted").await;
+    store
+        .claim_execution(unstarted.id, &silent_worker)
+        .await
+        .unwrap();
+    store
+        .upsert_worker_heartbeat(
+            org,
+            uuid::Uuid::now_v7(),
+            &silent_worker,
+            &["mock".into()],
+            "local",
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE executions SET updated_at = now() - interval '1 hour', started_at = now() - interval '1 hour', created_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(unstarted.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+    // While both are still open, the snapshot counts them (the database is shared with
+    // other tests, so these are lower bounds).
+    let snapshot = store.metrics_snapshot(90).await.unwrap();
+    let in_flight = |status: &str| {
+        snapshot
+            .executions_in_flight
+            .iter()
+            .find(|(name, _)| name == status)
+            .map(|(_, count)| *count)
+            .unwrap()
+    };
+    assert_eq!(snapshot.executions_in_flight.len(), 4);
+    assert!(in_flight("running") >= 1);
+    assert!(in_flight("dispatched") >= 1);
+    assert!(snapshot.workers_online >= 1);
+    assert_eq!(snapshot.worker_launches.len(), 3);
+    let usage: Vec<&str> = snapshot
+        .license_usage
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(usage, ["seats", "agents", "workers", "executions_per_day"]);
+    assert!(snapshot.license_usage[1].1 >= 1);
+    assert!(snapshot.license_usage[3].1 >= 4);
+
+    let reaped = store
+        .reap_orphaned_executions_for_org(org, 60)
+        .await
+        .unwrap();
+    assert_eq!(reaped.len(), 1);
+    let ended = store
+        .reap_unstarted_executions(Some(org), 600, 60)
+        .await
+        .unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(
+        observer.for_execution(lost.id),
+        ["created", "started", "finished:failed:WorkerLost"]
+    );
+    assert_eq!(
+        observer.for_execution(unstarted.id),
+        ["created", "finished:failed:NeverStarted"]
+    );
+}

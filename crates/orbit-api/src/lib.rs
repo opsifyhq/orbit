@@ -32,5 +32,5 @@ pub mod worker_auth;
 
 pub use bootstrap::{initialize, Initialized};
 pub use config::ApiConfig;
-pub use routes::build_router;
-pub use state::{AppState, DevIdentity};
+pub use routes::{build_metrics_router, build_router};
+pub use state::{AppState, DevIdentity, MetricsAccess};

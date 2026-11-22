@@ -445,10 +445,9 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::worker_api::connection),
         );
 
-    let public = Router::new()
+    let mut public = Router::new()
         .route("/healthz", get(handlers::health::healthz))
         .route("/readyz", get(handlers::health::readyz))
-        .route("/metrics", get(handlers::health::metrics))
         .route("/api/v1/meta", get(handlers::health::meta))
         .route("/api/v1/auth/oidc/config", get(handlers::auth_oidc::config))
         .route("/api/v1/auth/oidc/token", post(handlers::auth_oidc::token))
@@ -459,6 +458,16 @@ pub fn build_router(state: AppState) -> Router {
             state.rate_limiter.clone(),
             crate::rate_limit::enforce,
         ));
+    // With a dedicated metrics listener the public port does not expose `/metrics`.
+    if !state.metrics_access.dedicated_listener {
+        public = public.route(
+            "/metrics",
+            get(handlers::health::metrics).layer(middleware::from_fn_with_state(
+                state.rate_limiter.clone(),
+                crate::rate_limit::enforce,
+            )),
+        );
+    }
 
     Router::new()
         .merge(public)
@@ -474,6 +483,17 @@ pub fn build_router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(state.max_body_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+        .with_state(state)
+}
+
+/// Router for the dedicated metrics listener (`ORBIT_METRICS_ADDR`): `/metrics` and a
+/// liveness probe, nothing else. It carries no rate limiter (scrapes come from one
+/// address at a fixed interval) and no CORS, and its requests are not counted in the
+/// HTTP metrics.
+pub fn build_metrics_router(state: AppState) -> Router {
+    Router::new()
+        .route("/metrics", get(handlers::health::metrics))
+        .route("/healthz", get(handlers::health::healthz))
         .with_state(state)
 }
 

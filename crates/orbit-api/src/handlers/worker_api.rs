@@ -350,6 +350,7 @@ pub async fn heartbeat(
             "worker id is already registered by another worker token",
         ));
     }
+    state.metrics.worker_heartbeat();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -402,13 +403,20 @@ pub async fn claim(
     };
     let execution = match claimed {
         Some(execution) => execution,
-        None => return Ok(Json(ClaimResponse { execution: None })),
+        None => {
+            state.metrics.worker_claim("empty");
+            return Ok(Json(ClaimResponse { execution: None }));
+        }
     };
     match build_context(&state, auth.org_id, profile.as_ref(), &execution).await {
-        Ok(context) => Ok(Json(ClaimResponse {
-            execution: Some(context),
-        })),
+        Ok(context) => {
+            state.metrics.worker_claim("claimed");
+            Ok(Json(ClaimResponse {
+                execution: Some(context),
+            }))
+        }
         Err(error) => {
+            state.metrics.worker_claim("error");
             let message = error.message.clone();
             fail_claimed(&state, &execution, &message).await;
             Err(error)
