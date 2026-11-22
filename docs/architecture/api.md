@@ -170,6 +170,11 @@ Used only by workers and the launcher-managed execution plane:
 `approvals` + `approvals/{id}/wait`, `connections/{id}`, `audit`, `env`, and
 `memory/{list,store}`.
 
+`audit` accepts only the tool broker's action names (`orbit_contracts::WORKER_AUDIT_ACTIONS`:
+`tool.call.executed`, `tool.call.failed`, `tool.call.approval_requested`,
+`tool.call.approved`, `tool.call.denied`) and answers `422` for any other, so a worker
+cannot write entries that look like user or platform actions.
+
 These routes are a private protocol between the API and its workers. They are left out of
 the OpenAPI document on purpose and may change between releases.
 

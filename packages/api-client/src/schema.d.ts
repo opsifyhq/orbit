@@ -2678,7 +2678,7 @@ export interface components {
         };
         LicenseOverview: {
             license: components["schemas"]["LicenseStatus"];
-            usage: components["schemas"]["LicenseUsage"];
+            usage?: components["schemas"]["LicenseUsage"] | null;
             warnings: string[];
         };
         LicenseStatus: {
@@ -2720,7 +2720,8 @@ export interface components {
         };
         /**
          * @description Counts are installation-wide (all organizations) because licenses are installed once
-         *     per ORBIT installation, not per organization.
+         *     per ORBIT installation, not per organization. They are returned to Owners and Admins
+         *     only (#325).
          */
         LicenseUsage: {
             /** Format: int64 */
@@ -2812,7 +2813,9 @@ export interface components {
             requireMappedGroup?: boolean;
             /**
              * @description Link an incoming identity to an existing user by email only when the token says
-             *     `email_verified: true` (a missing claim also blocks linking). Default false.
+             *     `email_verified: true` (a missing claim also blocks linking). This setting can
+             *     only turn the requirement on: it is already on unless
+             *     `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL=false` turned it off (the default is on).
              */
             requireVerifiedEmail?: boolean;
             /** @description Claim carrying IdP groups/roles (default `groups`). */

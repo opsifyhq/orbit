@@ -10723,3 +10723,103 @@ async fn license_phase_transitions_are_audited() {
     assert_eq!(entries[1].metadata["from"], "active");
     assert_eq!(entries[1].metadata["to"], "grace");
 }
+
+#[tokio::test]
+async fn worker_audit_accepts_only_worker_action_names() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "worker-audit").await;
+    let queued = queue_execution(&app, "audit execution").await;
+    let claimed = claim_as(&app, &token, "worker-audit")
+        .await
+        .expect("claimed");
+    assert_eq!(claimed, queued);
+
+    // A name that looks like a user or platform action is refused with the envelope.
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/audit",
+            &token,
+            Some(json!({ "executionId": claimed, "action": "member.role_changed" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "validation_error");
+    let forged = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("member.role_changed"))
+        .await
+        .unwrap();
+    assert!(forged.0.is_empty());
+
+    for action in orbit_contracts::WORKER_AUDIT_ACTIONS {
+        let (status, body) = send(
+            &app.router,
+            worker_request(
+                "POST",
+                "/api/v1/worker/audit",
+                &token,
+                Some(json!({ "executionId": claimed, "action": action, "metadata": {} })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{action}: {body}");
+        let rows = app
+            .store
+            .list_audit_logs(app.org_id, 10, None, Some(action))
+            .await
+            .unwrap();
+        assert_eq!(rows.0.len(), 1, "{action}");
+    }
+}
+
+#[tokio::test]
+async fn license_usage_is_only_shown_to_owners_and_admins() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&[], json!({ "seats": 1 })))).await
+    else {
+        return;
+    };
+
+    // The dev identity is an Owner: usage and the near-limit warning are included.
+    let (status, body) = send(&app.router, get("/api/v1/license")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["usage"]["seats"].as_i64().unwrap() >= 1, "{body}");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().starts_with("seats:")),
+        "{body}"
+    );
+
+    // A Viewer has settings:read but sees neither installation-wide counts nor the
+    // warnings that quote them.
+    let viewer = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "license-viewer@test.local",
+            "Viewer",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    let token = token_for(&app.store, app.org_id, viewer.id, "license-viewer").await;
+    let (status, body) = send(&app.router, auth_get("/api/v1/license", &token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("usage").is_none(), "{body}");
+    assert_eq!(body["license"]["tier"], "enterprise");
+    assert!(
+        !body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().contains("used")),
+        "{body}"
+    );
+}

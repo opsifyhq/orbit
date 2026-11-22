@@ -362,6 +362,7 @@ pub async fn export_agent(
     let yaml = crate::handlers::export::build_document(
         &state,
         auth.org_id,
+        &access,
         orbit_contracts::portable::PortableKind::Agent,
         agent_id,
     )

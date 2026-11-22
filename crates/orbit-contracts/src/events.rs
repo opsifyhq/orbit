@@ -15,6 +15,18 @@ pub mod subjects {
     pub const WORKER_HEARTBEAT: &str = "orbit.worker.heartbeat";
 }
 
+/// Audit actions a worker may write through `POST /api/v1/worker/audit`. The API
+/// rejects any other name, so a compromised worker cannot write entries that look like
+/// user or platform actions. Keep this in sync with the tool broker's `record_audit`
+/// calls in `services/worker/src/broker.rs`.
+pub const WORKER_AUDIT_ACTIONS: &[&str] = &[
+    "tool.call.executed",
+    "tool.call.failed",
+    "tool.call.approval_requested",
+    "tool.call.approved",
+    "tool.call.denied",
+];
+
 /// Transport-agnostic event envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

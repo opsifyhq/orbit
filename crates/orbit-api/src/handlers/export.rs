@@ -24,6 +24,7 @@ use orbit_contracts::portable::{
 use orbit_domain::AgentDefinition;
 use orbit_security::{AuthContext, Permission};
 
+use crate::access::AccessScope;
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -64,50 +65,143 @@ fn string_map(value: &Value) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// `<connector>/<name>` reference for a connection id, when it still exists.
-async fn connection_ref(state: &AppState, org_id: Uuid, id: Uuid) -> Option<String> {
-    let row = state
-        .store
-        .get_connection_with_connector(org_id, id)
-        .await
-        .ok()?;
-    Some(format!("{}/{}", row.connector_slug, row.connection.name))
+/// How a referenced resource appears in an export.
+enum Reference {
+    /// The caller can view it: its portable name.
+    Named(String),
+    /// It exists but the caller cannot view it: only the id, never the name (#325).
+    Hidden(Uuid),
 }
 
-async fn agent_name(state: &AppState, org_id: Uuid, id: Uuid) -> Option<String> {
-    state
-        .store
-        .get_agent(org_id, id)
-        .await
-        .ok()
-        .map(|agent| agent.name)
+impl Reference {
+    /// The value for a name list (`steps[].agent`, `connections`, …). A hidden
+    /// resource is written as its id, which an import reports as unresolved.
+    fn portable(self) -> String {
+        match self {
+            Self::Named(name) => name,
+            Self::Hidden(id) => id.to_string(),
+        }
+    }
 }
 
-/// Replace `connectionId` with a portable `connection: <connector>/<name>` in a JSON
-/// object (work source, repository entry). Unknown ids are dropped.
-async fn portable_connection_field(state: &AppState, org_id: Uuid, value: &mut Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    let Some(id) = object.remove("connectionId") else {
-        return;
-    };
-    if let Some(id) = id.as_str().and_then(|id| id.parse::<Uuid>().ok()) {
-        if let Some(reference) = connection_ref(state, org_id, id).await {
-            object.insert("connection".into(), Value::String(reference));
+/// Resolves referenced ids to names, within what the exporting user can view.
+struct Names<'a> {
+    state: &'a AppState,
+    org_id: Uuid,
+    access: &'a AccessScope,
+}
+
+impl<'a> Names<'a> {
+    fn new(state: &'a AppState, org_id: Uuid, access: &'a AccessScope) -> Self {
+        Self {
+            state,
+            org_id,
+            access,
+        }
+    }
+
+    async fn visible(&self, resource: &str, id: Uuid) -> bool {
+        match self
+            .state
+            .store
+            .resource_ownership(self.org_id, resource, id)
+            .await
+        {
+            Ok((owner_user, owner_team, visibility)) => {
+                self.access.can_view(owner_user, owner_team, &visibility)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// `<connector>/<name>` for a connection id, when it still exists.
+    async fn connection(&self, id: Uuid) -> Option<Reference> {
+        let row = self
+            .state
+            .store
+            .get_connection_with_connector(self.org_id, id)
+            .await
+            .ok()?;
+        if !self.visible("connections", id).await {
+            return Some(Reference::Hidden(id));
+        }
+        Some(Reference::Named(format!(
+            "{}/{}",
+            row.connector_slug, row.connection.name
+        )))
+    }
+
+    async fn agent(&self, id: Uuid) -> Option<Reference> {
+        let agent = self.state.store.get_agent(self.org_id, id).await.ok()?;
+        if !self.visible("agents", id).await {
+            return Some(Reference::Hidden(id));
+        }
+        Some(Reference::Named(agent.name))
+    }
+
+    async fn env_mapping(&self, id: Uuid) -> Option<Reference> {
+        let mapping = self
+            .state
+            .store
+            .get_env_mapping(self.org_id, id)
+            .await
+            .ok()?;
+        if !self.visible("env_mappings", id).await {
+            return Some(Reference::Hidden(id));
+        }
+        Some(Reference::Named(mapping.name))
+    }
+
+    async fn worker_profile(&self, id: Uuid) -> Option<Reference> {
+        let profile = self
+            .state
+            .store
+            .get_worker_profile(self.org_id, id)
+            .await
+            .ok()?;
+        if !self.visible("worker_profiles", id).await {
+            return Some(Reference::Hidden(id));
+        }
+        Some(Reference::Named(profile.name))
+    }
+
+    /// Replace `connectionId` with a portable `connection: <connector>/<name>` in a
+    /// JSON object (agent binding, work source, repository entry). Unknown ids are
+    /// dropped; a connection the caller cannot view keeps its `connectionId` only.
+    async fn connection_field(&self, value: &mut Value) {
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        let Some(raw) = object.remove("connectionId") else {
+            return;
+        };
+        let Some(id) = raw.as_str().and_then(|id| id.parse::<Uuid>().ok()) else {
+            return;
+        };
+        match self.connection(id).await {
+            Some(Reference::Named(reference)) => {
+                object.insert("connection".into(), Value::String(reference));
+            }
+            Some(Reference::Hidden(_)) => {
+                object.insert("connectionId".into(), raw);
+            }
+            None => {}
         }
     }
 }
 
 /// Build the portable document for a stored resource. Returns the document and the
-/// raw name used for file naming.
+/// raw name used for file naming. Referenced resources the caller cannot view are
+/// written by id, never by name.
 pub(crate) async fn build_document(
     state: &AppState,
     org_id: Uuid,
+    access: &AccessScope,
     kind: PortableKind,
     id: Uuid,
 ) -> Result<PortableDocument, ApiError> {
     let store = &state.store;
+    let names = Names::new(state, org_id, access);
     let document = match kind {
         PortableKind::Agent => {
             let agent = store.get_agent(org_id, id).await?;
@@ -129,18 +223,7 @@ pub(crate) async fn build_document(
             // `secretRef`, harness config secrets) is removed by `redact`.
             if let Some(bindings) = spec.get_mut("connectors").and_then(Value::as_array_mut) {
                 for binding in bindings {
-                    if let Some(object) = binding.as_object_mut() {
-                        if let Some(connection_id) = object
-                            .remove("connectionId")
-                            .and_then(|v| v.as_str().and_then(|s| s.parse::<Uuid>().ok()))
-                        {
-                            if let Some(reference) =
-                                connection_ref(state, org_id, connection_id).await
-                            {
-                                object.insert("connection".into(), Value::String(reference));
-                            }
-                        }
-                    }
+                    names.connection_field(binding).await;
                 }
             }
             let mut doc = PortableDocument::new(PortableKind::Agent, agent.name, redacted(spec));
@@ -200,16 +283,16 @@ pub(crate) async fn build_document(
             let profile = store.get_worker_profile(org_id, id).await?;
             let mut agents = Vec::new();
             for agent_id in &profile.agent_ids {
-                if let Some(name) = agent_name(state, org_id, *agent_id).await {
-                    agents.push(name);
+                if let Some(reference) = names.agent(*agent_id).await {
+                    agents.push(reference.portable());
                 }
             }
-            let env_mappings: Vec<String> = store
-                .list_worker_profile_env_mappings(profile.id)
-                .await?
-                .into_iter()
-                .map(|mapping| mapping.name)
-                .collect();
+            let mut env_mappings = Vec::new();
+            for mapping in store.list_worker_profile_env_mappings(profile.id).await? {
+                if let Some(reference) = names.env_mapping(mapping.id).await {
+                    env_mappings.push(reference.portable());
+                }
+            }
             let env: BTreeMap<String, String> = profile
                 .env
                 .as_object()
@@ -248,29 +331,28 @@ pub(crate) async fn build_document(
             let team = store.get_agent_team(org_id, id).await?;
             let definition = super::teams::parse_definition(&team)?;
             let worker_profile = match definition.worker_profile_id {
-                Some(profile_id) => store
-                    .get_worker_profile(org_id, profile_id)
+                Some(profile_id) => names
+                    .worker_profile(profile_id)
                     .await
-                    .ok()
-                    .map(|profile| profile.name),
+                    .map(Reference::portable),
                 None => None,
             };
             let mut connections = Vec::new();
             for connection_id in &definition.connection_ids {
-                if let Some(reference) = connection_ref(state, org_id, *connection_id).await {
-                    connections.push(reference);
+                if let Some(reference) = names.connection(*connection_id).await {
+                    connections.push(reference.portable());
                 }
             }
             let mut env_mappings = Vec::new();
             for mapping_id in &definition.env_mapping_ids {
-                if let Ok(mapping) = store.get_env_mapping(org_id, *mapping_id).await {
-                    env_mappings.push(mapping.name);
+                if let Some(reference) = names.env_mapping(*mapping_id).await {
+                    env_mappings.push(reference.portable());
                 }
             }
             let mut steps = Vec::new();
             for step in &definition.steps {
-                if let Some(name) = agent_name(state, org_id, step.agent_id).await {
-                    let mut entry = json!({ "agent": name });
+                if let Some(reference) = names.agent(step.agent_id).await {
+                    let mut entry = json!({ "agent": reference.portable() });
                     if let Some(model) = &step.model {
                         entry["model"] = serde_json::to_value(model).map_err(internal)?;
                     }
@@ -282,12 +364,12 @@ pub(crate) async fn build_document(
                 None => None,
             };
             if let Some(source) = work_source.as_mut() {
-                portable_connection_field(state, org_id, source).await;
+                names.connection_field(source).await;
             }
             let mut repositories = Vec::new();
             for repository in &definition.repositories {
                 let mut value = serde_json::to_value(repository).map_err(internal)?;
-                portable_connection_field(state, org_id, &mut value).await;
+                names.connection_field(&mut value).await;
                 if value.get("connectionId").is_none() {
                     if let Some(object) = value.as_object_mut() {
                         object.retain(|_, v| !v.is_null());
@@ -318,9 +400,11 @@ pub(crate) async fn build_document(
         }
         PortableKind::Trigger => {
             let trigger = store.get_trigger(org_id, id).await?;
-            let agent = agent_name(state, org_id, trigger.agent_id)
+            let agent = names
+                .agent(trigger.agent_id)
                 .await
-                .ok_or_else(|| ApiError::not_found("agent of trigger"))?;
+                .ok_or_else(|| ApiError::not_found("agent of trigger"))?
+                .portable();
             let webhook = trigger.kind == "webhook";
             let mut doc = PortableDocument::new(
                 PortableKind::Trigger,
@@ -341,7 +425,7 @@ pub(crate) async fn build_document(
         PortableKind::ToolPolicy => {
             let policy = store.get_tool_policy(org_id, id).await?;
             let agent = match policy.agent_id {
-                Some(agent_id) => agent_name(state, org_id, agent_id).await,
+                Some(agent_id) => names.agent(agent_id).await.map(Reference::portable),
                 None => None,
             };
             let mut doc = PortableDocument::new(
@@ -416,11 +500,11 @@ pub async fn export_resource(
         .store
         .resource_ownership(auth.org_id, &resource, resource_id)
         .await?;
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let access = AccessScope::load(&state, &auth).await?;
     access.require_view(&resource, owner_user, owner_team, &visibility)?;
 
     let format = query.format.as_deref().unwrap_or("json");
-    let document = build_document(&state, auth.org_id, kind, resource_id).await?;
+    let document = build_document(&state, auth.org_id, &access, kind, resource_id).await?;
     let stem = file_stem(&document.metadata.name);
     match format {
         "yaml" | "yml" => {

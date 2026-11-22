@@ -69,7 +69,10 @@ Rules that hold for every kind:
   it before sharing.
 - **References use names, never ids.** A skill is its `slug`, an agent its `name`, a
   connection `<connector>/<name>` (for example `github/team-github`), a worker profile or
-  provider its `name`. Ids differ between installations.
+  provider its `name`. Ids differ between installations. A referenced resource you cannot
+  view is written by its id instead of its name (an agent binding, work source or
+  repository keeps `connectionId`), so an export never reveals the names of resources
+  hidden from you. Importing such a document reports the id as an unresolved reference.
 - **`credentials.required`** tells the recipient that the source resource had a credential
   (connection, provider, worker profile with env vars or an auth secret, webhook trigger).
   After import, set it on the resource (Connectors, Model providers, Worker profiles).

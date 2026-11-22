@@ -166,7 +166,10 @@ impl AuthConfig {
                     auto_create_teams: env_bool("ORBIT_OIDC_AUTO_CREATE_TEAMS", false),
                     require_mapped_group: env_bool("ORBIT_OIDC_REQUIRE_MAPPED_GROUP", false),
                     sync_roles: env_bool("ORBIT_OIDC_SYNC_ROLES", false),
-                    require_verified_email: env_bool("ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL", false),
+                    require_verified_email: env_bool(
+                        "ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL",
+                        DEFAULT_REQUIRE_VERIFIED_EMAIL,
+                    ),
                     clock_skew_seconds: env_or("ORBIT_OIDC_CLOCK_SKEW_SECONDS", "60")
                         .parse()
                         .unwrap_or(60),
@@ -257,6 +260,10 @@ fn parse_group_roles(value: &str) -> Result<Vec<(String, UserRole)>, SecurityErr
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
+
+/// Default for `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL`: email-based linking to an existing
+/// user needs `email_verified: true` unless an operator turns this off (#325).
+pub const DEFAULT_REQUIRE_VERIFIED_EMAIL: bool = true;
 
 fn env_bool(key: &str, default: bool) -> bool {
     std::env::var(key)

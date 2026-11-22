@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -7601,7 +7601,6 @@
         "type": "object",
         "required": [
           "license",
-          "usage",
           "warnings"
         ],
         "properties": {
@@ -7609,7 +7608,15 @@
             "$ref": "#/components/schemas/LicenseStatus"
           },
           "usage": {
-            "$ref": "#/components/schemas/LicenseUsage"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LicenseUsage",
+                "description": "Installation-wide usage; omitted for roles other than Owner and Admin."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "warnings": {
             "type": "array",
@@ -7721,7 +7728,7 @@
       },
       "LicenseUsage": {
         "type": "object",
-        "description": "Counts are installation-wide (all organizations) because licenses are installed once\nper ORBIT installation, not per organization.",
+        "description": "Counts are installation-wide (all organizations) because licenses are installed once\nper ORBIT installation, not per organization. They are returned to Owners and Admins\nonly (#325).",
         "required": [
           "seats",
           "agents",
@@ -7999,7 +8006,7 @@
           },
           "requireVerifiedEmail": {
             "type": "boolean",
-            "description": "Link an incoming identity to an existing user by email only when the token says\n`email_verified: true` (a missing claim also blocks linking). Default false."
+            "description": "Link an incoming identity to an existing user by email only when the token says\n`email_verified: true` (a missing claim also blocks linking). This setting can\nonly turn the requirement on: it is already on unless\n`ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL=false` turned it off (the default is on)."
           },
           "roleClaim": {
             "type": "string",

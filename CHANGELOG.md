@@ -8,6 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Security
+
+- OIDC email linking now requires `email_verified: true` by default
+  (`ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL`, Helm `auth.oidc.requireVerifiedEmail`, now `true`).
+  An IdP that omits the claim no longer links a first login to an invited user; see the
+  upgrade note in `docs/development/oidc.md` (#325).
+- `orbit-worker mcp-broker` no longer loads a `.env` file from the agent workspace; the
+  worker audit endpoint accepts only the tool broker's action names (422 otherwise);
+  exports write referenced resources the caller cannot view by id, not by name; and
+  `GET /api/v1/license` returns installation-wide usage to Owners and Admins only (#325).
+
 ## [0.27.0] - 2026-11-21
 
 ### Added

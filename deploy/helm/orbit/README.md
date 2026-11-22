@@ -230,7 +230,7 @@ Mount at `/etc/orbit-license.jwt`; the API hot-reloads it (~60s) and exposes the
 | `auth.oidc.autoCreateTeams` | `false` | create missing access teams for mapped group slugs |
 | `auth.oidc.requireMappedGroup` | `false` | deny users whose groups match no role/team mapping |
 | `auth.oidc.syncRoles` | `false` | re-evaluate the stored role on every login |
-| `auth.oidc.requireVerifiedEmail` | `false` | link a first login to an invited user by email only when the token has `email_verified=true` |
+| `auth.oidc.requireVerifiedEmail` | `true` | link a first login to an invited user by email only when the token has `email_verified=true` |
 | `secrets.create` / `secrets.existingSecret` | `true` / `""` | bring your own Secret in production |
 | `secrets.masterKey` | dev key | base64 32-byte AES key; replace for real deployments |
 | `secrets.oidcClientSecret` | `""` | confidential clients only |
