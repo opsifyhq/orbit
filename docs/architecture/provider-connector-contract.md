@@ -176,7 +176,12 @@ transport option (`mcp` capability provider), not the only connector mechanism.
   actionable `user-context`/`tweet.write` error. See [the X connector guide](../guide/x-connector.md).
 - **Repository tools** (`repo.checkout`, `repo.commit`, `repo.push`) run in the worker
   over a per-execution workspace; git credentials are injected through `GIT_ASKPASS` in
-  the child process only.
+  the child process only, and only for `repo.checkout` and `repo.push` (a commit is
+  local and gets no token). The workspace's `.git/config` is agent-writable, so
+  `repo.push` never uses its `remote.*` settings: it pushes to the URL built from the
+  connection (`cloneBaseUrl`) and the checked-out repository, re-checked against
+  `allowedRepositories` / `allowedProjects`. Git refuses to run when the repository config
+  sets `url.*` (rewrites) or `http.*` (proxy, TLS, extra headers) keys.
 - **Capability enforcement**: the broker evaluates `evaluate_capability` (autonomy ×
   effect × grant) before every call; writes below L4 create approvals.
 

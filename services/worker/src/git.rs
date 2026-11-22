@@ -178,6 +178,12 @@ fn is_dangerous_config_key(key: &str) -> bool {
     ) {
         return true;
     }
+    // `url.*.insteadOf` / `pushInsteadOf` rewrite even an explicit push URL, and `http.*`
+    // (proxy, sslVerify, sslCAInfo, extraHeader) can redirect or intercept the request
+    // that carries the connection token (#301). Clones never write either section.
+    if matches!(section, "url" | "http") {
+        return true;
+    }
     if (key.starts_with("diff.") && (key.ends_with(".textconv") || key.ends_with(".command")))
         || (key.starts_with("merge.") && key.ends_with(".driver"))
     {
@@ -241,15 +247,35 @@ fn commit_command(workspace: &Path, message: &str) -> Command {
     command
 }
 
-fn push_command(workspace: &Path, branch: &str) -> Command {
+/// Push to an explicit URL. The workspace's `remote.*` config is agent-writable, so the
+/// push target must never be taken from it (#301).
+fn push_command(workspace: &Path, url: &str, branch: &str) -> Command {
     let mut command = git_command(workspace);
     command.args([
         "push",
         "--no-verify",
-        "origin",
+        url,
         &format!("HEAD:refs/heads/{branch}"),
     ]);
     command
+}
+
+/// The HTTPS URL of `repo` on the connection's host, the same one the clone uses.
+fn repository_url(connection: &WorkerConnection, repo: &str) -> String {
+    let clone_base = connection
+        .connection
+        .config
+        .get("cloneBaseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            if connection.connector.slug == "gitlab" {
+                "https://gitlab.com"
+            } else {
+                "https://github.com"
+            }
+        })
+        .trim_end_matches('/');
+    format!("{clone_base}/{repo}.git")
 }
 
 fn write_askpass() -> anyhow::Result<NamedTempFile> {
@@ -527,19 +553,6 @@ async fn checkout_repository(
         Some(_) => Some(write_askpass()?),
         None => None,
     };
-    let clone_base = connection
-        .connection
-        .config
-        .get("cloneBaseUrl")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| {
-            if connection.connector.slug == "gitlab" {
-                "https://gitlab.com"
-            } else {
-                "https://github.com"
-            }
-        })
-        .trim_end_matches('/');
     let username = git_username(&connection);
     tokio::fs::create_dir_all(workspace).await?;
     let mut command = git_command(workspace);
@@ -547,7 +560,7 @@ async fn checkout_repository(
     if let Some(branch) = branch.filter(|branch| !branch.is_empty()) {
         command.args(["--branch", branch]);
     }
-    command.arg(format!("{clone_base}/{repo}.git")).arg(".");
+    command.arg(repository_url(&connection, repo)).arg(".");
     if let Some(token) = &token {
         command.env("ORBIT_GIT_TOKEN", token);
     }
@@ -591,26 +604,15 @@ async fn run_git(
 }
 
 /// Commit all workspace changes. Returns the commit subject/status.
+///
+/// A commit is local, so the connection token is not given to git here (#301).
 pub async fn commit(
-    client: &WorkerClient,
-    execution_id: uuid::Uuid,
-    connection_id: uuid::Uuid,
     workspace: &Path,
     message: &str,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Value> {
-    let connection = client.connection(execution_id, connection_id).await?;
-    let username = git_username(&connection);
-    let token = connection
-        .credential
-        .as_ref()
-        .map(|secret| secret.value.clone())
-        .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
     stage_workspace_changes(workspace, cancel).await?;
-    let askpass = write_askpass()?;
-    let mut command = commit_command(workspace, message);
-    command.env("ORBIT_GIT_TOKEN", &token);
-    apply_git_auth(&mut command, askpass.path(), &username);
+    let command = commit_command(workspace, message);
     let output = run_git(command, cancel, GIT_LOCAL_TIMEOUT, "commit").await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -626,11 +628,19 @@ pub async fn commit(
     }))
 }
 
-/// Push the current HEAD to a branch.
+/// Push the current HEAD to a branch of the workspace's repository.
+///
+/// The target is built from the connection and the repository that was checked out
+/// (`repository`, else the execution input or the connection default), validated against
+/// the connection's allowlist, and passed to git explicitly. The workspace's own
+/// `remote.*` and `url.*` config cannot redirect the push or the token (#301).
+#[allow(clippy::too_many_arguments)]
 pub async fn push(
     client: &WorkerClient,
     execution_id: uuid::Uuid,
     connection_id: uuid::Uuid,
+    repository: Option<&str>,
+    input: &Value,
     workspace: &Path,
     branch: &str,
     cancel: &CancellationToken,
@@ -644,6 +654,11 @@ pub async fn push(
         anyhow::bail!("invalid branch name");
     }
     let connection = client.connection(execution_id, connection_id).await?;
+    let repo = repository
+        .map(str::to_string)
+        .or_else(|| repo_name(&connection, input))
+        .ok_or_else(|| anyhow::anyhow!("no repository is configured for this workspace"))?;
+    validate_repo(&connection, &repo)?;
     let username = git_username(&connection);
     let token = connection
         .credential
@@ -652,7 +667,7 @@ pub async fn push(
         .ok_or_else(|| anyhow::anyhow!("connection has no token"))?;
     ensure_safe_repo_config(workspace, cancel).await?;
     let askpass = write_askpass()?;
-    let mut command = push_command(workspace, branch);
+    let mut command = push_command(workspace, &repository_url(&connection, &repo), branch);
     command.env("ORBIT_GIT_TOKEN", &token);
     apply_git_auth(&mut command, askpass.path(), &username);
     let output = run_git(command, cancel, GIT_PUSH_TIMEOUT, "push").await?;
@@ -662,7 +677,7 @@ pub async fn push(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(serde_json::json!({ "status": "pushed", "branch": branch }))
+    Ok(serde_json::json!({ "status": "pushed", "repository": repo, "branch": branch }))
 }
 
 #[cfg(test)]
@@ -827,6 +842,218 @@ mod tests {
         let _ = std::fs::remove_dir_all(workspace);
     }
 
+    /// A local HTTP listener that answers every request with a Basic 401 and records
+    /// whether the request carried an `Authorization` header.
+    #[cfg(unix)]
+    async fn recording_git_host() -> (String, std::sync::Arc<std::sync::Mutex<Vec<bool>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let record = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let record = record.clone();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0u8; 8192];
+                    let read = socket.read(&mut buffer).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+                    record
+                        .lock()
+                        .unwrap()
+                        .push(request.contains("\r\nauthorization:"));
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// A fake worker API that serves one connection with a dummy token.
+    #[cfg(unix)]
+    async fn fake_connection_api(clone_base: &str) -> (WorkerClient, uuid::Uuid) {
+        use axum::routing::get;
+        let connection_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now();
+        let body = serde_json::json!({
+            "connection": orbit_store::Connection {
+                id: connection_id,
+                org_id: uuid::Uuid::now_v7(),
+                owner_user_id: None,
+                owner_team_id: None,
+                visibility: "org".into(),
+                connector_id: uuid::Uuid::now_v7(),
+                name: "github".into(),
+                status: "active".into(),
+                credential_ref: None,
+                config: serde_json::json!({
+                    "cloneBaseUrl": clone_base,
+                    "allowedRepositories": ["acme/allowed"],
+                }),
+                scopes: vec![],
+                created_by: None,
+                last_checked_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            "connector": orbit_store::ConnectorRecord {
+                id: uuid::Uuid::now_v7(),
+                org_id: None,
+                slug: "github".into(),
+                name: "GitHub".into(),
+                version: "1".into(),
+                description: String::new(),
+                auth: serde_json::json!({}),
+                capabilities: serde_json::json!([]),
+                config_schema: serde_json::json!({}),
+                webhooks: false,
+                builtin: true,
+                docs_url: None,
+                created_at: now,
+            },
+            "credential": { "secretRef": "test/token", "value": "DUMMY-NOT-A-REAL-TOKEN" },
+        });
+        let app = axum::Router::new().route(
+            "/api/v1/worker/connections/{id}",
+            get(move || {
+                let body = body.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (
+            WorkerClient::new(format!("http://{addr}"), "worker-token").unwrap(),
+            connection_id,
+        )
+    }
+
+    #[cfg(unix)]
+    fn committed_repo(name: &str) -> std::path::PathBuf {
+        let workspace = init_repo(name);
+        git(
+            &workspace,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        workspace
+    }
+
+    /// #301: the workspace's `origin` is agent-writable; the push (and the token) must go
+    /// to the connection's host and repository only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn push_ignores_a_rewritten_origin() {
+        let (legit, legit_seen) = recording_git_host().await;
+        let (attacker, attacker_seen) = recording_git_host().await;
+        let (client, connection_id) = fake_connection_api(&legit).await;
+        let workspace = committed_repo("push-origin");
+        git(
+            &workspace,
+            &["remote", "add", "origin", &format!("{attacker}/other.git")],
+        );
+
+        let result = push(
+            &client,
+            uuid::Uuid::now_v7(),
+            connection_id,
+            Some("acme/allowed"),
+            &serde_json::json!({}),
+            &workspace,
+            "orbit/test",
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(result.is_err(), "the fake host refuses the push");
+        assert!(
+            attacker_seen.lock().unwrap().is_empty(),
+            "the rewritten origin must not be contacted"
+        );
+        assert!(
+            !legit_seen.lock().unwrap().is_empty(),
+            "the connection's host is the push target"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn push_refuses_url_rewrites_and_foreign_repositories() {
+        let (legit, legit_seen) = recording_git_host().await;
+        let (attacker, attacker_seen) = recording_git_host().await;
+        let (client, connection_id) = fake_connection_api(&legit).await;
+
+        // An insteadOf rule would rewrite even the explicit URL: refuse before any request.
+        let workspace = committed_repo("push-insteadof");
+        git(
+            &workspace,
+            &[
+                "config",
+                &format!("url.{attacker}/.insteadOf"),
+                &format!("{legit}/"),
+            ],
+        );
+        let error = push(
+            &client,
+            uuid::Uuid::now_v7(),
+            connection_id,
+            Some("acme/allowed"),
+            &serde_json::json!({}),
+            &workspace,
+            "orbit/test",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("refusing to run git"), "{error}");
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        // A repository outside the connection's allowlist is refused too.
+        let workspace = committed_repo("push-allowlist");
+        let error = push(
+            &client,
+            uuid::Uuid::now_v7(),
+            connection_id,
+            Some("acme/other"),
+            &serde_json::json!({}),
+            &workspace,
+            "orbit/test",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("allowedRepositories"), "{error}");
+        assert!(attacker_seen.lock().unwrap().is_empty());
+        assert!(legit_seen.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn commit_does_not_receive_the_connection_token() {
+        let command = commit_command(Path::new("."), "message");
+        for (name, _) in command.as_std().get_envs() {
+            assert_ne!(name, "ORBIT_GIT_TOKEN");
+            assert_ne!(name, "GIT_ASKPASS");
+        }
+    }
+
     #[test]
     fn dangerous_config_keys_are_detected() {
         for key in [
@@ -838,6 +1065,12 @@ mod tests {
             "credential.helper",
             "core.pager",
             "gpg.program",
+            // #301: these can redirect or intercept the credentialed push.
+            "url.https://evil.example/.insteadOf",
+            "url.https://evil.example/.pushInsteadOf",
+            "http.proxy",
+            "http.sslVerify",
+            "http.https://github.com/.extraHeader",
         ] {
             assert!(is_dangerous_config_key(key), "{key}");
         }

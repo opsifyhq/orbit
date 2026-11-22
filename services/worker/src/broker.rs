@@ -85,12 +85,16 @@ impl BrokerState {
             .ok_or_else(|| "execution has no connector connection".to_string())
     }
 
+    /// The workspace directory, connection and repository a repo tool acts on. The
+    /// repository is `None` for a single-repository workspace without a team manifest;
+    /// `git::push` then uses the execution input or the connection default, as the clone
+    /// did.
     fn repo_target(
         &self,
         repository: Option<&str>,
-    ) -> Result<(std::path::PathBuf, uuid::Uuid), String> {
+    ) -> Result<(std::path::PathBuf, uuid::Uuid, Option<String>), String> {
         if self.repo_specs.is_empty() {
-            return Ok((self.workspace.clone(), self.connection_id()?));
+            return Ok((self.workspace.clone(), self.connection_id()?, None));
         }
         if self.repo_specs.len() == 1 {
             let spec = &self.repo_specs[0];
@@ -99,7 +103,11 @@ impl BrokerState {
             } else {
                 self.workspace.join(&spec.path)
             };
-            return Ok((path, spec.connection_id.unwrap_or(self.connection_id()?)));
+            return Ok((
+                path,
+                spec.connection_id.unwrap_or(self.connection_id()?),
+                Some(spec.repository.clone()),
+            ));
         }
         let repository = repository
             .ok_or_else(|| {
@@ -122,7 +130,11 @@ impl BrokerState {
         } else {
             self.workspace.join(&spec.path)
         };
-        Ok((path, spec.connection_id.unwrap_or(self.connection_id()?)))
+        Ok((
+            path,
+            spec.connection_id.unwrap_or(self.connection_id()?),
+            Some(spec.repository.clone()),
+        ))
     }
 }
 
@@ -859,7 +871,7 @@ async fn call_tool(
 
     let result = if matches!(tool.capability.as_str(), "repo.commit" | "repo.push") {
         let repository = call.arguments.get("repository").and_then(Value::as_str);
-        let (workspace, connection_id) = match state.repo_target(repository) {
+        let (workspace, connection_id, target_repository) = match state.repo_target(repository) {
             Ok(target) => target,
             Err(error) => {
                 return tool_error(&state, tool, &call.arguments, &error).await;
@@ -872,17 +884,7 @@ async fn call_tool(
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty());
             match message {
-                Some(message) => {
-                    crate::git::commit(
-                        &state.client,
-                        state.execution.id,
-                        connection_id,
-                        &workspace,
-                        message,
-                        &state.cancel,
-                    )
-                    .await
-                }
+                Some(message) => crate::git::commit(&workspace, message, &state.cancel).await,
                 None => Err(anyhow::anyhow!("commit message is required")),
             }
         } else {
@@ -893,6 +895,8 @@ async fn call_tool(
                         &state.client,
                         state.execution.id,
                         connection_id,
+                        target_repository.as_deref(),
+                        &state.execution.input,
                         &workspace,
                         branch,
                         &state.cancel,
