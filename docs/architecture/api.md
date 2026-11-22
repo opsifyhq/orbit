@@ -20,11 +20,12 @@ an overview.
   worker tokens.
 - Every response carries `X-Request-Id`; errors include it as `requestId`.
 - Unauthenticated/public routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger)
-  are limited per source IP to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
+  are limited per client to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
   window (default 120). Excess requests return `429 rate_limited` in the standard
   envelope with `Retry-After`. Authenticated API routes and worker-protocol routes are
-  not affected; behind an L7 proxy the peer address is the proxy, so enforce client-IP
-  limits there as well.
+  not affected. The client is the TCP peer, or, when the peer is listed in
+  `ORBIT_TRUSTED_PROXIES`, the right-most `X-Forwarded-For` hop that is not a trusted
+  proxy. IPv6 clients are counted per /64.
 - Idempotent execution creation: send an `Idempotency-Key` header or an `idempotencyKey`
   body field. Keys are scoped to the organization; a repeated key returns the execution
   that was already created.

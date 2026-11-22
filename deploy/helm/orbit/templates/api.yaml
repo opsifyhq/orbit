@@ -149,6 +149,8 @@ spec:
               value: {{ .Values.auth.dev.orgName | quote }}
             - name: ORBIT_BODY_LIMIT_BYTES
               value: {{ .Values.platform.bodyLimitBytes | quote }}
+            - name: ORBIT_TRUSTED_PROXIES
+              value: {{ .Values.api.trustedProxies | quote }}
             - name: ORBIT_ARCHIVE_AFTER_DAYS
               value: {{ .Values.platform.archiveAfterDays | quote }}
             - name: ORBIT_AUDIT_RETENTION_DAYS

@@ -117,6 +117,7 @@ append-only.
 | `platform.seedWorkerProfile` | `true` | one launchable mock profile when a launcher is configured |
 | `platform.logFormat` | `json` | `text` for local |
 | `platform.bodyLimitBytes` | `2097152` | |
+| `api.trustedProxies` | private ranges | Proxies whose `X-Forwarded-For` the anonymous rate limit believes; narrow to the pod CIDR when clients connect from private ranges |
 | `platform.archiveAfterDays` | `30` | archive terminal runs older than N days; `0` disables |
 | `platform.auditRetentionDays` | `0` | delete audit log entries older than N days; `0` (default) keeps forever |
 

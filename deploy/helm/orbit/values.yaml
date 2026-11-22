@@ -21,6 +21,12 @@ api:
   tag: ""
   replicas: 1
   port: 8080
+  # Peers whose X-Forwarded-For the anonymous rate limit believes (CIDRs or addresses).
+  # Browser traffic reaches the API through the web proxy and the ingress controller,
+  # so without this every client shares one budget. The default trusts the private
+  # ranges pods use; narrow it to your pod CIDR when clients also connect from those
+  # ranges, because a trusted range's X-Forwarded-For is taken as given.
+  trustedProxies: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
   resources:
     requests:
       cpu: 100m
