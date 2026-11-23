@@ -20,9 +20,7 @@ import type {
   MetaResponse,
   ProviderView,
   HarnessView,
-  TriggerRecord,
   ApiTokenView,
-  AgentInstanceView,
   ApprovalWithExecution,
   WorkerView,
   Skill,
@@ -68,9 +66,7 @@ export const queryKeys = {
   providers: ["providers"] as const,
   connectors: ["connectors"] as const,
   connections: ["connections"] as const,
-  triggers: (agentId?: string) => ["triggers", agentId ?? "all"] as const,
   tokens: ["api-tokens"] as const,
-  instances: ["agent-instances"] as const,
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
   workers: ["workers"] as const,
   skills: ["skills"] as const,
@@ -417,29 +413,10 @@ export function useConnections() {
   });
 }
 
-export function useTriggers(agentId?: string) {
-  return useQuery<TriggerRecord[]>({
-    queryKey: queryKeys.triggers(agentId),
-    queryFn: async () =>
-      unwrap(
-        await api.GET("/api/v1/triggers", {
-          params: { query: { agentId: agentId } },
-        }),
-      ),
-  });
-}
-
 export function useApiTokens() {
   return useQuery<ApiTokenView[]>({
     queryKey: queryKeys.tokens,
     queryFn: async () => unwrap(await api.GET("/api/v1/api-tokens")),
-  });
-}
-
-export function useAgentInstances() {
-  return useQuery<{ items: AgentInstanceView[]; total: number }>({
-    queryKey: queryKeys.instances,
-    queryFn: async () => unwrap(await api.GET("/api/v1/agent-instances")),
   });
 }
 
