@@ -52,6 +52,8 @@ const approval = event(4, "tool_call", "approval requested for issues.comment (a
   level: "warn",
 });
 const failure = event(5, "error", "worker heartbeat expired", {}, "error");
+const leaseFailure = event(7, "error", "worker stopped reporting this execution; outcome is unknown", {}, "error");
+const bootFailure = event(8, "error", "worker restarted; execution outcome is unknown", {}, "error");
 const status = event(6, "status", "execution dispatched to harness");
 const all = [output, tool, capability, approval, failure, status];
 
@@ -78,6 +80,8 @@ test("event types classify approvals and errors before tools", () => {
   assert.equal(eventType(tool), "tools");
   assert.equal(eventType(approval), "approvals");
   assert.equal(eventType(failure), "errors");
+  assert.equal(eventType(leaseFailure), "errors");
+  assert.equal(eventType(bootFailure), "errors");
   assert.equal(eventType(status), "system");
   assert.equal(eventType(event(7, "log", "debug", {}, "error")), "errors");
 });

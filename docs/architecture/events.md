@@ -89,6 +89,8 @@ reports in at the same moment wins.
 | Pass | Condition | Result |
 |---|---|---|
 | Worker lost | `dispatched`, `running` or `awaiting_approval`, claimed at least 15 seconds ago (`COALESCE(started_at, created_at)`), and with no heartbeat in the last 90 seconds. A `dispatched` run whose worker has never sent a heartbeat is still starting (a launched container or Job pulls its image first) and is excluded from this rule entirely, left to the next rule | `failed` with `worker_lost`; open approvals on the execution become `expired` |
+| Worker restarted | A worker heartbeat arrives with a different `bootId` than the still-active executions it owned | those executions become `failed` with `worker_lost`; their approvals expire |
+| Execution lease expired | `dispatched`, `running` or `awaiting_approval` with `execution_lease_until` older than 90 seconds, while the worker's own heartbeat is fresh (the harness is hung, not the worker) | `failed` with `harness_unresponsive`; the team step, run and queue item also become terminal with no automatic rerun |
 | Never started | `dispatched` and nothing has happened on it (claim, cancel request or event) for 600 seconds, or for 60 seconds after a cancel request | `failed` with `worker_did_not_start`, or `cancelled` |
 | Timed out | `running` for longer than `timeout_seconds` plus a grace period | `timed_out` |
 
@@ -105,6 +107,17 @@ event and an `orbit.execution.updated` message.
 
 The same loop deletes worker heartbeat rows that have been silent for
 `ORBIT_WORKER_STALE_RETENTION_HOURS` (default 24).
+
+### Worker termination
+
+A separate pass every 15 seconds refreshes live worker launches through the launcher, so a
+container killed by its runtime is noticed even when nobody has the Workers page open. When
+a launch comes back `failed` with a structured `termination` (see
+[runtime contract](runtime-contract.md#runtime-termination)), every execution still in flight
+on that worker becomes `failed` with `worker_oom`, `worker_evicted`, `worker_exited` or
+`worker_lost`, carrying the pod/container name, restart count, exit code and termination
+time. Each gets an `error` event, an `orbit.execution.updated` message and an audit entry;
+the team step, run and queue item become terminal with no automatic rerun.
 
 ## Scheduling and dispatch
 
@@ -127,6 +140,8 @@ database or the event bus directly.
   interval has passed; see [domain model](domain-model.md).
 - **Outputs** (every 5s) deliver the results of finished executions to their outputs.
 - **Execution reaper** (every 15s): see above.
+- **Worker termination** (every 15s) refreshes live worker launches through the launcher
+  and fails the in-flight work of a runtime-terminated worker: see above.
 - **Worker image updates** (every 60s) relaunch workers whose profile follows the
   platform version after an upgrade: the old token is revoked, running executions drain,
   then the launcher replaces the worker.

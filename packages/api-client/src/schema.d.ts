@@ -2508,12 +2508,16 @@ export interface components {
             createdAt: string;
             error?: unknown;
             /** Format: date-time */
+            executionLeaseUntil?: string | null;
+            /** Format: date-time */
             finishedAt?: string | null;
             harnessKind: string;
             /** Format: uuid */
             id: string;
             idempotencyKey?: string | null;
             input: unknown;
+            /** Format: date-time */
+            lastExecutionHeartbeatAt?: string | null;
             /** Format: uuid */
             orgId: string;
             output?: unknown;
@@ -2539,6 +2543,10 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
             usage: unknown;
+            /** Format: uuid */
+            workerBootId?: string | null;
+            /** Format: date-time */
+            workerBootStartedAt?: string | null;
             workerId?: string | null;
         };
         /**

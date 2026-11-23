@@ -9,7 +9,7 @@ use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
 /// Expire an execution's outstanding approvals in the same transaction that ends the run.
 /// A human must never be able to authorise work for a run that is already over.
-async fn expire_pending_approvals(
+pub(crate) async fn expire_pending_approvals(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     execution_id: Uuid,
 ) -> StoreResult<()> {
@@ -334,7 +334,8 @@ impl Store {
                 usage = COALESCE($5, usage),
                 session_ref = COALESCE($6, session_ref),
                 finished_at = now(),
-                updated_at = now()
+                updated_at = now(),
+                execution_lease_until = NULL
             WHERE id = $1
               AND status = ANY($7)
             RETURNING *
@@ -770,9 +771,10 @@ impl Store {
 }
 
 impl Store {
-    /// Executions currently running on a worker. Used to fail them when the worker
-    /// container is OOM-killed and the process cannot report its own failure.
-    pub async fn running_executions_for_worker(
+    /// Executions still in flight on a worker (claimed, running or awaiting approval).
+    /// Used to fail them when the worker container is terminated by the runtime and the
+    /// process cannot report its own failure.
+    pub async fn active_executions_for_worker(
         &self,
         org_id: Uuid,
         worker_id: &str,
@@ -780,7 +782,8 @@ impl Store {
         Ok(sqlx::query_as::<_, ExecutionRecord>(
             r#"
             SELECT * FROM executions
-            WHERE org_id = $1 AND worker_id = $2 AND status = 'running'
+            WHERE org_id = $1 AND worker_id = $2
+              AND status IN ('dispatched', 'running', 'awaiting_approval')
             ORDER BY created_at ASC
             "#,
         )

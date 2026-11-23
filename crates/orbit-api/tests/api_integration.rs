@@ -5927,6 +5927,182 @@ async fn worker_offline_and_heartbeat_are_owner_scoped() {
 }
 
 #[tokio::test]
+async fn heartbeat_with_new_boot_fails_previous_boot_team_execution() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "boot-worker").await;
+    let worker_id = format!("boot-worker-{}", Uuid::now_v7());
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    // maxAttempts > 1: the platform-ended run must still close the item without retrying.
+    let item = queue_item(&app, team, "gh#boot", 3).await;
+    app.store
+        .claim_team_queue_item(app.org_id, item)
+        .await
+        .unwrap()
+        .unwrap();
+    let run_id = start_run(&app, team).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert!(app
+        .store
+        .attach_team_run_to_queue_item(app.org_id, item, run.id)
+        .await
+        .unwrap());
+    let step = app.store.current_team_step(run.id).await.unwrap().unwrap();
+    let execution_id = step.execution_id.unwrap();
+    assert_eq!(claim_as(&app, &token, &worker_id).await, Some(execution_id));
+    app.store
+        .mark_execution_running(execution_id, None)
+        .await
+        .unwrap();
+
+    let first = json!({
+        "workerId": worker_id,
+        "harnesses": ["mock"],
+        "target": "local",
+        "bootId": Uuid::now_v7(),
+        "startedAt": Utc::now() - Duration::seconds(30),
+        "activeExecutionIds": [execution_id],
+    });
+    let (status, body) = send(
+        &app.router,
+        worker_request("POST", "/api/v1/worker/heartbeat", &token, Some(first)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/heartbeat",
+            &token,
+            Some(json!({
+                "workerId": worker_id,
+                "harnesses": ["mock"],
+                "target": "local",
+                "bootId": Uuid::now_v7(),
+                "startedAt": Utc::now(),
+                "activeExecutionIds": [],
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    assert_eq!(execution.status, "failed");
+    assert_eq!(execution.error.as_ref().unwrap()["code"], "worker_lost");
+    let step = app.store.current_team_step(run.id).await.unwrap().unwrap();
+    assert_eq!(step.status, "failed");
+    let run = app.store.get_team_run(app.org_id, run.id).await.unwrap();
+    assert_eq!(run.status, "failed");
+    let queue = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(queue.status, "failed");
+    assert_eq!(queue.error.as_deref(), run.error.as_deref());
+}
+
+#[tokio::test]
+async fn startup_reconciliation_reaps_expired_leases_but_not_live_ones() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&[], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "lease-worker").await;
+    let worker_id = format!("lease-worker-{}", Uuid::now_v7());
+    // The demo agent allows one active execution, so use a second agent for the live one.
+    let second_agent = create_demo_agent(
+        &app.store,
+        app.org_id,
+        app.state.dev_identity.as_ref().unwrap().user_id,
+    )
+    .await;
+    let stale = queue_execution(&app, "lease-stale").await;
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{second_agent}/executions"),
+            "test-token",
+            json!({ "task": "lease-live" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let live = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    let claimed = vec![
+        claim_as(&app, &token, &worker_id).await.unwrap(),
+        claim_as(&app, &token, &worker_id).await.unwrap(),
+    ];
+    assert!(claimed.contains(&stale) && claimed.contains(&live));
+    for execution_id in &claimed {
+        app.store
+            .mark_execution_running(*execution_id, None)
+            .await
+            .unwrap();
+    }
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/heartbeat",
+            &token,
+            Some(json!({
+                "workerId": worker_id,
+                "harnesses": ["mock"],
+                "target": "local",
+                "bootId": Uuid::now_v7(),
+                "startedAt": Utc::now(),
+                "activeExecutionIds": claimed,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    // The worker is alive and its heartbeat is fresh; only this execution stopped
+    // reporting. Its lease expired well beyond the stale threshold.
+    sqlx::query(
+        "UPDATE executions
+         SET last_execution_heartbeat_at = now() - interval '2 minutes',
+             execution_lease_until = now() - interval '2 minutes'
+         WHERE id = $1",
+    )
+    .bind(stale)
+    .execute(&raw_pool().await)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE executions
+         SET last_execution_heartbeat_at = now(),
+             execution_lease_until = now() + interval '90 seconds'
+         WHERE id = $1",
+    )
+    .bind(live)
+    .execute(&raw_pool().await)
+    .await
+    .unwrap();
+
+    orbit_api::background::reconcile_startup(&app.state).await;
+
+    let stale = app.store.get_execution(app.org_id, stale).await.unwrap();
+    assert_eq!(stale.status, "failed");
+    assert_eq!(
+        stale.error.as_ref().unwrap()["code"],
+        "harness_unresponsive"
+    );
+    let live = app.store.get_execution(app.org_id, live).await.unwrap();
+    assert_eq!(live.status, "running");
+    assert!(live.error.is_none());
+}
+
+#[tokio::test]
 async fn worker_launches_follow_profile_visibility() {
     let Some(app) = test_app(true).await else {
         return;
@@ -6056,6 +6232,298 @@ async fn worker_launches_follow_profile_visibility() {
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ---------------------------------------------------------------------------
+// #343: runtime termination reasons (OOM, eviction, exit, node loss)
+// ---------------------------------------------------------------------------
+
+/// A mock launcher answering `GET /launches/{id}` with one canned status.
+async fn mock_launcher_status(status: Value) -> String {
+    let mock = axum::Router::new().route(
+        "/launches/{id}",
+        axum::routing::get(
+            move |axum::extract::Path(_id): axum::extract::Path<String>| {
+                let status = status.clone();
+                async move { axum::Json(status) }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// A live launch already bound to `worker_id`, as the launcher would have reported it.
+async fn live_launch_for_worker(
+    app: &TestApp,
+    worker_id: &str,
+    target: &str,
+) -> orbit_store::WorkerLaunch {
+    let profile = app
+        .store
+        .create_worker_profile(
+            app.org_id,
+            "Terminated worker",
+            "mock",
+            target,
+            "process",
+            "orbit-worker",
+            "test",
+            "all",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            &json!({}),
+            &json!({}),
+            &json!({}),
+            false,
+            false,
+            false,
+            false,
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            profile.id,
+            &profile.name,
+            target,
+            "orbit-worker:test",
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    app.store
+        .update_worker_launch(
+            app.org_id,
+            launch.id,
+            "running",
+            Some("orbit-worker-abc123"),
+            Some(worker_id),
+            None,
+            true,
+            false,
+        )
+        .await
+        .unwrap()
+}
+
+/// A team run whose current step is claimed by `worker_id`, plus a queue item that would
+/// retry three times if the platform let it.
+async fn team_work_on_worker(app: &TestApp, token: &str, worker_id: &str) -> (Uuid, Uuid, Uuid) {
+    let team = make_team(app, vec![app.agent_id], json!({})).await;
+    let item = queue_item(app, team, "gh#terminated", 3).await;
+    app.store
+        .claim_team_queue_item(app.org_id, item)
+        .await
+        .unwrap()
+        .unwrap();
+    let run_id = start_run(app, team).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert!(app
+        .store
+        .attach_team_run_to_queue_item(app.org_id, item, run.id)
+        .await
+        .unwrap());
+    let step = app.store.current_team_step(run.id).await.unwrap().unwrap();
+    let execution_id = step.execution_id.unwrap();
+    assert_eq!(claim_as(app, token, worker_id).await, Some(execution_id));
+    (item, run.id, execution_id)
+}
+
+#[tokio::test]
+async fn launcher_termination_fails_work_and_never_retries_it() {
+    for (reason, detail, exit_code, audit_action) in [
+        ("worker_oom", "OOMKilled", 137, "worker.oom_killed"),
+        ("worker_evicted", "Evicted", 137, "worker.evicted"),
+        ("worker_exited", "Error", 2, "worker.exited"),
+        ("worker_lost", "NodeLost", 1, "execution.worker_lost"),
+    ] {
+        let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await
+        else {
+            return;
+        };
+        let token = worker_token(&app.store, app.org_id, "terminated-worker").await;
+        let worker_id = format!("terminated-{}", Uuid::now_v7());
+        let (item, run_id, execution_id) = team_work_on_worker(&app, &token, &worker_id).await;
+        app.store
+            .mark_execution_running(execution_id, None)
+            .await
+            .unwrap();
+        let launch = live_launch_for_worker(&app, &worker_id, "kubernetes").await;
+
+        let url = mock_launcher_status(json!({
+            "status": "failed",
+            "runtimeId": "orbit-worker-abc123",
+            "workerId": worker_id,
+            "error": format!("worker pod was terminated ({detail})"),
+            "termination": {
+                "reason": reason,
+                "workerName": "orbit-worker-abc123",
+                "restartCount": 2,
+                "terminatedAt": "2026-11-23T10:00:00Z",
+                "exitCode": exit_code,
+                "detail": detail,
+            },
+        }))
+        .await;
+        let mut state = app.state.clone();
+        state.launcher_url = Some(url);
+        state.launcher_token = Some("launcher-token".into());
+        let router = build_router(state);
+
+        // Opening the launch (Workers page) refreshes it and ends the in-flight work.
+        let (status, body) = send(
+            &router,
+            get(&format!("/api/v1/worker-launches/{}", launch.id)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "failed", "{reason}");
+
+        let execution = app
+            .store
+            .get_execution(app.org_id, execution_id)
+            .await
+            .unwrap();
+        assert_eq!(execution.status, "failed", "{reason}");
+        let error = execution.error.as_ref().unwrap();
+        assert_eq!(error["code"], reason);
+        assert_eq!(error["workerName"], "orbit-worker-abc123");
+        assert_eq!(error["restartCount"], 2);
+        assert_eq!(error["exitCode"], exit_code);
+        assert_eq!(error["terminatedAt"], "2026-11-23T10:00:00Z");
+        assert_eq!(error["retryable"], false);
+        assert_eq!(error["workerId"], worker_id);
+        assert!(!error.to_string().contains("ORBIT_WORKER_TOKEN"));
+
+        // The timeline carries the same structured cause.
+        let events = execution_events(&app, &execution_id.to_string(), "&kind=error").await;
+        assert!(
+            events.iter().any(|event| event["data"]["code"] == reason),
+            "{reason}: {events:?}"
+        );
+
+        // Team step, run and queue item are terminal; maxAttempts=3 must not rerun it.
+        let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+        assert_eq!(step.status, "failed", "{reason}");
+        let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+        assert_eq!(run.status, "failed", "{reason}");
+        let queue = app
+            .store
+            .get_team_queue_item(app.org_id, item)
+            .await
+            .unwrap();
+        assert_eq!(queue.status, "failed", "{reason}");
+        // A retry would reset the item to `pending`, bump attempts and detach the run.
+        assert_eq!(queue.attempts, 0, "{reason}");
+        assert_eq!(queue.team_run_id, Some(run_id), "{reason}");
+
+        let (rows, _) = app
+            .store
+            .list_audit_logs(app.org_id, 10, None, Some(audit_action))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{reason}");
+        assert_eq!(rows[0].metadata["code"], reason);
+        assert_eq!(rows[0].target_id, Some(execution_id));
+    }
+}
+
+#[tokio::test]
+async fn termination_poller_ends_dispatched_work_without_the_workers_page() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "polled-worker").await;
+    let worker_id = format!("polled-{}", Uuid::now_v7());
+    // Claimed but never started: the worker died before it could report anything.
+    let execution_id = queue_execution(&app, "polled-oom").await;
+    assert_eq!(claim_as(&app, &token, &worker_id).await, Some(execution_id));
+    let launch = live_launch_for_worker(&app, &worker_id, "kubernetes").await;
+
+    // An older launcher only reports a human-readable OOM message.
+    let url = mock_launcher_status(json!({
+        "status": "failed",
+        "runtimeId": "orbit-worker-abc123",
+        "workerId": worker_id,
+        "error": "worker container was OOMKilled (memory limit 1Gi); increase the worker profile memory limit",
+    }))
+    .await;
+    let mut state = app.state.clone();
+    state.launcher_url = Some(url);
+    state.launcher_token = Some("launcher-token".into());
+
+    assert!(orbit_api::handlers::worker_launches::refresh_active_launches(&state).await);
+
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    assert_eq!(execution.status, "failed");
+    let error = execution.error.as_ref().unwrap();
+    assert_eq!(error["code"], "worker_oom");
+    assert_eq!(error["workerName"], "orbit-worker-abc123");
+    assert_eq!(error["retryable"], false);
+    let stored = app
+        .store
+        .get_worker_launch(app.org_id, launch.id)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    // A terminal launch is not polled again.
+    assert!(app
+        .store
+        .list_active_worker_launches_installation(200)
+        .await
+        .unwrap()
+        .iter()
+        .all(|launch| launch.id != stored.id));
+}
+
+#[tokio::test]
+async fn a_clean_stop_does_not_fail_the_workers_executions() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "stopped-worker").await;
+    let worker_id = format!("stopped-{}", Uuid::now_v7());
+    let execution_id = queue_execution(&app, "clean-stop").await;
+    assert_eq!(claim_as(&app, &token, &worker_id).await, Some(execution_id));
+    app.store
+        .mark_execution_running(execution_id, None)
+        .await
+        .unwrap();
+    live_launch_for_worker(&app, &worker_id, "docker").await;
+
+    let url = mock_launcher_status(json!({
+        "status": "stopped",
+        "runtimeId": "orbit-worker-abc123",
+        "workerId": worker_id,
+    }))
+    .await;
+    let mut state = app.state.clone();
+    state.launcher_url = Some(url);
+    state.launcher_token = Some("launcher-token".into());
+    assert!(orbit_api::handlers::worker_launches::refresh_active_launches(&state).await);
+
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    assert_eq!(execution.status, "running");
+    assert!(execution.error.is_none());
 }
 
 // ---------------------------------------------------------------------------

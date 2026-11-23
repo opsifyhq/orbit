@@ -37,6 +37,7 @@ pub fn spawn_at(
 /// Write one heartbeat. Failures are logged; the next tick tries again.
 pub async fn beat(state: &WorkerState) {
     let hostname = std::env::var("HOSTNAME").ok();
+    let active_execution_ids = crate::runner::active_ids(state);
     if let Err(error) = state
         .client
         .heartbeat(&crate::client::HeartbeatRequest {
@@ -44,6 +45,9 @@ pub async fn beat(state: &WorkerState) {
             harnesses: &state.harnesses,
             target: &state.target,
             hostname: hostname.as_deref(),
+            boot_id: state.boot_id,
+            boot_started_at: state.boot_started_at,
+            active_execution_ids: &active_execution_ids,
         })
         .await
     {
@@ -54,31 +58,43 @@ pub async fn beat(state: &WorkerState) {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use axum::extract::State;
     use axum::http::StatusCode;
     use axum::routing::post;
-    use axum::Router;
+    use axum::{Json, Router};
 
     use super::*;
     use crate::retry::RetryPolicy;
 
-    async fn heartbeat(State(count): State<Arc<AtomicUsize>>) -> StatusCode {
-        count.fetch_add(1, Ordering::SeqCst);
+    #[derive(Default)]
+    struct HeartbeatCapture {
+        count: AtomicUsize,
+        bodies: Mutex<Vec<serde_json::Value>>,
+    }
+
+    async fn heartbeat(
+        State(capture): State<Arc<HeartbeatCapture>>,
+        Json(body): Json<serde_json::Value>,
+    ) -> StatusCode {
+        capture.count.fetch_add(1, Ordering::SeqCst);
+        capture.bodies.lock().unwrap().push(body);
         StatusCode::NO_CONTENT
     }
 
-    async fn state_with_counter() -> (WorkerState, Arc<AtomicUsize>) {
-        let count = Arc::new(AtomicUsize::new(0));
+    async fn state_with_counter() -> (WorkerState, Arc<HeartbeatCapture>) {
+        let capture = Arc::new(HeartbeatCapture::default());
         let app = Router::new()
             .route("/api/v1/worker/heartbeat", post(heartbeat))
-            .with_state(count.clone());
+            .with_state(capture.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let state = WorkerState {
             worker_id: "worker-test".into(),
+            boot_id: uuid::Uuid::nil(),
+            boot_started_at: chrono::Utc::now(),
             client: crate::client::WorkerClient::new(format!("http://{addr}"), "token").unwrap(),
             registry: Arc::new(orbit_harness::HarnessRegistry::builtin()),
             workspace_root: std::env::temp_dir(),
@@ -98,24 +114,24 @@ mod tests {
                 max_delay: Duration::from_millis(5),
             },
         };
-        (state, count)
+        (state, capture)
     }
 
     /// The single-execution path used to send one heartbeat and nothing after it, so the
     /// API reaped every run longer than 90 seconds as `worker_lost` (#298).
     #[tokio::test]
     async fn heartbeats_repeat_until_aborted() {
-        let (state, count) = state_with_counter().await;
+        let (state, capture) = state_with_counter().await;
         let handle = spawn(state, Duration::from_millis(40));
         tokio::time::sleep(Duration::from_millis(150)).await;
         handle.abort();
         let _ = handle.await;
-        let beats = count.load(Ordering::SeqCst);
+        let beats = capture.count.load(Ordering::SeqCst);
         assert!(beats >= 3, "expected repeated heartbeats, got {beats}");
 
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert_eq!(
-            count.load(Ordering::SeqCst),
+            capture.count.load(Ordering::SeqCst),
             beats,
             "no heartbeat may be written after the task is aborted"
         );
@@ -123,16 +139,45 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_at_waits_for_the_first_beat() {
-        let (state, count) = state_with_counter().await;
+        let (state, capture) = state_with_counter().await;
         let handle = spawn_at(
             state,
             Duration::from_millis(40),
             Instant::now() + Duration::from_millis(100),
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(capture.count.load(Ordering::SeqCst), 0);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(count.load(Ordering::SeqCst) >= 1);
+        assert!(capture.count.load(Ordering::SeqCst) >= 1);
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn heartbeat_includes_boot_identity_and_active_executions() {
+        let (state, capture) = state_with_counter().await;
+        let execution_id = uuid::Uuid::now_v7();
+        state
+            .active
+            .lock()
+            .unwrap()
+            .insert(execution_id, tokio_util::sync::CancellationToken::new());
+
+        beat(&state).await;
+
+        assert_eq!(capture.count.load(Ordering::SeqCst), 1);
+        let bodies = capture.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(
+            bodies[0]["bootId"],
+            serde_json::Value::String(state.boot_id.to_string())
+        );
+        assert_eq!(
+            bodies[0]["startedAt"],
+            serde_json::to_value(state.boot_started_at).unwrap()
+        );
+        assert_eq!(
+            bodies[0]["activeExecutionIds"],
+            serde_json::json!([execution_id])
+        );
     }
 }

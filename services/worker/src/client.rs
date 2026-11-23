@@ -113,6 +113,10 @@ pub struct HeartbeatRequest<'a> {
     pub harnesses: &'a [String],
     pub target: &'a str,
     pub hostname: Option<&'a str>,
+    pub boot_id: Uuid,
+    #[serde(rename = "startedAt")]
+    pub boot_started_at: chrono::DateTime<chrono::Utc>,
+    pub active_execution_ids: &'a [Uuid],
 }
 
 #[derive(Debug, Clone, Serialize)]

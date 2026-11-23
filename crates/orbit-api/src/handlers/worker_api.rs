@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -109,6 +109,15 @@ pub struct HeartbeatRequest {
     pub target: String,
     #[serde(default)]
     pub hostname: Option<String>,
+    /// Changes when the worker process restarts. Lets the platform fail work left over
+    /// from the previous boot instead of waiting for the heartbeat to go stale.
+    #[serde(default)]
+    pub boot_id: Option<Uuid>,
+    #[serde(default, rename = "startedAt")]
+    pub boot_started_at: Option<DateTime<Utc>>,
+    /// Executions this worker is still actively reporting on in this heartbeat.
+    #[serde(default)]
+    pub active_execution_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,21 +343,47 @@ pub async fn heartbeat(
 ) -> Result<StatusCode, ApiError> {
     let _ = active_profile(&state, &auth).await?;
     let harnesses = intersect_harnesses(&auth, &body.harnesses);
-    let accepted = state
+    let boot_started_at = body.boot_started_at;
+    let outcome = state
         .store
-        .upsert_worker_heartbeat(
+        .upsert_worker_heartbeat_with_boot(
             auth.org_id,
             auth.token_id,
             &body.worker_id,
             &harnesses,
             &body.target,
             body.hostname.as_deref(),
+            body.boot_id,
+            boot_started_at,
         )
         .await?;
-    if !accepted {
+    if !outcome.accepted {
         return Err(ApiError::conflict(
             "worker id is already registered by another worker token",
         ));
+    }
+    // The lease is refreshed on every heartbeat, independently of the boot change. A
+    // worker that stops reporting an execution lets the reaper end it as unresponsive.
+    let _ = state
+        .store
+        .touch_execution_leases(
+            auth.org_id,
+            auth.token_id,
+            &body.worker_id,
+            body.boot_id,
+            boot_started_at,
+            &body.active_execution_ids,
+            crate::background::EXECUTION_LEASE_SECONDS,
+        )
+        .await?;
+    for execution in &outcome.failed_executions {
+        crate::background::report_ended_execution(
+            &state,
+            execution,
+            "worker restarted; execution marked failed",
+            &orbit_store::workers::worker_restarted_error(),
+        )
+        .await;
     }
     state.metrics.worker_heartbeat();
     Ok(StatusCode::NO_CONTENT)

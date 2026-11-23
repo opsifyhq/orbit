@@ -1496,7 +1496,14 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             )
             .await
             .unwrap();
-        assert_eq!(store.enqueue_team_output_deliveries().await.unwrap(), 1);
+        store.enqueue_team_output_deliveries().await.unwrap();
+        let deliveries: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM output_deliveries WHERE output_id = $1")
+                .bind(output.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(deliveries, if task == "first" { 1 } else { 2 });
     }
     // Make the order unambiguous and record a failure on the newest delivery, the way
     // `finish_output_delivery` would.
@@ -4368,4 +4375,413 @@ async fn installation_wide_execution_count_uses_created_at_index() {
         "unexpected sequential scan: {plan}"
     );
     tx.rollback().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Per-execution liveness and worker boot identity (#342)
+// ---------------------------------------------------------------------------
+
+async fn worker_token(
+    store: &Store,
+    org: uuid::Uuid,
+    name: &str,
+) -> orbit_store::WorkerTokenRecord {
+    let issued = orbit_security::issue_worker_token();
+    store
+        .create_worker_token(org, None, name, &issued.prefix, &issued.hash, &[])
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn worker_boot_change_fails_executions_from_the_previous_boot() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Boot Change Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "boot-change").await;
+    let worker_id = format!("worker-boot-{}", uuid::Uuid::now_v7());
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(execution.id, &worker_id, token.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let old_boot = uuid::Uuid::now_v7();
+    let new_boot = uuid::Uuid::now_v7();
+    let old_started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+    let touched = store
+        .touch_execution_leases(
+            org,
+            token.id,
+            &worker_id,
+            Some(old_boot),
+            Some(old_started_at),
+            &[execution.id],
+            60,
+        )
+        .await
+        .unwrap();
+    assert_eq!(touched, vec![execution.id]);
+
+    let approval = store
+        .create_approval(
+            org,
+            execution.id,
+            serde_json::json!({ "capability": "issues.comment" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let first = store
+        .upsert_worker_heartbeat_with_boot(
+            org,
+            token.id,
+            &worker_id,
+            &["mock".into()],
+            "local",
+            Some("host"),
+            Some(old_boot),
+            Some(old_started_at),
+        )
+        .await
+        .unwrap();
+    assert!(first.accepted);
+    assert!(!first.boot_changed);
+    assert!(first.failed_executions.is_empty());
+
+    let second = store
+        .upsert_worker_heartbeat_with_boot(
+            org,
+            token.id,
+            &worker_id,
+            &["mock".into()],
+            "local",
+            Some("host"),
+            Some(new_boot),
+            Some(chrono::Utc::now()),
+        )
+        .await
+        .unwrap();
+    assert!(second.accepted);
+    assert!(second.boot_changed);
+    assert_eq!(second.failed_executions.len(), 1);
+    let failed = &second.failed_executions[0];
+    assert_eq!(failed.id, execution.id);
+    let error = failed.error.as_ref().unwrap();
+    assert_eq!(error["code"], "worker_lost");
+    assert_eq!(
+        error["message"],
+        "worker restarted; execution outcome is unknown"
+    );
+    assert_eq!(error["retryable"].as_bool(), Some(true));
+    assert!(failed.execution_lease_until.is_none());
+
+    let stored = store.get_execution(org, execution.id).await.unwrap();
+    assert_eq!(stored.status, "failed");
+    assert!(stored.execution_lease_until.is_none());
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
+}
+
+/// #343: a worker killed by the runtime cannot report its own failure, so every in-flight
+/// execution on it must be findable — not only the ones already `running`.
+#[tokio::test]
+async fn active_executions_for_worker_covers_every_in_flight_state() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Terminated Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "terminated").await;
+    let worker_id = format!("worker-term-{}", uuid::Uuid::now_v7());
+    let other_worker = format!("worker-other-{}", uuid::Uuid::now_v7());
+
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        let execution = queued_execution(&store, org, user, &agent, &version).await;
+        store
+            .claim_execution_for_launch(execution.id, &worker_id, token.id)
+            .await
+            .unwrap()
+            .unwrap();
+        ids.push(execution.id);
+    }
+    // ids[0] stays `dispatched` (a single-execution launch claims before the pod starts).
+    store.mark_execution_running(ids[1], None).await.unwrap();
+    sqlx::query("UPDATE executions SET status = 'awaiting_approval' WHERE id = $1")
+        .bind(ids[2])
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store
+        .finish_execution(ids[3], ExecutionStatus::Failed, None, None, None, None)
+        .await
+        .unwrap();
+
+    // Still queued, or claimed by a different worker: not this worker's in-flight work.
+    let queued = queued_execution(&store, org, user, &agent, &version).await;
+    let elsewhere = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(elsewhere.id, &other_worker, token.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let active = store
+        .active_executions_for_worker(org, &worker_id)
+        .await
+        .unwrap();
+    let mut found: Vec<uuid::Uuid> = active.iter().map(|execution| execution.id).collect();
+    found.sort();
+    let mut expected = vec![ids[0], ids[1], ids[2]];
+    expected.sort();
+    assert_eq!(found, expected);
+    assert!(!found.contains(&queued.id));
+    assert!(!found.contains(&elsewhere.id));
+    assert!(!found.contains(&ids[3]));
+    assert!(store
+        .active_executions_for_worker(uuid::Uuid::now_v7(), &worker_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn execution_leases_only_touch_listed_active_executions() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Lease Touch Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "lease-touch").await;
+    let worker_id = format!("worker-lease-{}", uuid::Uuid::now_v7());
+
+    let active = queued_execution(&store, org, user, &agent, &version).await;
+    let ignored = queued_execution(&store, org, user, &agent, &version).await;
+    let terminal = queued_execution(&store, org, user, &agent, &version).await;
+    for execution in [&active, &ignored, &terminal] {
+        store
+            .claim_execution_for_launch(execution.id, &worker_id, token.id)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    // A terminal execution is never renewed, even when explicitly listed.
+    store
+        .mark_execution_running(terminal.id, None)
+        .await
+        .unwrap();
+    store
+        .finish_execution(
+            terminal.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let boot = uuid::Uuid::now_v7();
+    let started_at = chrono::Utc::now();
+    let touched = store
+        .touch_execution_leases(
+            org,
+            token.id,
+            &worker_id,
+            Some(boot),
+            Some(started_at),
+            &[active.id, terminal.id],
+            60,
+        )
+        .await
+        .unwrap();
+    assert_eq!(touched, vec![active.id]);
+
+    let renewed = store.get_execution(org, active.id).await.unwrap();
+    assert!(renewed.last_execution_heartbeat_at.is_some());
+    assert!(renewed.execution_lease_until.is_some());
+    assert_eq!(renewed.worker_boot_id, Some(boot));
+    assert!(renewed.worker_boot_started_at.is_some());
+
+    for untouched in [&ignored, &terminal] {
+        let row = store.get_execution(org, untouched.id).await.unwrap();
+        assert!(row.last_execution_heartbeat_at.is_none());
+        assert!(row.execution_lease_until.is_none());
+        assert!(row.worker_boot_id.is_none());
+        assert!(row.worker_boot_started_at.is_none());
+    }
+}
+
+#[tokio::test]
+async fn expired_execution_leases_are_reaped_only_when_the_worker_is_alive() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Lease Reaper Agent"))
+        .await
+        .unwrap();
+    let live_token = worker_token(&store, org, "lease-live").await;
+    let quiet_token = worker_token(&store, org, "lease-quiet").await;
+    let live_worker = format!("worker-live-{}", uuid::Uuid::now_v7());
+    let quiet_worker = format!("worker-quiet-{}", uuid::Uuid::now_v7());
+
+    let live = queued_execution(&store, org, user, &agent, &version).await;
+    let quiet = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(live.id, &live_worker, live_token.id)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .claim_execution_for_launch(quiet.id, &quiet_worker, quiet_token.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let approval = store
+        .create_approval(
+            org,
+            live.id,
+            serde_json::json!({ "capability": "issues.comment" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A negative lease puts both runs in the past; only the live worker's run is reaped.
+    store
+        .touch_execution_leases(
+            org,
+            live_token.id,
+            &live_worker,
+            None,
+            None,
+            &[live.id],
+            -60,
+        )
+        .await
+        .unwrap();
+    store
+        .touch_execution_leases(
+            org,
+            quiet_token.id,
+            &quiet_worker,
+            None,
+            None,
+            &[quiet.id],
+            -60,
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_worker_heartbeat(
+            org,
+            live_token.id,
+            &live_worker,
+            &["mock".into()],
+            "local",
+            Some("host"),
+        )
+        .await
+        .unwrap();
+
+    let reaped = store.reap_expired_execution_leases(60).await.unwrap();
+    let reaped_ids: Vec<uuid::Uuid> = reaped.iter().map(|row| row.id).collect();
+    assert!(reaped_ids.contains(&live.id));
+    assert!(!reaped_ids.contains(&quiet.id));
+    let failed = reaped.iter().find(|row| row.id == live.id).unwrap();
+    let error = failed.error.as_ref().unwrap();
+    assert_eq!(error["code"], "harness_unresponsive");
+    assert_eq!(
+        error["message"],
+        "worker stopped reporting this execution; outcome is unknown"
+    );
+    assert_eq!(error["retryable"].as_bool(), Some(true));
+    assert!(failed.execution_lease_until.is_none());
+
+    assert_eq!(
+        store.get_execution(org, quiet.id).await.unwrap().status,
+        "dispatched",
+        "a worker that went quiet must be reported as worker_lost instead"
+    );
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
+}
+
+#[tokio::test]
+async fn foreign_worker_token_cannot_renew_an_execution_lease() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Lease Ownership Agent"))
+        .await
+        .unwrap();
+    let owner = worker_token(&store, org, "lease-owner").await;
+    let foreign = worker_token(&store, org, "lease-foreign").await;
+    let worker_id = format!("worker-owned-{}", uuid::Uuid::now_v7());
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(execution.id, &worker_id, owner.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let boot = uuid::Uuid::now_v7();
+    let started_at = chrono::Utc::now();
+    let refused = store
+        .touch_execution_leases(
+            org,
+            foreign.id,
+            &worker_id,
+            Some(boot),
+            Some(started_at),
+            &[execution.id],
+            60,
+        )
+        .await
+        .unwrap();
+    assert!(refused.is_empty());
+
+    let untouched = store.get_execution(org, execution.id).await.unwrap();
+    assert!(untouched.last_execution_heartbeat_at.is_none());
+    assert!(untouched.execution_lease_until.is_none());
+    assert!(untouched.worker_boot_id.is_none());
+    assert!(untouched.worker_boot_started_at.is_none());
+
+    let renewed = store
+        .touch_execution_leases(
+            org,
+            owner.id,
+            &worker_id,
+            Some(boot),
+            Some(started_at),
+            &[execution.id],
+            60,
+        )
+        .await
+        .unwrap();
+    assert_eq!(renewed, vec![execution.id]);
 }

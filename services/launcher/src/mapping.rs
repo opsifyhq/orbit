@@ -9,6 +9,7 @@
 //! - Waiting reasons that Kubernetes retries forever (CrashLoopBackOff, ImagePullBackOff, ...)
 //!   are reported as `failed` with a message instead of staying `starting`.
 
+use orbit_contracts::{WorkerTermination, WorkerTerminationReason};
 use serde_json::Value;
 
 /// Result of mapping workload state to an ORBIT launch status.
@@ -16,11 +17,25 @@ use serde_json::Value;
 pub struct Mapped {
     pub status: &'static str,
     pub error: Option<String>,
+    /// Structured, non-secret cause for a terminal failure.
+    pub termination: Option<WorkerTermination>,
 }
 
 impl Mapped {
     fn new(status: &'static str, error: Option<String>) -> Self {
-        Self { status, error }
+        Self {
+            status,
+            error,
+            termination: None,
+        }
+    }
+
+    fn failed(error: String, termination: WorkerTermination) -> Self {
+        Self {
+            status: "failed",
+            error: Some(error),
+            termination: Some(termination),
+        }
     }
 }
 
@@ -95,10 +110,103 @@ fn restarts(status: &Value) -> i64 {
         .unwrap_or(0)
 }
 
+fn pod_name(pod: &Value) -> String {
+    str_at(pod, "/metadata/name")
+        .unwrap_or("unknown-worker")
+        .to_string()
+}
+
+fn pod_status_reason(pod: &Value) -> Option<&str> {
+    str_at(pod, "/status/reason")
+}
+
+fn is_evicted(pod: &Value, terminated: Option<&Value>) -> bool {
+    pod_status_reason(pod) == Some("Evicted")
+        || terminated.is_some_and(|value| str_at(value, "/reason") == Some("Evicted"))
+}
+
+fn is_node_loss(pod: &Value) -> bool {
+    str_at(pod, "/status/phase") == Some("Unknown")
+        || matches!(
+            pod_status_reason(pod),
+            Some("NodeLost" | "NodeNotFound" | "NodeUnreachable" | "NodeAffinity")
+        )
+}
+
+fn terminated_at(terminated: &Value) -> Option<String> {
+    str_at(terminated, "/finishedAt").map(str::to_string)
+}
+
+fn termination(
+    reason: WorkerTerminationReason,
+    name: impl Into<String>,
+    restarts: Option<i64>,
+    terminated: Option<&Value>,
+    detail: Option<String>,
+) -> WorkerTermination {
+    WorkerTermination {
+        reason,
+        worker_name: name.into(),
+        restart_count: restarts,
+        terminated_at: terminated.and_then(terminated_at),
+        exit_code: terminated.and_then(|value| value.get("exitCode").and_then(Value::as_i64)),
+        detail,
+    }
+}
+
+/// Pick the most specific reason available from a terminated container state.
+fn container_termination(pod: &Value, status: &Value, terminated: &Value) -> WorkerTermination {
+    let reason = if is_oom(terminated) {
+        WorkerTerminationReason::WorkerOom
+    } else if is_evicted(pod, Some(terminated)) {
+        WorkerTerminationReason::WorkerEvicted
+    } else {
+        WorkerTerminationReason::WorkerExited
+    };
+    termination(
+        reason,
+        pod_name(pod),
+        Some(restarts(status)),
+        Some(terminated),
+        str_at(terminated, "/reason").map(str::to_string),
+    )
+}
+
 /// Map the current state of one pod's containers. `restart_always` is true for Deployment
 /// pods, where a terminated container is about to be restarted.
 fn map_pod(pod: &Value, restart_always: bool) -> Mapped {
     let statuses = container_statuses(pod);
+    // Pod-level eviction/node loss can arrive with no usable container state at all.
+    if is_evicted(pod, None) {
+        return Mapped::failed(
+            format!(
+                "worker pod was evicted ({})",
+                str_at(pod, "/status/message").unwrap_or("node pressure or drain")
+            ),
+            termination(
+                WorkerTerminationReason::WorkerEvicted,
+                pod_name(pod),
+                None,
+                None,
+                Some("Evicted".into()),
+            ),
+        );
+    }
+    if is_node_loss(pod) {
+        return Mapped::failed(
+            format!(
+                "worker pod was lost ({})",
+                pod_status_reason(pod).unwrap_or("node or pod disappeared")
+            ),
+            termination(
+                WorkerTerminationReason::WorkerLost,
+                pod_name(pod),
+                None,
+                None,
+                pod_status_reason(pod).map(str::to_string),
+            ),
+        );
+    }
     let mut starting = statuses.is_empty();
     let mut hint: Option<String> = None;
     for status in &statuses {
@@ -116,7 +224,8 @@ fn map_pod(pod: &Value, restart_always: bool) -> Mapped {
                     "worker container is {reason} (restarts: {})",
                     restarts(status)
                 );
-                if let Some(last) = status.pointer("/lastState/terminated") {
+                let last = status.pointer("/lastState/terminated");
+                if let Some(last) = last {
                     message = format!(
                         "{message}; last termination: {}",
                         termination_message(pod, last)
@@ -124,12 +233,34 @@ fn map_pod(pod: &Value, restart_always: bool) -> Mapped {
                 } else if let Some(detail) = str_at(waiting, "/message") {
                     message = format!("{message}: {detail}");
                 }
-                return Mapped::new("failed", Some(message));
+                let termination = match last {
+                    Some(last) => container_termination(pod, status, last),
+                    None => termination(
+                        WorkerTerminationReason::WorkerExited,
+                        pod_name(pod),
+                        Some(restarts(status)),
+                        None,
+                        Some(reason.to_string()),
+                    ),
+                };
+                return Mapped::failed(message, termination);
             }
             starting = true;
         } else if let Some(terminated) = status.pointer("/state/terminated") {
             if is_oom(terminated) {
-                return Mapped::new("failed", Some(oom_message(pod)));
+                return Mapped::failed(
+                    oom_message(pod),
+                    container_termination(pod, status, terminated),
+                );
+            }
+            if is_evicted(pod, Some(terminated)) {
+                return Mapped::failed(
+                    format!(
+                        "worker container was evicted ({})",
+                        str_at(terminated, "/message").unwrap_or("Evicted")
+                    ),
+                    container_termination(pod, status, terminated),
+                );
             }
             if restart_always {
                 // Kubernetes is restarting it; this is a transient state.
@@ -137,7 +268,10 @@ fn map_pod(pod: &Value, restart_always: bool) -> Mapped {
             } else if terminated.get("exitCode").and_then(Value::as_i64) == Some(0) {
                 return Mapped::new("stopped", None);
             } else {
-                return Mapped::new("failed", Some(describe_termination(terminated)));
+                return Mapped::failed(
+                    describe_termination(terminated),
+                    container_termination(pod, status, terminated),
+                );
             }
         } else if status.pointer("/state/running").is_none() {
             starting = true;
@@ -188,14 +322,41 @@ fn map_job(job: &Value, pods: &[&Value]) -> Mapped {
             None => parts.push("job failed".into()),
         }
         // Add the most specific container-level cause while the pod is still around.
+        let mut cause: Option<WorkerTermination> = None;
         for pod in pods {
             for status in container_statuses(pod) {
                 if let Some(terminated) = status.pointer("/state/terminated") {
                     parts.push(termination_message(pod, terminated));
+                    if cause.is_none() {
+                        cause = Some(container_termination(pod, status, terminated));
+                    }
                 }
             }
         }
-        return Mapped::new("failed", Some(parts.join("; ")));
+        let condition_reason = failed_condition
+            .and_then(|condition| str_at(condition, "/reason"))
+            .unwrap_or("Failed");
+        let cause = cause.unwrap_or_else(|| {
+            let reason = match condition_reason {
+                "Evicted" => WorkerTerminationReason::WorkerEvicted,
+                "DeadlineExceeded" | "BackoffLimitExceeded" => {
+                    WorkerTerminationReason::WorkerExited
+                }
+                _ => WorkerTerminationReason::WorkerLost,
+            };
+            termination(
+                reason,
+                pods.first().map(|pod| pod_name(pod)).unwrap_or_else(|| {
+                    str_at(job, "/metadata/name")
+                        .unwrap_or("unknown-worker")
+                        .to_string()
+                }),
+                None,
+                None,
+                Some(condition_reason.to_string()),
+            )
+        });
+        return Mapped::failed(parts.join("; "), cause);
     }
     // Still running or starting: a stuck pod (image pull, crash) is a failure.
     let mut best = Mapped::new("starting", None);
@@ -247,13 +408,29 @@ pub fn map_kubernetes(items: &[Value]) -> Mapped {
         return match str_at(pod, "/status/phase") {
             Some("Succeeded") => Mapped::new("stopped", None),
             Some("Failed") => {
-                let message = container_statuses(pod)
-                    .into_iter()
-                    .find_map(|s| s.pointer("/state/terminated"))
-                    .map(|t| termination_message(pod, t))
-                    .or_else(|| str_at(pod, "/status/message").map(str::to_string))
+                let mapped = map_pod(pod, false);
+                if mapped.status == "failed" {
+                    return mapped;
+                }
+                // Eviction is identifiable; anything else that ends a bare pod is a loss.
+                let reason = if is_evicted(pod, None) {
+                    WorkerTerminationReason::WorkerEvicted
+                } else {
+                    WorkerTerminationReason::WorkerLost
+                };
+                let message = str_at(pod, "/status/message")
+                    .map(str::to_string)
                     .unwrap_or_else(|| "pod failed".into());
-                Mapped::new("failed", Some(message))
+                Mapped::failed(
+                    message,
+                    termination(
+                        reason,
+                        pod_name(pod),
+                        None,
+                        None,
+                        pod_status_reason(pod).map(str::to_string),
+                    ),
+                )
             }
             _ => map_pod(pod, false),
         };
@@ -261,36 +438,57 @@ pub fn map_kubernetes(items: &[Value]) -> Mapped {
     Mapped::new("stopped", None)
 }
 
+/// Parsed `docker inspect` state for one worker container.
+pub struct DockerState<'a> {
+    pub status: &'a str,
+    pub oom_killed: bool,
+    pub exit_code: i64,
+    pub error: &'a str,
+    pub name: &'a str,
+    pub restart_count: Option<i64>,
+    pub finished_at: Option<&'a str>,
+}
+
 /// Map `docker inspect` state. `oom_killed` comes from `State.OOMKilled`, never from the
 /// exit code.
-pub fn map_docker(state: &str, oom_killed: bool, exit_code: i64, error: &str) -> Mapped {
-    if oom_killed {
-        return Mapped::new(
-            "failed",
-            Some(
-                "worker container was OOMKilled (Docker memory limit); increase the worker profile memory limit"
-                    .into(),
-            ),
+pub fn map_docker(state: DockerState<'_>) -> Mapped {
+    let docker_termination =
+        |reason: WorkerTerminationReason, detail: Option<String>| WorkerTermination {
+            reason,
+            worker_name: state.name.to_string(),
+            restart_count: state.restart_count,
+            terminated_at: state.finished_at.map(str::to_string),
+            exit_code: Some(state.exit_code),
+            detail,
+        };
+    if state.oom_killed {
+        return Mapped::failed(
+            "worker container was OOMKilled (Docker memory limit); increase the worker profile memory limit"
+                .into(),
+            docker_termination(WorkerTerminationReason::WorkerOom, Some("OOMKilled".into())),
         );
     }
-    let error = (!error.is_empty()).then(|| error.to_string());
-    match state {
+    let error = (!state.error.is_empty()).then(|| state.error.to_string());
+    match state.status {
         "running" => Mapped::new("running", error),
         "created" | "restarting" => Mapped::new("starting", error),
-        "exited" if exit_code == 0 => Mapped::new("stopped", error),
-        "exited" => Mapped::new(
-            "failed",
-            Some(error.unwrap_or_else(|| {
-                if exit_code == 137 {
+        "exited" if state.exit_code == 0 => Mapped::new("stopped", error),
+        "exited" => Mapped::failed(
+            error.unwrap_or_else(|| {
+                if state.exit_code == 137 {
                     "worker container was killed (exit code 137 / SIGKILL); not an out-of-memory kill"
                         .into()
                 } else {
-                    format!("worker container exited with code {exit_code}")
+                    format!("worker container exited with code {}", state.exit_code)
                 }
-            })),
+            }),
+            docker_termination(WorkerTerminationReason::WorkerExited, None),
         ),
         "removing" => Mapped::new("stopped", error),
-        "dead" | "paused" => Mapped::new("failed", error),
+        "dead" | "paused" => Mapped::failed(
+            error.unwrap_or_else(|| format!("worker container is {}", state.status)),
+            docker_termination(WorkerTerminationReason::WorkerLost, None),
+        ),
         _ => Mapped::new("starting", error),
     }
 }
@@ -351,6 +549,11 @@ mod tests {
             error.contains("OOMKilled") && error.contains("1Gi"),
             "{error}"
         );
+        let termination = mapped.termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerOom);
+        assert_eq!(termination.worker_name, "orbit-worker-1234");
+        assert_eq!(termination.restart_count, Some(0));
+        assert_eq!(termination.exit_code, Some(137));
     }
 
     #[test]
@@ -480,7 +683,8 @@ mod tests {
             map_kubernetes(&items),
             Mapped {
                 status: "stopped",
-                error: None
+                error: None,
+                termination: None,
             }
         );
     }
@@ -499,14 +703,117 @@ mod tests {
         assert_eq!(map_kubernetes(&[]).status, "stopped");
     }
 
+    fn docker(status: &str, oom_killed: bool, exit_code: i64) -> Mapped {
+        map_docker(DockerState {
+            status,
+            oom_killed,
+            exit_code,
+            error: "",
+            name: "orbit-worker-1234",
+            restart_count: Some(1),
+            finished_at: Some("2026-11-23T10:00:00Z"),
+        })
+    }
+
     #[test]
     fn docker_oom_uses_flag_not_exit_code() {
-        assert_eq!(map_docker("exited", true, 137, "").status, "failed");
-        let killed = map_docker("exited", false, 137, "");
+        let oom = docker("exited", true, 137);
+        assert_eq!(oom.status, "failed");
+        let termination = oom.termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerOom);
+        assert_eq!(termination.exit_code, Some(137));
+        assert_eq!(termination.restart_count, Some(1));
+        let killed = docker("exited", false, 137);
         assert_eq!(killed.status, "failed");
         assert!(killed.error.unwrap().contains("not an out-of-memory"));
-        assert_eq!(map_docker("exited", false, 0, "").status, "stopped");
-        assert_eq!(map_docker("running", false, 0, "").status, "running");
+        assert_eq!(
+            killed.termination.unwrap().reason,
+            WorkerTerminationReason::WorkerExited
+        );
+        assert_eq!(docker("exited", false, 0).status, "stopped");
+        assert_eq!(docker("running", false, 0).status, "running");
+    }
+
+    #[test]
+    fn evicted_pod_is_failed_evicted() {
+        let mut pod = pod(json!({
+            "state": { "terminated": { "reason": "Evicted", "exitCode": 137 } }
+        }));
+        pod["status"]["reason"] = json!("Evicted");
+        pod["status"]["message"] = json!("The node was low on resource: memory.");
+        let mapped = map_kubernetes(&[pod]);
+        assert_eq!(mapped.status, "failed");
+        let termination = mapped.termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerEvicted);
+        assert_eq!(termination.detail.as_deref(), Some("Evicted"));
+    }
+
+    #[test]
+    fn node_loss_pod_is_failed_worker_lost() {
+        let mut pod = pod(json!({ "state": { "waiting": { "reason": "ContainerCreating" } } }));
+        pod["status"]["phase"] = json!("Unknown");
+        pod["status"]["reason"] = json!("NodeLost");
+        let mapped = map_kubernetes(&[pod]);
+        assert_eq!(mapped.status, "failed");
+        assert_eq!(
+            mapped.termination.unwrap().reason,
+            WorkerTerminationReason::WorkerLost
+        );
+    }
+
+    #[test]
+    fn non_zero_exit_carries_exit_code_and_time() {
+        let items = [
+            job(json!({ "failed": 1 })),
+            pod(json!({
+                "restartCount": 1,
+                "state": { "terminated": {
+                    "reason": "Error",
+                    "exitCode": 2,
+                    "finishedAt": "2026-11-23T10:00:00Z"
+                } }
+            })),
+        ];
+        let mapped = map_kubernetes(&items);
+        assert_eq!(mapped.status, "failed");
+        let termination = mapped.termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerExited);
+        assert_eq!(termination.exit_code, Some(2));
+        assert_eq!(termination.restart_count, Some(1));
+        assert_eq!(
+            termination.terminated_at.as_deref(),
+            Some("2026-11-23T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn crash_loop_after_oom_reports_worker_oom() {
+        let items = [
+            deployment(),
+            pod(json!({
+                "restartCount": 3,
+                "state": { "waiting": { "reason": "CrashLoopBackOff" } },
+                "lastState": { "terminated": { "reason": "OOMKilled", "exitCode": 137 } }
+            })),
+        ];
+        let mapped = map_kubernetes(&items);
+        assert_eq!(
+            mapped.termination.unwrap().reason,
+            WorkerTerminationReason::WorkerOom
+        );
+    }
+
+    #[test]
+    fn job_failed_without_pod_reports_condition_reason() {
+        let items = [job(json!({
+            "failed": 1,
+            "conditions": [{ "type": "Failed", "status": "True", "reason": "Evicted" }]
+        }))];
+        let mapped = map_kubernetes(&items);
+        assert_eq!(mapped.status, "failed");
+        let termination = mapped.termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerEvicted);
+        assert_eq!(termination.worker_name, "orbit-worker-1234");
     }
 
     #[test]

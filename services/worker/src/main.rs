@@ -145,8 +145,13 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| config.execution_driver.clone());
 
+    let boot_id = uuid::Uuid::now_v7();
+    let boot_started_at = chrono::Utc::now();
+
     let state = runner::WorkerState {
         worker_id: config.worker_id.clone(),
+        boot_id,
+        boot_started_at,
         client: client.clone(),
         registry: registry.clone(),
         workspace_root: std::path::PathBuf::from(&config.workspace_root),

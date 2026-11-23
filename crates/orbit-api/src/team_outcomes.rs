@@ -39,6 +39,29 @@ pub(crate) async fn close_queue_loop(
     output: Option<&Value>,
     error: Option<&str>,
 ) -> anyhow::Result<()> {
+    close_queue_loop_inner(state, run, status, output, error, true).await
+}
+
+/// Close the queue item of a run ended by the platform without offering a retry: the
+/// worker lost the execution, so replaying it would duplicate unknown side effects.
+pub(crate) async fn close_queue_loop_without_retry(
+    state: &AppState,
+    run: &TeamRun,
+    status: &str,
+    output: Option<&Value>,
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    close_queue_loop_inner(state, run, status, output, error, false).await
+}
+
+async fn close_queue_loop_inner(
+    state: &AppState,
+    run: &TeamRun,
+    status: &str,
+    output: Option<&Value>,
+    error: Option<&str>,
+    retry_allowed: bool,
+) -> anyhow::Result<()> {
     let Some(item) = state.store.get_team_queue_item_by_run(run.id).await? else {
         return Ok(());
     };
@@ -80,7 +103,7 @@ pub(crate) async fn close_queue_loop(
         None => None,
     };
 
-    let retry = status == "failed" && item.max_attempts > item.attempts + 1;
+    let retry = retry_allowed && status == "failed" && item.max_attempts > item.attempts + 1;
     let outcome = match status {
         "succeeded" => "done",
         "failed" if retry => "retry",

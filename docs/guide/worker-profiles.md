@@ -112,8 +112,13 @@ stopping profiles needs `settings:write`.
 - Long-lived profile → a Kubernetes **Deployment** (recreated after drains/evictions)
 - Single execution → a **Job** with TTL cleanup
 - Stop deletes the workload; logs are read by the `orbit.launch-id` label
-- OOMKilled/exit 137 is surfaced as a failed launch with the memory limit, and running
-  executions on that worker fail with a `worker_oom` event
+- A worker stopped by the runtime is surfaced as a failed launch with a structured reason:
+  `worker_oom` (OOMKilled, with the memory limit), `worker_evicted` (node pressure or drain),
+  `worker_exited` (non-zero exit) or `worker_lost` (node/pod gone). Exit code 137 alone is
+  SIGKILL, not OOM. Every in-flight execution on that worker fails with the same reason,
+  pod name, restart count, exit code and termination time; team runs are not retried
+  automatically. The API polls live launches every 15 seconds, so this happens even when
+  nobody has the Workers page open
 
 The profile can also generate copy-paste Docker/Compose/Kubernetes bootstrap output with a
 scoped token. Generating bootstrap output (an explicit **Generate** button in the dialog)

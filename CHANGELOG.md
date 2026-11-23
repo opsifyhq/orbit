@@ -41,6 +41,15 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - The team run dialog now shows a fixed team autonomy and no longer labels auto-approve
   as a Level 4 override.
 
+### Fixed
+
+- Kubernetes and Docker worker terminations are surfaced with a structured reason
+  (`worker_oom`, `worker_evicted`, `worker_exited`, `worker_lost`) plus pod/container name,
+  restart count, exit code and termination time. Every in-flight execution on the terminated
+  worker fails with that reason, its team step/run/queue item ends without an automatic
+  rerun, and the cause is audited. A background pass polls live launches every 15 seconds so
+  this no longer depends on someone opening the Workers page (#343).
+
 ## [0.28.3] - 2026-11-23
 
 ### Changed

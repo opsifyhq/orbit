@@ -2165,6 +2165,10 @@ mod tests {
             finished_at: None,
             updated_at: now,
             archived_at: None,
+            last_execution_heartbeat_at: None,
+            execution_lease_until: None,
+            worker_boot_id: None,
+            worker_boot_started_at: None,
         }
     }
 
