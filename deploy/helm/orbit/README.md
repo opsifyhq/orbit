@@ -38,7 +38,8 @@ Verify:
 ```bash
 kubectl -n orbit get pods,svc,ingress
 kubectl -n orbit logs deploy/orbit-api --tail=50
-curl http://orbit.example.com/api/v1/healthz
+curl http://orbit.example.com/healthz
+curl http://orbit.example.com/readyz
 ```
 
 Custom/external workers (your own cluster, laptop or Docker host) still need a token from

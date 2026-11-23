@@ -42,7 +42,7 @@ Check readiness:
 Fixed workers (optional):
   base worker     -> mock harness (ORBIT_WORKER_HARNESSES=mock)
   Workers use ORBIT_API_URL + ORBIT_WORKER_TOKEN; no database/NATS/master key.
-  opencode worker -> OpenCode CLI, tested with v2.2.5 (enabled when auth is configured)
+  opencode worker -> OpenCode CLI, tested with v2.3.0 (enabled when auth is configured)
 
 OpenCode credentials are imported from an `opencode auth export` Secret by an init
 container (see opencodeWorker.auth in values.yaml). The CLI is never bundled into the

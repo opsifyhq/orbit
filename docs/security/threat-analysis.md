@@ -150,16 +150,42 @@ or at a host they control to collect the stored credential.
 
 **Mitigations:**
 
-- Outbound URLs for providers, outputs and work sources, and the connection fields
-  `baseUrl`, `cloneBaseUrl`, `url` and `apiServer`, are checked after DNS resolution
-  (`crates/orbit-security/src/http.rs`). The Kubernetes client uses the same guard and
-  checks its API server (including a kubeconfig's `server`) before every request; its
-  errors pass on Kubernetes `Status` messages only, never other response bodies.
-- A stored credential never follows an edited endpoint: changing a provider's base URL
-  or one of the connection URL fields requires the credential in the same request. Loopback, link-local, cloud-metadata,
-  unspecified, multicast and reserved addresses are blocked; metadata addresses can never
-  be allowlisted.
-- Private ranges (RFC 1918, CGNAT, IPv6 ULA) are allowed by default so self-hosted model
+`crates/orbit-security/src/http.rs` provides `check_outbound_url` (literal hosts and
+resolved addresses) and a DNS-guarded HTTP client that applies the same policy to every
+lookup and refuses cross-host redirects. Every call site that uses a URL from stored or
+user-supplied config is covered:
+
+| Call site | URL source | Checked? |
+|---|---|---|
+| `probe_endpoint` (`crates/orbit-api/src/handlers/catalog.rs`) | provider `baseUrl` and its models endpoint | Yes, on each probe |
+| `probe_connection` / `probe_supported_connection` (`crates/orbit-api/src/handlers/catalog.rs`) | connection `baseUrl` or `url` | Yes, on each test; URL fields are also checked when saved |
+| Webhook delivery (`crates/orbit-api/src/handlers/outputs.rs`) | write-only webhook URL | Yes, on save and on each delivery |
+| `send_telegram` (`crates/orbit-api/src/handlers/outputs.rs`) | `api.telegram.org`, or `ORBIT_TELEGRAM_API_BASE_URL` set by an operator | Yes, on each send; the token is confined to the URL path |
+| Work-source dispatcher (`crates/orbit-api/src/dispatcher.rs`, `crates/orbit-api/src/work_sources.rs`) | connection `baseUrl` | Yes, before each dispatch |
+| Team outcome delivery (`crates/orbit-api/src/team_outcomes.rs`) | connection `baseUrl` | Yes, on each delivery |
+| Kubernetes client (`crates/orbit-kubernetes/src/lib.rs`) | API server / kubeconfig `server` | Yes, before each request; only Kubernetes `Status` messages are forwarded, never other response bodies |
+| X context hydration (`services/worker/src/connectors.rs`) | connection `baseUrl` | Yes, on each hydration |
+| GitHub, GitLab and X broker clients (`services/worker/src/{github,gitlab,x}.rs`, using the client from `services/worker/src/broker.rs`) | connection `baseUrl` | Yes: the guarded client checks DNS on every request; the base URL is also checked when the connection is saved |
+| Worker git clone/push (`services/worker/src/git.rs`) | connection `cloneBaseUrl` | Checked when the connection is saved, not again at use time (the request is made by the `git` binary) |
+
+The remaining HTTP callers use operator-supplied internal URLs, not agent-editable
+config, and are deliberately outside the outbound policy:
+
+- OIDC discovery (`crates/orbit-api/src/handlers/auth_oidc.rs`) and JWKS fetches
+  (`crates/orbit-security/src/auth.rs`) use `client_with_custom_ca` with the issuer/JWKS
+  URL from `ORBIT_OIDC_ISSUER` / `ORBIT_OIDC_JWKS_URL`; both are cached and rate-bounded.
+- Launcher calls (`crates/orbit-api/src/handlers/worker_launches.rs`) use
+  `ORBIT_LAUNCHER_URL`; worker → API calls (`services/worker/src/client.rs`) use
+  `ORBIT_API_URL`.
+- The MCP bridge (`services/worker/src/mcp_broker.rs`, `services/mcp-broker/src/main.rs`)
+  calls `ORBIT_BROKER_URL`, which the worker sets to its loopback tool broker.
+
+A stored credential never follows an edited endpoint: changing a provider's base URL or
+one of the connection URL fields (`baseUrl`, `cloneBaseUrl`, `url`, `apiServer`) requires
+the credential in the same request. Loopback, link-local, cloud-metadata, unspecified,
+multicast and reserved addresses are blocked; metadata addresses can never be allowlisted.
+
+Private ranges (RFC 1918, CGNAT, IPv6 ULA) are allowed by default so self-hosted model
   servers work. `ORBIT_OUTBOUND_ALLOW_PRIVATE=false` blocks them, and
   `ORBIT_OUTBOUND_ALLOWED_HOSTS` lists exceptions (Helm: `outbound.*`).
 
@@ -210,7 +236,9 @@ Container images are **not** scanned for vulnerabilities in CI; see "Residual ri
   ingress every request has the same TCP peer, so the limit keys on `X-Forwarded-For`
   only for peers in `ORBIT_TRUSTED_PROXIES` (the chart trusts the private ranges by
   default). A client inside a trusted range can choose its own key; narrow the setting
-  to the pod CIDR where clients share those ranges.
+  to the pod CIDR where clients share those ranges. Buckets are in-memory per API
+  process, not shared between replicas: if the web proxy's peer is not trusted, every
+  anonymous caller shares one bucket behind it, and the budget is per replica.
 - API tokens are hashed and always bounded by their owner's current role. Role edits
   follow a grant ceiling (see [rbac.md](../development/rbac.md)).
 - `ORBIT_ALLOW_API_TOKENS=false` disables API tokens entirely.
