@@ -160,13 +160,18 @@ impl KubernetesClientConfig {
     }
 
     /// The namespaces tools may use. An empty `namespaces` allowlist allows only
-    /// `defaultNamespace`; with neither set, every namespaced tool is refused.
+    /// `defaultNamespace`; with neither set, every namespaced tool is refused. `*` lets
+    /// the kubeconfig/RBAC decide which namespaces are reachable.
     fn allowed_namespaces(&self) -> Vec<&str> {
         if self.namespaces.is_empty() {
             self.default_namespace.as_deref().into_iter().collect()
         } else {
             self.namespaces.iter().map(String::as_str).collect()
         }
+    }
+
+    fn all_namespaces(&self) -> bool {
+        self.namespaces.iter().any(|namespace| namespace == "*")
     }
 
     fn namespace(&self, args: &Value) -> Result<String, String> {
@@ -176,10 +181,10 @@ impl KubernetesClientConfig {
             .or(self.default_namespace.as_deref())
             .ok_or("namespace is required (or set config.defaultNamespace)")?;
         validate_segment(namespace, "namespace")?;
-        if !self.allowed_namespaces().contains(&namespace) {
+        if !self.all_namespaces() && !self.allowed_namespaces().contains(&namespace) {
             return Err(format!(
                 "namespace '{namespace}' is not allowed on this connection; add it to \
-                 config.namespaces (an empty list allows only config.defaultNamespace)"
+                 config.namespaces, use '*' to follow the kubeconfig, or set config.defaultNamespace"
             ));
         }
         Ok(namespace.to_string())
@@ -250,7 +255,12 @@ impl KubernetesClientConfig {
             // Fall back to a bounded pod list in an allowed namespace so the connection
             // can still be validated without cluster-wide RBAC.
             if status == reqwest::StatusCode::FORBIDDEN {
-                if let Some(namespace) = self.allowed_namespaces().first() {
+                let probe_namespace = self.default_namespace.as_deref().or_else(|| {
+                    self.allowed_namespaces()
+                        .into_iter()
+                        .find(|namespace| *namespace != "*")
+                });
+                if let Some(namespace) = probe_namespace {
                     let probe = self
                         .get(
                             &format!("/api/v1/namespaces/{namespace}/pods"),
@@ -409,13 +419,15 @@ impl KubernetesClientConfig {
         }
         match capability {
             "namespaces.list" => {
-                let allowed = self.allowed_namespaces();
-                if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
-                    items.retain(|item| {
-                        item.pointer("/metadata/name")
-                            .and_then(Value::as_str)
-                            .is_some_and(|name| allowed.contains(&name))
-                    });
+                if !self.all_namespaces() {
+                    let allowed = self.allowed_namespaces();
+                    if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
+                        items.retain(|item| {
+                            item.pointer("/metadata/name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|name| allowed.contains(&name))
+                        });
+                    }
                 }
             }
             "pods.get" => redact_object(&mut data, "/spec"),
@@ -702,6 +714,18 @@ users:
         assert!(parsed.namespace(&json!({ "namespace": "other" })).is_err());
         assert!(parsed.resource_allowed("pods"));
         assert!(!parsed.resource_allowed("events"));
+    }
+
+    #[test]
+    fn wildcard_namespaces_follow_the_kubeconfig() {
+        let parsed = connection(json!({ "namespaces": ["*"] }));
+        assert!(parsed
+            .namespace(&json!({ "namespace": "kube-system" }))
+            .is_ok());
+        assert!(parsed
+            .namespace(&json!({ "namespace": "payments" }))
+            .is_ok());
+        assert!(parsed.all_namespaces());
     }
 
     fn connection(extra: Value) -> KubernetesClientConfig {
