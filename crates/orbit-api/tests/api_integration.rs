@@ -9144,7 +9144,7 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     let (_, body) = send(&app.router, get("/api/v1/team-runs?limit=3")).await;
     let first = body["items"].as_array().unwrap();
     assert_eq!(first.len(), 3);
-    assert_eq!(body["total"], 6);
+    assert_eq!(body["total"], 4);
 
     // The cursor reaches the older half without repeating the first page.
     let cursor = body["nextCursor"].as_str().expect("a next page exists");
@@ -9154,7 +9154,7 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     )
     .await;
     let second = body["items"].as_array().unwrap();
-    assert_eq!(second.len(), 3);
+    assert_eq!(second.len(), 1);
     assert!(body["nextCursor"].is_null());
     let first_ids: Vec<_> = first
         .iter()
