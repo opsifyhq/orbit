@@ -5212,6 +5212,131 @@ async fn claim_as(app: &TestApp, token: &str, worker_id: &str) -> Option<Uuid> {
         .map(|id| Uuid::parse_str(id).unwrap())
 }
 
+/// #306: unknown event and memory kinds are validation errors, not database errors.
+#[tokio::test]
+async fn worker_event_and_memory_kinds_are_validated() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "worker-kinds").await;
+    queue_execution(&app, "kinds").await;
+    let claimed = claim_as(&app, &token, "worker-kinds")
+        .await
+        .expect("claimed");
+    let events = format!("/api/v1/worker/executions/{claimed}/events");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            &events,
+            &token,
+            Some(json!({ "kind": "worker_oom", "level": "error", "message": "x" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            &events,
+            &token,
+            Some(json!({ "kind": "error", "level": "error", "message": "x", "data": { "code": "worker_oom" } })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/store",
+            &token,
+            Some(json!({ "executionId": claimed, "kind": "long_term", "content": "x" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// #306: generating bootstrap output must not revoke the tokens of running workers, is a
+/// POST (a GET must not change state), and a live launch cannot be deleted.
+#[tokio::test]
+async fn bootstrap_keeps_existing_worker_tokens_and_live_launches_are_kept() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let profile = d2_profile(&app, &format!("bootstrap-{}", Uuid::now_v7())).await;
+    let issued = orbit_security::issue_worker_token();
+    let launched = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            Some(profile),
+            "launch:running",
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/v1/worker-profiles/{profile}/bootstrap");
+    for _ in 0..2 {
+        let (status, body) = send(&app.router, post(&path, json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let tokens = app.store.list_worker_tokens(app.org_id).await.unwrap();
+    let profile_tokens: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.profile_id == Some(profile))
+        .collect();
+    assert_eq!(
+        profile_tokens.len(),
+        3,
+        "one launch token plus one per generation"
+    );
+    assert!(
+        profile_tokens
+            .iter()
+            .all(|token| token.revoked_at.is_none()),
+        "bootstrap output must not revoke other tokens"
+    );
+    assert!(profile_tokens.iter().any(|token| token.id == launched.id));
+    let (status, _) = send(&app.router, get(&path)).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            profile,
+            "orbit-worker-live",
+            "docker",
+            "orbit-worker:test",
+            Some(launched.id),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let delete = |id: Uuid| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/worker-launches/{id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, body) = send(&app.router, delete(launch.id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    sqlx::query("UPDATE worker_launches SET status = 'stopped' WHERE id = $1")
+        .bind(launch.id)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (status, body) = send(&app.router, delete(launch.id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}
+
 #[tokio::test]
 async fn worker_cannot_act_on_execution_claimed_by_another_worker() {
     let Some(app) = test_app(true).await else {

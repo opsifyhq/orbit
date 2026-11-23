@@ -223,16 +223,34 @@ impl Store {
 }
 
 impl Store {
+    /// Delete a launch that has ended. A live launch keeps its row: without it the stop
+    /// endpoint can no longer reach the container or Job, which would keep running with
+    /// its worker token (#306).
     pub async fn delete_worker_launch(&self, org_id: Uuid, launch_id: Uuid) -> StoreResult<()> {
-        let result = sqlx::query("DELETE FROM worker_launches WHERE org_id = $1 AND id = $2")
-            .bind(org_id)
-            .bind(launch_id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() == 0 {
-            return Err(StoreError::NotFound("worker launch".into()));
+        let result = sqlx::query(
+            "DELETE FROM worker_launches WHERE org_id = $1 AND id = $2 AND status IN ('stopped', 'failed')",
+        )
+        .bind(org_id)
+        .bind(launch_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() > 0 {
+            return Ok(());
         }
-        Ok(())
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_launches WHERE org_id = $1 AND id = $2)",
+        )
+        .bind(org_id)
+        .bind(launch_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if exists {
+            Err(StoreError::Conflict(
+                "stop the worker launch before deleting it".into(),
+            ))
+        } else {
+            Err(StoreError::NotFound("worker launch".into()))
+        }
     }
 }
 

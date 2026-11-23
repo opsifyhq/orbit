@@ -1503,9 +1503,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["bootstrap"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.
+         * @description Each call issues one new worker token for the profile and leaves the existing ones
+         *     alone: launched and previously bootstrapped workers keep running (#306). Rotating
+         *     every token of a profile is the separate, explicit `POST …/token`.
+         */
+        post: operations["bootstrap"];
         delete?: never;
         options?: never;
         head?: never;

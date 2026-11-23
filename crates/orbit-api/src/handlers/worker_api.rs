@@ -812,12 +812,19 @@ pub async fn event(
             )))
         }
     };
+    // Unknown kinds would otherwise reach the CHECK constraint and surface as a 500.
+    let kind = orbit_domain::ExecutionEventKind::parse(&body.kind).ok_or_else(|| {
+        ApiError::validation(vec![orbit_domain::ValidationIssue::new(
+            "kind",
+            format!("unknown event kind '{}'", body.kind),
+        )])
+    })?;
     let event = state
         .store
         .append_execution_event(
             execution.org_id,
             execution.id,
-            &body.kind,
+            kind.as_str(),
             level,
             &body.message,
             &body.data,
@@ -1412,6 +1419,12 @@ pub async fn store_memory(
     }
     let (agent_id, retention_days) =
         memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    // After the ownership check, so an unbound execution is a 404 whatever the body says.
+    if !matches!(body.kind.as_str(), "short_term" | "summary") {
+        return Err(ApiError::validation(vec![
+            orbit_domain::ValidationIssue::new("kind", "memory kind must be short_term or summary"),
+        ]));
+    }
     let expires_at = retention_days.map(|days| Utc::now() + chrono::Duration::days(days));
     state
         .store

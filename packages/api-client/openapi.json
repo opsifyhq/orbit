@@ -4146,10 +4146,12 @@
       }
     },
     "/api/v1/worker-profiles/{profile_id}/bootstrap": {
-      "get": {
+      "post": {
         "tags": [
           "workers"
         ],
+        "summary": "Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.",
+        "description": "Each call issues one new worker token for the profile and leaves the existing ones\nalone: launched and previously bootstrapped workers keep running (#306). Rotating\nevery token of a profile is the separate, explicit `POST …/token`.",
         "operationId": "bootstrap",
         "parameters": [
           {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Copy } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { Copy, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -29,16 +30,19 @@ export function BootstrapDialog({
   profile: WorkerProfile | null;
   onClose: () => void;
 }) {
-  const bootstrap = useQuery<WorkerBootstrap>({
-    queryKey: ["worker-bootstrap", profile?.id],
-    queryFn: async () =>
+  // Generating issues a new worker token, so it happens on an explicit click, never on
+  // open or refetch. Existing tokens (launched or bootstrapped workers) stay valid.
+  const bootstrap = useMutation<WorkerBootstrap>({
+    mutationFn: async () =>
       unwrap(
-        await api.GET("/api/v1/worker-profiles/{profile_id}/bootstrap", {
+        await api.POST("/api/v1/worker-profiles/{profile_id}/bootstrap", {
           params: { path: { profile_id: profile!.id } },
         }),
       ),
-    enabled: Boolean(profile),
   });
+  const { reset } = bootstrap;
+  // Output belongs to one profile: clear it when the dialog closes or switches profile.
+  useEffect(() => reset(), [profile?.id, reset]);
 
   async function copy(value: string) {
     if (await copyText(value)) toast.success("Copied");
@@ -55,7 +59,17 @@ export function BootstrapDialog({
             for you. Supply the database, NATS, master key and harness auth from your secret store.
           </DialogDescription>
         </DialogHeader>
-        {bootstrap.isLoading ? (
+        {bootstrap.isIdle ? (
+          <div className="space-y-3">
+            <p className="text-[13px] text-muted-foreground">
+              Generating the output issues a new worker token for this profile. Workers that
+              are already running keep their tokens.
+            </p>
+            <Button onClick={() => bootstrap.mutate()}>
+              <KeyRound /> Generate bootstrap output
+            </Button>
+          </div>
+        ) : bootstrap.isPending ? (
           <Skeleton className="h-64" />
         ) : bootstrap.data ? (
           <Tabs defaultValue="docker">
