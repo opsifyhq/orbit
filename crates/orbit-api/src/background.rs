@@ -84,6 +84,17 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         }
     }));
 
+    handles.push(supervise("launches", &state, |launch_state| async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let tick = Tick::start(&launch_state, "launches");
+            let ok = crate::handlers::worker_launches::refresh_active_launches(&launch_state).await;
+            tick.done(ok);
+        }
+    }));
+
     handles.push(supervise("team_runs", &state, |team_state| async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(2));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -863,10 +874,13 @@ pub(crate) async fn report_ended_execution(
     .with_idempotency(format!("reap:{}", execution.id));
     let _ = state.bus.publish(event).await;
     // A worker that vanished (or stopped reporting a still-live harness) may have caused
-    // side effects, so its team run must not be auto-retried. Other endings keep the
+    // side effects, so its team run must not be auto-retried. The same holds for a worker
+    // terminated by the runtime (OOM, eviction, exit or node loss). Other endings keep the
     // normal team poller behaviour, including queue retries for runs that never started.
     let code = data.get("code").and_then(serde_json::Value::as_str);
-    if matches!(code, Some("worker_lost" | "harness_unresponsive")) {
+    let worker_terminated =
+        code.is_some_and(|code| orbit_contracts::WorkerTerminationReason::parse(code).is_some());
+    if worker_terminated || matches!(code, Some("harness_unresponsive")) {
         if let Err(error) =
             crate::handlers::teams::fail_team_run_for_execution(state, execution).await
         {

@@ -99,6 +99,8 @@ struct LaunchStatus {
     runtime_id: Option<String>,
     worker_id: Option<String>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    termination: Option<orbit_contracts::WorkerTermination>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,6 +579,7 @@ async fn launch_docker(state: &AppState, request: &LaunchRequest) -> anyhow::Res
         runtime_id: Some(name),
         worker_id: Some(request.worker_id.clone()),
         error: None,
+        termination: None,
     })
 }
 
@@ -596,7 +599,7 @@ async fn docker_status(state: &AppState, name: &str) -> LaunchStatus {
         .args([
             "inspect",
             "-f",
-            "{{.State.Status}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{if .State.Error}}{{.State.Error}}{{end}}",
+            "{{.State.Status}}|{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.State.FinishedAt}}|{{.RestartCount}}|{{if .State.Error}}{{.State.Error}}{{end}}",
             name,
         ])
         .output()
@@ -609,6 +612,7 @@ async fn docker_status(state: &AppState, name: &str) -> LaunchStatus {
                 runtime_id: Some(name.into()),
                 worker_id: None,
                 error: Some(error.to_string()),
+                termination: None,
             }
         }
     };
@@ -618,10 +622,12 @@ async fn docker_status(state: &AppState, name: &str) -> LaunchStatus {
             runtime_id: Some(name.into()),
             worker_id: None,
             error: None,
+            termination: None,
         };
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut parts = stdout.trim().splitn(4, '|');
+    // The free-text daemon error is last so a `|` inside it cannot shift the other fields.
+    let mut parts = stdout.trim().splitn(6, '|');
     let state_value = parts.next().unwrap_or_default();
     // OOM comes from Docker's own flag, never from exit code 137 (which is any SIGKILL).
     let oom_killed = parts.next().unwrap_or_default() == "true";
@@ -629,13 +635,26 @@ async fn docker_status(state: &AppState, name: &str) -> LaunchStatus {
         .next()
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
+    let finished_at = parts
+        .next()
+        .filter(|value| !value.is_empty() && !value.starts_with("0001-01-01"));
+    let restart_count = parts.next().and_then(|value| value.parse::<i64>().ok());
     let error = parts.next().unwrap_or_default();
-    let mapped = mapping::map_docker(state_value, oom_killed, exit_code, error);
+    let mapped = mapping::map_docker(mapping::DockerState {
+        status: state_value,
+        oom_killed,
+        exit_code,
+        error,
+        name,
+        restart_count,
+        finished_at,
+    });
     LaunchStatus {
         status: mapped.status.into(),
         runtime_id: Some(name.into()),
         worker_id: None,
         error: mapped.error,
+        termination: mapped.termination,
     }
 }
 
@@ -982,6 +1001,7 @@ async fn launch_kubernetes(
         runtime_id: Some(name),
         worker_id: Some(request.worker_id.clone()),
         error: None,
+        termination: None,
     })
 }
 
@@ -1087,6 +1107,7 @@ async fn kubernetes_status(state: &AppState, name: &str, launch_id: Uuid) -> Lau
                 runtime_id: Some(name.into()),
                 worker_id: None,
                 error: Some(error.to_string()),
+                termination: None,
             }
         }
     };
@@ -1105,6 +1126,7 @@ async fn kubernetes_status(state: &AppState, name: &str, launch_id: Uuid) -> Lau
                 "could not read workload state: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )),
+            termination: None,
         };
     };
     let items = list
@@ -1118,6 +1140,7 @@ async fn kubernetes_status(state: &AppState, name: &str, launch_id: Uuid) -> Lau
         runtime_id: Some(name.into()),
         worker_id: None,
         error: mapped.error,
+        termination: mapped.termination,
     }
 }
 
@@ -1196,6 +1219,7 @@ async fn stop(
         runtime_id: Some(name),
         worker_id: None,
         error: None,
+        termination: None,
     }))
 }
 

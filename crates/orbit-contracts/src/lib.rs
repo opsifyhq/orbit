@@ -9,9 +9,11 @@ pub mod harness;
 pub mod output;
 pub mod portable;
 pub mod provider;
+pub mod worker;
 
 pub use connector::*;
 pub use events::*;
 pub use harness::*;
 pub use output::*;
 pub use provider::*;
+pub use worker::*;

@@ -771,9 +771,10 @@ impl Store {
 }
 
 impl Store {
-    /// Executions currently running on a worker. Used to fail them when the worker
-    /// container is OOM-killed and the process cannot report its own failure.
-    pub async fn running_executions_for_worker(
+    /// Executions still in flight on a worker (claimed, running or awaiting approval).
+    /// Used to fail them when the worker container is terminated by the runtime and the
+    /// process cannot report its own failure.
+    pub async fn active_executions_for_worker(
         &self,
         org_id: Uuid,
         worker_id: &str,
@@ -781,7 +782,8 @@ impl Store {
         Ok(sqlx::query_as::<_, ExecutionRecord>(
             r#"
             SELECT * FROM executions
-            WHERE org_id = $1 AND worker_id = $2 AND status = 'running'
+            WHERE org_id = $1 AND worker_id = $2
+              AND status IN ('dispatched', 'running', 'awaiting_approval')
             ORDER BY created_at ASC
             "#,
         )

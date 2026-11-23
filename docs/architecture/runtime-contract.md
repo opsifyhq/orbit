@@ -115,6 +115,32 @@ When the worker's own heartbeat stays fresh but an execution stops appearing in
 same 90-second grace period. In both cases team steps, runs and queue items become terminal
 without an automatic retry. Workers never derive permissions from these fields.
 
+### Runtime termination
+
+A worker killed by its runtime cannot report anything itself, so the launcher reports the
+cause instead. `GET /launches/{id}` returns a `termination` object
+(`orbit_contracts::WorkerTermination`) alongside the human-readable `error`:
+
+| Field | Meaning |
+|---|---|
+| `reason` | `worker_oom`, `worker_evicted`, `worker_exited` or `worker_lost` |
+| `workerName` | pod name (Kubernetes) or container name (Docker) |
+| `restartCount` | container restart count, when the runtime reports it |
+| `terminatedAt` | RFC 3339 finish time reported by the runtime |
+| `exitCode` | container exit code |
+| `detail` | short driver reason (`OOMKilled`, `Evicted`, `NodeLost`, ...) |
+
+OOM is only claimed when the kubelet says `reason: OOMKilled` or Docker sets
+`State.OOMKilled`; exit code 137 alone is SIGKILL. The object carries no env, command lines
+or logs.
+
+When the API sees a `failed` launch with a termination, it fails every execution still in
+flight on that worker (`dispatched`, `running`, `awaiting_approval`) with the reason as
+`error.code`, appends an `error` execution event, writes an audit entry
+(`worker.oom_killed`, `worker.evicted`, `worker.exited`, `execution.worker_lost`) and ends
+the team step, run and queue item without an automatic rerun: side effects may already have
+happened, so a person decides whether to run it again.
+
 ## Inputs
 
 `ExecutionRequest` carries:

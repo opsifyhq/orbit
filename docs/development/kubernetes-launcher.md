@@ -164,24 +164,37 @@ Status is mapped by pure functions in `services/launcher/src/mapping.rs` from
 `kubectl get deployments,jobs,pods -l orbit.launch-id=<id> -o json` (Kubernetes) or
 `docker inspect` (Docker).
 
-| Observed | Status | Message |
-|---|---|---|
-| Container terminated with `reason: OOMKilled` (Docker: `State.OOMKilled`) | `failed` | OOMKilled + memory limit |
-| Exit code 137 without `OOMKilled` | `failed` | SIGKILL, explicitly not OOM |
-| Deployment pod running after an earlier OOM restart | `running` | hint: OOMKilled earlier, restart count |
-| CrashLoopBackOff, ImagePullBackOff, ErrImagePull, InvalidImageName, CreateContainerConfigError, CreateContainerError, RunContainerError | `failed` | reason, restart count, last termination |
-| ContainerCreating / pending / not ready | `starting` | none |
-| Job `Complete` | `stopped` | none |
-| Job `Failed` condition (e.g. DeadlineExceeded, BackoffLimitExceeded) | `failed` | condition reason + message, container cause |
-| Workload not found (stopped, or Job removed by TTL) | `stopped` | none |
-| `kubectl get` itself fails | `starting` | read error (never terminal) |
-| Docker `exited` code 0 / non-zero | `stopped` / `failed` | exit code |
+| Observed | Status | Message | Termination reason |
+|---|---|---|---|
+| Container terminated with `reason: OOMKilled` (Docker: `State.OOMKilled`) | `failed` | OOMKilled + memory limit | `worker_oom` |
+| Pod `status.reason: Evicted`, or a terminated container with `reason: Evicted` | `failed` | eviction + node message | `worker_evicted` |
+| Pod phase `Unknown`, or `NodeLost` / `NodeNotFound` / `NodeUnreachable` / `NodeAffinity` | `failed` | pod lost + reason | `worker_lost` |
+| Exit code 137 without `OOMKilled` | `failed` | SIGKILL, explicitly not OOM | `worker_exited` |
+| Any other non-zero exit | `failed` | exit code + reason | `worker_exited` |
+| Deployment pod running after an earlier OOM restart | `running` | hint: OOMKilled earlier, restart count | none (still live) |
+| CrashLoopBackOff, ImagePullBackOff, ErrImagePull, InvalidImageName, CreateContainerConfigError, CreateContainerError, RunContainerError | `failed` | reason, restart count, last termination | from `lastState.terminated`, else `worker_exited` |
+| ContainerCreating / pending / not ready | `starting` | none | none |
+| Job `Complete` | `stopped` | none | none |
+| Job `Failed` condition (e.g. DeadlineExceeded, BackoffLimitExceeded) | `failed` | condition reason + message, container cause | container cause, else `Evicted` → `worker_evicted`, `DeadlineExceeded`/`BackoffLimitExceeded` → `worker_exited`, otherwise `worker_lost` |
+| Workload not found (stopped, or Job removed by TTL) | `stopped` | none | none |
+| `kubectl get` itself fails | `starting` | read error (never terminal) | none |
+| Docker `exited` code 0 / non-zero | `stopped` / `failed` | exit code | none / `worker_exited` |
+| Docker `dead` or `paused` | `failed` | container state | `worker_lost` |
+
+A `failed` mapping also carries a structured `termination` object
+(`orbit_contracts::WorkerTermination`) in `GET /launches/{id}`: `reason`, `workerName` (pod or
+container name), `restartCount`, `terminatedAt`, `exitCode` and a short `detail` such as
+`OOMKilled`. It never contains env, command lines or logs. The API turns it into the
+execution error (`data.code` = the reason), an `error` execution event, an audit entry, and
+a terminal team step/run/queue item with no automatic rerun. Older launchers that only send
+a human-readable `error` containing "OOM" are still understood as `worker_oom`.
 
 The API only refreshes launches that are `pending`, `starting` or `running`, so a terminal
 status it has already stored (for example `failed`) is never overwritten by a later
 "not found" `stopped` after the Job TTL (300s) removes the Job. A Job that fails and
 expires before the API polls it is still reported `stopped`; the API polls on every
-launch read, and the TTL leaves a five-minute window.
+launch read and, in the background, every 15 seconds across all installations (bounded to
+200 live launches per pass), so the TTL leaves a five-minute window.
 
 Lifecycle:
 
@@ -199,3 +212,29 @@ Lifecycle:
 - The launcher image runs as UID 10001. Under Compose the socket needs a group: set
   `DOCKER_GID` (`stat -c %g /var/run/docker.sock`) on Linux; the default `0` suits Docker Desktop.
 - Worker pods have no health endpoint, so no probes are set on them.
+
+## Verifying termination handling on a cluster
+
+The mapping rules are unit-tested against `kubectl`/`docker inspect` fixtures in
+`services/launcher/src/mapping.rs`, and the API side (execution error, event, team
+finalization, audit) against a mock launcher in `crates/orbit-api/tests/api_integration.rs`.
+For a real runtime, run the cluster smoke check against kind, microk8s or the mkd.local
+deployment:
+
+```bash
+API_URL=http://orbit.mdk.local ORBIT_API_TOKEN=<token> ./scripts/smoke-worker-termination.sh
+```
+
+It creates a mock agent, a Kubernetes worker profile with a tiny memory limit
+(`MEMORY_LIMIT`, default `16Mi`) and an auto-launch team, starts a run so the API launches a
+single-execution Job, and waits for the runtime to OOM-kill the worker. It then asserts the
+execution failed with `worker_oom` and carries `workerName`, `exitCode`, `restartCount` and
+`terminatedAt`, that the launch is `failed`, that the team step/run are terminal with exactly
+one step (no rerun), and that a `worker.oom_killed` audit entry exists. The execution is
+already `dispatched` and bound to the worker before the container starts, so a worker killed
+during start-up is covered too.
+
+Eviction, non-zero exit and node loss are not forced by the script; they are covered by the
+fixture tests. To exercise them by hand, drain the node running a live worker
+(`kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`), or delete its pod while
+a run is in flight, and check the same fields on the execution.

@@ -4492,6 +4492,72 @@ async fn worker_boot_change_fails_executions_from_the_previous_boot() {
     );
 }
 
+/// #343: a worker killed by the runtime cannot report its own failure, so every in-flight
+/// execution on it must be findable — not only the ones already `running`.
+#[tokio::test]
+async fn active_executions_for_worker_covers_every_in_flight_state() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Terminated Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "terminated").await;
+    let worker_id = format!("worker-term-{}", uuid::Uuid::now_v7());
+    let other_worker = format!("worker-other-{}", uuid::Uuid::now_v7());
+
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        let execution = queued_execution(&store, org, user, &agent, &version).await;
+        store
+            .claim_execution_for_launch(execution.id, &worker_id, token.id)
+            .await
+            .unwrap()
+            .unwrap();
+        ids.push(execution.id);
+    }
+    // ids[0] stays `dispatched` (a single-execution launch claims before the pod starts).
+    store.mark_execution_running(ids[1], None).await.unwrap();
+    sqlx::query("UPDATE executions SET status = 'awaiting_approval' WHERE id = $1")
+        .bind(ids[2])
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store
+        .finish_execution(ids[3], ExecutionStatus::Failed, None, None, None, None)
+        .await
+        .unwrap();
+
+    // Still queued, or claimed by a different worker: not this worker's in-flight work.
+    let queued = queued_execution(&store, org, user, &agent, &version).await;
+    let elsewhere = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(elsewhere.id, &other_worker, token.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let active = store
+        .active_executions_for_worker(org, &worker_id)
+        .await
+        .unwrap();
+    let mut found: Vec<uuid::Uuid> = active.iter().map(|execution| execution.id).collect();
+    found.sort();
+    let mut expected = vec![ids[0], ids[1], ids[2]];
+    expected.sort();
+    assert_eq!(found, expected);
+    assert!(!found.contains(&queued.id));
+    assert!(!found.contains(&elsewhere.id));
+    assert!(!found.contains(&ids[3]));
+    assert!(store
+        .active_executions_for_worker(uuid::Uuid::now_v7(), &worker_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 #[tokio::test]
 async fn execution_leases_only_touch_listed_active_executions() {
     let Some(store) = test_store().await else {

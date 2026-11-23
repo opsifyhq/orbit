@@ -361,6 +361,26 @@ impl Store {
         .await?)
     }
 
+    /// Installation-wide live launches for the background termination poller. Bounded so a
+    /// large backlog cannot stall one tick; the next tick picks up the rest.
+    pub async fn list_active_worker_launches_installation(
+        &self,
+        limit: i64,
+    ) -> StoreResult<Vec<WorkerLaunch>> {
+        Ok(sqlx::query_as::<_, WorkerLaunch>(
+            r#"
+            SELECT * FROM worker_launches
+            WHERE archived_at IS NULL
+              AND status IN ('pending', 'starting', 'running')
+            ORDER BY created_at ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// Installation-wide count of workers actually in flight. Disabled/enabled profiles
     /// are configuration, not running workers, so they do not consume worker seats.
     pub async fn count_active_worker_launches_installation(&self) -> StoreResult<i64> {
