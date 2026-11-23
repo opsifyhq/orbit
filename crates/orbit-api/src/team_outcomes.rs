@@ -54,7 +54,7 @@ pub(crate) async fn close_queue_loop(
         .as_ref()
         .and_then(|definition| definition.work_source.clone());
     let connector = match source {
-        Some(source) => match connector_for_work_source(state, run.org_id, &source).await {
+        Some(source) => match connector_for_work_source(state, run, &source).await {
             Ok(connector) => connector,
             // A deleted connection can never come back: skip side effects, close the item.
             Err(error)
@@ -64,6 +64,11 @@ pub(crate) async fn close_queue_loop(
                 ) =>
             {
                 tracing::warn!(%error, queue_item = %item.id, "work source connection is gone; skipping outcome side effects");
+                None
+            }
+            // Lost access is not retried: the credential is not used on the owner's behalf.
+            Err(error) if error.is::<crate::work_sources::WorkSourceAccessLost>() => {
+                tracing::warn!(%error, queue_item = %item.id, "skipping outcome side effects");
                 None
             }
             Err(error) if expired => {
@@ -144,7 +149,7 @@ async fn definition_for_run(state: &AppState, run: &TeamRun) -> Option<TeamDefin
 
 async fn connector_for_work_source(
     state: &AppState,
-    org_id: uuid::Uuid,
+    run: &TeamRun,
     source: &WorkSourceDefinition,
 ) -> anyhow::Result<Option<WorkSourceConnector>> {
     if !source.enabled {
@@ -153,7 +158,9 @@ async fn connector_for_work_source(
     let Some(connection_id) = source.connection_id else {
         return Ok(None);
     };
-    let connection = state.store.get_connection(org_id, connection_id).await?;
+    let team = state.store.get_agent_team(run.org_id, run.team_id).await?;
+    let connection =
+        crate::work_sources::work_source_connection(state, &team, connection_id).await?;
     let token = match &connection.credential_ref {
         Some(reference) => state
             .store

@@ -322,14 +322,35 @@ pub async fn execute_agent(
         .or(body.idempotency_key.clone())
         .filter(|key| !key.trim().is_empty() && key.len() <= 200);
 
+    // Keys the platform generates for its own executions share the per-organization
+    // namespace. A caller must not be able to claim one, which would both replay another
+    // agent's execution and make the platform's own insert look like a replay (#322).
+    if let Some(key) = &idempotency_key {
+        if is_reserved_idempotency_key(key) {
+            return Err(ApiError::validation(vec![
+                orbit_domain::ValidationIssue::new(
+                    "idempotencyKey",
+                    "keys starting with team:, trigger:, runtime: or rerun: are reserved for ORBIT",
+                ),
+            ]));
+        }
+    }
+
     // Idempotent replay returns the existing execution before any quota/concurrency
-    // checks so retried client requests never observe a spurious 429.
+    // checks so retried client requests never observe a spurious 429. It only replays an
+    // execution of this agent: the caller's access was checked for this agent, not for
+    // whichever execution happens to carry the key (#322).
     if let Some(key) = &idempotency_key {
         if let Some(existing) = state
             .store
             .get_execution_by_idempotency_key(auth.org_id, key)
             .await?
         {
+            if existing.agent_id != agent_id {
+                return Err(ApiError::conflict(
+                    "this idempotency key was already used for another execution",
+                ));
+            }
             return Ok((StatusCode::ACCEPTED, Json(existing)));
         }
     }
@@ -437,6 +458,17 @@ pub async fn execute_agent(
     .await;
 
     Ok((StatusCode::ACCEPTED, Json(execution)))
+}
+
+/// Prefixes of idempotency keys the platform generates (team steps, scheduled triggers,
+/// continuous runtimes and reruns).
+const RESERVED_IDEMPOTENCY_PREFIXES: [&str; 4] = ["team:", "trigger:", "runtime:", "rerun:"];
+
+fn is_reserved_idempotency_key(key: &str) -> bool {
+    let key = key.trim_start().to_ascii_lowercase();
+    RESERVED_IDEMPOTENCY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
 }
 
 #[utoipa::path(post, path = "/api/v1/executions/{execution_id}/cancel", tag = "executions", responses((status = 200, body = ExecutionRecord)))]

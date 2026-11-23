@@ -10402,6 +10402,355 @@ async fn settings_write_holder_cannot_attach_other_teams_mappings_or_profiles() 
     }
 }
 
+async fn private_github_connection(app: &TestApp, owner: Uuid, name: &str) -> Uuid {
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let reference = orbit_security::new_secret_ref("connection");
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &reference,
+            &orbit_security::SecretValue::new("dummy-token"),
+            "test",
+        )
+        .await
+        .unwrap();
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            name,
+            &json!({ "baseUrl": "https://127.0.0.1:9" }),
+            &[],
+            Some(&reference),
+            Some(owner),
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "connections", connection.id, owner).await;
+    connection.id
+}
+
+/// #322: a team author cannot attach a connection they cannot use as a work source, and
+/// the dispatcher stops using a work-source credential its team owner cannot use.
+#[tokio::test]
+async fn work_source_connections_require_use_by_the_team_owner() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let bob = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("ws-bob-{}@test.local", Uuid::now_v7()),
+            "Bob",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let foreign = private_github_connection(&app, bob.id, "Bob's GitHub").await;
+    let work_source = json!({
+        "provider": "github",
+        "enabled": true,
+        "connectionId": foreign,
+        "repository": "acme/issues",
+        "pollSeconds": 60
+    });
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agent-teams",
+            &fx.mallory_token,
+            json!({
+                "name": "ws", "mode": "pipeline",
+                "steps": [{ "agentId": app.agent_id }],
+                "workSource": work_source,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "workSource.connectionId")));
+
+    // A team stored with that work source (for example before this check existed) and
+    // owned by Mallory: the dispatcher refuses to use Bob's credential for it.
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "workSource": work_source }),
+    )
+    .await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team, fx.mallory.id)
+        .await
+        .unwrap();
+    let _ = orbit_api::dispatcher::dispatch_tick(&app.state).await;
+    let stored = app.store.get_agent_team(app.org_id, team).await.unwrap();
+    let error = stored.last_poll_error.unwrap_or_default();
+    assert!(error.contains("can no longer use"), "poll error: {error}");
+}
+
+/// #322: replay only returns an execution of the agent the caller targets, and keys the
+/// platform generates cannot be supplied by callers.
+#[tokio::test]
+async fn idempotent_replay_is_scoped_to_the_target_agent() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let path = format!("/api/v1/agents/{}/executions", app.agent_id);
+    let request = |key: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(json!({ "task": "replay" }).to_string()))
+            .unwrap()
+    };
+    let key = format!("client-{}", Uuid::now_v7());
+    let (status, first) = send(&app.router, request(&key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    let (status, again) = send(&app.router, request(&key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{again}");
+    assert_eq!(again["id"], first["id"], "same agent, same key: replay");
+
+    let other = create_demo_agent(&app.store, app.org_id, owner_user(&app).await.id).await;
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agents/{other}/executions"))
+            .header("content-type", "application/json")
+            .header("idempotency-key", &key)
+            .body(Body::from(json!({ "task": "replay" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(!body.to_string().contains(first["id"].as_str().unwrap()));
+
+    for reserved in ["team:x:0", "trigger:x:1", "runtime:x:first", "Rerun:x:y"] {
+        let (status, body) = send(&app.router, request(reserved)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{reserved}: {body}"
+        );
+    }
+}
+
+/// Claim a fresh execution of `agent` requested by `requested_by` and fetch its worker
+/// context with a worker token.
+async fn worker_context_for(
+    app: &TestApp,
+    agent: &orbit_store::Agent,
+    version: &orbit_store::AgentVersion,
+    requested_by: Uuid,
+    input: Value,
+) -> (StatusCode, Value) {
+    let issued = orbit_security::issue_worker_token();
+    let worker = format!("ctx-worker-{}", Uuid::now_v7());
+    let token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            None,
+            &worker,
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    let execution = app
+        .store
+        .create_execution(orbit_store::executions::NewExecution {
+            org_id: app.org_id,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: orbit_domain::HarnessKind::Mock,
+            trigger_source: orbit_domain::TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input,
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(requested_by),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    app.store
+        .claim_execution(execution.id, &worker)
+        .await
+        .unwrap()
+        .expect("queued");
+    app.store
+        .bind_execution_worker_token(execution.id, token.id)
+        .await
+        .unwrap();
+    send(
+        &app.router,
+        worker_request(
+            "GET",
+            &format!("/api/v1/worker/executions/{}/context", execution.id),
+            &issued.token,
+            None,
+        ),
+    )
+    .await
+}
+
+/// #322: env mappings named by a team run are checked again when the run starts.
+#[tokio::test]
+async fn team_env_mappings_are_checked_for_the_run_principal() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = owner_user(&app).await;
+    let mapping = app
+        .store
+        .create_env_mapping(
+            app.org_id,
+            &format!("private-{}", Uuid::now_v7().simple()),
+            "",
+            &json!([{ "envVar": "TOKEN", "secretKey": "x" }]),
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "env_mappings", mapping.id, owner.id).await;
+    let mut definition: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).unwrap();
+    definition.metadata.name = format!("env-user-{}", Uuid::now_v7().simple());
+    let (agent, version) = app
+        .store
+        .create_agent(app.org_id, Some(owner.id), &definition)
+        .await
+        .unwrap();
+    let carol = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("env-carol-{}@test.local", Uuid::now_v7()),
+            "Carol",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let input = json!({ "task": "x", "team": { "envMappingIds": [mapping.id] } });
+
+    let (status, body) = worker_context_for(&app, &agent, &version, carol.id, input.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains(&mapping.name), "{body}");
+
+    // The mapping's owner may use it.
+    let (status, body) = worker_context_for(&app, &agent, &version, owner.id, input).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// #322: skills are referenced by slug, so a referenced skill cannot be deleted (its
+/// slug could be registered again by someone else), and the worker context refuses a
+/// skill the run's principal cannot use.
+#[tokio::test]
+async fn skills_are_protected_by_reference_and_checked_at_run_time() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = owner_user(&app).await;
+    let skill = app
+        .store
+        .create_skill(
+            app.org_id,
+            &format!("ref-{}", Uuid::now_v7().simple()),
+            "Referenced",
+            "",
+            "body",
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let mut definition: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).unwrap();
+    definition.metadata.name = format!("skill-user-{}", Uuid::now_v7().simple());
+    definition.spec.skills = vec![skill.slug.clone()];
+    let (agent, version) = app
+        .store
+        .create_agent(app.org_id, Some(owner.id), &definition)
+        .await
+        .unwrap();
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/skills/{}", skill.id))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app.router, delete).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains(&agent.name), "{body}");
+
+    // An agent team that names the skill also holds it.
+    let team_skill = app
+        .store
+        .create_skill(
+            app.org_id,
+            &format!("team-{}", Uuid::now_v7().simple()),
+            "Team skill",
+            "",
+            "body",
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "skills": [team_skill.slug] }),
+    )
+    .await;
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/skills/{}", team_skill.id))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A run requested by an operator who cannot use the (private) skill fails closed.
+    let carol = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("skill-carol-{}@test.local", Uuid::now_v7()),
+            "Carol",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "skills", skill.id, owner.id).await;
+    let (status, body) =
+        worker_context_for(&app, &agent, &version, carol.id, json!({ "task": "x" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains(&skill.slug), "{body}");
+}
+
 #[tokio::test]
 async fn outputs_require_manage_on_their_target() {
     let Some(app) = test_app(true).await else {
