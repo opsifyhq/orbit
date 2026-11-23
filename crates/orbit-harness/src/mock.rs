@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use orbit_contracts::{
-    CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
-    HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessEventKind, HarnessHealth, HarnessInstance, HarnessInstanceRef, HarnessInstanceStatus,
+    ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
+    HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent, HarnessEventKind,
+    HarnessHealth,
 };
 use orbit_domain::{
     ExecutionMode, ExecutionStatus, HarnessKind, ImplementationStatus, LogLevel, Usage,
@@ -200,32 +200,6 @@ impl HarnessAdapter for MockHarnessAdapter {
         Ok(HarnessHealth::healthy())
     }
 
-    async fn create_instance(
-        &self,
-        _request: CreateInstanceRequest,
-    ) -> Result<HarnessInstance, HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn start_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn stop_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn delete_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn instance_status(
-        &self,
-        _instance: &HarnessInstanceRef,
-    ) -> Result<HarnessInstanceStatus, HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
     async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError> {
         let timeout = Duration::from_secs(request.resources.timeout_seconds);
         let cancel = request.cancel.clone();
@@ -263,38 +237,5 @@ impl HarnessAdapter for MockHarnessAdapter {
             outcome.usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
         }
         Ok(outcome)
-    }
-
-    async fn resume(
-        &self,
-        request: orbit_contracts::ResumeRequest,
-    ) -> Result<ExecutionOutcome, HarnessError> {
-        let execution_request = ExecutionRequest {
-            execution_id: request.execution_id,
-            agent_id: uuid::Uuid::nil(),
-            agent_version_id: uuid::Uuid::nil(),
-            agent_name: "resumed".into(),
-            instructions: orbit_contracts::InstructionsBlock {
-                system: String::new(),
-                constraints: vec![],
-            },
-            input: request.input,
-            model: None,
-            subagent_models: Vec::new(),
-            grants: vec![],
-            autonomy: orbit_domain::AutonomyLevel::default(),
-            resources: orbit_domain::ResourceLimits::default(),
-            harness_config: serde_json::Value::Null,
-            extra_env: Default::default(),
-            session: orbit_contracts::SessionRequest {
-                session_ref: Some(request.session_ref),
-                mode: ExecutionMode::OnDemand,
-            },
-            workspace: Default::default(),
-            events: request.events,
-            cancel: request.cancel,
-            pause: Default::default(),
-        };
-        self.execute(execution_request).await
     }
 }

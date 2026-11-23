@@ -211,19 +211,6 @@ impl Store {
 }
 
 impl Store {
-    pub async fn count_enabled_worker_profiles(&self, org_id: Uuid) -> StoreResult<i64> {
-        Ok(
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM worker_profiles WHERE org_id = $1 AND enabled",
-            )
-            .bind(org_id)
-            .fetch_one(&self.pool)
-            .await?,
-        )
-    }
-}
-
-impl Store {
     /// Enabled profiles that follow the platform image tag (empty imageTag).
     pub async fn list_platform_follow_profiles(&self) -> StoreResult<Vec<WorkerProfile>> {
         Ok(sqlx::query_as::<_, WorkerProfile>(

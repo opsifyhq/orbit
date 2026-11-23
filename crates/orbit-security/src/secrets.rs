@@ -5,7 +5,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::SecurityError;
 
@@ -196,14 +196,6 @@ impl SecretStore for MemorySecretStore {
             .remove(reference);
         Ok(())
     }
-}
-
-/// Redacted secret description returned by the API.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretDescriptor {
-    pub reference: String,
-    pub present: bool,
 }
 
 pub fn new_secret_ref(prefix: &str) -> String {

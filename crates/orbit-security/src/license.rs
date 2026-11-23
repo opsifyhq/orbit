@@ -190,11 +190,6 @@ impl LicenseStatus {
             _ => None,
         }
     }
-
-    /// Premium writes are allowed while valid, including the grace window.
-    pub fn premium_active(&self) -> bool {
-        self.valid
-    }
 }
 
 #[derive(Clone)]

@@ -11,10 +11,9 @@ use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChil
 use crate::process_env::child_environment;
 use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
-    CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
-    HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessEventKind, HarnessHealth, HarnessInstance, HarnessInstanceRef, HarnessInstanceStatus,
-    InstructionsBlock, SessionRequest,
+    ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
+    HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent, HarnessEventKind,
+    HarnessHealth, InstructionsBlock,
 };
 use orbit_domain::{
     AutonomyLevel, ExecutionMode, ExecutionStatus, HarnessKind, ImplementationStatus, LogLevel,
@@ -1082,34 +1081,6 @@ impl HarnessAdapter for OpenCodeHarnessAdapter {
         }
     }
 
-    async fn create_instance(
-        &self,
-        _request: CreateInstanceRequest,
-    ) -> Result<HarnessInstance, HarnessError> {
-        Err(HarnessError::unsupported(
-            "long-running instances (Phase 3). Use executionMode=on_demand.",
-        ))
-    }
-
-    async fn start_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn stop_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn delete_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
-    async fn instance_status(
-        &self,
-        _instance: &HarnessInstanceRef,
-    ) -> Result<HarnessInstanceStatus, HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
     async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError> {
         let settings = OpenCodeSettings::from_config(&HarnessConfig {
             kind: HarnessKind::OpenCode,
@@ -1121,52 +1092,12 @@ impl HarnessAdapter for OpenCodeHarnessAdapter {
         let (outcome, _, _) = self.run_open_code(request, settings, session).await?;
         Ok(outcome)
     }
-
-    async fn resume(
-        &self,
-        request: orbit_contracts::ResumeRequest,
-    ) -> Result<ExecutionOutcome, HarnessError> {
-        let settings = OpenCodeSettings::from_config(&HarnessConfig {
-            kind: HarnessKind::OpenCode,
-            settings: request.harness_config.clone(),
-        })?;
-        self.probe(&settings).await?;
-        let execution_request = ExecutionRequest {
-            execution_id: request.execution_id,
-            agent_id: uuid::Uuid::nil(),
-            agent_version_id: uuid::Uuid::nil(),
-            agent_name: "resumed".into(),
-            instructions: InstructionsBlock {
-                system: String::new(),
-                constraints: vec![],
-            },
-            input: request.input,
-            model: request.model,
-            subagent_models: Vec::new(),
-            grants: vec![],
-            autonomy: orbit_domain::AutonomyLevel::OBSERVE,
-            resources: request.resources,
-            harness_config: request.harness_config,
-            extra_env: Default::default(),
-            session: SessionRequest {
-                session_ref: Some(request.session_ref.clone()),
-                mode: ExecutionMode::OnDemand,
-            },
-            workspace: request.workspace,
-            events: request.events,
-            cancel: request.cancel,
-            pause: Default::default(),
-        };
-        let (outcome, _, _) = self
-            .run_open_code(execution_request, settings, Some(request.session_ref))
-            .await?;
-        Ok(outcome)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbit_contracts::SessionRequest;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]

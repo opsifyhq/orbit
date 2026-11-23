@@ -315,20 +315,6 @@ async fn resolve_role(
     }
 }
 
-/// Helper for tests and for building the dev identity during bootstrap.
-pub fn dev_context(state: &AppState) -> Option<AuthContext> {
-    state.dev_identity.as_ref().map(|dev| AuthContext {
-        user_id: dev.user_id,
-        org_id: dev.org_id,
-        email: dev.email.clone(),
-        display_name: dev.display_name.clone(),
-        role: dev.role,
-        method: AuthMethod::Dev,
-        scopes: vec![],
-        token_id: None,
-    })
-}
-
 /// Expose OIDC metadata to the web app without leaking secrets.
 pub fn oidc_public_config(state: &AppState) -> serde_json::Value {
     match &state.auth.oidc {

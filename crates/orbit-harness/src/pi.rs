@@ -11,9 +11,9 @@ use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChil
 use crate::process_env::child_environment;
 use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
-    CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
-    HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent,
-    HarnessEventKind, HarnessHealth, HarnessInstance, HarnessInstanceRef, HarnessInstanceStatus,
+    ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
+    HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessEvent, HarnessEventKind,
+    HarnessHealth,
 };
 use orbit_domain::{
     AutonomyLevel, ExecutionMode, ExecutionStatus, HarnessKind, ImplementationStatus, LogLevel,
@@ -865,28 +865,6 @@ impl HarnessAdapter for PiHarnessAdapter {
         }
     }
 
-    async fn create_instance(
-        &self,
-        _request: CreateInstanceRequest,
-    ) -> Result<HarnessInstance, HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-    async fn start_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-    async fn stop_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-    async fn delete_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-    async fn instance_status(
-        &self,
-        _instance: &HarnessInstanceRef,
-    ) -> Result<HarnessInstanceStatus, HarnessError> {
-        Err(HarnessError::unsupported("long-running instances"))
-    }
-
     async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError> {
         let settings = PiSettings::from_config(&HarnessConfig {
             kind: HarnessKind::Pi,
@@ -895,45 +873,6 @@ impl HarnessAdapter for PiHarnessAdapter {
         self.probe(&settings).await?;
         let session = request.session.session_ref.clone();
         self.run_pi(request, settings, session).await
-    }
-
-    async fn resume(
-        &self,
-        request: orbit_contracts::ResumeRequest,
-    ) -> Result<ExecutionOutcome, HarnessError> {
-        let settings = PiSettings::from_config(&HarnessConfig {
-            kind: HarnessKind::Pi,
-            settings: request.harness_config.clone(),
-        })?;
-        self.probe(&settings).await?;
-        let execution_request = ExecutionRequest {
-            execution_id: request.execution_id,
-            agent_id: uuid::Uuid::nil(),
-            agent_version_id: uuid::Uuid::nil(),
-            agent_name: "resumed".into(),
-            instructions: orbit_contracts::InstructionsBlock {
-                system: String::new(),
-                constraints: vec![],
-            },
-            input: request.input,
-            model: request.model,
-            subagent_models: Vec::new(),
-            grants: vec![],
-            autonomy: AutonomyLevel::OBSERVE,
-            resources: request.resources,
-            harness_config: request.harness_config,
-            extra_env: Default::default(),
-            session: orbit_contracts::SessionRequest {
-                session_ref: Some(request.session_ref.clone()),
-                mode: ExecutionMode::OnDemand,
-            },
-            workspace: request.workspace,
-            events: request.events,
-            cancel: request.cancel,
-            pause: Default::default(),
-        };
-        self.run_pi(execution_request, settings, Some(request.session_ref))
-            .await
     }
 }
 

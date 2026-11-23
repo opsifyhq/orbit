@@ -67,7 +67,6 @@ ORBIT is a Rust workspace with a Next.js frontend:
 | `services/api` | `orbit-api`: the control-plane binary |
 | `services/worker` | `orbit-worker`: the execution-plane binary and its tool broker |
 | `services/launcher` | `orbit-launcher`: starts and stops workers; the only component with the Docker socket or workload RBAC |
-| `services/mcp-broker` | MCP stdio bridge that exposes the worker's tool broker to a harness |
 | `services/license-cli` | Offline license signing tool (ADR 0010) |
 | `apps/web` | Next.js web app |
 | `packages/api-client` | Generated OpenAPI client and document |

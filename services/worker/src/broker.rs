@@ -1,6 +1,6 @@
 //! Execution-scoped, policy-enforcing tool broker.
 //!
-//! The agent harness talks MCP to `orbit-mcp-broker`, which forwards tool calls to this
+//! The agent harness talks MCP to `orbit-worker mcp-broker`, which forwards tool calls to this
 //! loopback HTTP broker. The broker validates the execution token, enforces autonomy and
 //! capability allowlists, pauses for approvals, leases credentials, invokes connectors and
 //! writes audit/execution events. The harness never receives provider credentials.

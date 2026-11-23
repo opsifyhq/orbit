@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug, thiserror::Error)]
 pub enum SecurityError {
     #[error("configuration error: {0}")]
@@ -25,22 +23,4 @@ impl SecurityError {
             Self::Unavailable(_) => "unavailable",
         }
     }
-
-    pub fn http_status(&self) -> u16 {
-        match self {
-            Self::Unauthorized => 401,
-            Self::Forbidden(_) => 403,
-            Self::Unavailable(_) => 503,
-            _ => 500,
-        }
-    }
-}
-
-/// Safe, redacted representation of a credential presence check.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CredentialStatus {
-    pub present: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
 }

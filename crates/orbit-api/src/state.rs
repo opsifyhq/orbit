@@ -88,10 +88,6 @@ impl AppState {
         self.environment == "production"
     }
 
-    pub fn is_dev_mode(&self) -> bool {
-        matches!(self.auth.mode, orbit_security::AuthMode::Dev)
-    }
-
     pub fn auth_cors_origins(&self) -> &[String] {
         &self.cors_origins
     }

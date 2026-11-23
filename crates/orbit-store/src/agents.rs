@@ -572,15 +572,6 @@ impl Store {
 }
 
 impl Store {
-    pub async fn count_agents(&self, org_id: Uuid) -> StoreResult<i64> {
-        Ok(sqlx::query_scalar(
-            "SELECT COUNT(*) FROM agents WHERE org_id = $1 AND status <> 'archived'",
-        )
-        .bind(org_id)
-        .fetch_one(&self.pool)
-        .await?)
-    }
-
     /// Installation-wide agent count used for the license limit.
     pub async fn count_agents_installation(&self) -> StoreResult<i64> {
         Ok(

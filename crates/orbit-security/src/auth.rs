@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use orbit_domain::{OrganizationId, UserId, UserRole};
@@ -327,10 +326,6 @@ impl AuthContext {
             )))
         }
     }
-
-    pub fn is_service(&self) -> bool {
-        self.method == AuthMethod::ApiToken
-    }
 }
 
 /// Claims extracted from a validated OIDC access token / ID token.
@@ -401,7 +396,6 @@ enum KeySource {
         /// previous failure), so unauthenticated bad tokens cannot drive traffic to the IdP.
         min_refresh: Duration,
     },
-    Hmac(Vec<u8>),
 }
 
 const JWKS_TTL: Duration = Duration::from_secs(600);
@@ -456,21 +450,9 @@ impl JwtValidator {
         })
     }
 
-    /// Test/dev constructor using a shared HS256 secret. Never used for real OIDC.
-    pub fn hmac_for_tests(issuer: &str, audience: &str, secret: &[u8]) -> Self {
-        Self {
-            issuer: issuer.to_string(),
-            audience: audience.to_string(),
-            role_claim: "groups".into(),
-            email_claim: "email".into(),
-            clock_skew: 5,
-            keys: KeySource::Hmac(secret.to_vec()),
-        }
-    }
-
     pub async fn validate(&self, token: &str) -> Result<OidcIdentity, SecurityError> {
         let header = decode_header(token).map_err(|_| SecurityError::Unauthorized)?;
-        if !ALLOWED_ALGORITHMS.contains(&header.alg) && !self.is_hmac() {
+        if !ALLOWED_ALGORITHMS.contains(&header.alg) {
             return Err(SecurityError::Unauthorized);
         }
         let key = self.resolve_key(&header).await?;
@@ -502,16 +484,11 @@ impl JwtValidator {
         })
     }
 
-    fn is_hmac(&self) -> bool {
-        matches!(self.keys, KeySource::Hmac(_))
-    }
-
     async fn resolve_key(
         &self,
         header: &jsonwebtoken::Header,
     ) -> Result<DecodingKey, SecurityError> {
         match &self.keys {
-            KeySource::Hmac(secret) => Ok(DecodingKey::from_secret(secret)),
             KeySource::Jwks {
                 url,
                 client,
@@ -645,23 +622,6 @@ pub fn bearer_token(header: Option<&str>) -> Option<&str> {
         Some(token.trim())
     } else {
         None
-    }
-}
-
-/// Used by the API to expose safe, non-secret metadata about the auth setup.
-pub fn public_auth_metadata(config: &AuthConfig) -> Value {
-    match &config.oidc {
-        Some(oidc) => serde_json::json!({
-            "mode": config.mode.as_str(),
-            "issuer": oidc.issuer,
-            "audience": oidc.audience,
-            "scopes": oidc.scopes,
-        }),
-        None => serde_json::json!({
-            "mode": config.mode.as_str(),
-            "devUser": config.dev.email,
-            "anonymousAllowed": config.dev.allow_anonymous,
-        }),
     }
 }
 

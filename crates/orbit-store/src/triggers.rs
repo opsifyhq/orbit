@@ -249,11 +249,6 @@ impl Store {
         Ok(())
     }
 
-    /// Safer alternative to deleting: disable without losing history.
-    pub async fn disable_trigger(&self, org_id: Uuid, trigger_id: Uuid) -> StoreResult<Trigger> {
-        self.set_trigger_enabled(org_id, trigger_id, false).await
-    }
-
     /// Claim due schedule triggers.
     ///
     /// The claim and the next `next_run_at` are written in one transaction, so a crash can
@@ -335,20 +330,6 @@ impl Store {
         }
         tx.commit().await?;
         Ok(repaired)
-    }
-
-    /// Overwrite a schedule trigger's `next_run_at` (the claim already stores the next one).
-    pub async fn reschedule_trigger(
-        &self,
-        trigger_id: Uuid,
-        next_run_at: Option<chrono::DateTime<Utc>>,
-    ) -> StoreResult<()> {
-        sqlx::query("UPDATE triggers SET next_run_at = $2, updated_at = now() WHERE id = $1")
-            .bind(trigger_id)
-            .bind(next_run_at)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 }
 

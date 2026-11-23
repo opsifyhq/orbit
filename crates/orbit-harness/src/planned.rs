@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 
 use orbit_contracts::{
-    CreateInstanceRequest, ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities,
-    HarnessConfig, HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessHealth,
-    HarnessInstance, HarnessInstanceRef, HarnessInstanceStatus,
+    ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
+    HarnessDescriptor, HarnessError, HarnessErrorKind, HarnessHealth,
 };
 use orbit_domain::{ExecutionMode, HarnessKind, ImplementationStatus, ValidationReport};
 
@@ -53,31 +52,6 @@ pub fn claude_code() -> DescriptorOnlyAdapter {
             }
         }),
         docs_url: Some("https://docs.anthropic.com/en/docs/claude-code".into()),
-    })
-}
-
-pub fn pi() -> DescriptorOnlyAdapter {
-    DescriptorOnlyAdapter::new(HarnessDescriptor {
-        kind: HarnessKind::Pi,
-        name: "Pi".into(),
-        description: "Pi harness adapter (Phase 3).".into(),
-        capabilities: HarnessCapabilities {
-            supports_sessions: true,
-            supports_resume: true,
-            supports_streaming: true,
-            supports_cancel: true,
-            supports_instances: true,
-            supports_tool_events: true,
-            supports_usage_reporting: true,
-            harness_managed_providers: true,
-            supports_platform_providers: true,
-            execution_modes: vec![ExecutionMode::OnDemand, ExecutionMode::LongRunning],
-            max_timeout_seconds: 86_400,
-            max_memory_mb: 16_384,
-        },
-        implementation_status: ImplementationStatus::Planned,
-        config_schema: serde_json::json!({ "type": "object" }),
-        docs_url: None,
     })
 }
 
@@ -138,32 +112,6 @@ impl HarnessAdapter for DescriptorOnlyAdapter {
             "{} adapter is not implemented in this build",
             self.descriptor.name
         )))
-    }
-
-    async fn create_instance(
-        &self,
-        _request: CreateInstanceRequest,
-    ) -> Result<HarnessInstance, HarnessError> {
-        Err(not_implemented(self.descriptor.kind))
-    }
-
-    async fn start_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(not_implemented(self.descriptor.kind))
-    }
-
-    async fn stop_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(not_implemented(self.descriptor.kind))
-    }
-
-    async fn delete_instance(&self, _instance: &HarnessInstanceRef) -> Result<(), HarnessError> {
-        Err(not_implemented(self.descriptor.kind))
-    }
-
-    async fn instance_status(
-        &self,
-        _instance: &HarnessInstanceRef,
-    ) -> Result<HarnessInstanceStatus, HarnessError> {
-        Err(not_implemented(self.descriptor.kind))
     }
 
     async fn execute(&self, _request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError> {

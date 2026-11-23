@@ -179,8 +179,4 @@ impl PlacementTarget {
             _ => return None,
         })
     }
-
-    pub fn matches_worker(&self, worker_target: &str) -> bool {
-        *self == Self::Auto || self.as_str() == worker_target
-    }
 }
