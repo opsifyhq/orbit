@@ -171,6 +171,8 @@ spec:
               value: {{ .Values.api.trustedProxies | quote }}
             - name: ORBIT_ARCHIVE_AFTER_DAYS
               value: {{ .Values.platform.archiveAfterDays | quote }}
+            - name: ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS
+              value: {{ .Values.platform.outputDeliveryRetentionDays | quote }}
             - name: ORBIT_AUDIT_RETENTION_DAYS
               value: {{ .Values.platform.auditRetentionDays | quote }}
             {{- with .Values.license }}
@@ -207,12 +209,15 @@ spec:
               value: {{ default .Values.auth.oidc.audience .Values.auth.oidc.clientId | quote }}
             - name: ORBIT_OIDC_REDIRECT_URI
               value: {{ default (printf "%s/auth/callback" .Values.platform.publicBaseUrl) .Values.auth.oidc.redirectUri | quote }}
-            {{- if .Values.secrets.oidcClientSecret }}
+            {{- if or .Values.secrets.oidcClientSecret .Values.secrets.existingSecret }}
             - name: ORBIT_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "orbit.secretName" . }}
                   key: oidc-client-secret
+                  {{- if .Values.secrets.existingSecret }}
+                  optional: true
+                  {{- end }}
             {{- end }}
             - name: ORBIT_OIDC_JWKS_URL
               value: {{ .Values.auth.oidc.jwksUrl | quote }}

@@ -14,7 +14,7 @@ use orbit_domain::ValidationIssue;
 use orbit_security::{new_secret_ref, AuthContext, OutboundPolicy, Permission, SecretValue};
 use orbit_store::outputs::DeliveryOutcome;
 use orbit_store::{
-    ExecutionRecord, Output, OutputDelivery, OutputDeliveryJob, StoreError, TeamRun,
+    ExecutionRecord, Output, OutputDelivery, OutputDeliveryJob, Store, StoreError, TeamRun,
 };
 
 use crate::audit;
@@ -385,6 +385,13 @@ pub async fn list(
 ) -> Result<Json<Vec<OutputView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    // One visibility query for the whole list instead of one lookup per output.
+    let visible_ids: std::collections::HashSet<Uuid> = state
+        .store
+        .list_visible_output_ids(auth.org_id, Some(&access.store_access()))
+        .await?
+        .into_iter()
+        .collect();
     let mut latest: std::collections::HashMap<Uuid, OutputDelivery> = state
         .store
         .latest_output_deliveries(auth.org_id)
@@ -394,13 +401,14 @@ pub async fn list(
         .collect();
     let mut visible = Vec::new();
     for output in state.store.list_outputs(auth.org_id).await? {
-        if access.is_privileged() || output_target_visible(&state, &auth, &access, &output).await {
-            let last = latest.remove(&output.id);
-            let mut view = OutputView::from(output);
-            view.last_delivery =
-                last.map(|delivery| OutputDeliveryView::from_delivery(delivery, false));
-            visible.push(view);
+        if !visible_ids.contains(&output.id) {
+            continue;
         }
+        let last = latest.remove(&output.id);
+        let mut view = OutputView::from(output);
+        view.last_delivery =
+            last.map(|delivery| OutputDeliveryView::from_delivery(delivery, false));
+        visible.push(view);
     }
     Ok(Json(visible))
 }
@@ -628,7 +636,7 @@ pub async fn deliver(
     execution: Option<&ExecutionRecord>,
     team_run: Option<&TeamRun>,
 ) -> Result<(), ApiError> {
-    send(state, output, text, execution, team_run, None)
+    send(state, output, text, execution, team_run, None, None)
         .await
         .map_err(|error| {
             ApiError::new(
@@ -649,6 +657,7 @@ pub async fn send(
     execution: Option<&ExecutionRecord>,
     team_run: Option<&TeamRun>,
     delivery_id: Option<Uuid>,
+    progress: Option<TelegramProgress<'_>>,
 ) -> Result<(), SendError> {
     let kind = OutputKind::parse(&output.kind).ok_or_else(|| SendError {
         status: None,
@@ -682,12 +691,13 @@ pub async fn send(
             message: message.to_string(),
             retryable: false,
         })?;
-        return send_telegram(
+        return send_telegram_with_progress(
             &TelegramEndpoint::from_env(),
             &secret,
             &target,
             text,
             delivery_id,
+            progress,
         )
         .await;
     }
@@ -769,6 +779,16 @@ impl TelegramEndpoint {
     }
 }
 
+/// Resume state for a claimed multi-part Telegram delivery. `store` is `None` for direct
+/// sends (tests and the test endpoint), which then always start at part zero.
+#[derive(Clone, Copy)]
+pub struct TelegramProgress<'a> {
+    pub store: Option<&'a Store>,
+    pub delivery_id: Uuid,
+    pub claim_token: Uuid,
+    pub parts_sent: i32,
+}
+
 /// Send one Telegram notification, splitting long text into multiple `sendMessage` calls.
 /// The bot token is only ever used in the request URL, never in errors or diagnostics.
 pub async fn send_telegram(
@@ -777,6 +797,19 @@ pub async fn send_telegram(
     target: &TelegramTarget,
     text: &str,
     delivery_id: Option<Uuid>,
+) -> Result<(), SendError> {
+    send_telegram_with_progress(endpoint, bot_token, target, text, delivery_id, None).await
+}
+
+/// Send a Telegram notification, resuming after the parts already accepted on a previous
+/// attempt and durably counting each newly accepted part as it goes.
+pub async fn send_telegram_with_progress(
+    endpoint: &TelegramEndpoint,
+    bot_token: &str,
+    target: &TelegramTarget,
+    text: &str,
+    delivery_id: Option<Uuid>,
+    progress: Option<TelegramProgress<'_>>,
 ) -> Result<(), SendError> {
     let url = format!("{}/bot{}/sendMessage", endpoint.base_url, bot_token);
     orbit_security::check_outbound_url(&url, &endpoint.policy)
@@ -794,7 +827,13 @@ pub async fn send_telegram(
         endpoint.policy.clone(),
     );
     let parts = telegram_message_parts(text, delivery_id);
+    let resume_after = progress
+        .as_ref()
+        .map_or(0, |progress| progress.parts_sent.max(0) as usize);
     for (index, part) in parts.iter().enumerate() {
+        if index < resume_after {
+            continue;
+        }
         let mut payload = serde_json::json!({
             "chat_id": target.chat_id,
             "text": part,
@@ -831,6 +870,31 @@ pub async fn send_telegram(
                 message: mapped.message,
                 retryable: mapped.retryable,
             });
+        }
+        if let Some(progress) = &progress {
+            let Some(store) = progress.store else {
+                continue;
+            };
+            match store
+                .record_output_delivery_part(progress.delivery_id, progress.claim_token)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(SendError {
+                        status: None,
+                        message: "delivery claim lost while sending Telegram part".into(),
+                        retryable: false,
+                    })
+                }
+                Err(error) => {
+                    return Err(SendError {
+                        status: None,
+                        message: format!("could not record Telegram part: {error}"),
+                        retryable: true,
+                    })
+                }
+            }
         }
     }
     Ok(())
@@ -924,6 +988,12 @@ async fn attempt_delivery(state: &AppState, job: &OutputDeliveryJob) -> AttemptR
         .or_else(|| team_run.as_ref().map(team_summary))
         .unwrap_or_else(|| "ORBIT run finished".into());
     let text = with_note(text, output.template.as_deref());
+    let progress = TelegramProgress {
+        store: Some(&state.store),
+        delivery_id: job.id,
+        claim_token: job.claim_token,
+        parts_sent: job.parts_sent,
+    };
     match send(
         state,
         &output,
@@ -931,6 +1001,7 @@ async fn attempt_delivery(state: &AppState, job: &OutputDeliveryJob) -> AttemptR
         execution.as_ref(),
         team_run.as_ref(),
         Some(job.id),
+        Some(progress),
     )
     .await
     {

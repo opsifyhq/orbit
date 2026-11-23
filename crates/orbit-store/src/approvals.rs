@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use orbit_domain::new_id;
+use orbit_domain::{new_id, ExecutionStatus};
 
 use crate::models::{Approval, ApprovalWithExecution};
 use crate::{Store, StoreError, StoreResult};
@@ -93,6 +93,34 @@ impl Store {
                 "decision must be approved or rejected".into(),
             ));
         }
+        // A pending approval of a run that already ended is dead: expire it so the UI stops
+        // showing it, then refuse the decision. `finish_execution` and cancel normally do
+        // this in their own transaction; this covers rows written by older versions.
+        let terminal: Vec<String> = ExecutionStatus::ALL
+            .into_iter()
+            .filter(|status| status.is_terminal())
+            .map(|status| status.as_str().to_string())
+            .collect();
+        let ended = sqlx::query(
+            r#"
+            UPDATE approvals
+            SET status = 'expired', decided_at = now()
+            WHERE org_id = $1 AND id = $2 AND status = 'pending'
+              AND EXISTS (
+                  SELECT 1 FROM executions e
+                  WHERE e.id = approvals.execution_id AND e.status = ANY($3)
+              )
+            "#,
+        )
+        .bind(org_id)
+        .bind(approval_id)
+        .bind(&terminal)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if ended > 0 {
+            return Err(StoreError::Conflict("execution is terminal".into()));
+        }
         // An approval past its deadline can no longer be decided: mark it expired first
         // so the UI does not keep showing a dead request, then try the decision.
         let expired = sqlx::query(
@@ -111,13 +139,22 @@ impl Store {
         if expired > 0 {
             return Err(StoreError::Conflict("approval expired".into()));
         }
+        let active: Vec<String> = ExecutionStatus::ALL
+            .into_iter()
+            .filter(|status| !status.is_terminal())
+            .map(|status| status.as_str().to_string())
+            .collect();
         sqlx::query_as::<_, Approval>(
             r#"
-            UPDATE approvals
+            UPDATE approvals ap
             SET status = $3, decided_by = $4, decided_at = now(), comment = $5
-            WHERE org_id = $1 AND id = $2 AND status = 'pending'
-              AND (expires_at IS NULL OR expires_at > now())
-            RETURNING *
+            WHERE ap.org_id = $1 AND ap.id = $2 AND ap.status = 'pending'
+              AND (ap.expires_at IS NULL OR ap.expires_at > now())
+              AND EXISTS (
+                  SELECT 1 FROM executions e
+                  WHERE e.id = ap.execution_id AND e.status = ANY($6)
+              )
+            RETURNING ap.*
             "#,
         )
         .bind(org_id)
@@ -125,6 +162,7 @@ impl Store {
         .bind(decision)
         .bind(decided_by)
         .bind(comment)
+        .bind(&active)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| {

@@ -182,6 +182,11 @@ transport option (`mcp` capability provider), not the only connector mechanism.
   connection (`cloneBaseUrl`) and the checked-out repository, re-checked against
   `allowedRepositories` / `allowedProjects`. Git refuses to run when the repository config
   sets `url.*` (rewrites) or `http.*` (proxy, TLS, extra headers) keys.
+  the child process only.
+- **Several connectors**: every supported binding of the agent (and of its team)
+  contributes its tools, one binding per connector type; a later binding of the same type
+  is ignored with a warning event. A binding without agent tools (X `posts.search`, which
+  hydrates the prompt instead) does not count.
 - **Capability enforcement**: the broker evaluates `evaluate_capability` (autonomy ×
   effect × grant) before every call; writes below L4 create approvals.
 

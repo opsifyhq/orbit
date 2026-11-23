@@ -25,6 +25,8 @@ import {
   useWorkerProfileEnvMappings,
 } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
+import { brandName } from "@/lib/presentation";
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { errorMessage } from "@orbit/api-client";
 
 import { SectionCard, SectionNav, SectionPills } from "./editor-nav";
@@ -84,20 +86,26 @@ export function WorkerEditor({
   const editing = editor.profile;
   const attachMappingId = editor.attachMappingId ?? null;
   const queryClient = useQueryClient();
+  const newHarness = editor.harness ?? DEFAULT_WORKER_FORM.harness;
   const form = useWorkerForm(() =>
     editing
       ? valuesFromProfile(editing)
       : {
           ...DEFAULT_WORKER_FORM,
-          harness: editor.harness ?? DEFAULT_WORKER_FORM.harness,
+          // A name derived from the harness, never an OpenCode-specific suggestion.
+          name: newHarness ? `New ${brandName(newHarness)} profile` : DEFAULT_WORKER_FORM.name,
+          harness: newHarness,
           target: editor.target ?? DEFAULT_WORKER_FORM.target,
         },
   );
   const { values } = form;
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ accessDirty }, { enabled: Boolean(editing) });
   const [confirmRelaunch, setConfirmRelaunch] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
   const providers = useProviders();
+  const providerRows = providers.data ?? [];
   const agents = useAllAgents({ status: "current" });
   const skills = useSkills();
   const connections = useConnections();
@@ -202,18 +210,23 @@ export function WorkerEditor({
             body,
           }),
         );
+        // Access is a separate write: only attempt it once the profile itself was saved.
+        const accessFailed = (await accessRef.current?.save()) === false;
         if (applyNow) {
           for (const item of activeProfileLaunches) {
             await stopWorkerLaunch(item.id);
           }
           await launchWorkerProfile(editing.id);
         }
-        return profile;
+        return { profile, accessFailed };
       }
-      return unwrap(await api.POST("/api/v1/worker-profiles", { body }));
+      const profile = unwrap(await api.POST("/api/v1/worker-profiles", { body }));
+      return { profile, accessFailed: false };
     },
-    onSuccess: (profile, applyNow) => {
-      if (applyNow) {
+    onSuccess: ({ profile, accessFailed }, applyNow) => {
+      if (accessFailed) {
+        toast.warning("Profile saved, but access could not be updated");
+      } else if (applyNow) {
         toast.success("Profile saved and worker relaunched");
       } else {
         toast.success(
@@ -230,7 +243,7 @@ export function WorkerEditor({
     onError: (error) => toast.error(errorMessage(error)),
   });
 
-  const issues = validateWorkerForm(values);
+  const issues = validateWorkerForm(values, providerRows);
   const summaries = sectionSummaries(values, Boolean(editing));
 
   async function requestSave() {
@@ -245,7 +258,6 @@ export function WorkerEditor({
       if (first) goToSection(first);
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
     if (needsRelaunch) {
       setConfirmRelaunch(true);
       return;
@@ -266,7 +278,6 @@ export function WorkerEditor({
       {saveLabel}
     </Button>
   );
-  const providerRows = providers.data ?? [];
   const runningCount = activeProfileLaunches.length;
 
   return (
@@ -403,7 +414,12 @@ export function WorkerEditor({
 
           {/* Kept mounted while hidden: Save reads the pending access edits from it. */}
           <SectionCard id="sharing" active={active} onGo={goToSection} keepMounted>
-            <ResourceAccessFields ref={accessRef} resource="worker_profiles" resourceId={editing?.id} />
+            <ResourceAccessFields
+              ref={accessRef}
+              resource="worker_profiles"
+              resourceId={editing?.id}
+              onDirtyChange={setAccessDirty}
+            />
           </SectionCard>
         </div>
       </div>

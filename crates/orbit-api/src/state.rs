@@ -4,7 +4,8 @@ use chrono::Utc;
 use orbit_events::EventBus;
 use orbit_harness::HarnessRegistry;
 use orbit_security::{AuthConfig, JwtValidator, LicenseHandle, LicenseStatus};
-use orbit_store::{LicenseLimitGuard, Store};
+use orbit_store::executions::NewExecution;
+use orbit_store::{ExecutionRecord, LicenseLimitGuard, Store};
 use uuid::Uuid;
 
 use crate::metrics::Metrics;
@@ -67,10 +68,19 @@ pub struct AppState {
     pub ca_secret_key: String,
     /// Archive terminal runs older than this many days. `None` disables retention.
     pub archive_after_days: Option<u32>,
+    /// Prune terminal output deliveries older than this many days. `None` keeps them.
+    pub output_delivery_retention_days: Option<u32>,
     /// Offline enterprise license (hot reloadable).
     pub license: LicenseHandle,
     /// Cancelled on SIGTERM/SIGINT: stops background loops and ends SSE streams.
     pub shutdown: tokio_util::sync::CancellationToken,
+}
+
+/// Guard held while an execution is counted and inserted. `Unrestricted` is returned when
+/// the installed license has no daily execution limit: no lock is taken and no count runs.
+pub enum ExecutionLimit<'a> {
+    Unrestricted,
+    Enforced(LicenseLimitGuard<'a>),
 }
 
 impl AppState {
@@ -94,27 +104,56 @@ impl AppState {
         Ok(guard)
     }
 
-    /// Guard + installation-wide agent count. Hold until the agent is inserted.
-    pub async fn agent_limit_guard(&self) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+    /// Guard + installation-wide agent count. Hold until the agent row is written. Returns
+    /// `None` without touching the database when the license has no agent limit.
+    pub async fn agent_limit_guard(
+        &self,
+    ) -> Result<Option<LicenseLimitGuard<'_>>, crate::error::ApiError> {
+        if self.license_status().limit("agents").is_none() {
+            return Ok(None);
+        }
         let guard = self.store.license_limit_guard("agents").await?;
         self.enforce_limit("agents", self.store.count_agents_installation().await?)?;
-        Ok(guard)
+        Ok(Some(guard))
     }
 
     /// Guard + installation-wide rolling 24h execution count. Hold until the execution
-    /// (or the team run's first step execution) is inserted.
+    /// is inserted. Without a configured limit this performs no lock and no count.
     pub async fn execution_limit_guard(
         &self,
-    ) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
+    ) -> Result<ExecutionLimit<'_>, crate::error::ApiError> {
+        if self.license_status().limit("executions_per_day").is_none() {
+            return Ok(ExecutionLimit::Unrestricted);
+        }
         let guard = self.store.license_limit_guard("executions_per_day").await?;
         let since = Utc::now() - chrono::Duration::hours(24);
-        self.enforce_limit(
-            "executions_per_day",
-            self.store
-                .count_all_executions_since_installation(since)
-                .await?,
-        )?;
-        Ok(guard)
+        let count = self
+            .store
+            .count_all_executions_since_installation(since)
+            .await?;
+        self.enforce_limit("executions_per_day", count)?;
+        Ok(ExecutionLimit::Enforced(guard))
+    }
+
+    /// The single insertion point for licensed executions. Every manual run, rerun, team
+    /// step, scheduled trigger and runtime tick goes through here so none can skip the
+    /// `executions_per_day` guard. An idempotent replay returns the existing execution
+    /// without consuming a slot or taking the lock.
+    pub async fn create_execution_with_limit(
+        &self,
+        new: NewExecution<'_>,
+    ) -> Result<ExecutionRecord, crate::error::ApiError> {
+        if let Some(key) = new.idempotency_key {
+            if let Some(existing) = self
+                .store
+                .get_execution_by_idempotency_key(new.org_id, key)
+                .await?
+            {
+                return Ok(existing);
+            }
+        }
+        let _limit = self.execution_limit_guard().await?;
+        Ok(self.store.create_execution(new).await?)
     }
 
     /// Guard + installation-wide running-worker count. Hold until the launch is inserted.

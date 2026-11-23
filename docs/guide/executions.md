@@ -62,9 +62,12 @@ instead, and you start a new team run from the team.
 ## Statuses and retention
 
 A run moves from `queued` (waiting for a worker) to `dispatched` (a worker took it), then
-`running`, and ends as `succeeded`, `failed`, `timed_out`, `cancelled` or `rejected`
-(`awaiting_approval` is a pause in between). Nothing in the current API or worker sets
-`rejected`; the Cancelled filter includes it.
+`running`, and ends as `succeeded`, `failed`, `timed_out`, `cancelled` or `rejected`.
+`awaiting_approval` remains a valid in-flight state for older and imported runs, and the
+reapers and in-flight metrics still cover it; current workers wait for an approval while the
+run stays `running`, with the wait added to its timeout clock. Nothing in the current API or
+worker sets `rejected`; the Cancelled filter includes it. An approval whose run has already
+ended is expired and cannot be decided (409).
 
 - `timed_out`: the run was still running when its time limit passed. The clock starts when
   the harness reports `running`, so checkout and worker start-up do not count, and time
@@ -100,8 +103,9 @@ page shows "The run failed" with the error.
 - `GET /api/v1/executions/{id}`, `.../events` (query `afterSeq`, `kind`, `tool`, `q`,
   `limit`) and `.../events/stream` (server-sent events).
 - `POST /api/v1/executions/{id}/cancel`, `POST /api/v1/executions/{id}/rerun`.
-- `GET /api/v1/team-runs` (query `teamId`, `archived`, `limit`) and
-  `GET /api/v1/team-runs/{id}`.
+- `GET /api/v1/team-runs` (query `teamId`, `archived`, `q`, `limit`, `cursor`): returns
+  `{ items, nextCursor, total }`; pass `nextCursor` back for older runs.
+  `GET /api/v1/team-runs/{id}` returns one run with its steps.
 - `POST /api/v1/team-runs/{id}/cancel`: stops a running team run. Its live execution is
   asked to stop and the run's queue item, if any, is cancelled. Deleting an agent team
   does the same for all of its runs.

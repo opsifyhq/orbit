@@ -7,6 +7,22 @@ use orbit_domain::{new_id, ExecutionStatus, HarnessKind, LogLevel, TriggerSource
 use crate::models::{ExecutionEventRecord, ExecutionRecord};
 use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
+/// Expire an execution's outstanding approvals in the same transaction that ends the run.
+/// A human must never be able to authorise work for a run that is already over.
+async fn expire_pending_approvals(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    execution_id: Uuid,
+) -> StoreResult<()> {
+    sqlx::query(
+        "UPDATE approvals SET status = 'expired', decided_at = now() \
+         WHERE execution_id = $1 AND status = 'pending'",
+    )
+    .bind(execution_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Optional, presentation-driven narrowing of the event list. All fields are ANDed;
 /// text fields are literal case-insensitive substrings (no SQL wildcard injection).
 #[derive(Debug, Clone, Default)]
@@ -308,6 +324,7 @@ impl Store {
             .iter()
             .map(|s| s.as_str().to_string())
             .collect();
+        let mut tx = self.pool.begin().await?;
         let finished = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions
@@ -330,8 +347,12 @@ impl Store {
         .bind(usage)
         .bind(session_ref)
         .bind(&from)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        if finished.is_some() {
+            expire_pending_approvals(&mut tx, execution_id).await?;
+        }
+        tx.commit().await?;
         if let Some(record) = &finished {
             self.observe_finished(record, crate::observe::FinishCause::Reported);
         }
@@ -345,6 +366,7 @@ impl Store {
         org_id: Uuid,
         execution_id: Uuid,
     ) -> StoreResult<ExecutionRecord> {
+        let mut tx = self.pool.begin().await?;
         let cancelled = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions
@@ -355,10 +377,12 @@ impl Store {
         )
         .bind(org_id)
         .bind(execution_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some(record) = cancelled {
+            expire_pending_approvals(&mut tx, execution_id).await?;
+            tx.commit().await?;
             self.observe_finished(&record, crate::observe::FinishCause::CancelledWhileQueued);
             return Ok(record);
         }
@@ -374,22 +398,26 @@ impl Store {
         )
         .bind(org_id)
         .bind(execution_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
-        match flagged {
-            Some(record) => Ok(record),
-            None => {
-                let existing = self.get_execution(org_id, execution_id).await?;
-                if existing.status == "cancelled" {
-                    Ok(existing)
-                } else {
-                    Err(StoreError::Invalid(format!(
-                        "execution in status '{}' cannot be cancelled",
-                        existing.status
-                    )))
-                }
-            }
+        if let Some(record) = flagged {
+            // The run is not terminal yet, but a cancel means nobody may decide its
+            // approvals from here on; expire them with the cancel flag in one commit.
+            expire_pending_approvals(&mut tx, execution_id).await?;
+            tx.commit().await?;
+            return Ok(record);
+        }
+        tx.commit().await?;
+
+        let existing = self.get_execution(org_id, execution_id).await?;
+        if existing.status == "cancelled" {
+            Ok(existing)
+        } else {
+            Err(StoreError::Invalid(format!(
+                "execution in status '{}' cannot be cancelled",
+                existing.status
+            )))
         }
     }
 

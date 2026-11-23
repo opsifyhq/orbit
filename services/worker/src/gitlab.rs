@@ -468,6 +468,11 @@ pub async fn invoke(
             .and_then(Value::as_str)
             .or_else(|| body.get("error").and_then(Value::as_str))
             .unwrap_or("GitLab API error");
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return Err(format!(
+                "GitLab API returned 403 Forbidden: {message}. The token needs the 'api'                  scope and at least Reporter access to the project (Developer for notes on                  protected merge requests); a read_api token cannot write."
+            ));
+        }
         return Err(format!("GitLab API returned {status}: {message}"));
     }
 

@@ -595,8 +595,15 @@ async fn run_execution_inner(
             subagent_model_selectors.insert(subagent.agent_id, selector);
         }
     }
-    match crate::subagents::materialize(&execution.input, &workspace, &subagent_model_selectors)
-        .await
+    let subagent_autonomy =
+        AutonomyLevel::from_level(spec.autonomy.level).unwrap_or(AutonomyLevel::OBSERVE);
+    match crate::subagents::materialize(
+        &execution.input,
+        &workspace,
+        &subagent_model_selectors,
+        subagent_autonomy,
+    )
+    .await
     {
         Ok(names) if !names.is_empty() => {
             append_harness_event(

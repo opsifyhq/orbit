@@ -6,6 +6,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [0.28.2] - 2026-11-23
+
+### Fixed
+
+- The worker tool broker serves every connector binding (GitHub, GitLab, Kubernetes, X)
+  instead of only the first, so a GitLab capability is no longer a 403 when another
+  connector comes first (#307).
+- Native Agent Team subagents get explicit OpenCode permissions at L4, so they receive
+  shell/edit/write tools instead of stopping at the interactive default.
+- GitLab 403 responses now name the missing `api` scope or project role.
+
+## [0.28.1] - 2026-11-23
+
+### Fixed
+
+- OpenCode L4 agents now get explicit `allow` for `bash`, `edit`, `write`, `patch`,
+  `multiedit` and `apply_patch` instead of relying on OpenCode's non-interactive default
+  (ask), which aborted before the ORBIT policy hook could approve. Repository
+  `opencode.json` can no longer disable write tools that the platform authorised at L4.
+
 ## [0.28.0] - 2026-11-23
 
 ### Added

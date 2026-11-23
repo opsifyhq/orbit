@@ -120,6 +120,18 @@ pub struct TeamRunListQuery {
     pub team_id: Option<Uuid>,
     /// Newest first; 1 to 200, default 100.
     pub limit: Option<u32>,
+    /// Opaque cursor from the previous page.
+    pub cursor: Option<String>,
+    /// Case-insensitive substring of the task, team name or run status.
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRunPage {
+    pub items: Vec<orbit_store::TeamRun>,
+    pub next_cursor: Option<String>,
+    pub total: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, IntoParams)]

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::Json;
-use orbit_api::handlers::outputs::{send_telegram, TelegramEndpoint};
+use orbit_api::handlers::outputs::{
+    send_telegram, send_telegram_with_progress, TelegramEndpoint, TelegramProgress,
+};
 use orbit_contracts::{TelegramTarget, TELEGRAM_TEXT_LIMIT};
 use orbit_security::OutboundPolicy;
 use serde_json::{json, Value};
@@ -200,4 +202,51 @@ async fn telegram_long_text_is_split_below_the_api_limit() {
         );
     }
     assert_eq!(keys.len(), bodies.len(), "each part has a unique key");
+}
+
+#[tokio::test]
+async fn telegram_retry_resumes_after_parts_already_accepted() {
+    let (base_url, mock) = start_mock(200, None).await;
+    let target = TelegramTarget::parse("-1001234567890", None).unwrap();
+    let text = "a line of build output that must be delivered safely\n".repeat(400);
+    let delivery_id = Uuid::now_v7();
+
+    send_telegram(
+        &endpoint(base_url.clone()),
+        TOKEN,
+        &target,
+        &text,
+        Some(delivery_id),
+    )
+    .await
+    .expect("initial send succeeds");
+    let total = mock.count();
+    assert!(total > 2, "long text must be split into several parts");
+
+    // Simulate a retry after the first n-1 parts were accepted: only the last part must
+    // be posted again, with its original part index and idempotency key.
+    send_telegram_with_progress(
+        &endpoint(base_url),
+        TOKEN,
+        &target,
+        &text,
+        Some(delivery_id),
+        Some(TelegramProgress {
+            store: None,
+            delivery_id,
+            claim_token: Uuid::nil(),
+            parts_sent: (total - 1) as i32,
+        }),
+    )
+    .await
+    .expect("resume succeeds");
+
+    assert_eq!(mock.count(), total + 1);
+    let bodies = mock.bodies();
+    assert_eq!(bodies[total]["text"], bodies[total - 1]["text"]);
+    let headers = mock.requests.lock().unwrap()[total].2.clone();
+    assert_eq!(
+        headers.get("idempotency-key").unwrap().to_str().unwrap(),
+        format!("{delivery_id}-{}", total - 1)
+    );
 }

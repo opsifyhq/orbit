@@ -1561,6 +1561,189 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
 }
 
 #[tokio::test]
+async fn delivery_parts_resume_and_pruning_keep_live_rows() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Delivery Reliability Agent"))
+        .await
+        .unwrap();
+    let output = store
+        .create_output(
+            org,
+            "parts-resume",
+            "telegram",
+            Some(agent.id),
+            None,
+            &["succeeded".into()],
+            "secret://output/parts-resume",
+            None,
+            Some("-1001234567890"),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "parts", "payload": {}, "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() } }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 300,
+            requested_by: Some(user),
+            idempotency_key: Some("delivery-parts-1"),
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    store
+        .claim_execution(execution.id, "worker-parts")
+        .await
+        .unwrap();
+    store
+        .mark_execution_running(execution.id, None)
+        .await
+        .unwrap();
+    store
+        .finish_execution(
+            execution.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.enqueue_output_deliveries().await.unwrap(), 1);
+
+    // Claim only this output's row. The shared test database contains deliveries from
+    // parallel tests, so the global claim queue cannot identify this job reliably.
+    let delivery_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM output_deliveries WHERE output_id = $1")
+            .bind(output.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    let claim_token = uuid::Uuid::now_v7();
+    sqlx::query(
+        "UPDATE output_deliveries SET status = 'sending', attempts = 1, claim_token = $2,          lease_until = now() + interval '120 seconds' WHERE id = $1",
+    )
+    .bind(delivery_id)
+    .bind(claim_token)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let job = orbit_store::OutputDeliveryJob {
+        id: delivery_id,
+        org_id: org,
+        output_id: output.id,
+        execution_id: Some(execution.id),
+        team_run_id: None,
+        attempts: 1,
+        claim_token,
+        parts_sent: 0,
+    };
+    assert_eq!(job.parts_sent, 0);
+    assert!(store
+        .record_output_delivery_part(job.id, job.claim_token)
+        .await
+        .unwrap());
+    assert!(!store
+        .record_output_delivery_part(job.id, uuid::Uuid::now_v7())
+        .await
+        .unwrap());
+    assert!(store
+        .finish_output_delivery(
+            job.id,
+            job.claim_token,
+            orbit_store::outputs::DeliveryOutcome::Retry,
+            None,
+            Some("later part failed"),
+            job.attempts,
+        )
+        .await
+        .unwrap());
+
+    // The retry reads the counter back from the row.
+    let parts_sent: i32 =
+        sqlx::query_scalar("SELECT parts_sent FROM output_deliveries WHERE id = $1")
+            .bind(job.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(parts_sent, 1);
+    let resumed_token = uuid::Uuid::now_v7();
+    sqlx::query(
+        "UPDATE output_deliveries SET status = 'sending', attempts = 2, claim_token = $2,          lease_until = now() + interval '120 seconds' WHERE id = $1",
+    )
+    .bind(job.id)
+    .bind(resumed_token)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let resumed = orbit_store::OutputDeliveryJob {
+        id: job.id,
+        org_id: job.org_id,
+        output_id: job.output_id,
+        execution_id: job.execution_id,
+        team_run_id: job.team_run_id,
+        attempts: 2,
+        claim_token: resumed_token,
+        parts_sent,
+    };
+
+    // A pending row and a terminal one of the right age: only the latter is pruned.
+    let cutoff = chrono::Utc::now() + chrono::Duration::seconds(1);
+    store
+        .prune_output_deliveries_before(cutoff, 10)
+        .await
+        .unwrap();
+    let claimed_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM output_deliveries WHERE id = $1)")
+            .bind(job.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(claimed_exists, "a claimed sending row is never pruned");
+    assert!(store
+        .finish_output_delivery(
+            resumed.id,
+            resumed.claim_token,
+            orbit_store::outputs::DeliveryOutcome::Succeeded,
+            None,
+            None,
+            resumed.attempts,
+        )
+        .await
+        .unwrap());
+    // Pruning is installation-wide; the shared test database has other expired rows.
+    let pruned = store
+        .prune_output_deliveries_before(cutoff, 100_000)
+        .await
+        .unwrap();
+    assert!(pruned >= 1, "our terminal delivery must be pruned");
+    let pruned_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM output_deliveries WHERE id = $1)")
+            .bind(resumed.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(!pruned_exists, "a terminal delivery is pruned");
+}
+
+#[tokio::test]
 async fn env_mappings_and_outputs_round_trip() {
     let Some(store) = test_store().await else {
         return;
@@ -2454,6 +2637,125 @@ async fn expired_approvals_cannot_be_decided() {
         .await
         .unwrap();
     assert_eq!(decided.status, "approved");
+}
+
+#[tokio::test]
+async fn terminal_executions_expire_their_pending_approvals() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Approval Reliability Agent"))
+        .await
+        .unwrap();
+    let input = serde_json::json!({
+        "task": "gated",
+        "payload": {},
+        "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() }
+    });
+    let make_execution = |key: &'static str| NewExecution {
+        org_id: org,
+        agent_id: agent.id,
+        agent_version_id: version.id,
+        agent_name: &agent.name,
+        harness_kind: HarnessKind::Mock,
+        trigger_source: TriggerSource::Manual,
+        placement: "auto",
+        trigger_id: None,
+        input: input.clone(),
+        session_ref: None,
+        skills: &[],
+        timeout_seconds: 300,
+        requested_by: Some(user),
+        idempotency_key: Some(key),
+        team_run_id: None,
+        team_step_index: None,
+    };
+
+    // finish_execution expires approvals in the same transaction as the terminal state.
+    let running = store
+        .create_execution(make_execution("approvals-finished"))
+        .await
+        .unwrap();
+    store
+        .claim_execution(running.id, "worker-approvals")
+        .await
+        .unwrap();
+    store
+        .mark_execution_running(running.id, None)
+        .await
+        .unwrap();
+    let approval = store
+        .create_approval(
+            org,
+            running.id,
+            serde_json::json!({ "action": "x" }),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .finish_execution(
+            running.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
+    let error = store
+        .decide_approval(org, approval.id, "approved", user, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, orbit_store::StoreError::Conflict(_)),
+        "{error}"
+    );
+    assert!(store
+        .get_approval(org, approval.id)
+        .await
+        .unwrap()
+        .decided_by
+        .is_none());
+
+    // The user cancel path expires approvals too, even before the worker reports back.
+    let queued = store
+        .create_execution(make_execution("approvals-cancelled"))
+        .await
+        .unwrap();
+    let approval = store
+        .create_approval(
+            org,
+            queued.id,
+            serde_json::json!({ "action": "y" }),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .unwrap();
+    let cancelled = store
+        .request_execution_cancel(org, queued.id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
+    assert!(matches!(
+        store
+            .decide_approval(org, approval.id, "rejected", user, None)
+            .await
+            .unwrap_err(),
+        orbit_store::StoreError::Conflict(_)
+    ));
 }
 
 /// Pruning takes a database-wide advisory lock and gives up when another caller holds
@@ -3982,4 +4284,88 @@ async fn execution_transitions_are_reported_once_including_reaped_runs() {
         observer.for_execution(unstarted.id),
         ["created", "finished:failed:NeverStarted"]
     );
+}
+
+#[tokio::test]
+async fn installation_wide_execution_count_uses_created_at_index() {
+    let Some(store) = test_store().await else {
+        eprintln!("skipping: ORBIT_TEST_DATABASE_URL not set");
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("License Count Agent"))
+        .await
+        .unwrap();
+
+    let before = store
+        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+        .await
+        .unwrap();
+    store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "license count" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    let after = store
+        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+        .await
+        .unwrap();
+    assert!(
+        after > before,
+        "the installation-wide count must include the new execution: {before} -> {after}"
+    );
+
+    let pool = store.pool();
+    let index: Option<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() \
+         AND tablename = 'executions' AND indexname = 'executions_created_at_idx'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap();
+    assert!(
+        index.is_some(),
+        "migrations must create the executions(created_at) index"
+    );
+
+    // A tiny or shared test database may still favour a sequential scan. Disable it for
+    // this plan only to prove the index is usable by the exact license-count predicate.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let lines: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT COUNT(*) FROM executions WHERE created_at >= now() - interval '24 hours'",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let plan = lines.join("\n");
+    assert!(
+        plan.contains("executions_created_at_idx"),
+        "expected an index plan, got: {plan}"
+    );
+    assert!(
+        !plan.contains("Seq Scan"),
+        "unexpected sequential scan: {plan}"
+    );
+    tx.rollback().await.unwrap();
 }

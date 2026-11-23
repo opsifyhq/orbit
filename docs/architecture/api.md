@@ -121,7 +121,7 @@ validated with field-level `details` and recorded in the audit log.
 | `POST /api/v1/agent-teams/{id}/runs` | start a team run |
 | `GET/POST /api/v1/agent-teams/{id}/queue` | list / enqueue work items |
 | `POST /api/v1/agent-teams/{id}/queue/{item_id}/{run,retry,requeue,cancel}` | queue item actions |
-| `GET /api/v1/team-runs` | team runs (`archived`, `teamId`, `limit`) |
+| `GET /api/v1/team-runs` | paged team runs (`archived`, `teamId`, `q`, `limit`, `cursor`) |
 | `GET /api/v1/team-runs/{id}` | one team run with its steps |
 | `POST /api/v1/team-runs/{id}/cancel` | cancel a running team run and request cancellation of its executions |
 | **Build** | |

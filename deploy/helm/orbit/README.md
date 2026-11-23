@@ -38,7 +38,8 @@ Verify:
 ```bash
 kubectl -n orbit get pods,svc,ingress
 kubectl -n orbit logs deploy/orbit-api --tail=50
-curl http://orbit.example.com/api/v1/healthz
+curl http://orbit.example.com/healthz
+curl http://orbit.example.com/readyz
 ```
 
 Custom/external workers (your own cluster, laptop or Docker host) still need a token from
@@ -120,6 +121,7 @@ replicas are safe.
 | `platform.bodyLimitBytes` | `2097152` | |
 | `api.trustedProxies` | private ranges | Proxies whose `X-Forwarded-For` the anonymous rate limit believes; narrow to the pod CIDR when clients connect from private ranges |
 | `platform.archiveAfterDays` | `30` | archive terminal runs older than N days; `0` disables |
+| `platform.outputDeliveryRetentionDays` | `30` | prune terminal output deliveries older than N days; `0` keeps them |
 | `platform.auditRetentionDays` | `0` | delete audit log entries older than N days; `0` (default) keeps forever |
 
 ### Database and bus
@@ -239,8 +241,13 @@ Mount at `/etc/orbit-license.jwt`; the API hot-reloads it (~60s) and exposes the
 | `auth.oidc.requireVerifiedEmail` | `true` | link a first login to an invited user by email only when the token has `email_verified=true` |
 | `secrets.create` / `secrets.existingSecret` | `true` / `""` | bring your own Secret in production |
 | `secrets.masterKey` | dev key | base64 32-byte AES key; replace for real deployments |
-| `secrets.oidcClientSecret` | `""` | confidential clients only |
+| `secrets.oidcClientSecret` | `""` | confidential clients only when the chart creates the Secret |
 | `vault.enabled` / `.addr` / `.existingSecret` | `false` / `""` / `""` | optional Vault wiring |
+
+With `secrets.existingSecret`, the API reads the optional `oidc-client-secret` key from
+that Secret in OIDC mode (no inline `secrets.oidcClientSecret` needed). Fixed workers
+likewise read `worker-token`, `opencode-worker-token` or `pi-worker-token` from it when
+enabled; the chart only writes tokens into a Secret it creates itself.
 
 OIDC can also be configured at runtime under **Settings → OIDC / SSO**; stored values are
 applied on the next API start.

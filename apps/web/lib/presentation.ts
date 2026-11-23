@@ -2,8 +2,8 @@ import { AUTONOMY_LEVELS } from "@orbit/contracts";
 import { describeSchedule } from "@/lib/schedule";
 
 // Human-friendly labels for the technical primitives ORBIT exposes in the UI.
-// Kept in one place so capability ids, effects, cron expressions and event kinds
-// read like English everywhere instead of internal identifiers.
+// Kept in one place so capability ids, effects and cron expressions read like
+// English everywhere instead of internal identifiers.
 
 const CAPABILITY_LABELS: Record<string, string> = {
   "notes.list": "List notes",
@@ -136,23 +136,6 @@ export function humanizeIdentifier(value: string | null | undefined): string {
   }
   const sentence = merged.join(" ");
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
-}
-
-export function eventKindLabel(kind: string | null | undefined): string {
-  switch (kind) {
-    case "log":
-      return "Log";
-    case "status":
-      return "Status";
-    case "error":
-      return "Error";
-    case "output":
-      return "Output";
-    case "tool_call":
-      return "Tool action";
-    default:
-      return kind ? kind.replace(/_/g, " ") : "Event";
-  }
 }
 
 export function toolLabel(toolOrCapability: string | null | undefined): string {

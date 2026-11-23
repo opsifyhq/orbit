@@ -8,7 +8,11 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Disclosure } from "@/components/ui/disclosure";
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -33,6 +37,7 @@ import {
   emptyAgentDefinition,
 } from "@orbit/contracts";
 import { cn, titleCase } from "@/lib/utils";
+import { isOrbitManagedProvider } from "@/lib/provider-meta";
 import { connectorIssues, formatValidationPath } from "@/lib/connector-validation";
 import { brandName, cronDescription, effectLabel } from "@/lib/presentation";
 import { browserTimeZone } from "@/lib/schedule";
@@ -182,7 +187,7 @@ export function AgentForm({
   initial?: AgentDefinition;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (definition: AgentDefinition) => Promise<void> | void;
+  onSubmit: ResourceSubmit<AgentDefinition>;
   cancelHref?: string;
   /** The saved agent, so its access can be set; omitted while creating. */
   resourceId?: string;
@@ -199,7 +204,8 @@ export function AgentForm({
     initial ? structuredClone(initial) : emptyAgentDefinition(),
   );
   // A definition takes a while to write: do not let a stray click on the sidebar lose it.
-  useUnsavedChanges(definition);
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ definition, accessDirty });
   const [issues, setIssues] = useState<Array<{ path: string; message: string }>>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const meta = useMeta();
@@ -216,7 +222,7 @@ export function AgentForm({
   }, [failedSubmits]);
 
   const platformProviders = useMemo(
-    () => providers.data?.filter((p) => p.kind === "openai_compatible") ?? [],
+    () => providers.data?.filter((p) => isOrbitManagedProvider(p.kind)) ?? [],
     [providers.data],
   );
   const harnessProviders = useMemo(
@@ -390,8 +396,10 @@ export function AgentForm({
       return;
     }
     setIssues([]);
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition);
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition, commitAccess);
   }
 
   const editing = Boolean(initial);
@@ -701,8 +709,8 @@ export function AgentForm({
               htmlFor="agent-management"
               hint={
                 spec.model.management === "harness"
-                  ? "The harness owns the provider list and credentials, for example OpenCode Go."
-                  : "ORBIT resolves an OpenAI-compatible endpoint and injects the credential at run time."
+                  ? "The harness owns the provider list and credentials."
+                  : "ORBIT resolves the provider endpoint and injects the credential at run time."
               }
             >
               <Select
@@ -744,7 +752,6 @@ export function AgentForm({
                         const name = String(config.provider ?? p.name);
                         return name === event.target.value || p.name === event.target.value;
                       });
-                      const kind = selected?.kind;
                       const settings = (selected?.config as Record<string, unknown> | undefined)
                         ?.settings as Record<string, unknown> | undefined;
                       const catalog = Array.isArray(settings?.models)
@@ -761,12 +768,11 @@ export function AgentForm({
                           ...spec.model,
                           provider: event.target.value || undefined,
                           model: defaultModel || undefined,
-                          management:
-                            kind === "harness_managed"
-                              ? "harness"
-                              : kind === "openai_compatible"
-                                ? "platform"
-                                : spec.model.management,
+                          management: selected
+                            ? isOrbitManagedProvider(selected.kind)
+                              ? "platform"
+                              : "harness"
+                            : spec.model.management,
                         },
                       });
                     }}
@@ -856,9 +862,9 @@ export function AgentForm({
 
             {spec.model.management === "platform" && platformProviders.length === 0 ? (
               <Callout tone="warning" title="No ORBIT providers yet">
-                Add an OpenAI-compatible provider under Model providers.
+                Add an ORBIT-managed provider under Model providers.
                 {harnessProviders.length > 0
-                  ? " You can also switch to a model managed by the harness, such as OpenCode Go."
+                  ? " You can also switch to a model managed by the harness."
                   : ""}
               </Callout>
             ) : null}
@@ -1378,7 +1384,12 @@ export function AgentForm({
             title="Access control (RBAC)"
             description="Who can see and use this agent. Saved together with the agent."
           >
-            <ResourceAccessFields ref={accessRef} resource="agents" resourceId={resourceId} />
+            <ResourceAccessFields
+              ref={accessRef}
+              resource="agents"
+              resourceId={resourceId}
+              onDirtyChange={setAccessDirty}
+            />
           </FormSection>
         </div>
       </div>

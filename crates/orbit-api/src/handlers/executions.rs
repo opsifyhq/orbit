@@ -224,8 +224,6 @@ pub async fn execute_agent(
     crate::extract::ApiJson(body): crate::extract::ApiJson<CreateExecutionRequest>,
 ) -> Result<(StatusCode, Json<ExecutionRecord>), ApiError> {
     auth.require(Permission::ExecutionsCreate)?;
-    // Held until create_execution below: the check and insert cannot race with replicas.
-    let _execution_limit = state.execution_limit_guard().await?;
 
     let agent = state.store.get_agent(auth.org_id, agent_id).await?;
     if agent.status == "archived" {
@@ -381,8 +379,7 @@ pub async fn execute_agent(
     });
 
     let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: auth.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -664,8 +661,6 @@ pub async fn rerun_execution(
             "agent concurrency limit reached; retry after a running execution finishes",
         ));
     }
-    // Held until the rerun execution is inserted below.
-    let _execution_limit = state.execution_limit_guard().await?;
     let mut input = original.input.clone();
     // #194: an approval override only survives a rerun by someone who may decide approvals.
     if !auth.can(Permission::ApprovalsDecide) {
@@ -678,8 +673,7 @@ pub async fn rerun_execution(
     }
     let idempotency_key = format!("rerun:{}:{}", original.id, Uuid::now_v7());
     let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: auth.org_id,
             agent_id: original.agent_id,
             agent_version_id: original.agent_version_id,

@@ -1562,7 +1562,7 @@ checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
 name = "orbit-api"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-api-server"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-contracts"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-domain"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-events"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "async-nats",
  "async-stream",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-harness"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-kubernetes"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "base64 0.22.1",
  "orbit-security",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-launcher"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-license-cli"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-security"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-store"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-worker"
-version = "0.28.0"
+version = "0.28.2"
 dependencies = [
  "anyhow",
  "axum",

@@ -17,7 +17,7 @@ definitions, harnesses, model providers, connectors, triggers, executions and po
 ```
 apps/web/              Next.js + React + Tailwind web app (App Router)
 packages/api-client/   Generated OpenAPI document and TypeScript client (do not hand-edit openapi.json or schema.d.ts)
-packages/contracts/    Zod schemas shared by web and future mobile app
+packages/contracts/    Zod agent-definition schemas used by web (and a future mobile app)
 services/api/          orbit-api binary (control plane HTTP)
 services/worker/       orbit-worker binary (execution plane supervisor; also `orbit-worker mcp-broker`)
 services/launcher/     orbit-launcher binary (starts worker pods, Jobs and containers for the API)
@@ -48,7 +48,7 @@ ORBIT_TEST_DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit cargo test -
 
 # database (SQLx CLI)
 export DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit
-sqlx migrate add -r <name> --source crates/orbit-store/migrations
+sqlx migrate add <name> --source crates/orbit-store/migrations
 sqlx migrate run --source crates/orbit-store/migrations
 
 # frontend
@@ -109,7 +109,7 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 |---|---|---|
 | 0 | Foundation, contracts, DB, API, worker, docs, containers, Helm | Complete (deployed and smoke-tested on microk8s at http://orbit.mdk.local) |
 | 1 | Agent CRUD/Studio, OpenCode adapter verified, executions | OpenCode v2.3.0 + Pi v1.5.2 verified; platform-provider mapping done |
-| 2 | Connectors invocation, Telegram/GitLab, webhooks, approvals, Claude Code | GitHub, GitLab and Kubernetes run through the tool broker with approvals; GitHub writes need live verification; Telegram and generic webhook are manifest-only; inbound webhooks not started; Claude Code planned |
+| 2 | Connectors invocation, Telegram/GitLab, webhooks, approvals, Claude Code | GitHub, GitLab and Kubernetes run through the tool broker with approvals; GitHub writes need live verification; X `posts.search` hydrates run context and `posts.create` posts through the broker (#265); Telegram **output delivery** works (#268), but Telegram connector tools are not implemented; webhook outputs deliver, while the generic webhook connector is manifest-only; inbound webhooks not started; Claude Code planned |
 | 3 | Long-running agents, Pi, memory, scheduling hardening | Pi + skills + worker profiles + memory + scheduling hardening + K8s Jobs mode done |
 | 4 | Enterprise RBAC, shared connections, quotas, marketplace | Custom roles, access teams, sharing and offline licensing done; shared connections, quotas and marketplace not started |
 
@@ -136,11 +136,21 @@ helm template orbit deploy/helm/orbit -f deploy/helm/orbit/values.yaml
 
 ## Adding a connector (Phase 2+)
 
-1. Implement `Connector` (manifest + capability catalog with effects).
-2. Register it in the connector registry and seed the manifest.
-3. Store credentials only as encrypted `secret_ref` handles.
-4. Enforce capability allowlists and autonomy in the platform, not in the connector.
-5. Add mock/webhook tests; never commit real credentials.
+The `Connector` trait in `crates/orbit-contracts/src/connector.rs` is a target contract for
+third-party connectors; the built-in connectors are not trait objects.
+
+1. Add a `ConnectorManifest` (slug, auth, capabilities with effects, config schema) to
+   `builtin_manifests()` in `crates/orbit-api/src/connectors.rs`; bootstrap seeds it into
+   PostgreSQL.
+2. Extend `services/worker/src/broker.rs`: add the slug to the binding filter, a tool-spec
+   match arm and a `ConnectorClient` match arm, and implement the client in
+   `services/worker/src/<name>.rs` using the connection config and leased credential.
+3. Check URL-typed config fields in `validate_connection_urls` and, when a probe exists,
+   `probe_connection` (`crates/orbit-api/src/handlers/catalog.rs`); use
+   `orbit_security::guarded_client` for every HTTP call.
+4. Store credentials only as encrypted `secret_ref` handles.
+5. Enforce capability allowlists and autonomy in the platform (the broker), not in the client.
+6. Add mock/webhook tests in `crates/orbit-api/tests`; never commit real credentials.
 
 ## Testing expectations for a change
 

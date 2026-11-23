@@ -6,7 +6,11 @@ import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronLeft, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import {
   SectionCard,
@@ -212,7 +216,7 @@ export function TeamForm({
   team?: AgentTeam;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (input: TeamInput) => Promise<void> | void;
+  onSubmit: ResourceSubmit<TeamInput>;
   cancelHref: string;
 }) {
   const agents = useAllAgents();
@@ -223,7 +227,8 @@ export function TeamForm({
   const harnesses = useHarnesses();
 
   const [draft, setDraft] = useState<Draft>(() => draftFrom(team));
-  useUnsavedChanges(draft);
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ draft, accessDirty });
   const accessRef = useRef<ResourceAccessHandle>(null);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const patchWorkSource = (patch: Partial<WorkSource>) =>
@@ -294,9 +299,11 @@ export function TeamForm({
       toast.error(issues.length === 1 ? issues[0].message : "Fix the highlighted sections");
       return;
     }
-    // Access is stored separately from the team; flush its edits with the same Save.
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit(toInput(draft));
+    // Access is stored separately; the parent commits it after the team itself is saved.
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(toInput(draft), commitAccess);
   }
 
   // ------------------------------------------------------------------ summaries
@@ -975,7 +982,12 @@ export function TeamForm({
                 <p className="text-[13px] text-muted-foreground">Who can see, run and change this team. Saved together with the team.</p>
               </CardHeader>
               <CardContent className="space-y-5">
-                <ResourceAccessFields ref={accessRef} resource="agent_teams" resourceId={team.id} />
+                <ResourceAccessFields
+                  ref={accessRef}
+                  resource="agent_teams"
+                  resourceId={team.id}
+                  onDirtyChange={setAccessDirty}
+                />
                 <div className="flex items-center justify-between gap-3 border-t pt-4">
                   <Button type="button" variant="ghost" onClick={() => go("runtime")}>
                     <ChevronLeft /> {SECTION_TITLES.runtime}
