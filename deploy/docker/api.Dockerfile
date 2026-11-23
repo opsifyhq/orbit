@@ -12,6 +12,7 @@ COPY crates/orbit-events/Cargo.toml crates/orbit-events/Cargo.toml
 COPY crates/orbit-security/Cargo.toml crates/orbit-security/Cargo.toml
 COPY crates/orbit-harness/Cargo.toml crates/orbit-harness/Cargo.toml
 COPY crates/orbit-kubernetes/Cargo.toml crates/orbit-kubernetes/Cargo.toml
+COPY crates/orbit-s3/Cargo.toml crates/orbit-s3/Cargo.toml
 COPY crates/orbit-api/Cargo.toml crates/orbit-api/Cargo.toml
 COPY services/api/Cargo.toml services/api/Cargo.toml
 COPY services/worker/Cargo.toml services/worker/Cargo.toml
@@ -19,10 +20,10 @@ COPY services/launcher/Cargo.toml services/launcher/Cargo.toml
 COPY services/license-cli/Cargo.toml services/license-cli/Cargo.toml
 RUN mkdir -p crates/orbit-domain/src crates/orbit-contracts/src crates/orbit-store/src \
       crates/orbit-events/src crates/orbit-security/src crates/orbit-harness/src \
-      crates/orbit-kubernetes/src crates/orbit-api/src services/api/src services/worker/src services/launcher/src \
+      crates/orbit-kubernetes/src crates/orbit-s3/src crates/orbit-api/src services/api/src services/worker/src services/launcher/src \
       services/license-cli/src \
     && for d in crates/orbit-domain crates/orbit-contracts crates/orbit-store crates/orbit-events \
-              crates/orbit-security crates/orbit-harness crates/orbit-kubernetes crates/orbit-api; do echo "" > "$d/src/lib.rs"; done \
+              crates/orbit-security crates/orbit-harness crates/orbit-kubernetes crates/orbit-s3 crates/orbit-api; do echo "" > "$d/src/lib.rs"; done \
     && echo "fn main() {}" > services/api/src/main.rs \
     && echo "fn main() {}" > services/worker/src/main.rs \
     && echo "fn main() {}" > services/launcher/src/main.rs \
