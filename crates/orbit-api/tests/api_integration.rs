@@ -4277,6 +4277,201 @@ async fn concurrent_queue_start_creates_exactly_one_run() {
     assert!(stored.team_run_id.is_some());
 }
 
+/// The step execution of a team run, by run id.
+async fn run_execution(run: Uuid) -> (Uuid, String, bool) {
+    sqlx::query_as::<_, (Uuid, String, bool)>(
+        "SELECT id, status, cancel_requested FROM executions WHERE team_run_id = $1",
+    )
+    .bind(run)
+    .fetch_one(&raw_pool().await)
+    .await
+    .unwrap()
+}
+
+async fn start_queue_run(app: &TestApp, team: Uuid, key: &str) -> (Uuid, Uuid) {
+    let item = queue_item(app, team, key, 1).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/run"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap()
+        .team_run_id
+        .expect("run attached");
+    (item, run)
+}
+
+/// #299: cancelling a queue item must stop its step execution, not only the run row,
+/// and the item cannot start a second run while that execution is still stopping.
+#[tokio::test]
+async fn cancelling_a_queue_item_stops_its_execution() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+
+    // Claimed by a worker: the execution is asked to stop.
+    let (item, run) = start_queue_run(&app, team, "gh#299a").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/cancel"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, exec_status, cancel_requested) = run_execution(run).await;
+    assert_eq!(exec_status, "dispatched");
+    assert!(cancel_requested, "the worker must be told to stop");
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+
+    // While that execution is still stopping, the item cannot be requeued.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/requeue"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/retry"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    sqlx::query("UPDATE executions SET status = 'cancelled', finished_at = now() WHERE id = $1")
+        .bind(execution)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/requeue"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "pending");
+
+    // Not yet claimed: the execution is cancelled outright.
+    let (item, run) = start_queue_run(&app, team, "gh#299b").await;
+    let (status, _) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/cancel"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, exec_status, _) = run_execution(run).await;
+    assert_eq!(exec_status, "cancelled");
+}
+
+#[tokio::test]
+async fn team_runs_can_be_cancelled_directly() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let (item, run) = start_queue_run(&app, team, "gh#299c").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/team-runs/{run}/cancel"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["run"]["status"], "cancelled");
+    let (_, _, cancel_requested) = run_execution(run).await;
+    assert!(cancel_requested);
+    assert_eq!(
+        app.store
+            .get_team_queue_item(app.org_id, item)
+            .await
+            .unwrap()
+            .status,
+        "cancelled",
+        "the queue item of a cancelled run is cancelled too"
+    );
+
+    let (status, _) = send(
+        &app.router,
+        post(&format!("/api/v1/team-runs/{run}/cancel"), json!({})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a finished run cannot be cancelled again"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_team_stops_its_executions() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let (_, run) = start_queue_run(&app, team, "gh#299d").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/agent-teams/{team}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app.router, request).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let cancel_requested: bool =
+        sqlx::query_scalar("SELECT cancel_requested FROM executions WHERE id = $1")
+            .bind(execution)
+            .fetch_one(&raw_pool().await)
+            .await
+            .unwrap();
+    assert!(
+        cancel_requested,
+        "a detached execution must still be stopped"
+    );
+}
+
 #[tokio::test]
 async fn failed_launch_leaves_no_running_orphan() {
     let Some(app) = test_app(true).await else {

@@ -151,6 +151,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/team-runs", get(handlers::teams::list_runs))
         .route("/api/v1/team-runs/{run_id}", get(handlers::teams::get_run))
+        .route(
+            "/api/v1/team-runs/{run_id}/cancel",
+            post(handlers::teams::cancel_run),
+        )
         .route("/api/v1/harnesses", get(handlers::catalog::list_harnesses))
         .route("/api/v1/workers", get(handlers::catalog::list_workers))
         .route(

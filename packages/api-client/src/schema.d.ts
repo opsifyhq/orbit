@@ -1183,6 +1183,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/team-runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a team run: request cancellation of its live executions, mark the run
+         *     `cancelled` and cancel the queue item it was started for, if any.
+         */
+        post: operations["cancel_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/teams": {
         parameters: {
             query?: never;
@@ -5897,6 +5917,34 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TeamRunDetail"];
                 };
+            };
+        };
+    };
+    cancel_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamRunDetail"];
+                };
+            };
+            /** @description the run already ended */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

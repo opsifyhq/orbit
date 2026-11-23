@@ -781,8 +781,80 @@ pub async fn delete_team(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     require_team_manage(&state, &auth, team_id).await?;
+    // Deleting the team detaches its executions (`team_run_id` is ON DELETE SET NULL),
+    // so ask live ones to stop first; nothing would stop them afterwards (#299).
+    let cancelled = state
+        .store
+        .request_team_cancel(auth.org_id, team_id)
+        .await?;
+    announce_cancel(&state, auth.org_id, &cancelled).await;
     state.store.delete_agent_team(auth.org_id, team_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Tell workers about executions whose cancellation was just requested. Workers also
+/// poll the cancel flag, so a lost bus message only delays the stop.
+pub(crate) async fn announce_cancel(
+    state: &AppState,
+    org_id: Uuid,
+    executions: &[orbit_store::ExecutionRecord],
+) {
+    for execution in executions {
+        let event = orbit_contracts::OrbitEvent::new(
+            orbit_contracts::subjects::EXECUTION_CANCEL,
+            "orbit-api",
+            serde_json::json!({ "executionId": execution.id }),
+        )
+        .with_org(org_id);
+        if let Err(error) = state.bus.publish(event).await {
+            tracing::warn!(%error, execution_id = %execution.id, "cancel event publish failed; worker polls the cancel flag");
+        }
+    }
+}
+
+/// Stop a team run: request cancellation of its live executions, mark the run
+/// `cancelled` and cancel the queue item it was started for, if any.
+#[utoipa::path(post, path = "/api/v1/team-runs/{run_id}/cancel", tag = "agent-teams", responses((status = 200, body = TeamRunDetail), (status = 409, description = "the run already ended")))]
+pub async fn cancel_run(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run_id): Path<Uuid>,
+) -> Result<Json<TeamRunDetail>, ApiError> {
+    auth.require(Permission::ExecutionsCancel)?;
+    let run = state.store.get_team_run(auth.org_id, run_id).await?;
+    require_team_use(&state, &auth, run.team_id).await?;
+    if run.status != "running" {
+        return Err(ApiError::conflict("the team run already ended"));
+    }
+    let cancelled = state
+        .store
+        .request_team_run_cancel(auth.org_id, run_id)
+        .await?;
+    announce_cancel(&state, auth.org_id, &cancelled).await;
+    let run = state
+        .store
+        .finish_team_run(run_id, "cancelled", None, Some("cancelled by operator"))
+        .await?
+        .ok_or_else(|| ApiError::conflict("the team run already ended"))?;
+    if let Some(item) = state.store.get_team_queue_item_by_run(run_id).await? {
+        if item.status == "running" {
+            state
+                .store
+                .cancel_team_queue_item(auth.org_id, item.id, Some("team run cancelled"))
+                .await?;
+        }
+    }
+    crate::audit::record(
+        &state,
+        &auth,
+        "team_run.cancelled",
+        Some("team_run"),
+        Some(run_id),
+        serde_json::json!({ "executions": cancelled.iter().map(|e| e.id).collect::<Vec<_>>() }),
+    )
+    .await;
+    let steps = state.store.list_team_steps(run.id).await?;
+    Ok(Json(TeamRunDetail { run, steps }))
 }
 
 async fn native_subagents(

@@ -297,6 +297,99 @@ impl Store {
     }
 
     /// Move a `running` run to a terminal status. `None` when it was no longer running.
+    /// Request cancellation of every live execution of one team run. Queued executions
+    /// are cancelled outright (no worker has them); claimed ones get `cancel_requested`
+    /// and are stopped by their worker. Returns the executions that were changed.
+    pub async fn request_team_run_cancel(
+        &self,
+        org_id: Uuid,
+        run_id: Uuid,
+    ) -> StoreResult<Vec<crate::models::ExecutionRecord>> {
+        self.request_team_executions_cancel(org_id, Some(run_id), None)
+            .await
+    }
+
+    /// Like [`Self::request_team_run_cancel`] for every run of a team. Call it before the
+    /// team is deleted: deleting it detaches the executions (`team_run_id` is
+    /// `ON DELETE SET NULL`), and nothing would stop them afterwards.
+    pub async fn request_team_cancel(
+        &self,
+        org_id: Uuid,
+        team_id: Uuid,
+    ) -> StoreResult<Vec<crate::models::ExecutionRecord>> {
+        self.request_team_executions_cancel(org_id, None, Some(team_id))
+            .await
+    }
+
+    async fn request_team_executions_cancel(
+        &self,
+        org_id: Uuid,
+        run_id: Option<Uuid>,
+        team_id: Option<Uuid>,
+    ) -> StoreResult<Vec<crate::models::ExecutionRecord>> {
+        let mut tx = self.pool.begin().await?;
+        let mut changed = sqlx::query_as::<_, crate::models::ExecutionRecord>(
+            r#"
+            UPDATE executions
+            SET status = 'cancelled', finished_at = now(), cancel_requested = true, updated_at = now()
+            WHERE org_id = $1
+              AND status = 'queued'
+              AND team_run_id IN (
+                  SELECT r.id FROM team_runs r
+                  WHERE r.org_id = $1
+                    AND ($2::uuid IS NULL OR r.id = $2)
+                    AND ($3::uuid IS NULL OR r.team_id = $3)
+              )
+            RETURNING *
+            "#,
+        )
+        .bind(org_id)
+        .bind(run_id)
+        .bind(team_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let flagged = sqlx::query_as::<_, crate::models::ExecutionRecord>(
+            r#"
+            UPDATE executions
+            SET cancel_requested = true, updated_at = now()
+            WHERE org_id = $1
+              AND status IN ('dispatched', 'running', 'awaiting_approval')
+              AND NOT cancel_requested
+              AND team_run_id IN (
+                  SELECT r.id FROM team_runs r
+                  WHERE r.org_id = $1
+                    AND ($2::uuid IS NULL OR r.id = $2)
+                    AND ($3::uuid IS NULL OR r.team_id = $3)
+              )
+            RETURNING *
+            "#,
+        )
+        .bind(org_id)
+        .bind(run_id)
+        .bind(team_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        changed.extend(flagged);
+        Ok(changed)
+    }
+
+    /// True while any execution of the run is not terminal.
+    pub async fn team_run_has_live_executions(&self, run_id: Uuid) -> StoreResult<bool> {
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM executions
+                WHERE team_run_id = $1
+                  AND status IN ('queued', 'dispatched', 'running', 'awaiting_approval')
+            )
+            "#,
+        )
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn finish_team_run(
         &self,
         run_id: Uuid,

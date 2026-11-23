@@ -179,8 +179,8 @@ respect `maxAttempts`. Operators can retry, requeue or cancel an item from the U
 | Action | Allowed from | Effect |
 |---|---|---|
 | `retry` | `failed`, `cancelled`, and only while `attempts < maxAttempts` | back to `pending`, consumes an attempt |
-| `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items |
-| `cancel` | `pending`, `running`, `failed` | `cancelled`, detaches the run link |
+| `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items, and refused (409) while the previous run's execution is still stopping |
+| `cancel` | `pending`, `running`, `failed` | `cancelled`; the item's run is cancelled and its live execution is asked to stop (a queued one is cancelled outright) |
 
 Item status is limited to `pending`, `running`, `succeeded`, `failed` and `cancelled`
 (a CHECK constraint since migration 0041).

@@ -120,6 +120,7 @@ validated with field-level `details` and recorded in the audit log.
 | `POST /api/v1/agent-teams/{id}/queue/{item_id}/{run,retry,requeue,cancel}` | queue item actions |
 | `GET /api/v1/team-runs` | team runs (`archived`, `teamId`, `limit`) |
 | `GET /api/v1/team-runs/{id}` | one team run with its steps |
+| `POST /api/v1/team-runs/{id}/cancel` | cancel a running team run and request cancellation of its executions |
 | **Build** | |
 | `GET/POST /api/v1/skills`, `GET/PATCH/DELETE /api/v1/skills/{id}` | skills |
 | `POST /api/v1/skills/bulk/delete` | bulk permanent delete (1–500 deduped ids, `dryRun`, per-id failures); skills have no archive state (ADR 0013) |

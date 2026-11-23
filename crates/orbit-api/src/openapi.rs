@@ -101,6 +101,7 @@ use crate::handlers;
         handlers::teams::create_run,
         handlers::teams::list_runs,
         handlers::teams::get_run,
+        handlers::teams::cancel_run,
         handlers::team_queue::list,
         handlers::team_queue::enqueue,
         handlers::team_queue::run_item,
