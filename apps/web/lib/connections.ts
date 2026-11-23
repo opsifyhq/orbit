@@ -51,6 +51,7 @@ export const EFFECT_GROUPS: Array<{ tone: "safe" | "write" | "external"; title: 
 ];
 
 export function defaultConfig(slug: string): Record<string, unknown> {
+  if (slug === "github") return { baseUrl: "https://api.github.com" };
   if (slug === "gitlab") return { baseUrl: "https://gitlab.com/api/v4", cloneBaseUrl: "https://gitlab.com" };
   if (slug === "webhook") return { url: "" };
   return {};
