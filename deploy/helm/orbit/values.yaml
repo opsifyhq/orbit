@@ -314,8 +314,9 @@ auth:
     syncRoles: false
     # Link a first login to an existing (invited) user by email only when the token has
     # email_verified=true; a missing claim then also blocks linking. email_verified=false
-    # always blocks linking.
-    requireVerifiedEmail: false
+    # always blocks linking. Default true; set false only for an IdP that omits the claim
+    # and does not let users choose their email.
+    requireVerifiedEmail: true
 
 # ─── Secrets ─────────────────────────────────────────────────
 # For production set secrets.create=false and secrets.existingSecret to a Secret you

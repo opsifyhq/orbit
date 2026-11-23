@@ -1008,6 +1008,12 @@ pub async fn audit(
     crate::extract::ApiJson(body): crate::extract::ApiJson<AuditRequest>,
 ) -> Result<StatusCode, ApiError> {
     ensure_execution(&state, &auth, body.execution_id).await?;
+    if !orbit_contracts::WORKER_AUDIT_ACTIONS.contains(&body.action.as_str()) {
+        return Err(ApiError::validation(vec![orbit_domain::ValidationIssue {
+            path: "action".into(),
+            message: format!("unknown worker audit action '{}'", body.action),
+        }]));
+    }
     state
         .store
         .append_audit_log(

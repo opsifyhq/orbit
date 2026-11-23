@@ -5,13 +5,15 @@ use axum::Extension;
 use axum::Json;
 use serde::Serialize;
 
+use orbit_domain::UserRole;
 use orbit_security::{AuthContext, LicenseStatus, Permission, RESERVED_FEATURES};
 
 use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Counts are installation-wide (all organizations) because licenses are installed once
-/// per ORBIT installation, not per organization.
+/// per ORBIT installation, not per organization. They are returned to Owners and Admins
+/// only (#325).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseUsage {
@@ -25,7 +27,9 @@ pub struct LicenseUsage {
 #[serde(rename_all = "camelCase")]
 pub struct LicenseOverview {
     pub license: LicenseStatus,
-    pub usage: LicenseUsage,
+    /// Installation-wide usage; omitted for roles other than Owner and Admin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LicenseUsage>,
     pub warnings: Vec<String>,
 }
 
@@ -35,6 +39,27 @@ pub async fn overview(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<LicenseOverview>, ApiError> {
     auth.require(Permission::SettingsRead)?;
+    let license = state.license_status();
+    let mut warnings = Vec::new();
+    if license.valid
+        && license
+            .features
+            .iter()
+            .any(|feature| RESERVED_FEATURES.contains(&feature.as_str()))
+    {
+        warnings.push(
+            "license contains flags for features that are not available in this release".into(),
+        );
+    }
+    // Usage spans every organization of the installation: only Owners and Admins see
+    // it, and the near-limit warnings that quote it.
+    if !matches!(auth.role, UserRole::Owner | UserRole::Admin) {
+        return Ok(Json(LicenseOverview {
+            license,
+            usage: None,
+            warnings,
+        }));
+    }
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let usage = LicenseUsage {
         seats: state.store.count_active_users_installation().await?,
@@ -48,18 +73,6 @@ pub async fn overview(
             .count_all_executions_since_installation(since)
             .await?,
     };
-    let license = state.license_status();
-    let mut warnings = Vec::new();
-    if license.valid
-        && license
-            .features
-            .iter()
-            .any(|feature| RESERVED_FEATURES.contains(&feature.as_str()))
-    {
-        warnings.push(
-            "license contains flags for features that are not available in this release".into(),
-        );
-    }
     for (key, current) in [
         ("seats", usage.seats),
         ("agents", usage.agents),
@@ -74,7 +87,7 @@ pub async fn overview(
     }
     Ok(Json(LicenseOverview {
         license,
-        usage,
+        usage: Some(usage),
         warnings,
     }))
 }

@@ -111,6 +111,10 @@ is rejected with `402 license_required`.
 - **Settings → Platform → License**: tier, customer, expiry, days/grace left, features,
   usage and warnings ([settings](settings.md)).
 - `GET /api/v1/license` for scripts.
+
+Usage counts span every organization of the installation, so only Owners and Admins see
+them. Other roles with `settings:read` get the licence status without the `usage` block
+and without the near-limit warnings that quote the counts.
 - `GET /api/v1/meta` also includes a compact license block.
 
 ## If something is wrong

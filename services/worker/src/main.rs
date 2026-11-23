@@ -91,13 +91,16 @@ impl WorkerConfig {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
     // Subcommand dispatch: `orbit-worker mcp-broker` runs the MCP stdio bridge
-    // so a single binary can be shipped in custom worker images.
+    // so a single binary can be shipped in custom worker images. It runs before
+    // `.env` is loaded: the bridge's working directory is the agent workspace, and a
+    // repository's `.env` must not set the proxy, CA or broker URL for a client that
+    // carries the broker token (#325).
     if std::env::args().nth(1).as_deref() == Some("mcp-broker") {
         return mcp_broker::run().await;
     }
+
+    dotenvy::dotenv().ok();
 
     orbit_api::telemetry::init("orbit-worker");
 

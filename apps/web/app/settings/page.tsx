@@ -1144,6 +1144,7 @@ function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicen
             ]}
           />
         </Card>
+        {usage ? (
         <Card className="p-4">
           <h3 className="mb-3 text-[13px] font-medium text-muted-foreground">Usage</h3>
           <DescriptionList
@@ -1162,6 +1163,7 @@ function LicenseDetails({ data }: { data: NonNullable<ReturnType<typeof useLicen
             })}
           />
         </Card>
+        ) : null}
       </div>
       <div className="space-y-1.5">
         <h3 className="text-[13px] font-medium text-muted-foreground">Licensed features</h3>

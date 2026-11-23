@@ -1165,3 +1165,105 @@ async fn re_importing_a_bundle_upserts_every_kind_and_create_mode_conflicts() {
     let agents = call(&env, get(&target, "/api/v1/agents")).await.json();
     assert_eq!(agents["total"], 1);
 }
+
+#[tokio::test]
+async fn export_does_not_name_resources_the_caller_cannot_view() {
+    let Some(env) = env().await else { return };
+    let owner = owner_org(&env, "names-owner").await;
+    let seeded = seed(&env, &owner, "names").await;
+    let id_of = |resource: &str| {
+        seeded
+            .ids
+            .iter()
+            .find(|(kind, _)| *kind == resource)
+            .map(|(_, id)| id.clone())
+            .unwrap()
+    };
+    let (agent, connection, profile, team, trigger) = (
+        id_of("agents"),
+        id_of("connections"),
+        id_of("worker_profiles"),
+        id_of("agent_teams"),
+        id_of("triggers"),
+    );
+    // The team and trigger are shared; the agent, connection and profile they
+    // reference stay private to the owner.
+    for (resource, id, visibility) in [
+        ("agents", &agent, "private"),
+        ("connections", &connection, "private"),
+        ("worker_profiles", &profile, "private"),
+        ("agent_teams", &team, "org"),
+        ("triggers", &trigger, "org"),
+    ] {
+        env.store
+            .set_resource_visibility(owner.id, resource, id.parse().unwrap(), visibility, None)
+            .await
+            .unwrap();
+    }
+    let operator_user = env
+        .store
+        .ensure_user(
+            owner.id,
+            "names-operator@test.local",
+            "Operator",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let issued = orbit_security::issue_api_token();
+    env.store
+        .create_api_token(
+            owner.id,
+            operator_user.id,
+            "operator",
+            &issued.prefix,
+            &issued.hash,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let operator = Org {
+        id: owner.id,
+        user_id: operator_user.id,
+        token: issued.token,
+    };
+
+    let team_yaml = export_yaml(&env, &operator, "agent_teams", &team).await;
+    for hidden in ["Docs agent names", "gh-names", "profile-names"] {
+        assert!(!team_yaml.contains(hidden), "{hidden} leaked:\n{team_yaml}");
+    }
+    for id in [&agent, &connection, &profile] {
+        assert!(
+            team_yaml.contains(id.as_str()),
+            "{id} missing:\n{team_yaml}"
+        );
+    }
+    let trigger_yaml = export_yaml(&env, &operator, "triggers", &trigger).await;
+    assert!(!trigger_yaml.contains("Docs agent names"), "{trigger_yaml}");
+    assert!(trigger_yaml.contains(agent.as_str()), "{trigger_yaml}");
+
+    // The owner still gets names.
+    let owner_yaml = export_yaml(&env, &owner, "agent_teams", &team).await;
+    for name in ["Docs agent names", "github/gh-names", "profile-names"] {
+        assert!(owner_yaml.contains(name), "{name} missing:\n{owner_yaml}");
+    }
+
+    // An id-only reference imports as an unresolved reference, not an error.
+    let elsewhere = owner_org(&env, "names-elsewhere").await;
+    let dry = call(
+        &env,
+        import_request(&elsewhere, "?dryRun=true", &team_yaml, "team.yaml"),
+    )
+    .await;
+    assert_eq!(dry.status, StatusCode::OK, "{}", dry.text);
+    let report = dry.json();
+    assert_eq!(report["valid"], false, "{report}");
+    let references: Vec<String> = report["items"][0]["unresolvedReferences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["reference"].as_str().unwrap().to_string())
+        .collect();
+    assert!(references.contains(&agent), "{report}");
+}

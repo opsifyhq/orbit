@@ -55,7 +55,9 @@ pub struct OidcSettings {
     #[serde(default)]
     pub sync_roles: bool,
     /// Link an incoming identity to an existing user by email only when the token says
-    /// `email_verified: true` (a missing claim also blocks linking). Default false.
+    /// `email_verified: true` (a missing claim also blocks linking). This setting can
+    /// only turn the requirement on: it is already on unless
+    /// `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL=false` turned it off (the default is on).
     #[serde(default)]
     pub require_verified_email: bool,
 }
@@ -118,7 +120,7 @@ pub async fn get_oidc(
         auto_create_teams: false,
         require_mapped_group: false,
         sync_roles: false,
-        require_verified_email: false,
+        require_verified_email: orbit_security::DEFAULT_REQUIRE_VERIFIED_EMAIL,
     });
     Ok(Json(settings))
 }
@@ -319,7 +321,7 @@ fn require_full_authority(auth: &AuthContext, what: &str) -> Result<(), ApiError
 /// field left empty in the UI.
 pub async fn apply_stored_oidc(
     store: &orbit_store::Store,
-    mut auth: orbit_security::AuthConfig,
+    auth: orbit_security::AuthConfig,
 ) -> orbit_security::AuthConfig {
     if !matches!(auth.mode, orbit_security::AuthMode::Oidc) {
         return auth;
@@ -330,6 +332,13 @@ pub async fn apply_stored_oidc(
     let Ok(stored) = serde_json::from_value::<OidcSettings>(value) else {
         return auth;
     };
+    merge_stored_oidc(auth, stored)
+}
+
+fn merge_stored_oidc(
+    mut auth: orbit_security::AuthConfig,
+    stored: OidcSettings,
+) -> orbit_security::AuthConfig {
     if stored.issuer.trim().is_empty() {
         return auth;
     }
@@ -350,7 +359,7 @@ pub async fn apply_stored_oidc(
         auto_create_teams: false,
         require_mapped_group: false,
         sync_roles: false,
-        require_verified_email: false,
+        require_verified_email: orbit_security::DEFAULT_REQUIRE_VERIFIED_EMAIL,
         clock_skew_seconds: 60,
     });
     oidc.issuer = stored.issuer.trim().to_string();
@@ -434,6 +443,8 @@ pub async fn apply_stored_oidc(
     if stored.sync_roles {
         oidc.sync_roles = true;
     }
+    // Tighten only: a stored `false` means "not required by the Settings page" and
+    // never lifts the environment requirement, which defaults to on (#325).
     if stored.require_verified_email {
         oidc.require_verified_email = true;
     }
@@ -636,6 +647,82 @@ pub async fn update_approvals(
     )
     .await;
     Ok(Json(body))
+}
+
+#[cfg(test)]
+mod verified_email_tests {
+    use super::*;
+    use orbit_security::{AuthConfig, AuthMode, DevAuthConfig, OidcConfig};
+
+    fn stored(require_verified_email: Option<bool>) -> OidcSettings {
+        let mut value = serde_json::json!({ "issuer": "https://idp.example" });
+        if let Some(flag) = require_verified_email {
+            value["requireVerifiedEmail"] = flag.into();
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn auth(env_requires: Option<bool>) -> AuthConfig {
+        AuthConfig {
+            mode: AuthMode::Oidc,
+            dev: DevAuthConfig {
+                email: String::new(),
+                display_name: String::new(),
+                org_slug: String::new(),
+                org_name: String::new(),
+                role: orbit_domain::UserRole::Viewer,
+                allow_anonymous: false,
+                dev_token: String::new(),
+            },
+            oidc: env_requires.map(|require_verified_email| OidcConfig {
+                issuer: "https://idp.example".into(),
+                audience: "orbit".into(),
+                jwks_url: "https://idp.example/jwks".into(),
+                client_id: "orbit".into(),
+                client_secret: None,
+                redirect_uri: "http://localhost/auth/callback".into(),
+                scopes: vec!["openid".into()],
+                auto_provision: true,
+                default_role: orbit_domain::UserRole::Viewer,
+                role_claim: "groups".into(),
+                email_claim: "email".into(),
+                group_roles: Vec::new(),
+                team_groups: Vec::new(),
+                auto_create_teams: false,
+                require_mapped_group: false,
+                sync_roles: false,
+                require_verified_email,
+                clock_skew_seconds: 60,
+            }),
+            allow_api_tokens: true,
+        }
+    }
+
+    fn effective(env_requires: Option<bool>, stored_flag: Option<bool>) -> bool {
+        merge_stored_oidc(auth(env_requires), stored(stored_flag))
+            .oidc
+            .unwrap()
+            .require_verified_email
+    }
+
+    #[test]
+    fn verified_email_is_required_by_default() {
+        const { assert!(orbit_security::DEFAULT_REQUIRE_VERIFIED_EMAIL) };
+        // Configured only from the Settings page: the built-in default applies.
+        assert!(effective(None, None));
+        assert!(effective(None, Some(false)));
+    }
+
+    #[test]
+    fn stored_settings_only_tighten_the_requirement() {
+        // A stored `false` (including settings saved before this default) never lifts
+        // the environment requirement.
+        assert!(effective(Some(true), Some(false)));
+        assert!(effective(Some(true), None));
+        // Only the environment can turn it off; the Settings page can turn it on.
+        assert!(!effective(Some(false), Some(false)));
+        assert!(effective(Some(false), Some(true)));
+    }
 }
 
 #[cfg(test)]

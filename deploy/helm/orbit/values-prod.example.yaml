@@ -139,7 +139,7 @@ auth:
     autoCreateTeams: false
     requireMappedGroup: false
     syncRoles: false
-    requireVerifiedEmail: false
+    requireVerifiedEmail: true
 
 # Manage secrets externally (Vault, External Secrets, sealed-secrets, …).
 # Required keys: database-url, master-key, launcher-token when the launcher is enabled,

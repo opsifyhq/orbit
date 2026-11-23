@@ -24,7 +24,7 @@ provider-specific code is required beyond the issuer URL and client registration
 | Team mappings | `ORBIT_OIDC_TEAM_GROUPS` | see [oidc-team-sync.md](oidc-team-sync.md) |
 | Auto-create teams | `ORBIT_OIDC_AUTO_CREATE_TEAMS` | `false` |
 | Require a mapped group | `ORBIT_OIDC_REQUIRE_MAPPED_GROUP` | `false` |
-| Require verified email | `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL` | `false` |
+| Require verified email | `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL` | `true` (see [Linking by email](#linking-by-email)) |
 | Clock skew | `ORBIT_OIDC_CLOCK_SKEW_SECONDS` | `60`; seconds of tolerance when checking token times |
 
 `ORBIT_OIDC_ISSUER`, `ORBIT_OIDC_AUDIENCE` and `ORBIT_OIDC_JWKS_URL` are required in oidc
@@ -144,13 +144,25 @@ users:
   ("this email is already linked to another sign-in identity") and nothing changes. An
   admin must resolve it, e.g. by removing the old user.
 - `email_verified: false` in the token: the identity is never linked by email (`403`).
-- `email_verified` absent: linking proceeds, because many IdPs omit the claim. Set
-  `requireVerifiedEmail: true` (`ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL=true`, also under
-  Settings → OIDC / SSO) to require `email_verified: true` for linking; a missing claim then
-  also blocks it.
+- `email_verified` absent: the identity is not linked by email either (`403`), because
+  `requireVerifiedEmail` is on by default.
 
-If your IdP can issue the same email to several accounts, or the email claim is user
-editable, enable `requireVerifiedEmail` and keep the claim on a verified attribute.
+### Linking by email
+
+`requireVerifiedEmail` (`ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL`, Helm
+`auth.oidc.requireVerifiedEmail`) defaults to `true`: a first login is linked to an
+existing user only when the token carries `email_verified: true`. Without it, an IdP that
+omits the claim and lets users choose their email would let anyone sign in as an invited
+user.
+
+> **Upgrade note.** Before this default changed, a missing `email_verified` claim allowed
+> linking. If your IdP never sends the claim, invited users now get `403` on their first
+> login. Either make the IdP send `email_verified` (preferred), or set
+> `ORBIT_OIDC_REQUIRE_VERIFIED_EMAIL=false` (Helm `auth.oidc.requireVerifiedEmail: false`)
+> if the IdP does not let users choose their email. The switch under **Settings → OIDC /
+> SSO** can only turn the requirement on; it cannot turn off what the environment sets.
+> Users that are already linked are not affected, and new users are still
+> auto-provisioned.
 
 ## Configure from the UI
 
@@ -205,7 +217,7 @@ auth:
     groupRoles:
       orbit-admins: admin
     syncRoles: false
-    requireVerifiedEmail: false
+    requireVerifiedEmail: true
     # teamGroups, autoCreateTeams and requireMappedGroup: see oidc-team-sync.md
 secrets:
   oidcClientSecret: ""
