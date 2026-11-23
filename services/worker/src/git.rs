@@ -9,7 +9,7 @@ use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
-use tempfile::NamedTempFile;
+use tempfile::TempPath;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -285,7 +285,7 @@ fn repository_url(connection: &WorkerConnection, repo: &str) -> String {
     format!("{clone_base}/{repo}.git")
 }
 
-fn write_askpass() -> anyhow::Result<NamedTempFile> {
+fn write_askpass() -> anyhow::Result<TempPath> {
     let mut file = tempfile::Builder::new()
         .prefix(".orbit-git-askpass-")
         .suffix(".sh")
@@ -298,7 +298,11 @@ fn write_askpass() -> anyhow::Result<NamedTempFile> {
         permissions.set_mode(0o700);
         file.as_file().set_permissions(permissions)?;
     }
-    Ok(file)
+    // Close the write handle before git execs the script. Linux returns ETXTBSY
+    // ("text file busy") when execve() targets a file that is still open for writing.
+    // TempPath keeps the path alive (and deletes it on drop) without an open handle.
+    file.flush()?;
+    Ok(file.into_temp_path())
 }
 
 async fn stage_workspace_changes(
@@ -572,7 +576,7 @@ async fn checkout_repository(
         command.env("ORBIT_GIT_TOKEN", token);
     }
     if let Some(askpass) = &askpass {
-        apply_git_auth(&mut command, askpass.path(), &username);
+        apply_git_auth(&mut command, askpass.as_ref(), &username);
     }
     let output = run_git(command, cancel, GIT_CLONE_TIMEOUT, "clone").await?;
     if !output.status.success() {
@@ -676,7 +680,7 @@ pub async fn push(
     let askpass = write_askpass()?;
     let mut command = push_command(workspace, &repository_url(&connection, &repo), branch);
     command.env("ORBIT_GIT_TOKEN", &token);
-    apply_git_auth(&mut command, askpass.path(), &username);
+    apply_git_auth(&mut command, askpass.as_ref(), &username);
     let output = run_git(command, cancel, GIT_PUSH_TIMEOUT, "push").await?;
     if !output.status.success() {
         anyhow::bail!(
@@ -1183,10 +1187,28 @@ mod tests {
 mod cleanup_tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn askpass_can_be_executed_while_the_guard_is_held() {
+        let askpass = write_askpass().unwrap();
+        let askpass_path: &std::path::Path = askpass.as_ref();
+        let output = std::process::Command::new(askpass_path)
+            .arg("Password for 'https://git.example.com':")
+            .env("ORBIT_GIT_TOKEN", "test-token")
+            .output()
+            .expect("askpass executes");
+        assert!(
+            output.status.success(),
+            "askpass failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "test-token");
+    }
+
     #[test]
     fn askpass_file_is_removed_when_guard_drops() {
         let askpass = write_askpass().unwrap();
-        let path = askpass.path().to_path_buf();
+        let path = askpass.to_path_buf();
         assert!(path.is_file());
         drop(askpass);
         assert!(!path.exists());
