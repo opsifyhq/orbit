@@ -25,6 +25,14 @@ export const KIND_LABEL: Record<ProviderKind, string> = {
 
 export const kindLabel = (kind: string) => KIND_LABEL[kind as ProviderKind] ?? kind;
 
+/**
+ * A provider ORBIT talks to itself. Every kind except `harness_managed` qualifies,
+ * including endpoints and Anthropic providers; do not narrow this to OpenAI-compatible.
+ */
+export function isOrbitManagedProvider(kind: string): boolean {
+  return kind !== "harness_managed";
+}
+
 export const HARNESS_LABEL: Record<string, string> = {
   opencode: "OpenCode",
   claude_code: "Claude Code",

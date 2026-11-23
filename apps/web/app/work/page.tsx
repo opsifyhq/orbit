@@ -48,7 +48,6 @@ import { errorMessage } from "@orbit/api-client";
 import { cn, titleCase } from "@/lib/utils";
 import { brandName, autonomyName } from "@/lib/presentation";
 import { browserTimeZone, cronError, describeSchedule } from "@/lib/schedule";
-import { defaultWorkerImage } from "@/lib/worker-images";
 
 type WhoType = "agent" | "team";
 type When = "manual" | "schedule";
@@ -257,8 +256,10 @@ export default function WorkPage() {
                   harnessKind: effectiveHarness,
                   target,
                   executionDriver: "process",
-                  image: defaultWorkerImage(effectiveHarness),
-                  imageTag: "latest",
+                  // Empty image/tag: the API applies ORBIT_IMAGE_PREFIX/TAG, and an empty
+                  // tag makes the worker follow the installed platform version.
+                  image: "",
+                  imageTag: "",
                   agentIds: [who],
                   skillSlugs: [],
                   env: {},
