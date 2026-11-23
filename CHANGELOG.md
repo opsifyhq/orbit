@@ -6,6 +6,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [0.28.3] - 2026-11-23
+
+### Changed
+
+- Removed dead Rust APIs, unused dependencies and the `ORBIT_SCHEDULER_ENABLED` toggle;
+  the standalone `services/mcp-broker` crate is now the `orbit-worker mcp-broker`
+  subcommand (#315).
+
+### Fixed
+
+- Pending approvals expire with the execution, Telegram retries resume after the last
+  accepted part, schedule triggers shut down cleanly and terminal output deliveries are
+  pruned with bounded batches (#311, migration `0058`).
+
 ## [0.28.2] - 2026-11-23
 
 ### Fixed
