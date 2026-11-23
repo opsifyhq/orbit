@@ -47,10 +47,11 @@ export default function EditEnvironmentPage() {
   }
   const data = mapping.data;
 
-  async function handleSubmit(input: EnvironmentInput) {
+  async function handleSubmit(input: EnvironmentInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       await updateEnvMapping(id, input);
+      await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["env-mappings"] }),
         queryClient.invalidateQueries({ queryKey: ["worker-profile-env-mappings"] }),

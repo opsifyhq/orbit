@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Play } from "lucide-react";
 
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
-import { useAgentTeams, useTeamRuns } from "@/lib/queries";
+import { useAgentTeams, usePagedTeamRuns } from "@/lib/queries";
 import { formatDuration, relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
 
@@ -31,20 +31,22 @@ type Filter = "active" | "archived" | "all";
 export default function TeamRunsPage() {
   const [filter, setFilter] = useState<Filter>("active");
   const [search, setSearch] = useState("");
-  const runs = useTeamRuns({ archived: filter === "all" ? undefined : filter === "archived", limit: 200 });
+  // The server does the filtering; avoid a request for every keystroke.
+  const [searchQuery, setSearchQuery] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(search.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const runs = usePagedTeamRuns({
+    archived: filter === "all" ? undefined : filter === "archived",
+    q: searchQuery || undefined,
+    limit: 100,
+  });
   const teams = useAgentTeams();
   const teamName = (id: string) => teams.data?.find((team) => team.id === id)?.name;
-
-  const all = runs.data ?? [];
-  const visible = useMemo(() => {
-    const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
-    return all.filter((run) => {
-      if (!terms.length) return true;
-      const haystack = `${String(run.input.task ?? "")} ${teamName(run.teamId) ?? ""} ${run.status}`.toLowerCase();
-      return terms.every((term) => haystack.includes(term));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all, search, teams.data]);
+  const all = runs.data?.pages.flatMap((page) => page.items) ?? [];
+  const total = runs.data?.pages[0]?.total ?? 0;
 
   return (
     <div className="space-y-6">
@@ -74,10 +76,10 @@ export default function TeamRunsPage() {
         <Callout tone="danger" title="Runs could not be loaded">
           {errorMessage(runs.error)}
         </Callout>
-      ) : visible.length ? (
+      ) : all.length ? (
         <>
           <ListCard columns={["Run", "Status", "Team", "Started"]} selectable={false}>
-            {visible.map((run) => {
+            {all.map((run) => {
               const task = String(run.input.task ?? "") || "Agent team run";
               const team = teamName(run.teamId) ?? "Agent team";
               return (
@@ -108,7 +110,18 @@ export default function TeamRunsPage() {
               );
             })}
           </ListCard>
-          <ListCount shown={visible.length} total={all.length} singular="run" plural="runs" />
+          <ListCount shown={all.length} total={total} singular="run" plural="runs" verb="shown" />
+          {runs.hasNextPage ? (
+            <div className="mt-3">
+              <Button
+                variant="outline"
+                loading={runs.isFetchingNextPage}
+                onClick={() => void runs.fetchNextPage()}
+              >
+                Load older runs
+              </Button>
+            </div>
+          ) : null}
         </>
       ) : (
         <EmptyState

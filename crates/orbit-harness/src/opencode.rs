@@ -297,6 +297,16 @@ const WRITE_CAPABLE_NATIVE_TOOLS: &[&str] =
 /// Baseline native-tool permissions enforced by the platform for an autonomy level.
 /// At `<= RECOMMEND` every write/exec tool is denied; read-only tools stay available.
 fn autonomy_native_baseline(autonomy: AutonomyLevel) -> std::collections::BTreeMap<String, String> {
+    if autonomy >= AutonomyLevel::AUTONOMOUS {
+        // Explicitly allow write/exec tools at L4. OpenCode's non-interactive default is
+        // to ask, which aborts the run before the ORBIT policy hook can request a durable
+        // approval. The broker plugin still denies/approves every native call; this only
+        // stops OpenCode from pre-empting it. Also overrides a repo-supplied disable.
+        return WRITE_CAPABLE_NATIVE_TOOLS
+            .iter()
+            .map(|tool| ((*tool).to_string(), "allow".to_string()))
+            .collect();
+    }
     if autonomy > AutonomyLevel::RECOMMEND {
         return Default::default();
     }
@@ -394,8 +404,16 @@ fn write_open_code_tool_permissions(
         map.insert("webfetch".into(), serde_json::json!(web_fetch));
         // Hide autonomy-denied write/exec tools too, so the model is not offered them.
         for tool in WRITE_CAPABLE_NATIVE_TOOLS {
-            if native.get(*tool).map(String::as_str) == Some("deny") {
-                map.insert((*tool).into(), serde_json::json!(false));
+            match native.get(*tool).map(String::as_str) {
+                Some("deny") => {
+                    map.insert((*tool).into(), serde_json::json!(false));
+                }
+                Some("allow") => {
+                    // A repository's opencode.json cannot disable a tool the platform has
+                    // authorised; profile permissions were merged above and can still deny.
+                    map.insert((*tool).into(), serde_json::json!(true));
+                }
+                _ => {}
             }
         }
     }
@@ -1559,6 +1577,18 @@ mod config_tests {
         assert!(config["tools"].get("bash").is_none());
         let args = OpenCodeSettings::default().cli_args("task", None, None, AutonomyLevel::PREPARE);
         assert!(args.contains(&"--auto".to_string()));
+    }
+
+    #[test]
+    fn autonomous_allows_write_tools_explicitly() {
+        let config = permissions_for(AutonomyLevel::AUTONOMOUS, &[]);
+        for tool in ["bash", "edit", "write", "patch", "multiedit", "apply_patch"] {
+            assert_eq!(config["permission"][tool], "allow", "{tool}");
+            assert_eq!(config["tools"][tool], true, "{tool}");
+        }
+        // L3 still leaves OpenCode's approval flow in place.
+        let prepare = permissions_for(AutonomyLevel::PREPARE, &[]);
+        assert!(prepare["permission"].get("bash").is_none());
     }
 
     #[test]

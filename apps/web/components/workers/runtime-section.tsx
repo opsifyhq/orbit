@@ -7,12 +7,10 @@ import { Disclosure } from "@/components/ui/disclosure";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { DEFAULT_WORKER_IMAGES } from "@/lib/worker-images";
+import { brandName } from "@/lib/presentation";
 
 import { resolveProvider, type ProviderRow } from "./model-section";
 import type { WorkerFormApi } from "./worker-form";
-
-const DEFAULT_IMAGES = DEFAULT_WORKER_IMAGES;
 
 /** Name, harness and target. */
 export function BasicsFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
@@ -30,12 +28,12 @@ export function BasicsFields({ form, providers }: { form: WorkerFormApi; provide
             value={values.harness}
             onChange={(event) => {
               const nextHarness = event.target.value;
-              set({ harness: nextHarness, image: DEFAULT_IMAGES[nextHarness] ?? "" });
+              // An empty image lets the API choose the installation's image for this harness.
+              set({ harness: nextHarness, image: "" });
               const currentConfig = (selectedProvider?.config ?? {}) as Record<string, unknown>;
               if (selectedProvider && String(currentConfig.harness ?? "") !== nextHarness) {
                 set({ provider: "", model: "" });
               }
-              // Auto-suggest auth secret for harness-managed providers.
               if (nextHarness === "opencode" && !values.authSecret) {
                 set({ authSecret: "orbit-opencode-auth" });
               } else if (nextHarness === "pi" && !values.authSecret) {
@@ -45,9 +43,12 @@ export function BasicsFields({ form, providers }: { form: WorkerFormApi; provide
               }
             }}
           >
-            <option value="pi">Pi</option>
-            <option value="opencode">OpenCode</option>
-            <option value="mock">Mock</option>
+            <option value="">Choose a harness</option>
+            {["pi", "opencode", "mock"].map((kind) => (
+              <option key={kind} value={kind}>
+                {brandName(kind)}
+              </option>
+            ))}
           </Select>
         </Field>
         <Field label="Target" htmlFor="wp-target" hint="Where the worker runs.">
@@ -65,7 +66,6 @@ export function BasicsFields({ form, providers }: { form: WorkerFormApi; provide
 /** Execution driver and image. The image is rarely changed, so it sits in a disclosure. */
 export function ImageFields({ form }: { form: WorkerFormApi }) {
   const { values, set } = form;
-  const defaultImage = DEFAULT_IMAGES[values.harness];
   return (
     <>
       <Field
@@ -80,13 +80,15 @@ export function ImageFields({ form }: { form: WorkerFormApi }) {
       </Field>
       <Disclosure
         title="Image"
-        summary={<span className="font-mono text-xs">{values.image || "Not set"}</span>}
-        defaultOpen={Boolean(values.image) && values.image !== defaultImage}
+        summary={
+          <span className="font-mono text-xs">{values.image || "Installation default"}</span>
+        }
+        defaultOpen={Boolean(values.image)}
       >
         <Field
           label="Image"
           htmlFor="wp-image"
-          hint="Changing the harness resets this to that harness's published image."
+          hint="Leave empty to use the installation's worker image for this harness. Override only for a custom image."
         >
           <Input
             id="wp-image"

@@ -5,7 +5,11 @@ import Link from "next/link";
 import { Boxes, ChevronLeft, Cpu, Server, Zap } from "lucide-react";
 import { toast } from "sonner";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -90,14 +94,15 @@ export function ProviderForm({
   provider?: ProviderView;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (draft: ProviderDraft) => Promise<void> | void;
+  onSubmit: ResourceSubmit<ProviderDraft>;
   cancelHref: string;
   serverIssues?: Array<{ path: string; message: string }>;
 }) {
   const editing = Boolean(provider);
   const [draft, setDraft] = useState<ProviderDraft>(() => (provider ? draftFrom(provider) : EMPTY_DRAFT));
   const [modelsText, setModelsText] = useState(() => draft.models.join("\n"));
-  useUnsavedChanges({ draft, modelsText });
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ draft, modelsText, accessDirty });
   const set = <K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
   const accessRef = useRef<ResourceAccessHandle>(null);
@@ -199,8 +204,10 @@ export function ProviderForm({
       toast.error(local.length === 1 ? local[0].message : "Fix the highlighted sections");
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit({ ...draft, models });
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit({ ...draft, models }, commitAccess);
   }
 
   // ------------------------------------------------------------------ summaries
@@ -541,7 +548,12 @@ export function ProviderForm({
                 <p className="text-[13px] text-muted-foreground">Who can see this provider and use it for agents.</p>
               </CardHeader>
               <CardContent className="space-y-5">
-                <ResourceAccessFields ref={accessRef} resource="providers" resourceId={provider?.id} />
+                <ResourceAccessFields
+                  ref={accessRef}
+                  resource="providers"
+                  resourceId={provider?.id}
+                  onDirtyChange={setAccessDirty}
+                />
                 <div className="flex items-center justify-between gap-3 border-t pt-4">
                   <Button type="button" variant="ghost" onClick={() => go(order[order.length - 2])}>
                     <ChevronLeft /> {SECTION_TITLES[order[order.length - 2]]}

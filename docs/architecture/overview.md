@@ -70,7 +70,8 @@ ORBIT is a Rust workspace with a Next.js frontend:
 | `services/mcp-broker` | MCP stdio bridge that exposes the worker's tool broker to a harness |
 | `services/license-cli` | Offline license signing tool (ADR 0010) |
 | `apps/web` | Next.js web app |
-| `packages/api-client`, `packages/contracts` | Generated API client and shared Zod schemas |
+| `packages/api-client` | Generated OpenAPI client and document |
+| `packages/contracts` | Zod agent-definition schemas used by the web app |
 
 See `AGENTS.md` in the repository root for the full repository map.
 
@@ -126,7 +127,8 @@ PostgreSQL (the compare-and-set claim and the unique `idempotency_key`), not in 
 The backend is a pure HTTP/JSON + SSE API with bearer-token auth (OIDC access tokens,
 `orbit_sk_…` API tokens and separate `orbit_wk_…` worker tokens), versioned under
 `/api/v1`, with keyset pagination and a stable error envelope. No cookie-only or browser-specific behavior is required, so an
-Expo/React Native client can share `packages/api-client` and `packages/contracts`.
+Expo/React Native client can share `packages/api-client` and reuse the agent-definition
+validation in `packages/contracts`.
 
 ## 8. Observability
 

@@ -3189,6 +3189,24 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of the task, team name or run status.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3196,10 +3214,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TeamRun"
-                  }
+                  "$ref": "#/components/schemas/TeamRunPage"
                 }
               }
             }
@@ -9361,6 +9376,31 @@
             "items": {
               "$ref": "#/components/schemas/TeamStep"
             }
+          }
+        }
+      },
+      "TeamRunPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamRun"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
