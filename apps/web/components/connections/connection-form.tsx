@@ -34,6 +34,7 @@ import {
   URL_KEYS,
   applyUrl,
   defaultConfig,
+  kubernetesResources,
   urlError,
   urlFromConfig,
   type Capability,
@@ -44,6 +45,52 @@ import { effectLabel, effectTone, humanizeIdentifier } from "@/lib/presentation"
 import type { ConnectionView } from "@/lib/types";
 import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { cn } from "@/lib/utils";
+
+const KUBERNETES_CONFIG_KEYS = new Set([
+  "authMode",
+  "apiServer",
+  "context",
+  "namespaces",
+  "defaultNamespace",
+  "allowedResources",
+  "caCert",
+]);
+
+/** Array/object config values need a local draft; parsing every keystroke rejects "[". */
+function ConfigArrayInput({
+  id,
+  value,
+  onCommit,
+  placeholder,
+}: {
+  id?: string;
+  value: string;
+  onCommit: (raw: string) => void;
+  placeholder?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <Input
+      id={id}
+      value={draft}
+      placeholder={placeholder}
+      spellCheck={false}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => onCommit(draft)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onCommit(draft);
+      }}
+    />
+  );
+}
+
+function splitNamespaces(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 type SectionId = "service" | "account" | "capabilities" | "advanced" | "sharing";
 
@@ -129,6 +176,7 @@ export function ConnectionForm({
   const [connectorSlug, setConnectorSlug] = useState(firstSlug);
   const [name, setName] = useState(connection?.name ?? "");
   const [credential, setCredential] = useState("");
+  const [kubeconfigName, setKubeconfigName] = useState("");
   const [scopes, setScopes] = useState<string[]>(connection?.scopes ?? []);
   const [configText, setConfigText] = useState(JSON.stringify(startConfig, null, 2));
   const [configError, setConfigError] = useState<string | null>(null);
@@ -142,7 +190,13 @@ export function ConnectionForm({
   const capabilities = (connector?.capabilities ?? []) as Capability[];
   const schema = (connector?.configSchema ?? {}) as ConfigSchema;
   const usesUrl = URL_CONNECTORS.includes(connectorSlug);
-  const schemaFields = usesUrl ? [] : Object.entries(schema.properties ?? {}).filter(([key]) => !URL_KEYS.includes(key));
+  const schemaFields = usesUrl
+    ? []
+    : Object.entries(schema.properties ?? {}).filter(
+        ([key]) =>
+          !URL_KEYS.includes(key) &&
+          !(connectorSlug === "kubernetes" && KUBERNETES_CONFIG_KEYS.has(key)),
+      );
   const parsedConfig = useMemo(() => {
     try {
       const value = JSON.parse(configText || "{}");
@@ -151,6 +205,27 @@ export function ConnectionForm({
       return null;
     }
   }, [configText]);
+
+  const isKubernetes = connectorSlug === "kubernetes";
+  const kubernetesAuthMode = isKubernetes ? String(parsedConfig?.authMode ?? "service_account") : "";
+  const [namespaceText, setNamespaceText] = useState(() =>
+    Array.isArray(parsedConfig?.namespaces) ? (parsedConfig.namespaces as string[]).join(", ") : "",
+  );
+  // Seed the comma-separated draft when the selected connection/type changes. The raw
+  // config remains the source of truth; this only makes typing a list comfortable.
+  useEffect(() => {
+    if (!isKubernetes) return;
+    setNamespaceText(
+      Array.isArray(parsedConfig?.namespaces) ? (parsedConfig.namespaces as string[]).join(", ") : "",
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectorSlug, connection?.id]);
+
+  function setKubernetesConfig(patch: Record<string, unknown>) {
+    if (!parsedConfig) return;
+    setConfigText(JSON.stringify({ ...parsedConfig, ...patch }, null, 2));
+    setConfigError(null);
+  }
 
   function chooseConnector(slug: string) {
     if (editing || slug === connectorSlug) return;
@@ -240,16 +315,31 @@ export function ConnectionForm({
     const commitAccess = async () => {
       await accessRef.current?.save();
     };
+    const config = usesUrl ? applyUrl(connectorSlug, parsedConfig ?? {}, url) : { ...(parsedConfig ?? {}) };
+    if (isKubernetes) {
+      config.namespaces = splitNamespaces(namespaceText);
+      // Normally derived from the selected capabilities. A non-empty advanced value is
+      // kept as an explicit override.
+      if (!Array.isArray(config.allowedResources) || config.allowedResources.length === 0) {
+        config.allowedResources = kubernetesResources(scopes);
+      }
+    }
     await onSubmit(
       {
         connectorSlug,
         name: name.trim(),
         ...(credential ? { credential } : {}),
         scopes,
-        config: usesUrl ? applyUrl(connectorSlug, parsedConfig ?? {}, url) : (parsedConfig ?? {}),
+        config,
       },
       commitAccess,
     );
+  }
+
+  async function loadKubeconfig(file: File | undefined) {
+    if (!file) return;
+    setCredential(await file.text());
+    setKubeconfigName(file.name);
   }
 
   // ------------------------------------------------------------------ summaries
@@ -385,26 +475,151 @@ export function ConnectionForm({
                 />
               </Field>
             ) : null}
-            <Field
-              label="Credential"
-              htmlFor="connection-credential"
-              hint={
-                editing
-                  ? connection?.hasCredential
-                    ? "A credential is stored. Leave this empty to keep it, or enter a new one to replace it."
-                    : "No credential is stored yet. Enter one to add it."
-                  : "A token or bot token. Stored encrypted; you will not see it again."
-              }
-            >
-              <Input
-                id="connection-credential"
-                type="password"
-                value={credential}
-                autoComplete="new-password"
-                placeholder={editing && connection?.hasCredential ? "••••••••  (stored)" : undefined}
-                onChange={(event) => setCredential(event.target.value)}
-              />
-            </Field>
+            {isKubernetes && kubernetesAuthMode === "kubeconfig" ? (
+              <>
+                <Field
+                  label="Kubeconfig file"
+                  htmlFor="connection-kubeconfig-file"
+                  hint="The YAML is stored as the encrypted credential. Existing credentials are never shown again."
+                >
+                  <Input
+                    id="connection-kubeconfig-file"
+                    type="file"
+                    accept=".yaml,.yml,.conf,text/yaml,application/yaml"
+                    onChange={(event) => void loadKubeconfig(event.target.files?.[0])}
+                  />
+                </Field>
+                {kubeconfigName ? (
+                  <p className="text-[13px] text-muted-foreground">Loaded {kubeconfigName}; save to store it.</p>
+                ) : null}
+                <Field
+                  label="Or paste kubeconfig"
+                  htmlFor="connection-credential"
+                  hint={
+                    editing && connection?.hasCredential && !credential
+                      ? "A kubeconfig is stored. Leave this empty to keep it, or paste a new one to replace it."
+                      : "Paste a kubeconfig with a static token or client certificate. exec auth is refused."
+                  }
+                >
+                  <Textarea
+                    id="connection-credential"
+                    className="min-h-28 font-mono text-base md:text-xs"
+                    value={credential}
+                    spellCheck={false}
+                    placeholder={editing && connection?.hasCredential ? "••••••••  (stored)" : undefined}
+                    onChange={(event) => setCredential(event.target.value)}
+                  />
+                </Field>
+              </>
+            ) : (
+              <Field
+                label={isKubernetes ? "Service account token" : "Credential"}
+                htmlFor="connection-credential"
+                hint={
+                  isKubernetes
+                    ? "A token for the service account ORBIT uses. Stored encrypted; you will not see it again."
+                    : editing
+                      ? connection?.hasCredential
+                        ? "A credential is stored. Leave this empty to keep it, or enter a new one to replace it."
+                        : "No credential is stored yet. Enter one to add it."
+                      : "A token or bot token. Stored encrypted; you will not see it again."
+                }
+              >
+                <Input
+                  id="connection-credential"
+                  type="password"
+                  value={credential}
+                  autoComplete="new-password"
+                  placeholder={editing && connection?.hasCredential ? "••••••••  (stored)" : undefined}
+                  onChange={(event) => setCredential(event.target.value)}
+                />
+              </Field>
+            )}
+            {isKubernetes ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Authentication" htmlFor="connection-auth-mode">
+                  <Select
+                    id="connection-auth-mode"
+                    value={kubernetesAuthMode}
+                    onChange={(event) => setKubernetesConfig({ authMode: event.target.value })}
+                  >
+                    <option value="service_account">Service account</option>
+                    <option value="kubeconfig">Kubeconfig</option>
+                  </Select>
+                </Field>
+                {kubernetesAuthMode === "service_account" ? (
+                  <Field label="API server" htmlFor="connection-api-server">
+                    <Input
+                      id="connection-api-server"
+                      className="font-mono"
+                      value={String(parsedConfig?.apiServer ?? "https://kubernetes.default.svc")}
+                      onChange={(event) => setKubernetesConfig({ apiServer: event.target.value })}
+                      spellCheck={false}
+                    />
+                  </Field>
+                ) : (
+                  <Field
+                    label="Context"
+                    htmlFor="connection-context"
+                    optional
+                    hint="Defaults to current-context in the kubeconfig."
+                  >
+                    <Input
+                      id="connection-context"
+                      value={String(parsedConfig?.context ?? "")}
+                      onChange={(event) => setKubernetesConfig({ context: event.target.value })}
+                      spellCheck={false}
+                    />
+                  </Field>
+                )}
+                <Field
+                  label="Namespaces"
+                  htmlFor="connection-namespaces"
+                  hint="Comma-separated. Empty allows only the default namespace."
+                >
+                  <Input
+                    id="connection-namespaces"
+                    value={namespaceText}
+                    placeholder="orbit, monitoring"
+                    onChange={(event) => setNamespaceText(event.target.value)}
+                  />
+                </Field>
+                <Field
+                  label="Default namespace"
+                  htmlFor="connection-default-namespace"
+                  optional
+                  hint="Used when a tool call omits its namespace."
+                >
+                  <Input
+                    id="connection-default-namespace"
+                    value={String(parsedConfig?.defaultNamespace ?? "")}
+                    onChange={(event) => setKubernetesConfig({ defaultNamespace: event.target.value })}
+                  />
+                </Field>
+                {kubernetesAuthMode === "service_account" ? (
+                  <Field
+                    label="CA certificate"
+                    htmlFor="connection-ca-cert"
+                    optional
+                    hint="PEM certificate for a private API server."
+                    className="sm:col-span-2"
+                  >
+                    <Textarea
+                      id="connection-ca-cert"
+                      className="min-h-24 font-mono text-base md:text-xs"
+                      value={String(parsedConfig?.caCert ?? "")}
+                      spellCheck={false}
+                      onChange={(event) => setKubernetesConfig({ caCert: event.target.value })}
+                    />
+                  </Field>
+                ) : null}
+                <Callout tone="info" title="Allowed resources are derived from capabilities" className="sm:col-span-2">
+                  ORBIT normally limits the connection to the Kubernetes resources implied by the
+                  capabilities you allow below. Set <code>allowedResources</code> in Advanced config
+                  only when you need a deliberate override.
+                </Callout>
+              </div>
+            ) : null}
             {schemaFields.length ? (
               <div className="grid gap-4 sm:grid-cols-2">
                 {schemaFields.map(([key, property]) => (
@@ -424,6 +639,13 @@ export function ConnectionForm({
                         <option value="false">No</option>
                         <option value="true">Yes</option>
                       </Select>
+                    ) : property.type === "array" || property.type === "object" ? (
+                      <ConfigArrayInput
+                        id={`connection-config-${key}`}
+                        value={schemaValue(key)}
+                        placeholder={property.default !== undefined ? String(property.default) : undefined}
+                        onCommit={(raw) => setSchemaField(key, raw)}
+                      />
                     ) : (
                       <Input
                         id={`connection-config-${key}`}

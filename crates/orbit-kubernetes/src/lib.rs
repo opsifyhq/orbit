@@ -246,6 +246,33 @@ impl KubernetesClientConfig {
             .await
             .map_err(|error| format!("invalid Kubernetes response: {error}"))?;
         if !status.is_success() {
+            // A kubeconfig is often scoped to one namespace and cannot list namespaces.
+            // Fall back to a bounded pod list in an allowed namespace so the connection
+            // can still be validated without cluster-wide RBAC.
+            if status == reqwest::StatusCode::FORBIDDEN {
+                if let Some(namespace) = self.allowed_namespaces().first() {
+                    let probe = self
+                        .get(
+                            &format!("/api/v1/namespaces/{namespace}/pods"),
+                            &[("limit", "1".to_string())],
+                        )
+                        .await?;
+                    let probe_status = probe.status();
+                    if probe_status.is_success() {
+                        return Ok(json!({
+                            "namespaces": self.allowed_namespaces(),
+                            "count": self.allowed_namespaces().len(),
+                            "message": format!(
+                                "Kubernetes reachable; namespace listing is not permitted, but namespace {namespace} is readable"
+                            ),
+                        }));
+                    }
+                    let probe_body: Value = probe.json().await.unwrap_or(Value::Null);
+                    return Err(format!(
+                        "Kubernetes namespace listing returned {status} and the configured namespace probe returned {probe_status}: {probe_body}"
+                    ));
+                }
+            }
             return Err(format!("Kubernetes returned {status}: {data}"));
         }
         let names: Vec<&str> = data

@@ -6,19 +6,22 @@ details and bounded logs. No writes, exec, port-forward or Secret access.
 ## Connection
 
 Add a **Kubernetes** connection under **Connectors → New connection** (see
-[Connectors](connections.md)). Auth modes (`authMode`):
+[Connectors](connections.md)). The connection form has an **Authentication** dropdown:
 
 - `service_account` (preferred): paste a reader ServiceAccount token as the credential and
   set `apiServer` (in-cluster: `https://kubernetes.default.svc`).
-- `kubeconfig`: paste a kubeconfig as the credential. ORBIT uses the selected/current
-  context and supports static `token` or `client-certificate-data` +
+- `kubeconfig`: upload or paste a kubeconfig as the credential. ORBIT uses the
+  selected/current context and supports static `token` or `client-certificate-data` +
   `client-key-data` auth. It **rejects** `exec` auth plugins and
   `insecure-skip-tls-verify`. Set `context` to choose a context other than the current one.
 
-Config fields: `namespaces` allowlist, `defaultNamespace`, `allowedResources`
-(`pods`, `pods/log`, `deployments`, `events`, `namespaces`, or `*` for all), optional
-public `caCert`, `timeoutSeconds` (default 20), `maxLogBytes` (default 200000). Allowlists
-are enforced by ORBIT as well as RBAC, and an empty list denies:
+The namespaces field is comma-separated in the form and stored as an array. The
+connection also stores `defaultNamespace`, an optional public `caCert`,
+`timeoutSeconds` (default 20) and `maxLogBytes` (default 200000). Allowlists are enforced
+by ORBIT as well as RBAC, and an empty list denies:
+
+- `allowedResources` is normally derived from the selected capabilities; an explicit
+  non-empty value in Advanced config overrides that derivation.
 
 - `namespaces` empty: only `defaultNamespace` may be used; with neither set, every
   namespaced tool is refused. `namespaces.list` returns only allowed namespaces.
@@ -48,11 +51,12 @@ so plain environment values in a manifest do not reach the agent. `valueFrom` re
 
 ## Test connection
 
-The connection **Test** button parses the credential, connects to the API server and lists
-the namespaces visible to the credential (the connection's allowlists do not apply to the
-test). Unsupported kubeconfig auth, rejected TLS
-settings and RBAC failures return a readable message; the result is stored as the
-connection's check status. The check is advisory: a failed test marks the connection
+The connection **Test** button parses the credential and connects to the API server. It
+first lists the namespaces visible to the credential; if that returns 403 it probes a
+bounded pod list in the configured/default namespace. A kubeconfig scoped to one namespace
+therefore tests successfully without cluster-wide `list namespaces` RBAC. Unsupported
+kubeconfig auth, rejected TLS settings and RBAC failures return a readable message; the
+result is stored as the connection's check status. The check is advisory: a failed test marks the connection
 "Check failed" (status `error`), but runs do not check that status, so agents keep using
 the connection, and testing again after a fix sets it back to connected. A test never
 overwrites an `expired` or `revoked` status.

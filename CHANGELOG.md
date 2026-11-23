@@ -8,6 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Kubernetes connections use an authentication dropdown, kubeconfig file upload, a
+  comma-separated namespace field, and derive `allowedResources` from the selected
+  capabilities (Advanced config can override it). The connection test falls back to a
+  configured namespace when cluster-wide namespace listing is not permitted.
+- Array and object connection config fields can be typed normally; they commit on blur
+  instead of parsing every keystroke.
+
+
+
 ### Added
 
 - Agent Teams can declare a fixed autonomy level for every step and native subagent, or
