@@ -359,7 +359,8 @@ Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explain
 | `ORBIT_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `ORBIT_PUBLIC_BASE_URL` | `http://localhost:8080` | Externally visible URL |
 | `ORBIT_BODY_LIMIT_BYTES` | `2097152` | Maximum request body |
-| `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` | `120` | Per-source-IP budget per 60-second window on public/unauthenticated routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger). Excess requests get `429 rate_limited` with `Retry-After`; authenticated and worker routes are unaffected. Behind an L7 proxy the peer is the proxy, so keep proxy-side client-IP limits too |
+| `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` | `120` | Per-client budget per 60-second window on public/unauthenticated routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger). Excess requests get `429 rate_limited` with `Retry-After`; authenticated and worker routes are unaffected |
+| `ORBIT_TRUSTED_PROXIES` | empty (chart: private ranges; Compose: `172.16.0.0/12`) | Comma-separated CIDRs or addresses of proxies whose `X-Forwarded-For` the rate limit believes. For a request from one of them, the client is the right-most forwarded hop that is not itself a trusted proxy. Without it, all traffic through the web proxy shares one budget. Only list proxies that append the real client address (ingress-nginx, Traefik and the Next.js server do) |
 | `ORBIT_SEED_DEMO` | `true` | Seed demo data |
 | `ORBIT_SEED_WORKER_PROFILE` | `true` | Seed a launchable mock worker profile |
 | `ORBIT_DEFAULT_ORG_SLUG`, `ORBIT_DEFAULT_ORG_NAME` | `orbit`, `ORBIT` | Default organization |

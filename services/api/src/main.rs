@@ -78,7 +78,10 @@ async fn main() -> anyhow::Result<()> {
         public_base_url: config.public_base_url.clone(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
         max_body_bytes: config.body_limit_bytes,
-        rate_limiter: Arc::new(RateLimiter::new(config.anon_rate_limit_per_minute)),
+        rate_limiter: Arc::new(
+            RateLimiter::new(config.anon_rate_limit_per_minute)
+                .with_trusted_proxies(config.trusted_proxies.clone()),
+        ),
         cors_origins: config.cors_origins.clone(),
         launcher_url: config.launcher_url.clone(),
         launcher_token: config.launcher_token.clone(),

@@ -184,6 +184,11 @@ Container images are **not** scanned for vulnerabilities in CI; see "Residual ri
 - OIDC mode validates JWTs against the provider's JWKS. Discovery and JWKS fetches are
   cached and refreshed at a bounded rate, so unauthenticated requests cannot be turned
   into a stream of calls to the identity provider.
+- Unauthenticated routes are rate limited per client. Behind the web proxy and the
+  ingress every request has the same TCP peer, so the limit keys on `X-Forwarded-For`
+  only for peers in `ORBIT_TRUSTED_PROXIES` (the chart trusts the private ranges by
+  default). A client inside a trusted range can choose its own key; narrow the setting
+  to the pod CIDR where clients share those ranges.
 - API tokens are hashed and always bounded by their owner's current role. Role edits
   follow a grant ceiling (see [rbac.md](../development/rbac.md)).
 - `ORBIT_ALLOW_API_TOKENS=false` disables API tokens entirely.
