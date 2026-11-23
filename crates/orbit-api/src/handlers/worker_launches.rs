@@ -55,6 +55,8 @@ struct LauncherStatus {
     worker_id: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    termination: Option<orbit_contracts::WorkerTermination>,
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -112,7 +114,7 @@ async fn call_launcher<T: for<'de> Deserialize<'de>>(
     })
 }
 
-async fn refresh(state: &AppState, launch: WorkerLaunch) -> WorkerLaunch {
+pub(crate) async fn refresh(state: &AppState, launch: WorkerLaunch) -> WorkerLaunch {
     if !matches!(launch.status.as_str(), "pending" | "starting" | "running") {
         return launch;
     }
@@ -156,74 +158,149 @@ async fn refresh(state: &AppState, launch: WorkerLaunch) -> WorkerLaunch {
         )
         .await
         .unwrap_or(launch);
-    if updated.status == "failed"
-        && updated
-            .error
-            .as_deref()
-            .is_some_and(|error| error.to_lowercase().contains("oom"))
-    {
-        fail_worker_executions(state, &updated).await;
+    if updated.status == "failed" {
+        if let Some(termination) = launch_termination(&status, &updated) {
+            fail_worker_executions(state, &updated, &termination).await;
+        }
     }
     updated
 }
 
-/// A worker OOM kill takes the process down before it can report the execution failure.
-/// Fail any running executions on that worker with a clear error so they are not left
-/// running until timeout.
-async fn fail_worker_executions(state: &AppState, launch: &WorkerLaunch) {
+/// Structured termination from the launcher, with a legacy OOM-message fallback for older
+/// launchers that only report a human-readable error.
+fn launch_termination(
+    status: &LauncherStatus,
+    launch: &WorkerLaunch,
+) -> Option<orbit_contracts::WorkerTermination> {
+    if let Some(termination) = status.termination.clone() {
+        return Some(termination);
+    }
+    let oom = status
+        .error
+        .as_deref()
+        .is_some_and(|error| error.to_lowercase().contains("oom"));
+    if !oom {
+        return None;
+    }
+    let name = status
+        .runtime_id
+        .clone()
+        .or_else(|| launch.runtime_id.clone())
+        .or_else(|| launch.worker_id.clone())
+        .unwrap_or_else(|| "unknown-worker".into());
+    Some(orbit_contracts::WorkerTermination::new(
+        orbit_contracts::WorkerTerminationReason::WorkerOom,
+        name,
+    ))
+}
+
+/// A worker terminated by the runtime (OOM, eviction, exit or node loss) cannot report its
+/// own execution failure. Fail every in-flight execution on that worker with the structured
+/// reason, terminate the team step/run/queue without auto-retry, and audit the cause.
+async fn fail_worker_executions(
+    state: &AppState,
+    launch: &WorkerLaunch,
+    termination: &orbit_contracts::WorkerTermination,
+) {
     let Some(worker_id) = launch.worker_id.as_deref() else {
         return;
     };
     let executions = match state
         .store
-        .running_executions_for_worker(launch.org_id, worker_id)
+        .active_executions_for_worker(launch.org_id, worker_id)
         .await
     {
         Ok(executions) => executions,
         Err(error) => {
-            tracing::warn!(%error, launch_id = %launch.id, "could not load executions for OOM launch");
+            tracing::warn!(%error, launch_id = %launch.id, "could not load executions for terminated launch");
             return;
         }
     };
+    let message = launch
+        .error
+        .clone()
+        .unwrap_or_else(|| termination.message());
+    let mut data = serde_json::to_value(termination).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = data.as_object_mut() {
+        object.insert(
+            "code".into(),
+            serde_json::json!(termination.reason.as_str()),
+        );
+        object.insert("message".into(), serde_json::json!(message));
+        object.insert("workerId".into(), serde_json::json!(worker_id));
+        object.insert("profileId".into(), serde_json::json!(launch.profile_id));
+        object.insert("launchId".into(), serde_json::json!(launch.id));
+        // Side effects may already have happened; an operator must decide to rerun.
+        object.insert("retryable".into(), serde_json::json!(false));
+    }
     for execution in executions {
-        let message = launch
-            .error
-            .clone()
-            .unwrap_or_else(|| "worker container was OOMKilled".into());
-        if let Err(err) = state
-            .store
-            .append_execution_event(
-                launch.org_id,
-                execution.id,
-                // `worker_oom` is the error code in `data`; the event kind must be one the
-                // `execution_events` CHECK constraint accepts (#306).
-                orbit_domain::ExecutionEventKind::Error.as_str(),
-                orbit_domain::LogLevel::Error,
-                &message,
-                &serde_json::json!({
-                    "code": "worker_oom",
-                    "workerId": worker_id,
-                    "profileId": launch.profile_id,
-                    "launchId": launch.id,
-                    "error": message,
-                }),
-            )
-            .await
-        {
-            tracing::warn!(execution_id = %execution.id, error = %err, "failed to append execution event");
-        }
-        let _ = state
+        let finished = state
             .store
             .finish_execution(
                 execution.id,
                 orbit_domain::ExecutionStatus::Failed,
                 None,
-                Some(&serde_json::json!({ "code": "worker_oom", "message": message })),
+                Some(&data),
                 None,
                 execution.session_ref.as_deref(),
             )
             .await;
+        let ended = match finished {
+            Ok(Some(ended)) => ended,
+            Ok(None) => {
+                // Another path already ended it; still make sure the team run is closed.
+                let mut ended = execution.clone();
+                ended.status = orbit_domain::ExecutionStatus::Failed.as_str().into();
+                ended.error = Some(data.clone());
+                ended
+            }
+            Err(error) => {
+                tracing::warn!(execution_id = %execution.id, %error, "could not fail execution for terminated worker");
+                continue;
+            }
+        };
+        crate::background::report_ended_execution(state, &ended, &message, &data).await;
+        if let Err(error) = state
+            .store
+            .append_audit_log(
+                launch.org_id,
+                "system",
+                None,
+                None,
+                termination.reason.audit_action(),
+                Some("execution"),
+                Some(execution.id),
+                data.clone(),
+                None,
+                None,
+            )
+            .await
+        {
+            tracing::warn!(execution_id = %execution.id, %error, "failed to audit worker termination");
+        }
     }
+}
+
+/// Background termination poller: refresh live launches so an OOM/eviction/exit is surfaced
+/// even when nobody has the Workers page open. Returns false only when the store read fails.
+pub async fn refresh_active_launches(state: &AppState) -> bool {
+    if state.launcher_url.is_none() {
+        return true;
+    }
+    let launches = match state
+        .store
+        .list_active_worker_launches_installation(200)
+        .await
+    {
+        Ok(launches) => launches,
+        Err(error) => {
+            tracing::warn!(%error, "could not list live worker launches for termination polling");
+            return false;
+        }
+    };
+    let _ =
+        futures::future::join_all(launches.into_iter().map(|launch| refresh(state, launch))).await;
+    true
 }
 
 /// A launch is exactly as visible as the worker profile it was launched from. Launches

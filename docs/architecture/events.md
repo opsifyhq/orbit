@@ -108,6 +108,17 @@ event and an `orbit.execution.updated` message.
 The same loop deletes worker heartbeat rows that have been silent for
 `ORBIT_WORKER_STALE_RETENTION_HOURS` (default 24).
 
+### Worker termination
+
+A separate pass every 15 seconds refreshes live worker launches through the launcher, so a
+container killed by its runtime is noticed even when nobody has the Workers page open. When
+a launch comes back `failed` with a structured `termination` (see
+[runtime contract](runtime-contract.md#runtime-termination)), every execution still in flight
+on that worker becomes `failed` with `worker_oom`, `worker_evicted`, `worker_exited` or
+`worker_lost`, carrying the pod/container name, restart count, exit code and termination
+time. Each gets an `error` event, an `orbit.execution.updated` message and an audit entry;
+the team step, run and queue item become terminal with no automatic rerun.
+
 ## Scheduling and dispatch
 
 All background loops run in `orbit-api`; workers are token-only and never touch the
@@ -129,6 +140,8 @@ database or the event bus directly.
   interval has passed; see [domain model](domain-model.md).
 - **Outputs** (every 5s) deliver the results of finished executions to their outputs.
 - **Execution reaper** (every 15s): see above.
+- **Worker termination** (every 15s) refreshes live worker launches through the launcher
+  and fails the in-flight work of a runtime-terminated worker: see above.
 - **Worker image updates** (every 60s) relaunch workers whose profile follows the
   platform version after an upgrade: the old token is revoked, running executions drain,
   then the launcher replaces the worker.

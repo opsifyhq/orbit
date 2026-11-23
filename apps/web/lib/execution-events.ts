@@ -137,6 +137,18 @@ function describeStatus(message: string): { title: string; tone?: EventTone } {
   if (/^worker stopped reporting this execution/.test(message)) {
     return { title: "Ended: the worker stopped reporting this run", tone: "danger" };
   }
+  if (/^worker container was OOMKilled/.test(message)) {
+    return { title: "Ended: the worker was OOMKilled", tone: "danger" };
+  }
+  if (/^worker (pod|container) was evicted/.test(message)) {
+    return { title: "Ended: the worker pod was evicted", tone: "danger" };
+  }
+  if (/^worker container exited/.test(message)) {
+    return { title: "Ended: the worker container exited", tone: "danger" };
+  }
+  if (/^worker pod was lost/.test(message)) {
+    return { title: "Ended: the worker was lost", tone: "danger" };
+  }
   match = message.match(/^execution finished with status (\w+)/);
   if (match) return { title: `Ended: ${humanizeIdentifier(match[1]).toLowerCase()}`, tone: "danger" };
   return { title: message };
@@ -254,7 +266,21 @@ export function describeEvent(event: ExecutionEventRecord): EventView {
 
   if (event.kind === "error") {
     const status = describeStatus(event.message);
-    return { label: "Run", tone: "danger", title: status.title };
+    if (status.title !== event.message) {
+      return { label: "Run", tone: "danger", title: status.title };
+    }
+    const code = typeof d.code === "string" ? d.code : null;
+    const codeTitle =
+      code === "worker_oom"
+        ? "Ended: the worker was OOMKilled"
+        : code === "worker_evicted"
+          ? "Ended: the worker pod was evicted"
+          : code === "worker_exited"
+            ? "Ended: the worker container exited"
+            : code === "worker_lost"
+              ? "Ended: the worker was lost"
+              : null;
+    return { label: "Run", tone: "danger", title: codeTitle ?? event.message };
   }
 
   return {

@@ -74,8 +74,15 @@ ended is expired and cannot be decided (409).
   spent waiting for an approval is added. Raise the timeout in Agent Studio ("Run limits")
   or give the agent a smaller task.
 - `worker_lost` (a `failed` run): the worker running it stopped sending heartbeats for 90
-  seconds, or restarted with a new boot id while the run was still active, so the outcome
-  is unknown. Check whether it changed anything before running it again.
+  seconds, restarted with a new boot id while the run was still active, or its pod/node
+  disappeared, so the outcome is unknown. Check whether it changed anything before running
+  it again.
+- `worker_oom` (a `failed` run): the container runtime OOM-killed the worker. Raise the
+  memory limit on its worker profile, then check for side effects before running it again.
+- `worker_evicted` (a `failed` run): the cluster evicted the worker pod (node pressure, a
+  drain or preemption). The run did not finish; check for side effects before rerunning.
+- `worker_exited` (a `failed` run): the worker container exited non-zero. Its logs on the
+  Workers page say more.
 - `harness_unresponsive` (a `failed` run): the worker is still sending its own heartbeats
   but stopped reporting this run for 90 seconds, so the harness may be hung. Check for side
   effects before running it again.
@@ -83,6 +90,13 @@ ended is expired and cannot be decided (409).
   ORBIT ends it after 10 minutes without activity, or one minute after you cancel it. The
   worker's logs on the Workers page usually say why, for example a worker older than the
   platform.
+
+When the runtime reports them, a run ended by `worker_oom`, `worker_evicted`, `worker_exited`
+or `worker_lost` also shows the worker/pod name, exit code, restart count and termination
+time under the error. None of these are rerun automatically — the worker may already have
+changed something — and the team step, team run and queue item end with the run. Each one is
+written to the audit log (`worker.oom_killed`, `worker.evicted`, `worker.exited`,
+`execution.worker_lost`).
 
 ORBIT archives finished executions, team runs and worker launches older than
 `ORBIT_ARCHIVE_AFTER_DAYS` (30 by default; Helm `platform.archiveAfterDays`; a value of 0

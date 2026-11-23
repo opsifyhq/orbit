@@ -49,6 +49,37 @@ import { Markdown } from "@/components/ui/markdown";
 import { ApprovalDetails } from "@/components/approvals/approval-details";
 import type { ExecutionEventRecord, ExecutionRecord } from "@/lib/types";
 
+/** Reasons the runtime stopped a worker container; the run's outcome is unknown. */
+const WORKER_TERMINATION_CODES = ["worker_oom", "worker_evicted", "worker_exited", "worker_lost"];
+
+/** Outcomes the platform decided on, worded for the person reading the run. */
+const PLATFORM_ERROR_TEXT = new Map<string, string>([
+  [
+    "worker_did_not_start",
+    "A worker took this run but never started it, so ORBIT ended it. This usually means the worker could not read the run, for example because it is older than the platform. Its logs in Workers say more.",
+  ],
+  [
+    "worker_oom",
+    "The worker container was OOMKilled. Increase the worker profile memory limit, then check for side effects before running it again.",
+  ],
+  [
+    "worker_evicted",
+    "The worker pod was evicted by the cluster (node pressure or a drain). Check for side effects before running it again.",
+  ],
+  [
+    "worker_exited",
+    "The worker container exited unexpectedly. Check its logs in Workers and any side effects before running it again.",
+  ],
+  [
+    "worker_lost",
+    "The worker running this stopped responding, restarted or was lost, so the outcome is unknown. Check whether it made any changes before running it again.",
+  ],
+  [
+    "harness_unresponsive",
+    "The worker is still online but stopped reporting this run, so the outcome is unknown. Check whether it made any changes before running it again.",
+  ],
+]);
+
 export default function ExecutionDetailPage() {
   // Event filters read the URL; keep the rest of the page prerenderable.
   return (
@@ -191,19 +222,31 @@ function ExecutionDetail() {
     outputTokens?: number;
   };
   const errorCode = (execution.error as { code?: string } | null)?.code;
-  // Outcomes the platform decided on, worded for the person reading the run.
   const errorText = !execution.error
     ? null
-    : errorCode === "worker_did_not_start"
-      ? "A worker took this run but never started it, so ORBIT ended it. This usually means the worker could not read the run, for example because it is older than the platform. Its logs in Workers say more."
-      : errorCode === "worker_lost"
-        ? "The worker running this stopped responding or restarted, so the outcome is unknown. Check whether it made any changes before running it again."
-        : errorCode === "harness_unresponsive"
-          ? "The worker is still online but stopped reporting this run, so the outcome is unknown. Check whether it made any changes before running it again."
-          : String((execution.error as { message?: string }).message ?? "Unknown error");
+    : (PLATFORM_ERROR_TEXT.get(errorCode ?? "") ??
+      String((execution.error as { message?: string }).message ?? "Unknown error"));
 
-  const errorInfo = (execution.error ?? {}) as { kind?: string; retryable?: boolean };
-  const lostByWorker = errorCode === "worker_lost" || errorCode === "harness_unresponsive";
+  const errorInfo = (execution.error ?? {}) as {
+    kind?: string;
+    retryable?: boolean;
+    workerName?: string;
+    restartCount?: number;
+    terminatedAt?: string;
+    exitCode?: number;
+  };
+  const terminatedByRuntime = WORKER_TERMINATION_CODES.includes(errorCode ?? "");
+  const lostByWorker = terminatedByRuntime || errorCode === "harness_unresponsive";
+  const terminationMeta = terminatedByRuntime
+    ? [
+        errorInfo.workerName ? `Worker/pod ${errorInfo.workerName}` : null,
+        typeof errorInfo.exitCode === "number" ? `Exit code ${errorInfo.exitCode}` : null,
+        typeof errorInfo.restartCount === "number" ? `Restarts ${errorInfo.restartCount}` : null,
+        errorInfo.terminatedAt ? `Terminated ${relativeTime(errorInfo.terminatedAt)}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
   const errorMeta =
     execution.error && execution.status !== "cancelled"
     ? [
@@ -213,7 +256,7 @@ function ExecutionDetail() {
           : null,
         errorInfo.retryable === true
           ? "Running it again may succeed."
-          : errorInfo.retryable === false
+          : errorInfo.retryable === false && !lostByWorker
             ? "Running it again unchanged will fail the same way."
             : null,
         lostByWorker ? "Check for side effects before using Run again." : null,
@@ -378,6 +421,7 @@ function ExecutionDetail() {
           ) : (
             <>
               <p className="break-words text-foreground">{errorText}</p>
+              {terminationMeta ? <p className="mt-1 text-[13px]">{terminationMeta}</p> : null}
               {errorMeta ? <p className="mt-1">{errorMeta}</p> : null}
             </>
           )}
