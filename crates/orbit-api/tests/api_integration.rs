@@ -11861,6 +11861,206 @@ async fn zero_limits_reject_creates_with_402() {
 }
 
 #[tokio::test]
+async fn execution_limit_guard_is_inactive_without_a_limit() {
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    // Without a configured limit the guard is a no-op: no advisory lock and no count.
+    let guard = app.state.execution_limit_guard().await.unwrap();
+    assert!(matches!(
+        &guard,
+        orbit_api::state::ExecutionLimit::Unrestricted
+    ));
+    drop(guard);
+
+    // Leave room for the executions other tests have already created in this database.
+    let used = app
+        .store
+        .count_all_executions_since_installation(Utc::now() - Duration::hours(24))
+        .await
+        .unwrap();
+    app.state.license =
+        LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": used + 1 })));
+    let guard = app.state.execution_limit_guard().await.unwrap();
+    assert!(matches!(
+        &guard,
+        orbit_api::state::ExecutionLimit::Enforced(_)
+    ));
+}
+
+#[tokio::test]
+async fn execution_limit_skips_scheduled_trigger_without_failing_it() {
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let trigger = app
+        .store
+        .create_trigger(
+            app.org_id,
+            app.agent_id,
+            "schedule",
+            None,
+            json!({ "cron": "* * * * *" }),
+            true,
+        )
+        .await
+        .unwrap();
+
+    // A zero limit blocks every new execution without disabling the trigger.
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": 0 })));
+    orbit_api::background::fire_trigger(&app.state, trigger.clone())
+        .await
+        .expect("a skipped tick is not a trigger failure");
+
+    let (executions, _, _) = app
+        .store
+        .list_executions(app.org_id, 50, None, None, Some(app.agent_id), None, None)
+        .await
+        .unwrap();
+    assert!(executions.is_empty(), "no execution may be created");
+
+    let current = app.store.get_trigger(app.org_id, trigger.id).await.unwrap();
+    assert!(current.enabled, "the trigger must stay enabled");
+    let failures: i32 =
+        sqlx::query_scalar("SELECT consecutive_failures FROM triggers WHERE id = $1")
+            .bind(trigger.id)
+            .fetch_one(app.store.pool())
+            .await
+            .unwrap();
+    assert_eq!(failures, 0, "a skipped tick must not count as a failure");
+
+    let (logs, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("execution.license_skipped"))
+        .await
+        .unwrap();
+    assert_eq!(logs.len(), 1, "the skip must be reported");
+    assert_eq!(logs[0].target_type.as_deref(), Some("trigger"));
+    assert_eq!(logs[0].target_id, Some(trigger.id));
+}
+
+#[tokio::test]
+async fn execution_limit_skips_runtime_tick_without_stopping_it() {
+    let Some(mut app) = test_app(false).await else {
+        return;
+    };
+    let _serial = RUNTIME_TICK_LOCK.lock().await;
+    let user_id = app.state.dev_identity.as_ref().unwrap().user_id;
+    let agent_id = create_demo_agent(&app.store, app.org_id, user_id).await;
+    let runtime = app
+        .store
+        .create_agent_runtime(app.org_id, agent_id, "t", "mock", 60, Some(user_id))
+        .await
+        .unwrap();
+
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": 0 })));
+    orbit_api::background::runtime_tick(&app.state)
+        .await
+        .expect("runtime tick itself succeeds");
+
+    let (executions, _, _) = app
+        .store
+        .list_executions(app.org_id, 50, None, None, Some(agent_id), None, None)
+        .await
+        .unwrap();
+    assert!(executions.is_empty(), "no execution may be created");
+
+    let row = runtime_row(&app, agent_id).await;
+    assert_eq!(row.status, "running", "the runtime must stay enabled");
+    assert_eq!(row.last_execution_id, None);
+    assert!(row.last_error.as_deref().unwrap().contains("license limit"));
+    let failures: i32 =
+        sqlx::query_scalar("SELECT consecutive_failures FROM agent_runtimes WHERE id = $1")
+            .bind(runtime.id)
+            .fetch_one(app.store.pool())
+            .await
+            .unwrap();
+    assert_eq!(failures, 0, "a skipped tick must not count as a failure");
+    assert!(row.next_run_at > chrono::Utc::now());
+
+    let (logs, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("execution.license_skipped"))
+        .await
+        .unwrap();
+    assert_eq!(logs.len(), 1, "the skip must be reported");
+    assert_eq!(logs[0].target_type.as_deref(), Some("agent_runtime"));
+    assert_eq!(logs[0].target_id, Some(runtime.id));
+}
+
+#[tokio::test]
+async fn opencode_import_respects_agent_limit() {
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let current = app.store.count_agents_installation().await.unwrap();
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "agents": current })));
+    app.router = build_router(app.state.clone());
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/import/opencode",
+            json!({
+                "kind": "agent",
+                "filename": "blocked.md",
+                "content": "---\nname: Blocked Import\n---\nYou are a test agent.\n",
+                "activate": true,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_limit");
+    // Other tests share this database, so check the imported row rather than the global
+    // count that they may have changed concurrently.
+    let imported: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents WHERE org_id = $1 AND name = 'Blocked Import'",
+    )
+    .bind(app.org_id)
+    .fetch_one(app.store.pool())
+    .await
+    .unwrap();
+    assert_eq!(imported, 0, "no agent may be created");
+}
+
+#[tokio::test]
+async fn reactivating_archived_agent_respects_agent_limit() {
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let user_id = app.state.dev_identity.as_ref().unwrap().user_id;
+    let archived = app.agent_id;
+    create_demo_agent(&app.store, app.org_id, user_id).await;
+    app.store
+        .set_agent_status(app.org_id, archived, orbit_domain::AgentStatus::Archived)
+        .await
+        .unwrap();
+
+    // The replacement fills the only available slot; restoring the archived agent would
+    // exceed the installation-wide count.
+    let current = app.store.count_agents_installation().await.unwrap();
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "agents": current })));
+    app.router = build_router(app.state.clone());
+
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/agents/{archived}/activate"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_limit");
+    assert_eq!(
+        app.store
+            .get_agent(app.org_id, archived)
+            .await
+            .unwrap()
+            .status,
+        "archived"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_agent_creates_cannot_race_past_the_limit() {
     let Some(url) = std::env::var("ORBIT_TEST_DATABASE_URL").ok() else {
         return;

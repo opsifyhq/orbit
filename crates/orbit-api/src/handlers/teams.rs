@@ -967,9 +967,8 @@ pub(crate) async fn start_step(
     step_index: usize,
     previous_output: Option<&serde_json::Value>,
 ) -> Result<TeamStep, ApiError> {
-    // Every team step creates an execution. Enforce here so manual runs, scheduled/queue
-    // starts and the work-source dispatcher's auto-run all share the same atomic check.
-    let _execution_limit = state.execution_limit_guard().await?;
+    // Every team step creates an execution through `create_execution_with_limit`, so
+    // manual runs, scheduled/queue starts and dispatcher auto-run share the same guard.
     let step = definition
         .steps
         .get(step_index)
@@ -1124,8 +1123,7 @@ pub(crate) async fn start_step(
             serde_json::json!(orbit_domain::APPROVAL_OVERRIDE_AUTO);
     }
     let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: run.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,

@@ -3983,3 +3983,87 @@ async fn execution_transitions_are_reported_once_including_reaped_runs() {
         ["created", "finished:failed:NeverStarted"]
     );
 }
+
+#[tokio::test]
+async fn installation_wide_execution_count_uses_created_at_index() {
+    let Some(store) = test_store().await else {
+        eprintln!("skipping: ORBIT_TEST_DATABASE_URL not set");
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("License Count Agent"))
+        .await
+        .unwrap();
+
+    let before = store
+        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+        .await
+        .unwrap();
+    store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "license count" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    let after = store
+        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+        .await
+        .unwrap();
+    assert!(
+        after > before,
+        "the installation-wide count must include the new execution: {before} -> {after}"
+    );
+
+    let pool = store.pool();
+    let index: Option<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() \
+         AND tablename = 'executions' AND indexname = 'executions_created_at_idx'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap();
+    assert!(
+        index.is_some(),
+        "migrations must create the executions(created_at) index"
+    );
+
+    // A tiny or shared test database may still favour a sequential scan. Disable it for
+    // this plan only to prove the index is usable by the exact license-count predicate.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let lines: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT COUNT(*) FROM executions WHERE created_at >= now() - interval '24 hours'",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let plan = lines.join("\n");
+    assert!(
+        plan.contains("executions_created_at_idx"),
+        "expected an index plan, got: {plan}"
+    );
+    assert!(
+        !plan.contains("Seq Scan"),
+        "unexpected sequential scan: {plan}"
+    );
+    tx.rollback().await.unwrap();
+}
