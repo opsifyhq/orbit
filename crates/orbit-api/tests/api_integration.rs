@@ -7282,6 +7282,152 @@ async fn connection_base_urls_are_validated_on_create_and_update() {
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
 }
 
+/// #321: a stored credential must not follow an edited endpoint, as for providers.
+#[tokio::test]
+async fn connection_credential_does_not_follow_an_edited_endpoint() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Endpoint edit",
+                "config": { "baseUrl": "https://93.184.216.34" },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("/api/v1/connections/{}", body["id"].as_str().unwrap());
+
+    // A new host without a new credential is refused.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "config": { "baseUrl": "https://93.184.216.35" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "credential")));
+
+    // The same endpoint (modulo a trailing slash) and other fields may change freely.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "name": "Renamed", "config": { "baseUrl": "https://93.184.216.34/", "defaultRepository": "acme/x" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A new host together with its credential is accepted.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "config": { "baseUrl": "https://93.184.216.35" }, "credential": "new-token" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// #321: the Kubernetes endpoint is checked like every other connection URL, and a test
+/// sends the credential, so it needs write permission and use of the connection.
+#[tokio::test]
+async fn kubernetes_api_server_is_guarded_and_testing_needs_write() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "kubernetes",
+                "name": "Metadata cluster",
+                "config": { "authMode": "service_account", "apiServer": "https://169.254.169.254" },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "apiServer")));
+
+    // A loopback API server stored before this check is refused when the test connects,
+    // and the response does not echo what the address returned.
+    let kubernetes = app
+        .store
+        .list_connectors(app.org_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|connector| connector.slug == "kubernetes")
+        .unwrap();
+    let user = owner_user(&app).await;
+    let reference = format!("connection/{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &reference,
+            &orbit_security::SecretValue::new("dummy-token"),
+            "test",
+        )
+        .await
+        .unwrap();
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            kubernetes.id,
+            "Loopback cluster",
+            &json!({ "authMode": "service_account", "apiServer": "https://127.0.0.1:6443" }),
+            &[],
+            Some(&reference),
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+    let test_path = format!("/api/v1/connections/{}/test", connection.id);
+    let (status, body) = send(&app.router, post(&test_path, json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], false, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("request refused"),
+        "{body}"
+    );
+
+    // A viewer can see the connection but cannot make ORBIT send its credential.
+    let viewer = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "conn-viewer@test.local",
+            "Viewer",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    let token = token_for(&app.store, app.org_id, viewer.id, "conn-viewer").await;
+    let (status, _) = send(&app.router, auth_post(&test_path, &token, json!({}))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn provider_probe_requires_manage_and_refuses_metadata_addresses() {
     let Some(app) = test_app(true).await else {

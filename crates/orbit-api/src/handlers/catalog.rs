@@ -523,13 +523,17 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
     }
 }
 
+/// Connection config fields that name an endpoint ORBIT sends the credential to.
+const CONNECTION_URL_FIELDS: [&str; 4] = ["baseUrl", "cloneBaseUrl", "url", "apiServer"];
+
 /// Validate URL-typed connection config fields against the outbound policy
 /// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`); errors are 422s on
-/// the offending field name.
+/// the offending field name. A kubeconfig credential's own `server` is checked when the
+/// Kubernetes client connects.
 pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
     let policy = orbit_security::OutboundPolicy::from_env();
     let mut issues = Vec::new();
-    for field in ["baseUrl", "cloneBaseUrl", "url"] {
+    for field in CONNECTION_URL_FIELDS {
         let Some(value) = config.get(field).and_then(|v| v.as_str()) else {
             continue;
         };
@@ -685,6 +689,18 @@ pub async fn update_connection(
     )?;
     if let Some(config) = &body.config {
         validate_connection_urls(config).await?;
+        // A stored credential must never follow an edited endpoint (#321), the same rule
+        // providers follow: changing a URL field requires the credential for it.
+        if existing.credential_ref.is_some() && body.credential.is_none() {
+            if let Some(field) = changed_url_field(&existing.config, config) {
+                return Err(ApiError::validation(vec![
+                    orbit_domain::ValidationIssue::new(
+                        "credential",
+                        format!("re-enter the credential when changing {field}"),
+                    ),
+                ]));
+            }
+        }
     }
     let name = body
         .name
@@ -742,6 +758,24 @@ pub async fn update_connection(
     )
     .await;
     Ok(Json(ConnectionView::from(row)))
+}
+
+/// The first endpoint field whose value differs between two connection configs, ignoring
+/// surrounding whitespace and trailing slashes.
+fn changed_url_field(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) -> Option<&'static str> {
+    let normalized = |config: &serde_json::Value, field: &str| {
+        config
+            .get(field)
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().trim_end_matches('/').to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+    };
+    CONNECTION_URL_FIELDS
+        .into_iter()
+        .find(|field| normalized(before, field) != normalized(after, field))
 }
 
 #[utoipa::path(delete, path = "/api/v1/connections/{connection_id}", tag = "connectors", responses((status = 204)))]
@@ -813,13 +847,15 @@ pub async fn test_connection(
     Extension(auth): Extension<AuthContext>,
     Path(connection_id): Path<Uuid>,
 ) -> Result<Json<ConnectionTestResponse>, ApiError> {
-    auth.require(Permission::ConnectionsRead)?;
+    // A test sends the stored credential upstream and records the result for everyone,
+    // so it needs write permission and use of the connection, not just read (#321).
+    auth.require(Permission::ConnectionsWrite)?;
     let row = state
         .store
         .get_connection_with_connector(auth.org_id, connection_id)
         .await?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    access.require_view(
+    access.require_use(
         "connection",
         row.connection.owner_user_id,
         row.connection.owner_team_id,
