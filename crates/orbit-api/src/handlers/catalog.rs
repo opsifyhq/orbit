@@ -924,6 +924,46 @@ async fn probe_connection(
         "gitlab" | "github" | "webhook" | "kubernetes" => {
             probe_supported_connection(slug, config, credential).await
         }
+        "s3" => {
+            let result = async {
+                let (config, credentials) =
+                    orbit_s3::S3Config::from_connection(config, credential)?;
+                let client = orbit_s3::S3Client::new(config, credentials)?;
+                match client.list_buckets().await {
+                    Ok(buckets) => Ok(format!("S3 reachable; {} bucket(s) visible", buckets.len())),
+                    Err(list_error) => {
+                        // Many least-privilege credentials can list objects in one bucket
+                        // but not enumerate every bucket.
+                        let bucket = client
+                            .config()
+                            .default_bucket
+                            .clone()
+                            .or_else(|| client.config().allowed_buckets.first().cloned());
+                        if let Some(bucket) = bucket {
+                            client
+                                .list_objects(Some(&bucket), None)
+                                .await
+                                .map(|objects| {
+                                    format!(
+                                        "S3 reachable; {} object(s) visible in {bucket}",
+                                        objects.len()
+                                    )
+                                })
+                                .map_err(|probe| {
+                                    format!("{list_error}; bucket probe failed: {probe}")
+                                })
+                        } else {
+                            Err(list_error)
+                        }
+                    }
+                }
+            }
+            .await;
+            match result {
+                Ok(message) => (true, Some(200), message),
+                Err(message) => (false, None, message),
+            }
+        }
         _ => return None,
     })
 }

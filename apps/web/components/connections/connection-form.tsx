@@ -518,6 +518,8 @@ export function ConnectionForm({
                 hint={
                   isKubernetes
                     ? "A token for the service account ORBIT uses. Stored encrypted; you will not see it again."
+                    : connectorSlug === "s3"
+                      ? "JSON: {\"accessKeyId\":\"…\",\"secretAccessKey\":\"…\",\"sessionToken\":\"…\"}. Stored encrypted; never shown again."
                     : editing
                       ? connection?.hasCredential
                         ? "A credential is stored. Leave this empty to keep it, or enter a new one to replace it."

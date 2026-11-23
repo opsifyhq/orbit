@@ -14,9 +14,9 @@ agent or team before the run is created.
 message was refused or gave up), **Off**, or **Cannot send** (no credential or no events),
 and how its last delivery went. **New output** opens Output Studio:
 
-- **Destination**: Slack, Mattermost, Telegram or Webhook, a name, and the destination
-  credential (incoming webhook URL or Telegram bot token; write-only — leave it empty when
-  editing to keep the stored one).
+- **Destination**: Slack, Mattermost, Telegram, Webhook or S3, a name, and the
+  destination credential (incoming webhook URL, Telegram bot token, or S3 access-key JSON;
+  write-only — leave it empty when editing to keep the stored one).
 - **Trigger**: every agent, one agent, or one agent team, and which results send a message
   (succeeded, failed, cancelled).
 - **Message**: an optional note added under the run summary, an example of the message, and
@@ -31,6 +31,26 @@ page has **Send test** (a test message, with the note), **Edit**, and **Turn off
 **Delete** under ⋯. Runs that finish while an output is off are not sent later.
 
 Creating, changing, deleting and testing outputs needs `settings:write`.
+
+## S3 object storage
+
+An S3 output uploads the rendered run text (the same summary plus template note) to
+Amazon S3 or RustFS. Configure the provider, bucket, optional key prefix, endpoint,
+region and path-style toggle. The object key is `<keyPrefix><deliveryId>.txt`, so a retry
+overwrites the same object instead of creating a duplicate.
+
+The credential is write-only JSON:
+
+```json
+{ "accessKeyId": "…", "secretAccessKey": "…", "sessionToken": "optional" }
+```
+
+Amazon S3 uses its regional endpoint and virtual-hosted addressing by default. RustFS
+normally needs an explicit `endpoint` and `pathStyle: true`. The same account can also be
+used as an **S3 / object storage** connection for agent tools
+(`buckets.list`, `objects.list`, `objects.get`, `objects.put`, `objects.delete`,
+`objects.copy`). An empty bucket allowlist denies every operation; object keys must stay
+inside the configured prefix. `maxObjectBytes` caps reads and writes.
 
 ## Telegram bot setup
 

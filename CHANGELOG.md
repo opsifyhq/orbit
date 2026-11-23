@@ -10,6 +10,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- S3 object storage as an execution output and a tool-broker connector for Amazon S3 and
+  RustFS: rendered runs upload to a bucket/prefix, and agents can list/get/put/delete/copy
+  objects under bucket, prefix and size allowlists.
+
 - Agent and Agent Team pages show their linked outputs and can create a new output with
   that scope preselected; Work's Then section links to the same scoped creation form.
 
