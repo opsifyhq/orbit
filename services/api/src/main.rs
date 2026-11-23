@@ -33,15 +33,18 @@ async fn main() -> anyhow::Result<()> {
         SecretCipher::from_base64_key(&config.master_key)
             .context("ORBIT_MASTER_KEY must be a base64-encoded 32-byte key")?,
     );
+    let metrics = Arc::new(orbit_api::metrics::Metrics::new());
     let store = Store::connect(&config.database_url, config.db_max_connections)
         .await
         .context("could not connect to PostgreSQL")?
-        .with_cipher(cipher);
+        .with_cipher(cipher)
+        .with_execution_observer(metrics.clone());
 
     let bus_config = EventBusConfig::from_env().context("invalid event bus configuration")?;
     let bus = connect_bus(&bus_config)
         .await
         .context("could not connect to the event bus")?;
+    let bus = orbit_api::metrics::MeteredBus::wrap(bus, metrics.clone());
     let registry = Arc::new(HarnessRegistry::builtin());
 
     let initialized = initialize(&store, &registry, &config, bus.as_ref())
@@ -76,7 +79,11 @@ async fn main() -> anyhow::Result<()> {
         environment: config.environment.clone(),
         events_driver: bus_config.driver.clone(),
         public_base_url: config.public_base_url.clone(),
-        metrics: Arc::new(orbit_api::metrics::Metrics::new()),
+        metrics,
+        metrics_access: orbit_api::MetricsAccess {
+            token: config.metrics_token.clone(),
+            dedicated_listener: config.metrics_addr.is_some(),
+        },
         max_body_bytes: config.body_limit_bytes,
         rate_limiter: Arc::new(
             RateLimiter::new(config.anon_rate_limit_per_minute)
@@ -94,6 +101,35 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let background = orbit_api::background::spawn(state.clone());
+    let metrics_server = match &config.metrics_addr {
+        Some(addr) => {
+            let listener = TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("could not bind metrics listener {addr}"))?;
+            tracing::info!(
+                address = %addr,
+                token_required = config.metrics_token.is_some(),
+                "ORBIT metrics listening"
+            );
+            let router = orbit_api::build_metrics_router(state.clone());
+            let token = shutdown.clone();
+            Some(tokio::spawn(async move {
+                let served = axum::serve(listener, router)
+                    .with_graceful_shutdown(async move { token.cancelled().await })
+                    .await;
+                if let Err(error) = served {
+                    tracing::error!(%error, "metrics listener failed");
+                }
+            }))
+        }
+        None => None,
+    };
+    if config.is_production() && config.metrics_token.is_none() && config.metrics_addr.is_none() {
+        tracing::warn!(
+            "/metrics is served on the public API port without a token; set \
+             ORBIT_METRICS_ADDR or ORBIT_METRICS_TOKEN, or keep it off the ingress"
+        );
+    }
     let router = build_router(state);
     let listener = TcpListener::bind(&config.http_addr)
         .await
@@ -132,6 +168,9 @@ async fn main() -> anyhow::Result<()> {
         ),
     }
     shutdown.cancel();
+    if let Some(server) = metrics_server {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), server).await;
+    }
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         futures::future::join_all(background),

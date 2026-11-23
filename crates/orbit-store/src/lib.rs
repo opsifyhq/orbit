@@ -29,7 +29,9 @@ pub mod dashboard;
 pub mod env_mappings;
 pub mod executions;
 pub mod identity;
+pub mod metrics;
 pub mod models;
+pub mod observe;
 pub mod outputs;
 pub mod platform_settings;
 pub mod portable;
@@ -109,6 +111,7 @@ pub struct Store {
     pool: PgPool,
     cipher: Option<Arc<SecretCipher>>,
     license_limit_locks: Arc<StdMutex<HashMap<String, Arc<Mutex<()>>>>>,
+    observer: observe::SharedObserver,
 }
 
 impl Store {
@@ -117,6 +120,7 @@ impl Store {
             pool,
             cipher,
             license_limit_locks: Arc::new(StdMutex::new(HashMap::new())),
+            observer: None,
         }
     }
 
@@ -130,12 +134,49 @@ impl Store {
             pool,
             cipher: None,
             license_limit_locks: Arc::new(StdMutex::new(HashMap::new())),
+            observer: None,
         })
     }
 
     pub fn with_cipher(mut self, cipher: Arc<SecretCipher>) -> Self {
         self.cipher = Some(cipher);
         self
+    }
+
+    /// Report execution lifecycle transitions to `observer` (see [`observe`]).
+    pub fn with_execution_observer(
+        mut self,
+        observer: Arc<dyn observe::ExecutionObserver>,
+    ) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    pub(crate) fn observe_created(&self, execution: &ExecutionRecord) {
+        if let Some(observer) = &self.observer {
+            observer.created(execution);
+        }
+    }
+
+    pub(crate) fn observe_started(&self, execution: &ExecutionRecord) {
+        if let Some(observer) = &self.observer {
+            observer.started(execution);
+        }
+    }
+
+    pub(crate) fn observe_finished(
+        &self,
+        execution: &ExecutionRecord,
+        cause: observe::FinishCause,
+    ) {
+        if let Some(observer) = &self.observer {
+            observer.finished(execution, cause);
+        }
+    }
+
+    /// Connections currently open in the pool and how many of them are idle.
+    pub fn pool_stats(&self) -> (u32, u32) {
+        (self.pool.size(), self.pool.num_idle() as u32)
     }
 
     pub fn pool(&self) -> &PgPool {

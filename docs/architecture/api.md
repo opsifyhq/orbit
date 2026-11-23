@@ -28,7 +28,9 @@ an overview.
   proxy. IPv6 clients are counted per /64.
 - Idempotent execution creation: send an `Idempotency-Key` header or an `idempotencyKey`
   body field. Keys are scoped to the organization; a repeated key returns the execution
-  that was already created.
+  that was already created, but only for the same agent (otherwise 409). Keys starting
+  with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved for executions ORBIT
+  creates itself and are rejected (422).
 - Keyset pagination on agents, executions, execution events, agent instances and audit
   logs: `?limit=25&cursor=<opaque>` returns `{ "items": [...], "nextCursor": null }`
   (agents also return `total`). Other lists return a plain array.
@@ -80,7 +82,7 @@ validated with field-level `details` and recorded in the audit log.
 |---|---|
 | **System** | |
 | `GET /healthz`, `GET /readyz` | liveness / readiness (database gates; event bus reported as degraded) |
-| `GET /metrics` | Prometheus metrics |
+| `GET /metrics` | Prometheus metrics ([catalogue](../development/observability.md)); optional bearer token, optional dedicated port |
 | `GET /api/v1/meta` | platform version, auth mode, capabilities |
 | `GET /api/v1/docs` | embedded documentation index (sections and pages); authenticated |
 | `GET /api/v1/docs/{*path}` | one page by slug (for example `architecture/overview`): JSON with Markdown, `?format=markdown`, or HTML (`?format=html` / `Accept: text/html`); a path under `assets/` returns an embedded image |

@@ -486,14 +486,18 @@ pub(crate) async fn launch_profile_internal(
         single_execution_id,
         timeout_seconds,
     };
-    let result: LauncherStatus = match call_launcher(
+    let launch_started = std::time::Instant::now();
+    let launched = call_launcher(
         state,
         reqwest::Method::POST,
         "/launches",
         Some(serde_json::to_value(&request).unwrap_or_default()),
     )
-    .await
-    {
+    .await;
+    state
+        .metrics
+        .worker_launch_request(launched.is_ok(), launch_started.elapsed());
+    let result: LauncherStatus = match launched {
         Ok(result) => result,
         Err(error) => {
             let _ = state

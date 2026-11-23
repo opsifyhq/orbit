@@ -209,6 +209,12 @@ jobs:
             --set auth.acknowledgeInsecureDev=true \
             --set networkPolicy.enabled=true \
             --set worker.enabled=true --set worker.token=render-check-only > /dev/null
+          helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
+            --set auth.acknowledgeInsecureDev=true \
+            --set networkPolicy.enabled=true \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set monitoring.port=9090 \
+            --set monitoring.token.existingSecret=render-check-only > /dev/null
 
   # ---------------------------------------------------------------- migrations
   # AGENTS.md rule 7: migrations are append-only. A migration that already exists on the

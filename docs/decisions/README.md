@@ -16,3 +16,4 @@ new decision; do not edit an accepted one, supersede it.
 - [0011 — Multi-team access model](0011-multi-team-access-model.md)
 - [0012 — Decouple agents from harnesses](0012-decouple-agent-and-harness.md)
 - [0013 — Bulk lifecycle: agents archive, skills delete only](0013-bulk-lifecycle.md)
+- [0014 — Prometheus metrics from the API only](0014-prometheus-metrics.md)

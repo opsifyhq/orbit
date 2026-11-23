@@ -1669,6 +1669,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Prometheus scrape endpoint. Open unless `ORBIT_METRICS_TOKEN` is set, in which case
+         *     the scraper must send it as a bearer token.
+         */
         get: operations["metrics"];
         put?: never;
         post?: never;
@@ -6820,8 +6824,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Prometheus metrics */
+            /** @description Prometheus metrics in the text exposition format (0.0.4) */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": unknown;
+                };
+            };
+            /** @description A metrics token is configured and the request did not present it */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

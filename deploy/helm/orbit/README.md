@@ -258,6 +258,23 @@ applied on the next API start.
 | `terminationGracePeriodSeconds` | `30` | |
 | `nameOverride` / `fullnameOverride` | `""` | |
 
+### Monitoring (Prometheus)
+
+The API serves Prometheus metrics at `/metrics`; the ingress never routes it. Metric
+catalogue and examples: `docs/development/observability.md`.
+
+| Key | Default | Notes |
+|---|---|---|
+| `monitoring.annotations` | `false` | `prometheus.io/*` annotations on the API pods and Service; cannot be combined with `monitoring.token` |
+| `monitoring.port` | `0` | dedicated metrics port (e.g. `9090`); `0` serves `/metrics` on `api.port`. When set, `api.port` stops serving `/metrics` |
+| `monitoring.token.existingSecret` / `.key` | `""` / `token` | Secret (release namespace) with the bearer token scrapers must send |
+| `monitoring.serviceMonitor.enabled` | `false` | Prometheus Operator `ServiceMonitor`; needs the `monitoring.coreos.com/v1` CRDs |
+| `monitoring.serviceMonitor.namespace` / `.labels` | `""` / `{}` | release namespace by default (required with a token); add the label your Prometheus selects on |
+| `monitoring.serviceMonitor.interval` / `.scrapeTimeout` | `30s` / `10s` | |
+| `monitoring.serviceMonitor.scheme` / `.tlsConfig` | `http` / `{}` | |
+| `monitoring.serviceMonitor.relabelings` / `.metricRelabelings` | `[]` / `[]` | |
+| `monitoring.allowFrom` | `[]` | with `networkPolicy.enabled` and `monitoring.port`: peers allowed to reach the metrics port (empty = any) |
+
 ## Troubleshooting
 
 | Symptom | Fix |

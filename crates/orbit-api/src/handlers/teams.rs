@@ -274,6 +274,7 @@ fn validate_requested_repositories(
 async fn validate_work_source_connection(
     state: &AppState,
     org_id: Uuid,
+    access: &crate::access::AccessScope,
     source: &WorkSourceDefinition,
     issues: &mut Vec<ValidationIssue>,
 ) {
@@ -288,6 +289,35 @@ async fn validate_work_source_connection(
         .get_connection_with_connector(org_id, connection_id)
         .await
     {
+        // A connection the caller cannot view is reported exactly like a missing one.
+        Ok(connection)
+            if !access.can_view(
+                connection.connection.owner_user_id,
+                connection.connection.owner_team_id,
+                &connection.connection.visibility,
+            ) =>
+        {
+            issues.push(ValidationIssue::new(
+                "workSource.connectionId",
+                format!("unknown connection '{connection_id}'"),
+            ))
+        }
+        // The dispatcher polls and writes outcomes with this credential (#322).
+        Ok(connection)
+            if !access.can_use(
+                connection.connection.owner_user_id,
+                connection.connection.owner_team_id,
+                &connection.connection.visibility,
+            ) =>
+        {
+            issues.push(ValidationIssue::new(
+                "workSource.connectionId",
+                format!(
+                    "you cannot use connection '{}' for a work source",
+                    connection.connection.name
+                ),
+            ))
+        }
         Ok(connection) => {
             if connection.connector_slug != source.provider {
                 issues.push(ValidationIssue::new(
@@ -482,7 +512,7 @@ pub async fn create_team(
         }
     }
     if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
+        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
     }
     if let Some(profile_id) = body.worker_profile_id {
         let viewable = match state
@@ -668,7 +698,7 @@ pub async fn update_team(
         }
     }
     if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
+        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
     }
     if let Some(profile_id) = body.worker_profile_id {
         let viewable = match state
