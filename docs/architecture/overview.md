@@ -62,7 +62,7 @@ ORBIT is a Rust workspace with a Next.js frontend:
 | `crates/orbit-events` | Event bus (in-memory and NATS JetStream) |
 | `crates/orbit-security` | Authentication, permissions, secret encryption, licensing |
 | `crates/orbit-harness` | Harness adapters (mock, OpenCode, Pi), process supervision, workspace confinement |
-| `crates/orbit-kubernetes` | Read-only Kubernetes client behind the Kubernetes connector |
+| `crates/orbit-kubernetes` | Kubernetes client behind the connector: inspection plus restart/delete recovery |
 | `crates/orbit-api` | HTTP API (handlers, routes, OpenAPI, background loops) |
 | `services/api` | `orbit-api`: the control-plane binary |
 | `services/worker` | `orbit-worker`: the execution-plane binary and its tool broker |
