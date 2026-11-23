@@ -361,16 +361,35 @@ fn kubernetes_tool_specs(
                     "properties": { "namespace": { "type": "string" }, "name": { "type": "string" } },
                     "required": ["name"]
                 }),
+                "deployments.restart" => json!({
+                    "type": "object",
+                    "properties": { "namespace": { "type": "string" }, "name": { "type": "string" } },
+                    "required": ["name"]
+                }),
+                "pods.delete" => json!({
+                    "type": "object",
+                    "properties": {
+                        "namespace": { "type": "string" },
+                        "name": { "type": "string" },
+                        "gracePeriodSeconds": { "type": "integer", "minimum": 0, "maximum": 300 }
+                    },
+                    "required": ["name"]
+                }),
                 "events.list" => json!({
                     "type": "object",
                     "properties": { "namespace": { "type": "string" }, "fieldSelector": { "type": "string" } }
                 }),
                 _ => json!({ "type": "object" }),
             };
+            let description = match capability.as_str() {
+                "deployments.restart" => "Restart a deployment with a rolling update.",
+                "pods.delete" => "Delete one pod so its controller recreates it. Use only for a stuck pod.",
+                _ => "Kubernetes read capability.",
+            };
             ToolSpec {
                 capability: capability.clone(),
                 name: format!("kubernetes_{}", capability.replace('.', "_")),
-                description: format!("Kubernetes read capability {capability}."),
+                description: format!("{description} {capability}"),
                 effect,
                 input_schema,
                 binding: 0,
@@ -1644,6 +1663,28 @@ mod tests {
         assert_eq!(tools[0].name, "github_issues_list");
         assert_eq!(tools[1].name, "github_issues_comment");
         assert_eq!(tools[1].effect, CapabilityEffect::Write);
+    }
+
+    #[test]
+    fn kubernetes_recovery_tools_are_external_side_effects() {
+        let effects = std::collections::BTreeMap::from([
+            (
+                "deployments.restart".to_string(),
+                CapabilityEffect::ExternalSideEffect,
+            ),
+            (
+                "pods.delete".to_string(),
+                CapabilityEffect::ExternalSideEffect,
+            ),
+        ]);
+        let tools = kubernetes_tool_specs(
+            &["deployments.restart".to_string(), "pods.delete".to_string()],
+            &effects,
+        );
+        assert_eq!(tools[0].name, "kubernetes_deployments_restart");
+        assert_eq!(tools[0].effect, CapabilityEffect::ExternalSideEffect);
+        assert_eq!(tools[1].name, "kubernetes_pods_delete");
+        assert_eq!(tools[1].effect, CapabilityEffect::ExternalSideEffect);
     }
 
     #[test]

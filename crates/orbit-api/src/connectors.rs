@@ -193,6 +193,18 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                 capability("pods.logs", "Pod logs", "Reads bounded pod logs (current or previous).", CapabilityEffect::Read),
                 capability("deployments.list", "List deployments", "Lists deployments in a namespace.", CapabilityEffect::Read),
                 capability("deployments.get", "Get deployment", "Reads one deployment.", CapabilityEffect::Read),
+                capability(
+                    "deployments.restart",
+                    "Restart deployment",
+                    "Triggers a rolling restart by updating the pod template's restartedAt annotation.",
+                    CapabilityEffect::ExternalSideEffect,
+                ),
+                capability(
+                    "pods.delete",
+                    "Delete pod",
+                    "Deletes one pod; its Deployment/ReplicaSet recreates it. Use for a stuck pod.",
+                    CapabilityEffect::ExternalSideEffect,
+                ),
                 capability("events.list", "List events", "Lists namespace events.", CapabilityEffect::Read),
             ],
             config_schema: serde_json::json!({

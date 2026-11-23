@@ -18,7 +18,7 @@ The image follows the reader's light or dark colour scheme. A light PNG export i
 
 | Status | Components |
 |---|---|
-| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration and posting, SSE, audit, encrypted secrets, tool broker and tool policies, GitHub and GitLab connectors (approval-gated writes), read-only Kubernetes connector, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), continuous agent runtime, memory, launcher and K8s Jobs, OIDC, custom roles, access teams and sharing, webhook/Slack/Mattermost/Telegram outputs, offline licensing, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
+| **Implemented** | API, PostgreSQL schema, NATS/memory bus, mock harness, OpenCode v2.3.0, Pi v1.5.2, X read hydration and posting, SSE, audit, encrypted secrets, tool broker and tool policies, GitHub and GitLab connectors (approval-gated writes), Kubernetes connector with inspection and recovery actions, approval UI, Agent Teams (queue, dispatcher, multi-repo, close-the-loop), continuous agent runtime, memory, launcher and K8s Jobs, OIDC, custom roles, access teams and sharing, webhook/Slack/Mattermost/Telegram outputs, offline licensing, custom CA, dark/light mode, env var mappings, scripts in skills, per-agent models, Work wizard |
 | **Planned** | Inbound webhooks (webhook and event triggers are stored but never fire), Telegram and webhook connector invocation, large-scale simulation runs, Claude Code adapter |
 
 ## System context

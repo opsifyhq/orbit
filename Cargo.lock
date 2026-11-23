@@ -1694,6 +1694,7 @@ name = "orbit-kubernetes"
 version = "0.28.3"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "orbit-security",
  "reqwest",
  "serde_json",
