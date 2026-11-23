@@ -262,12 +262,10 @@ impl PiHarnessAdapter {
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "binary": { "type": "string", "description": "pi binary (default: pi)" },
                     "provider": { "type": "string" },
                     "model": { "type": "string" },
                     "thinking": { "type": "string", "enum": ["off","minimal","low","medium","high","xhigh","max"] },
-                    "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill directories or files passed with --skill" },
-                    "extraArgs": { "type": "array", "items": { "type": "string" } },
+                    "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill directories or files passed with --skill, relative to the execution workspace (no absolute paths or '..')" },
                     "sessionDir": { "type": "string", "description": "Session file directory, relative to the execution workspace (no absolute paths or '..')" },
                     "debugLogs": { "type": "boolean" }
                 }
@@ -556,6 +554,16 @@ impl PiHarnessAdapter {
             }
             _ => crate::paths::resolve_confined_dir(&workspace, ".pi-sessions").await?,
         };
+        // Extra skill paths are agent-author input too: `--skill /etc/...` would read worker
+        // files into the model context, so they stay inside the workspace (#303).
+        for skill in &settings.skills {
+            crate::paths::validate_relative_subpath(skill).map_err(|message| {
+                HarnessError::new(
+                    HarnessErrorKind::InvalidConfig,
+                    format!("Pi skill path '{skill}': {message}"),
+                )
+            })?;
+        }
 
         if let Some(bridge) = &settings.orbit_mcp {
             write_pi_mcp_config(&workspace, bridge).map_err(|e| {
@@ -825,6 +833,11 @@ impl HarnessAdapter for PiHarnessAdapter {
                         report.push("sessionDir", message);
                     }
                 }
+                for (idx, skill) in settings.skills.iter().enumerate() {
+                    if let Err(message) = crate::paths::validate_relative_subpath(skill) {
+                        report.push(format!("skills[{idx}]"), message);
+                    }
+                }
                 if let Some(thinking) = &settings.thinking {
                     if !["off", "minimal", "low", "medium", "high", "xhigh", "max"]
                         .contains(&thinking.as_str())
@@ -927,6 +940,30 @@ impl HarnessAdapter for PiHarnessAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn skill_paths_stay_inside_the_workspace() {
+        let adapter = PiHarnessAdapter;
+        for bad in ["/etc/shadow", "../../secrets", "a/../../b"] {
+            let report = adapter
+                .validate_config(&HarnessConfig {
+                    kind: HarnessKind::Pi,
+                    settings: serde_json::json!({ "skills": [bad] }),
+                })
+                .await;
+            assert!(
+                report.issues.iter().any(|issue| issue.path == "skills[0]"),
+                "{bad} accepted"
+            );
+        }
+        let ok = adapter
+            .validate_config(&HarnessConfig {
+                kind: HarnessKind::Pi,
+                settings: serde_json::json!({ "skills": [".pi/skills/review"] }),
+            })
+            .await;
+        assert!(ok.is_valid());
+    }
 
     #[tokio::test]
     async fn validate_config_rejects_escaping_session_dir() {
