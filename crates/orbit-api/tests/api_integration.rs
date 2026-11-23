@@ -11873,7 +11873,14 @@ async fn execution_limit_guard_is_inactive_without_a_limit() {
     ));
     drop(guard);
 
-    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": 1 })));
+    // Leave room for the executions other tests have already created in this database.
+    let used = app
+        .store
+        .count_all_executions_since_installation(Utc::now() - Duration::hours(24))
+        .await
+        .unwrap();
+    app.state.license =
+        LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": used + 1 })));
     let guard = app.state.execution_limit_guard().await.unwrap();
     assert!(matches!(
         &guard,
@@ -12005,11 +12012,16 @@ async fn opencode_import_respects_agent_limit() {
     .await;
     assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
     assert_eq!(body["error"]["code"], "license_limit");
-    assert_eq!(
-        app.store.count_agents_installation().await.unwrap(),
-        current,
-        "no agent may be created"
-    );
+    // Other tests share this database, so check the imported row rather than the global
+    // count that they may have changed concurrently.
+    let imported: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents WHERE org_id = $1 AND name = 'Blocked Import'",
+    )
+    .bind(app.org_id)
+    .fetch_one(app.store.pool())
+    .await
+    .unwrap();
+    assert_eq!(imported, 0, "no agent may be created");
 }
 
 #[tokio::test]
