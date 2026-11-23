@@ -1611,7 +1611,10 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         .claim_execution(execution.id, "worker-parts")
         .await
         .unwrap();
-    store.mark_execution_running(execution.id, None).await.unwrap();
+    store
+        .mark_execution_running(execution.id, None)
+        .await
+        .unwrap();
     store
         .finish_execution(
             execution.id,
@@ -1669,7 +1672,10 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
     // A pending row and a terminal one of the right age: only the latter is pruned.
     let cutoff = chrono::Utc::now() + chrono::Duration::seconds(1);
     assert_eq!(
-        store.prune_output_deliveries_before(cutoff, 10).await.unwrap(),
+        store
+            .prune_output_deliveries_before(cutoff, 10)
+            .await
+            .unwrap(),
         0,
         "a claimed sending row is never pruned"
     );
@@ -1685,10 +1691,17 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         .await
         .unwrap());
     assert_eq!(
-        store.prune_output_deliveries_before(cutoff, 10).await.unwrap(),
+        store
+            .prune_output_deliveries_before(cutoff, 10)
+            .await
+            .unwrap(),
         1
     );
-    assert!(store.list_output_deliveries(org, output.id, 10).await.unwrap().is_empty());
+    assert!(store
+        .list_output_deliveries(org, output.id, 10)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2630,7 +2643,10 @@ async fn terminal_executions_expire_their_pending_approvals() {
         .claim_execution(running.id, "worker-approvals")
         .await
         .unwrap();
-    store.mark_execution_running(running.id, None).await.unwrap();
+    store
+        .mark_execution_running(running.id, None)
+        .await
+        .unwrap();
     let approval = store
         .create_approval(
             org,
@@ -2652,7 +2668,10 @@ async fn terminal_executions_expire_their_pending_approvals() {
         .await
         .unwrap()
         .is_some());
-    assert_eq!(store.get_approval(org, approval.id).await.unwrap().status, "expired");
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
     let error = store
         .decide_approval(org, approval.id, "approved", user, None)
         .await
@@ -2661,7 +2680,12 @@ async fn terminal_executions_expire_their_pending_approvals() {
         matches!(error, orbit_store::StoreError::Conflict(_)),
         "{error}"
     );
-    assert!(store.get_approval(org, approval.id).await.unwrap().decided_by.is_none());
+    assert!(store
+        .get_approval(org, approval.id)
+        .await
+        .unwrap()
+        .decided_by
+        .is_none());
 
     // The user cancel path expires approvals too, even before the worker reports back.
     let queued = store
@@ -2682,7 +2706,10 @@ async fn terminal_executions_expire_their_pending_approvals() {
         .await
         .unwrap();
     assert_eq!(cancelled.status, "cancelled");
-    assert_eq!(store.get_approval(org, approval.id).await.unwrap().status, "expired");
+    assert_eq!(
+        store.get_approval(org, approval.id).await.unwrap().status,
+        "expired"
+    );
     assert!(matches!(
         store
             .decide_approval(org, approval.id, "rejected", user, None)

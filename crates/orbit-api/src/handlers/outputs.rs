@@ -781,7 +781,7 @@ impl TelegramEndpoint {
 
 /// Resume state for a claimed multi-part Telegram delivery. `store` is `None` for direct
 /// sends (tests and the test endpoint), which then always start at part zero.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct TelegramProgress<'a> {
     pub store: Option<&'a Store>,
     pub delivery_id: Uuid,
