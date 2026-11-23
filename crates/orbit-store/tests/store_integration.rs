@@ -1496,7 +1496,14 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             )
             .await
             .unwrap();
-        assert_eq!(store.enqueue_team_output_deliveries().await.unwrap(), 1);
+        store.enqueue_team_output_deliveries().await.unwrap();
+        let deliveries: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM output_deliveries WHERE output_id = $1")
+                .bind(output.id)
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(deliveries, if task == "first" { 1 } else { 2 });
     }
     // Make the order unambiguous and record a failure on the newest delivery, the way
     // `finish_output_delivery` would.
