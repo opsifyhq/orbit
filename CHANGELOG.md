@@ -8,6 +8,13 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Git clone/push no longer fails with `cannot exec .orbit-git-askpass-*.sh: text file busy`.
+  The askpass helper is closed before git execs it; Linux returns ETXTBSY when execve()
+  targets a file still open for writing (affects v0.27.0).
+
+
 <
 ### Added
 
