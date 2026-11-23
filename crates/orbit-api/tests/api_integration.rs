@@ -5832,6 +5832,182 @@ async fn worker_offline_and_heartbeat_are_owner_scoped() {
 }
 
 #[tokio::test]
+async fn heartbeat_with_new_boot_fails_previous_boot_team_execution() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "boot-worker").await;
+    let worker_id = format!("boot-worker-{}", Uuid::now_v7());
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    // maxAttempts > 1: the platform-ended run must still close the item without retrying.
+    let item = queue_item(&app, team, "gh#boot", 3).await;
+    app.store
+        .claim_team_queue_item(app.org_id, item)
+        .await
+        .unwrap()
+        .unwrap();
+    let run_id = start_run(&app, team).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert!(app
+        .store
+        .attach_team_run_to_queue_item(app.org_id, item, run.id)
+        .await
+        .unwrap());
+    let step = app.store.current_team_step(run.id).await.unwrap().unwrap();
+    let execution_id = step.execution_id.unwrap();
+    assert_eq!(claim_as(&app, &token, &worker_id).await, Some(execution_id));
+    app.store
+        .mark_execution_running(execution_id, None)
+        .await
+        .unwrap();
+
+    let first = json!({
+        "workerId": worker_id,
+        "harnesses": ["mock"],
+        "target": "local",
+        "bootId": Uuid::now_v7(),
+        "startedAt": Utc::now() - Duration::seconds(30),
+        "activeExecutionIds": [execution_id],
+    });
+    let (status, body) = send(
+        &app.router,
+        worker_request("POST", "/api/v1/worker/heartbeat", &token, Some(first)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/heartbeat",
+            &token,
+            Some(json!({
+                "workerId": worker_id,
+                "harnesses": ["mock"],
+                "target": "local",
+                "bootId": Uuid::now_v7(),
+                "startedAt": Utc::now(),
+                "activeExecutionIds": [],
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let execution = app
+        .store
+        .get_execution(app.org_id, execution_id)
+        .await
+        .unwrap();
+    assert_eq!(execution.status, "failed");
+    assert_eq!(execution.error.as_ref().unwrap()["code"], "worker_lost");
+    let step = app.store.current_team_step(run.id).await.unwrap().unwrap();
+    assert_eq!(step.status, "failed");
+    let run = app.store.get_team_run(app.org_id, run.id).await.unwrap();
+    assert_eq!(run.status, "failed");
+    let queue = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(queue.status, "failed");
+    assert_eq!(queue.error.as_deref(), run.error.as_deref());
+}
+
+#[tokio::test]
+async fn startup_reconciliation_reaps_expired_leases_but_not_live_ones() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&[], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "lease-worker").await;
+    let worker_id = format!("lease-worker-{}", Uuid::now_v7());
+    // The demo agent allows one active execution, so use a second agent for the live one.
+    let second_agent = create_demo_agent(
+        &app.store,
+        app.org_id,
+        app.state.dev_identity.as_ref().unwrap().user_id,
+    )
+    .await;
+    let stale = queue_execution(&app, "lease-stale").await;
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            &format!("/api/v1/agents/{second_agent}/executions"),
+            "test-token",
+            json!({ "task": "lease-live" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let live = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    let claimed = vec![
+        claim_as(&app, &token, &worker_id).await.unwrap(),
+        claim_as(&app, &token, &worker_id).await.unwrap(),
+    ];
+    assert!(claimed.contains(&stale) && claimed.contains(&live));
+    for execution_id in &claimed {
+        app.store
+            .mark_execution_running(*execution_id, None)
+            .await
+            .unwrap();
+    }
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/heartbeat",
+            &token,
+            Some(json!({
+                "workerId": worker_id,
+                "harnesses": ["mock"],
+                "target": "local",
+                "bootId": Uuid::now_v7(),
+                "startedAt": Utc::now(),
+                "activeExecutionIds": claimed,
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    // The worker is alive and its heartbeat is fresh; only this execution stopped
+    // reporting. Its lease expired well beyond the stale threshold.
+    sqlx::query(
+        "UPDATE executions
+         SET last_execution_heartbeat_at = now() - interval '2 minutes',
+             execution_lease_until = now() - interval '2 minutes'
+         WHERE id = $1",
+    )
+    .bind(stale)
+    .execute(&raw_pool().await)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE executions
+         SET last_execution_heartbeat_at = now(),
+             execution_lease_until = now() + interval '90 seconds'
+         WHERE id = $1",
+    )
+    .bind(live)
+    .execute(&raw_pool().await)
+    .await
+    .unwrap();
+
+    orbit_api::background::reconcile_startup(&app.state).await;
+
+    let stale = app.store.get_execution(app.org_id, stale).await.unwrap();
+    assert_eq!(stale.status, "failed");
+    assert_eq!(
+        stale.error.as_ref().unwrap()["code"],
+        "harness_unresponsive"
+    );
+    let live = app.store.get_execution(app.org_id, live).await.unwrap();
+    assert_eq!(live.status, "running");
+    assert!(live.error.is_none());
+}
+
+#[tokio::test]
 async fn worker_launches_follow_profile_visibility() {
     let Some(app) = test_app(true).await else {
         return;

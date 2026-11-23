@@ -99,6 +99,22 @@ unanswered cancel request (`reap_unstarted_executions` in `crates/orbit-store/sr
 A worker that reports `running` for an execution that has already ended gets `409 Conflict`
 and must not start the harness.
 
+### Execution liveness
+
+A worker process has a per-process `bootId` (UUID v7) and `startedAt` timestamp in addition
+to its routing `workerId`. Every worker heartbeat includes both and the ids of all active
+executions. For each listed execution the API refreshes `last_execution_heartbeat_at` and
+extends `execution_lease_until` by `ORBIT_EXECUTION_LEASE_SECONDS` (90 by default), which is
+several heartbeat intervals. A missing field is treated as an older worker: its runs stay
+on worker-level heartbeat liveness only, so mixed-version rolling upgrades are safe.
+
+When a heartbeat arrives with a new `bootId`, executions still active under the previous
+boot are failed with `worker_lost` and are not resumed: their side effects are unknown.
+When the worker's own heartbeat stays fresh but an execution stops appearing in
+`activeExecutionIds` past its lease, the API fails it with `harness_unresponsive` after the
+same 90-second grace period. In both cases team steps, runs and queue items become terminal
+without an automatic retry. Workers never derive permissions from these fields.
+
 ## Inputs
 
 `ExecutionRequest` carries:

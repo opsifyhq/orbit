@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use orbit_domain::{HarnessKind, TeamAutonomy, TeamAutonomyMode, TriggerSource, ValidationIssue};
 use orbit_security::{AuthContext, Permission};
-use orbit_store::{AgentTeam, TeamRun, TeamStep};
+use orbit_store::{AgentTeam, ExecutionRecord, TeamRun, TeamStep};
 
 use crate::dto::{TeamRunListQuery, TeamRunPage};
 use crate::error::ApiError;
@@ -1546,7 +1546,7 @@ async fn advance_claimed(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
                         current.id,
                         "failed",
                         execution.output.as_ref(),
-                        Some(&execution.status),
+                        Some(&execution_error_message(&execution)),
                     )
                     .await?
                 else {
@@ -1571,6 +1571,55 @@ async fn fail_run_for_step(state: &AppState, run: &TeamRun, step: &TeamStep) -> 
     finalize_run(state, run, "failed", step.output.as_ref(), Some(&message)).await
 }
 
+/// Human-readable reason recorded on a step whose execution ended outside the harness.
+fn execution_error_message(execution: &ExecutionRecord) -> String {
+    execution
+        .error
+        .as_ref()
+        .and_then(|error| error.get("message").and_then(serde_json::Value::as_str))
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "worker failed".into())
+}
+
+/// Fail the team run whose current step owns an execution ended by the platform (worker
+/// restart, lost heartbeat or expired lease). Both writes are conditional, so repeated
+/// calls from the heartbeat and reaper paths are safe.
+pub(crate) async fn fail_team_run_for_execution(
+    state: &AppState,
+    execution: &ExecutionRecord,
+) -> anyhow::Result<()> {
+    let Some(run_id) = execution.team_run_id else {
+        return Ok(());
+    };
+    let run = state.store.get_team_run(execution.org_id, run_id).await?;
+    let Some(step) = state.store.current_team_step(run_id).await? else {
+        return Ok(());
+    };
+    if step.execution_id != Some(execution.id)
+        || !matches!(step.status.as_str(), "running" | "failed")
+    {
+        return Ok(());
+    }
+    let message = execution_error_message(execution);
+    if step.status == "running" {
+        // `None` means another caller already finished this step; still finalize the run.
+        let _ = state
+            .store
+            .finish_team_step(step.id, "failed", execution.output.as_ref(), Some(&message))
+            .await?;
+    }
+    let error = format!("step '{}' finished with {}", step.name, message);
+    finalize_run_no_retry(
+        state,
+        &run,
+        "failed",
+        execution.output.as_ref(),
+        Some(&error),
+    )
+    .await
+}
+
 /// Move a run to a terminal status (conditionally) and close the queue loop. If closing
 /// the loop fails the queue item stays `running` with a terminal run; the outcome
 /// reconciler (`reconcile_team_outcomes`) retries it on later ticks.
@@ -1589,6 +1638,32 @@ async fn finalize_run(
         return Ok(());
     };
     crate::team_outcomes::close_queue_loop(
+        state,
+        &updated,
+        status,
+        updated.output.as_ref(),
+        updated.error.as_deref(),
+    )
+    .await
+}
+
+/// Same terminal transition as `finalize_run`, but closes the queue item terminal without
+/// offering a retry. Used when the platform - not the harness - ended the execution.
+async fn finalize_run_no_retry(
+    state: &AppState,
+    run: &TeamRun,
+    status: &str,
+    output: Option<&serde_json::Value>,
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(updated) = state
+        .store
+        .finish_team_run(run.id, status, output, error)
+        .await?
+    else {
+        return Ok(());
+    };
+    crate::team_outcomes::close_queue_loop_without_retry(
         state,
         &updated,
         status,

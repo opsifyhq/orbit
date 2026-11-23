@@ -25,6 +25,8 @@ pub enum FinishCause {
     NeverStarted,
     /// Reaped: the execution ran past its deadline.
     TimedOut,
+    /// Reaped: the execution's lease expired while its worker was still alive.
+    HarnessUnresponsive,
 }
 
 impl FinishCause {
@@ -34,6 +36,7 @@ impl FinishCause {
             FinishCause::WorkerLost => Some("worker_lost"),
             FinishCause::NeverStarted => Some("never_started"),
             FinishCause::TimedOut => Some("timed_out"),
+            FinishCause::HarnessUnresponsive => Some("harness_unresponsive"),
             FinishCause::Reported | FinishCause::CancelledWhileQueued => None,
         }
     }

@@ -101,6 +101,10 @@ async fn main() -> anyhow::Result<()> {
         shutdown: shutdown.clone(),
     };
 
+    // End work left behind by a previous API process before any background loop starts.
+    // Reconciliation is best-effort: a store failure is logged, not fatal to startup.
+    orbit_api::background::reconcile_startup(&state).await;
+
     let background = orbit_api::background::spawn(state.clone());
     let metrics_server = match &config.metrics_addr {
         Some(addr) => {

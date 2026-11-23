@@ -265,6 +265,14 @@ pub struct ExecutionRecord {
     pub requested_by: Option<Uuid>,
     pub worker_id: Option<String>,
     #[sqlx(default)]
+    pub last_execution_heartbeat_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub execution_lease_until: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub worker_boot_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub worker_boot_started_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
     pub team_run_id: Option<Uuid>,
     #[sqlx(default)]
     pub team_step_index: Option<i32>,

@@ -197,10 +197,13 @@ function ExecutionDetail() {
     : errorCode === "worker_did_not_start"
       ? "A worker took this run but never started it, so ORBIT ended it. This usually means the worker could not read the run, for example because it is older than the platform. Its logs in Workers say more."
       : errorCode === "worker_lost"
-        ? "The worker running this stopped responding, so the outcome is unknown. Check whether it made any changes before running it again."
-        : String((execution.error as { message?: string }).message ?? "Unknown error");
+        ? "The worker running this stopped responding or restarted, so the outcome is unknown. Check whether it made any changes before running it again."
+        : errorCode === "harness_unresponsive"
+          ? "The worker is still online but stopped reporting this run, so the outcome is unknown. Check whether it made any changes before running it again."
+          : String((execution.error as { message?: string }).message ?? "Unknown error");
 
   const errorInfo = (execution.error ?? {}) as { kind?: string; retryable?: boolean };
+  const lostByWorker = errorCode === "worker_lost" || errorCode === "harness_unresponsive";
   const errorMeta =
     execution.error && execution.status !== "cancelled"
     ? [
@@ -213,6 +216,7 @@ function ExecutionDetail() {
           : errorInfo.retryable === false
             ? "Running it again unchanged will fail the same way."
             : null,
+        lostByWorker ? "Check for side effects before using Run again." : null,
       ]
         .filter(Boolean)
         .join(". ")
@@ -456,6 +460,19 @@ function ExecutionDetail() {
                   { label: "Finished", value: formatDateTime(execution.finishedAt) },
                   { label: "Timeout", value: `${execution.timeoutSeconds} s` },
                   execution.workerId && { label: "Worker", value: execution.workerId, mono: true },
+                  execution.workerBootId && {
+                    label: "Worker boot",
+                    value: execution.workerBootId,
+                    mono: true,
+                  },
+                  execution.lastExecutionHeartbeatAt && {
+                    label: "Last execution heartbeat",
+                    value: formatDateTime(execution.lastExecutionHeartbeatAt),
+                  },
+                  execution.executionLeaseUntil && {
+                    label: "Lease until",
+                    value: formatDateTime(execution.executionLeaseUntil),
+                  },
                   execution.sessionRef && { label: "Session", value: execution.sessionRef, mono: true },
                   execution.idempotencyKey && {
                     label: "Idempotency key",

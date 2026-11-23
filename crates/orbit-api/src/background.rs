@@ -621,6 +621,8 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
 
 /// A worker whose heartbeat stops for this long is considered gone.
 pub(crate) const HEARTBEAT_STALE_SECONDS: i64 = 90;
+/// How long an execution lease is valid after the worker's last heartbeat.
+pub(crate) const EXECUTION_LEASE_SECONDS: i64 = 90;
 /// A claimed run with no activity for this long was never started by its worker. Long
 /// enough for a large repository checkout, which reports only when it finishes.
 const UNSTARTED_SILENT_SECONDS: i64 = 600;
@@ -722,7 +724,7 @@ async fn reap(state: &AppState) -> bool {
                     worker_id = ?execution.worker_id,
                     "reaped orphaned execution"
                 );
-                report_reaped(
+                report_ended_execution(
                     state,
                     &execution,
                     "worker heartbeat expired; execution marked failed",
@@ -734,6 +736,35 @@ async fn reap(state: &AppState) -> bool {
         Err(error) => {
             ok = false;
             tracing::warn!(%error, "execution reaper failed");
+        }
+    }
+
+    // A live worker that stops reporting an execution leaves its lease to expire. The
+    // outcome is genuinely unknown, so end it as failed rather than running forever.
+    match state
+        .store
+        .reap_expired_execution_leases(HEARTBEAT_STALE_SECONDS)
+        .await
+    {
+        Ok(rows) => {
+            for execution in rows {
+                tracing::warn!(
+                    execution_id = %execution.id,
+                    worker_id = ?execution.worker_id,
+                    "reaped execution with an expired lease"
+                );
+                report_ended_execution(
+                    state,
+                    &execution,
+                    "worker stopped reporting this execution; outcome is unknown",
+                    &orbit_store::workers::harness_unresponsive_error(),
+                )
+                .await;
+            }
+        }
+        Err(error) => {
+            ok = false;
+            tracing::warn!(%error, "expired execution lease reaper failed");
         }
     }
 
@@ -759,7 +790,7 @@ async fn reap(state: &AppState) -> bool {
                 let data = execution.error.clone().unwrap_or_else(
                     || serde_json::json!({ "code": "worker_did_not_start", "retryable": true }),
                 );
-                report_reaped(state, &execution, message, &data).await;
+                report_ended_execution(state, &execution, message, &data).await;
             }
         }
         Err(error) => {
@@ -787,7 +818,7 @@ async fn reap(state: &AppState) -> bool {
                 let data = execution.error.clone().unwrap_or_else(
                     || serde_json::json!({ "code": "execution_timeout", "retryable": true }),
                 );
-                report_reaped(state, &execution, &message, &data).await;
+                report_ended_execution(state, &execution, &message, &data).await;
             }
         }
         Err(error) => {
@@ -799,7 +830,7 @@ async fn reap(state: &AppState) -> bool {
 }
 
 /// Record why the platform ended an execution and tell subscribers.
-async fn report_reaped(
+pub(crate) async fn report_ended_execution(
     state: &AppState,
     execution: &orbit_store::ExecutionRecord,
     message: &str,
@@ -831,6 +862,24 @@ async fn report_reaped(
     .with_org(execution.org_id)
     .with_idempotency(format!("reap:{}", execution.id));
     let _ = state.bus.publish(event).await;
+    // A worker that vanished (or stopped reporting a still-live harness) may have caused
+    // side effects, so its team run must not be auto-retried. Other endings keep the
+    // normal team poller behaviour, including queue retries for runs that never started.
+    let code = data.get("code").and_then(serde_json::Value::as_str);
+    if matches!(code, Some("worker_lost" | "harness_unresponsive")) {
+        if let Err(error) =
+            crate::handlers::teams::fail_team_run_for_execution(state, execution).await
+        {
+            tracing::warn!(%error, execution_id = %execution.id, "failed to fail team run for ended execution");
+        }
+    }
+}
+
+/// End executions left over from a previous API process before background loops start.
+/// The reaper is idempotent; a failed pass is retried by the regular tick.
+pub async fn reconcile_startup(state: &AppState) {
+    let ok = reap(state).await;
+    tracing::info!(ok, "startup execution reconciliation completed");
 }
 
 /// Relaunch platform-follow worker profiles when ORBIT_IMAGE_TAG changes. The old token

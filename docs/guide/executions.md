@@ -74,8 +74,11 @@ ended is expired and cannot be decided (409).
   spent waiting for an approval is added. Raise the timeout in Agent Studio ("Run limits")
   or give the agent a smaller task.
 - `worker_lost` (a `failed` run): the worker running it stopped sending heartbeats for 90
-  seconds, so the outcome is unknown. Check whether it changed anything before running it
-  again.
+  seconds, or restarted with a new boot id while the run was still active, so the outcome
+  is unknown. Check whether it changed anything before running it again.
+- `harness_unresponsive` (a `failed` run): the worker is still sending its own heartbeats
+  but stopped reporting this run for 90 seconds, so the harness may be hung. Check for side
+  effects before running it again.
 - `worker_did_not_start` (a `failed` run): a worker took the run but never started it.
   ORBIT ends it after 10 minutes without activity, or one minute after you cancel it. The
   worker's logs on the Workers page usually say why, for example a worker older than the

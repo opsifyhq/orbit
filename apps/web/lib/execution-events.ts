@@ -131,6 +131,12 @@ function describeStatus(message: string): { title: string; tone?: EventTone } {
   if (/^worker heartbeat expired/.test(message)) {
     return { title: "Ended: the worker stopped responding", tone: "danger" };
   }
+  if (/^worker restarted; execution outcome is unknown/.test(message)) {
+    return { title: "Ended: the worker restarted mid-run", tone: "danger" };
+  }
+  if (/^worker stopped reporting this execution/.test(message)) {
+    return { title: "Ended: the worker stopped reporting this run", tone: "danger" };
+  }
   match = message.match(/^execution finished with status (\w+)/);
   if (match) return { title: `Ended: ${humanizeIdentifier(match[1]).toLowerCase()}`, tone: "danger" };
   return { title: message };

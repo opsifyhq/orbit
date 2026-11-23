@@ -7040,6 +7040,13 @@
             "format": "date-time"
           },
           "error": {},
+          "executionLeaseUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "finishedAt": {
             "type": [
               "string",
@@ -7061,6 +7068,13 @@
             ]
           },
           "input": {},
+          "lastExecutionHeartbeatAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "orgId": {
             "type": "string",
             "format": "uuid"
@@ -7138,6 +7152,20 @@
             "format": "date-time"
           },
           "usage": {},
+          "workerBootId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "workerBootStartedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "workerId": {
             "type": [
               "string",

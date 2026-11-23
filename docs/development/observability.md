@@ -123,7 +123,7 @@ scrape_configs:
 | `orbit_execution_duration_seconds` | histogram | `harness`, `status` | `running` to terminal. Runs that never ran have no sample. |
 | `orbit_execution_queue_wait_seconds` | histogram | | Accepted to `running`: queueing, worker start-up and checkout. |
 | `orbit_execution_timeouts_total` | counter | | Ended as `timed_out`. |
-| `orbit_executions_reaped_total` | counter | `reason` | Ended by the control plane: `worker_lost`, `never_started`, `timed_out`. |
+| `orbit_executions_reaped_total` | counter | `reason` | Ended by the control plane: `worker_lost`, `harness_unresponsive`, `never_started`, `timed_out`. |
 | `orbit_executions_in_flight` | gauge | `status` | Installation-wide: `queued`, `dispatched`, `running`, `awaiting_approval`. |
 
 ### Workers

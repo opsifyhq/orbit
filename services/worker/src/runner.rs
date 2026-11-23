@@ -16,7 +16,12 @@ use uuid::Uuid;
 /// Shared worker state.
 #[derive(Clone)]
 pub struct WorkerState {
+    /// Stable routing identifier for this worker (may repeat across restarts).
     pub worker_id: String,
+    /// Per-process identity, used by the control plane to detect worker restarts.
+    pub boot_id: Uuid,
+    /// Start time of this process, paired with [`WorkerState::boot_id`] for liveness.
+    pub boot_started_at: chrono::DateTime<chrono::Utc>,
     pub client: crate::client::WorkerClient,
     pub registry: Arc<orbit_harness::HarnessRegistry>,
     pub workspace_root: std::path::PathBuf,
@@ -80,7 +85,7 @@ pub fn track(state: &WorkerState, id: Uuid) -> (ActiveGuard, tokio_util::sync::C
     )
 }
 
-fn active_ids(state: &WorkerState) -> Vec<Uuid> {
+pub(crate) fn active_ids(state: &WorkerState) -> Vec<Uuid> {
     state
         .active
         .lock()
@@ -1327,6 +1332,8 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         WorkerState {
             worker_id: "test-worker".into(),
+            boot_id: Uuid::nil(),
+            boot_started_at: chrono::Utc::now(),
             client: crate::client::WorkerClient::new(format!("http://{addr}"), "token").unwrap(),
             registry: Arc::new(orbit_harness::HarnessRegistry::builtin()),
             workspace_root: std::env::temp_dir(),
@@ -1665,6 +1672,8 @@ mod cleanup_tests {
         });
         let state = WorkerState {
             worker_id: "cleanup-test".into(),
+            boot_id: Uuid::nil(),
+            boot_started_at: chrono::Utc::now(),
             client: WorkerClient::new(format!("http://{address}"), "test-token").unwrap(),
             registry: Arc::new(HarnessRegistry::builtin()),
             workspace_root: workspace_root.clone(),
@@ -1869,6 +1878,8 @@ mod lifecycle_tests {
         let root = tempfile::tempdir().unwrap().keep();
         let state = WorkerState {
             worker_id: "lifecycle-test".into(),
+            boot_id: Uuid::nil(),
+            boot_started_at: chrono::Utc::now(),
             client: WorkerClient::new(format!("http://{addr}"), "token").unwrap(),
             registry: Arc::new(orbit_harness::HarnessRegistry::builtin()),
             workspace_root: root,

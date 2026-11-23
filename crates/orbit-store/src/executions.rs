@@ -9,7 +9,7 @@ use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
 /// Expire an execution's outstanding approvals in the same transaction that ends the run.
 /// A human must never be able to authorise work for a run that is already over.
-async fn expire_pending_approvals(
+pub(crate) async fn expire_pending_approvals(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     execution_id: Uuid,
 ) -> StoreResult<()> {
@@ -334,7 +334,8 @@ impl Store {
                 usage = COALESCE($5, usage),
                 session_ref = COALESCE($6, session_ref),
                 finished_at = now(),
-                updated_at = now()
+                updated_at = now(),
+                execution_lease_until = NULL
             WHERE id = $1
               AND status = ANY($7)
             RETURNING *
