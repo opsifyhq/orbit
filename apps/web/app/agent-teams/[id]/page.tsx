@@ -9,6 +9,7 @@ import { Download, Ellipsis, Pencil, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { exportResource } from "@/components/export-resource-button";
+import { LinkedOutputs } from "@/components/outputs/linked-outputs";
 import { RunTeamDialog } from "@/components/teams/run-team-dialog";
 import { AgentSteps, MODE_HINT, MODE_LABEL, agentLookup, modelLabel, teamMode } from "@/components/teams/team-parts";
 import { TeamQueue } from "@/components/teams/team-queue";
@@ -38,6 +39,7 @@ import {
   useAllAgents,
   useConnections,
   useEnvMappings,
+  useOutputs,
   useSkills,
   useTeamQueue,
   useTeamRuns,
@@ -62,6 +64,7 @@ export default function AgentTeamPage() {
   const connections = useConnections();
   const envMappings = useEnvMappings();
   const workerProfiles = useWorkerProfiles();
+  const outputs = useOutputs();
   const runs = useTeamRuns({ teamId });
   const queue = useTeamQueue(teamId);
 
@@ -328,6 +331,8 @@ export default function AgentTeamPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              <LinkedOutputs outputs={outputs.data ?? []} scope="team" id={teamId} />
             </div>
           </div>
         </TabsContent>

@@ -728,9 +728,19 @@ export default function WorkPage() {
             <div className="rounded-lg border bg-card p-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium">Outputs</p>
-                <Link href="/outputs" className="text-[13px] font-medium text-primary underline-offset-4 hover:underline">
-                  Manage outputs
-                </Link>
+                <div className="flex items-center gap-3 text-[13px] font-medium">
+                  {who ? (
+                    <Link
+                      href={`/outputs/new?${whoType === "agent" ? "agent" : "team"}=${who}`}
+                      className="text-primary underline-offset-4 hover:underline"
+                    >
+                      New output
+                    </Link>
+                  ) : null}
+                  <Link href="/outputs" className="text-muted-foreground underline-offset-4 hover:underline">
+                    Manage
+                  </Link>
+                </div>
               </div>
               {outputs.isLoading ? (
                 <p className="mt-1.5 text-[13px] text-muted-foreground">Loading outputs</p>
