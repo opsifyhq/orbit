@@ -1,7 +1,6 @@
 import { useState } from "react";
 
 import type { WorkerProfile } from "@/lib/types";
-import { DEFAULT_WORKER_IMAGES } from "@/lib/worker-images";
 
 export type InlineMapping = { envVar: string; connectionId: string; secretKey: string };
 
@@ -44,15 +43,20 @@ type Resources = {
   workspace?: { sizeLimit?: string };
 };
 
+/**
+ * Harness-neutral starting point. Image and tag stay empty so the API applies the
+ * installation's registry and version; provider and model come from the catalog, never
+ * from a hardcoded default.
+ */
 export const DEFAULT_WORKER_FORM: WorkerFormValues = {
-  name: "OpenCode production",
-  harness: "opencode",
+  name: "New worker profile",
+  harness: "",
   target: "docker",
   driver: "process",
-  image: DEFAULT_WORKER_IMAGES.opencode,
+  image: "",
   tag: "",
-  provider: "opencode-go",
-  model: "deepseek-v4-pro",
+  provider: "",
+  model: "",
   authSecret: "",
   envMappings: [],
   envMappingIds: [],

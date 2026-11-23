@@ -5,6 +5,7 @@ import { Callout } from "@/components/ui/callout";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { isOrbitManagedProvider } from "@/lib/provider-meta";
 import type { useProviders } from "@/lib/queries";
 import {
   harnessLabel,
@@ -12,11 +13,8 @@ import {
   providerOptionValue,
   resolveProvider,
 } from "@/lib/worker-harness";
-import { DEFAULT_WORKER_IMAGES } from "@/lib/worker-images";
 
 import type { WorkerFormApi } from "./worker-form";
-
-const DEFAULT_IMAGES = DEFAULT_WORKER_IMAGES;
 
 export type ProviderRow = NonNullable<ReturnType<typeof useProviders>["data"]>[number];
 
@@ -25,7 +23,7 @@ export { providerOptionValue, resolveProvider };
 /** Provider and model, from the catalogue kept under Models. */
 export function ModelFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
   const { values, set } = form;
-  const { provider, model, image } = values;
+  const { provider, model } = values;
   const { selectedProvider, providerModels } = resolveProvider(providers, provider);
   const mismatch = harnessMismatch(values.harness, provider, providers);
 
@@ -76,10 +74,10 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
                       })}
                   </optgroup>
                 ) : null}
-                {providers.some((candidate) => candidate.kind === "openai_compatible") ? (
+                {providers.some((candidate) => isOrbitManagedProvider(candidate.kind)) ? (
                   <optgroup label="ORBIT-managed (API key stored in ORBIT)">
                     {providers
-                      .filter((candidate) => candidate.kind === "openai_compatible")
+                      .filter((candidate) => isOrbitManagedProvider(candidate.kind))
                       .map((candidate) => (
                         <option key={candidate.id} value={providerOptionValue(candidate)}>
                           {candidate.name}
@@ -140,10 +138,8 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
               size="sm"
               variant="outline"
               onClick={() => {
-                set({
-                  harness: mismatch.providerHarness,
-                  image: DEFAULT_IMAGES[mismatch.providerHarness] ?? image,
-                });
+                // Let the API fill the installation's image for the new harness.
+                set({ harness: mismatch.providerHarness, image: "" });
                 toast.success(`Worker switched to ${harnessLabel(mismatch.providerHarness)}`);
               }}
             >
@@ -166,7 +162,7 @@ export function AuthSecretField({ form }: { form: WorkerFormApi }) {
       label="Harness auth secret"
       htmlFor="wp-auth"
       optional
-      hint="Only for harness-managed providers such as OpenCode Go. Leave blank for ORBIT-managed providers; their credentials are injected at runtime."
+      hint="Only for providers signed in through the harness. Leave blank for ORBIT-managed providers; their credentials are injected at runtime."
     >
       <Input
         id="wp-auth"
