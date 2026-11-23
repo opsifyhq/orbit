@@ -474,9 +474,14 @@ async fn build_context(
         Some(user_id) => Some(AccessScope::load_for_user(state, org_id, user_id).await?),
         None => None,
     };
+    // A team step runs the model its team configured, not only the agent's own (#305).
+    // Applied before resolution, so the provider access check covers the model used.
+    if let Some(override_model) = execution.input.get("team").and_then(model_override_in) {
+        override_model.apply(&mut spec.model);
+    }
     let model = resolve_model(&state.store, org_id, &spec, access.as_ref()).await?;
     let mut subagent_models = Vec::new();
-    for (agent_id, name) in team_subagents(execution) {
+    for (agent_id, name, subagent_override) in team_subagents(execution) {
         let agent = state
             .store
             .get_agent(org_id, agent_id)
@@ -487,9 +492,12 @@ async fn build_context(
             .get_current_version(org_id, &agent)
             .await
             .map_err(|_| ApiError::conflict(format!("subagent '{name}' has no current version")))?;
-        let sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
+        let mut sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
             ApiError::internal(format!("subagent '{name}' spec is invalid: {error}"))
         })?;
+        if let Some(override_model) = &subagent_override {
+            override_model.apply(&mut sub_spec.model);
+        }
         let resolved = resolve_model(&state.store, org_id, &sub_spec, access.as_ref()).await?;
         subagent_models.push(WorkerSubagentModel {
             agent_id,
@@ -540,7 +548,13 @@ fn team_ids(execution: &ExecutionRecord, key: &str) -> Vec<Uuid> {
         .unwrap_or_default()
 }
 
-fn team_subagents(execution: &ExecutionRecord) -> Vec<(Uuid, String)> {
+type SubagentRef = (
+    Uuid,
+    String,
+    Option<crate::handlers::teams::TeamModelOverride>,
+);
+
+fn team_subagents(execution: &ExecutionRecord) -> Vec<SubagentRef> {
     execution
         .input
         .get("team")
@@ -556,11 +570,21 @@ fn team_subagents(execution: &ExecutionRecord) -> Vec<(Uuid, String)> {
                         .and_then(|value| value.as_str())
                         .unwrap_or("subagent")
                         .to_string();
-                    Some((agent_id, name))
+                    Some((agent_id, name, model_override_in(item)))
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The team or step model override the API recorded with a team execution (#305).
+fn model_override_in(
+    value: &serde_json::Value,
+) -> Option<crate::handlers::teams::TeamModelOverride> {
+    value
+        .get("modelOverride")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 async fn merge_team_connections(

@@ -3693,6 +3693,78 @@ async fn worker_context_withholds_credential_from_unauthorized_principal() {
     );
 }
 
+/// #305: a step's model override reaches the worker context, so the step runs the model
+/// (and provider credential) the team configured, not only the agent's own.
+#[tokio::test]
+async fn team_step_model_override_reaches_the_worker() {
+    let Some(f) = provider_fixture().await else {
+        return;
+    };
+    let issued = orbit_security::issue_worker_token();
+    let token = f
+        .app
+        .store
+        .create_worker_token(
+            f.app.org_id,
+            None,
+            "override-test",
+            &issued.prefix,
+            &issued.hash,
+            &[],
+        )
+        .await
+        .unwrap();
+    // The step agent has no provider of its own; the team step names one.
+    let team = make_team(&f.app, vec![f.app.agent_id], json!({})).await;
+    let mut definition = f
+        .app
+        .store
+        .get_agent_team(f.app.org_id, team)
+        .await
+        .unwrap()
+        .definition;
+    definition["steps"][0]["model"] =
+        json!({ "management": "harness", "provider": f.provider_name });
+    sqlx::query("UPDATE agent_teams SET definition = $2 WHERE id = $1")
+        .bind(team)
+        .bind(&definition)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let run_id = start_run(&f.app, team).await;
+    let execution: Uuid = sqlx::query_scalar("SELECT id FROM executions WHERE team_run_id = $1")
+        .bind(run_id)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    f.app
+        .store
+        .claim_execution(execution, "override-worker")
+        .await
+        .unwrap();
+    f.app
+        .store
+        .bind_execution_worker_token(execution, token.id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &f.app.router,
+        worker_request(
+            "GET",
+            &format!("/api/v1/worker/executions/{execution}/context"),
+            &issued.token,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["model"]["credential"]["value"], "sk-victim-secret",
+        "the step override's provider is used: {}",
+        body["model"]
+    );
+}
+
 #[tokio::test]
 async fn team_run_auto_approve_requires_approvals_decide() {
     let Some(app) = test_app(false).await else {
@@ -4164,6 +4236,86 @@ async fn advance_resumes_after_step_finished_without_next_step() {
         .await
         .unwrap();
     assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 2);
+}
+
+/// #305: a step held back by its agent's hourly quota waits for the quota instead of
+/// failing the run, and fails only when the longer limit window has passed.
+#[tokio::test]
+async fn a_temporary_limit_at_a_later_step_does_not_fail_the_run() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let limited = bound_agent(&app, owner, None, Some(1)).await;
+    // Use up the second agent's hourly quota.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{limited}/executions"),
+            json!({ "task": "earlier" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let team = make_team(&app, vec![app.agent_id, limited], json!({})).await;
+    let run_id = start_run(&app, team).await;
+    succeed_current_step(&app, run_id).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run_id)
+            .await
+            .unwrap()
+            .status,
+        "running",
+        "a quota clears by itself"
+    );
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 1);
+
+    // Past the limit window the run fails visibly.
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    sqlx::query("UPDATE team_steps SET finished_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(step.id)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+}
+
+/// #305: while the current step's execution is still working, a tick does not write the
+/// advance lease.
+#[tokio::test]
+async fn advancing_a_busy_run_takes_no_lease() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let run_id = start_run(&app, team).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run)
+        .await
+        .unwrap();
+    let claimed: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT advance_claimed_at FROM team_runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_one(&raw_pool().await)
+            .await
+            .unwrap();
+    assert!(claimed.is_none(), "a queued step needs no lease");
 }
 
 #[tokio::test]
