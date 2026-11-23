@@ -103,7 +103,8 @@ The GitHub connection should set `defaultRepository` (and optionally
 
 6. Run the team. The primary lists/selects the issue; the builder receives the previous
    output, clones the repository, makes changes, commits and pushes.
-7. Approve any write action according to the agents' autonomy settings.
+7. Approve any write action according to the team's fixed autonomy policy, or the step
+   agents' own settings when the team follows them.
 
 ## Native OpenCode team
 

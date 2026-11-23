@@ -7,7 +7,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use orbit_domain::{HarnessKind, TriggerSource, ValidationIssue};
+use orbit_domain::{HarnessKind, TeamAutonomy, TeamAutonomyMode, TriggerSource, ValidationIssue};
 use orbit_security::{AuthContext, Permission};
 use orbit_store::{AgentTeam, TeamRun, TeamStep};
 
@@ -91,6 +91,9 @@ pub struct CreateTeamRequest {
     /// Per-step wall-clock timeout; defaults to 1 hour for team runs.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Team-wide autonomy policy. Omitted/follow_primary keeps each step agent's own level.
+    #[serde(default)]
+    pub autonomy: Option<TeamAutonomy>,
     pub steps: Vec<TeamStepInput>,
 }
 
@@ -102,7 +105,8 @@ pub struct CreateTeamRunRequest {
     pub task: String,
     #[serde(default)]
     pub payload: serde_json::Value,
-    /// Explicitly allow bound writes for this run without per-call approvals (L4).
+    /// Ask the worker to auto-approve approvals for this run. It only applies when the
+    /// execution's level is already L3+, and never raises the level.
     #[serde(default)]
     pub auto_approve: bool,
     /// Override the agent's stored harness for this run.
@@ -149,6 +153,9 @@ pub struct TeamDefinition {
     /// Wall-clock timeout for each step. Defaults to 1 hour for team runs.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Explicit team autonomy. Missing means follow each step agent's level.
+    #[serde(default)]
+    pub autonomy: Option<TeamAutonomy>,
     pub steps: Vec<TeamStepDefinition>,
 }
 
@@ -390,6 +397,84 @@ async fn validate_native_primary(
     }
 }
 
+/// Validate a fixed team autonomy and authorise any elevation above a step agent's own
+/// level. Lowering is always allowed; raising requires manage access to that agent, so a
+/// team cannot silently turn an L2 agent into an L4 executor.
+async fn validate_team_autonomy(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    autonomy: Option<&TeamAutonomy>,
+    steps: &[TeamStepInput],
+    issues: &mut Vec<ValidationIssue>,
+) -> Vec<(Uuid, String, u8)> {
+    let mut elevated = Vec::new();
+    let Some(autonomy) = autonomy else {
+        return elevated;
+    };
+    if autonomy.mode != TeamAutonomyMode::Fixed {
+        return elevated;
+    }
+    let Some(level) = autonomy.level.filter(|level| (1..=4).contains(level)) else {
+        issues.push(ValidationIssue::new(
+            "autonomy.level",
+            "a fixed team autonomy needs a level from 1 to 4",
+        ));
+        return elevated;
+    };
+    for step in steps {
+        let Ok(agent) = state.store.get_agent(auth.org_id, step.agent_id).await else {
+            continue;
+        };
+        let Ok(version) = state.store.get_current_version(auth.org_id, &agent).await else {
+            continue;
+        };
+        let Ok(spec) = serde_json::from_value::<orbit_domain::AgentSpec>(version.spec) else {
+            continue;
+        };
+        if level > spec.autonomy.level {
+            elevated.push((agent.id, agent.name.clone(), spec.autonomy.level));
+            if !access.can_manage(agent.owner_user_id, agent.owner_team_id) {
+                issues.push(ValidationIssue::new(
+                    "autonomy.level",
+                    format!(
+                        "raising agent '{}' from level {} to {} requires manage access to that agent",
+                        agent.name, spec.autonomy.level, level
+                    ),
+                ));
+            }
+        }
+    }
+    elevated
+}
+
+async fn audit_team_autonomy_elevations(
+    state: &AppState,
+    auth: &AuthContext,
+    team_id: Uuid,
+    elevated: &[(Uuid, String, u8)],
+    autonomy: Option<&TeamAutonomy>,
+) {
+    if elevated.is_empty() {
+        return;
+    }
+    crate::audit::record(
+        state,
+        auth,
+        "team.autonomy_elevated",
+        Some("agent_team"),
+        Some(team_id),
+        serde_json::json!({
+            "level": autonomy.and_then(|autonomy| autonomy.level),
+            "agents": elevated
+                .iter()
+                .map(|(id, name, from)| serde_json::json!({ "id": id, "name": name, "from": from }))
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .await;
+}
+
 pub(crate) async fn require_team_view(
     state: &AppState,
     auth: &AuthContext,
@@ -584,6 +669,15 @@ pub async fn create_team(
         }
     }
     validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
+    let elevations = validate_team_autonomy(
+        &state,
+        &auth,
+        &access,
+        body.autonomy.as_ref(),
+        &body.steps,
+        &mut issues,
+    )
+    .await;
     if !issues.is_empty() {
         return Err(ApiError::validation(issues));
     }
@@ -602,6 +696,7 @@ pub async fn create_team(
         "connectionIds": body.connection_ids,
         "envMappingIds": body.env_mapping_ids,
         "timeoutSeconds": body.timeout_seconds,
+        "autonomy": body.autonomy,
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
@@ -621,6 +716,8 @@ pub async fn create_team(
         .store
         .assign_resource_owner(auth.org_id, "agent_teams", team.id, auth.user_id)
         .await?;
+    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, body.autonomy.as_ref())
+        .await;
     Ok((StatusCode::CREATED, Json(team)))
 }
 
@@ -770,6 +867,15 @@ pub async fn update_team(
         }
     }
     validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
+    let elevations = validate_team_autonomy(
+        &state,
+        &auth,
+        &access,
+        body.autonomy.as_ref(),
+        &body.steps,
+        &mut issues,
+    )
+    .await;
     if !issues.is_empty() {
         return Err(ApiError::validation(issues));
     }
@@ -788,23 +894,25 @@ pub async fn update_team(
         "connectionIds": body.connection_ids,
         "envMappingIds": body.env_mapping_ids,
         "timeoutSeconds": body.timeout_seconds,
+        "autonomy": body.autonomy,
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
         })).collect::<Vec<_>>()
     });
-    Ok(Json(
-        state
-            .store
-            .update_agent_team(
-                auth.org_id,
-                team_id,
-                body.name.trim(),
-                body.description.trim(),
-                &definition,
-            )
-            .await?,
-    ))
+    let team = state
+        .store
+        .update_agent_team(
+            auth.org_id,
+            team_id,
+            body.name.trim(),
+            body.description.trim(),
+            &definition,
+        )
+        .await?;
+    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, body.autonomy.as_ref())
+        .await;
+    Ok(Json(team))
 }
 
 #[utoipa::path(get, path = "/api/v1/agent-teams", tag = "agent-teams", responses((status = 200, body = [orbit_store::AgentTeam])))]
@@ -1111,8 +1219,14 @@ pub(crate) async fn start_step(
         },
         "team": team_payload,
     });
+    if let Some(autonomy) = definition.autonomy.as_ref() {
+        if autonomy.mode == TeamAutonomyMode::Fixed {
+            input[orbit_domain::TEAM_AUTONOMY_KEY] =
+                serde_json::to_value(autonomy).unwrap_or(serde_json::Value::Null);
+        }
+    }
     // #194: set only here, server-side, after the run was authorised with approvals:decide.
-    // The worker caps it at the step agent's own level (never raises it).
+    // The worker applies this before the fixed team policy, so a fixed team policy wins.
     if run
         .input
         .get("autoApprove")

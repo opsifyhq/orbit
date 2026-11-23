@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Added
+
+- Agent Teams can declare a fixed autonomy level for every step and native subagent, or
+  follow each agent's own level. Raising a step agent above its own level requires manage
+  access to that agent and is audited as `team.autonomy_elevated`; the policy is
+  snapshotted into the run.
+- The team run dialog now shows a fixed team autonomy and no longer labels auto-approve
+  as a Level 4 override.
+
 ## [0.28.3] - 2026-11-23
 
 ### Changed

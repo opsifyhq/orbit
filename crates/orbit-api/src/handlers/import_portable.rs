@@ -699,6 +699,16 @@ async fn translate(
                 },
                 None => None,
             };
+            let autonomy = match spec.autonomy {
+                Some(value) => match serde_json::from_value::<orbit_domain::TeamAutonomy>(value) {
+                    Ok(autonomy) => Some(autonomy),
+                    Err(error) => {
+                        found.issue("spec.autonomy", error.to_string());
+                        None
+                    }
+                },
+                None => None,
+            };
             Some(Translated::Team(Box::new(CreateTeamRequest {
                 name,
                 description: doc.metadata.description.clone(),
@@ -716,6 +726,7 @@ async fn translate(
                 connection_ids,
                 env_mapping_ids,
                 timeout_seconds: spec.timeout_seconds,
+                autonomy,
                 steps,
             })))
         }

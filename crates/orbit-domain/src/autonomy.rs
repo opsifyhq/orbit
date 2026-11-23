@@ -408,4 +408,86 @@ mod tests {
         strip_approval_overrides(&mut input);
         assert_eq!(input, serde_json::json!({ "task": "x" }));
     }
+
+    #[test]
+    fn fixed_team_autonomy_replaces_the_agent_level_and_approval() {
+        let mut spec = spec_at(2, ApprovalMode::Always);
+        let autonomy = TeamAutonomy {
+            mode: TeamAutonomyMode::Fixed,
+            level: Some(4),
+            approval_mode: Some(ApprovalMode::Auto),
+        };
+        assert!(apply_team_autonomy(&mut spec, Some(&autonomy)));
+        assert_eq!(spec, spec_at(4, ApprovalMode::Auto));
+    }
+
+    #[test]
+    fn follow_primary_or_an_invalid_level_does_not_change_autonomy() {
+        let mut spec = spec_at(2, ApprovalMode::Always);
+        let follow = TeamAutonomy {
+            mode: TeamAutonomyMode::FollowPrimary,
+            level: Some(4),
+            approval_mode: Some(ApprovalMode::Auto),
+        };
+        assert!(!apply_team_autonomy(&mut spec, Some(&follow)));
+        let invalid = TeamAutonomy {
+            mode: TeamAutonomyMode::Fixed,
+            level: Some(9),
+            approval_mode: Some(ApprovalMode::Auto),
+        };
+        assert!(!apply_team_autonomy(&mut spec, Some(&invalid)));
+        assert_eq!(spec, spec_at(2, ApprovalMode::Always));
+    }
+}
+
+/// How an Agent Team chooses the autonomy level for its executions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamAutonomyMode {
+    /// Each step uses its own agent version's autonomy; native subagents inherit the
+    /// primary step's execution level.
+    #[default]
+    FollowPrimary,
+    /// Every step and native subagent uses the explicit team level. Raising it above a
+    /// step agent's own level is authorised when the team is saved.
+    Fixed,
+}
+
+/// An explicit team-wide autonomy policy. `follow_primary` is the backward-compatible
+/// default; `fixed` is snapshotted into a run so later agent/team edits cannot change an
+/// in-flight run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamAutonomy {
+    #[serde(default)]
+    pub mode: TeamAutonomyMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<crate::ApprovalMode>,
+}
+
+/// Execution-input key carrying the server-created team autonomy snapshot.
+pub const TEAM_AUTONOMY_KEY: &str = "teamAutonomy";
+
+/// Apply a fixed team autonomy policy to an execution's agent spec. Returns `true` when
+/// the spec changed. A missing/invalid level never changes anything.
+pub fn apply_team_autonomy(
+    spec: &mut crate::AutonomySpec,
+    autonomy: Option<&TeamAutonomy>,
+) -> bool {
+    let Some(autonomy) = autonomy else {
+        return false;
+    };
+    if autonomy.mode != TeamAutonomyMode::Fixed {
+        return false;
+    }
+    let Some(level) = autonomy.level.and_then(AutonomyLevel::from_level) else {
+        return false;
+    };
+    spec.level = level.level();
+    if let Some(approval_mode) = autonomy.approval_mode {
+        spec.approval_mode = approval_mode;
+    }
+    true
 }

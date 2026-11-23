@@ -22,6 +22,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { autonomyName } from "@/lib/presentation";
 import { queryKeys, useHarnesses } from "@/lib/queries";
 import { startTeamRun } from "@/lib/teams";
 import type { AgentTeam } from "@/lib/types";
@@ -45,6 +46,8 @@ export function RunTeamDialog({
   const [repository, setRepository] = useState("");
   const [harness, setHarness] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
+  const fixedAutonomy = team.definition.autonomy?.mode === "fixed";
+  const fixedLevel = team.definition.autonomy?.level ?? 2;
 
   function reset(next: boolean) {
     if (next) {
@@ -121,15 +124,21 @@ export function RunTeamDialog({
             </Field>
           </div>
           <div className="space-y-2">
-            <CheckboxField
-              title="Auto-approve writes for this run"
-              description="Level 4 autonomy, for this run only."
-              checked={autoApprove}
-              onChange={(event) => setAutoApprove(event.target.checked)}
-            />
-            {autoApprove ? (
+            {fixedAutonomy ? (
+              <Callout tone="neutral" title={`Team autonomy: ${autonomyName(fixedLevel)} (level ${fixedLevel})`}>
+                This team runs every step and native subagent at the level configured on the team.
+              </Callout>
+            ) : (
+              <CheckboxField
+                title="Auto-approve approvals for this run"
+                description="Only applies when the primary agent is Level 3 or higher. It never raises the agent's autonomy."
+                checked={autoApprove}
+                onChange={(event) => setAutoApprove(event.target.checked)}
+              />
+            )}
+            {!fixedAutonomy && autoApprove ? (
               <Callout tone="warning" title="Auto-approve skips human review">
-                Bound GitHub writes run without approval. Capability allowlists still apply. Use it only for trusted
+                Bound writes run without approval. Capability allowlists still apply. Use it only for trusted
                 repositories and tested agents.
               </Callout>
             ) : null}

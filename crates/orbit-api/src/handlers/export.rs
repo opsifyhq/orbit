@@ -392,6 +392,7 @@ pub(crate) async fn build_document(
                 "connections": connections,
                 "envMappings": env_mappings,
                 "timeoutSeconds": definition.timeout_seconds,
+                "autonomy": definition.autonomy,
                 "steps": steps,
             }));
             let mut doc = PortableDocument::new(PortableKind::AgentTeam, team.name, spec);

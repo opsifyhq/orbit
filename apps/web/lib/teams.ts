@@ -15,6 +15,13 @@ export type TeamModel = { provider?: string | null; model?: string | null; manag
 
 export type TeamStepInput = { agentId: string; model?: TeamModel | null };
 
+/** Optional explicit team-wide autonomy; `follow_primary` is the server default. */
+export type TeamAutonomy = {
+  mode: "follow_primary" | "fixed";
+  level?: number | null;
+  approvalMode?: "auto" | "always" | "writes" | null;
+};
+
 export function listAgentTeams(): Promise<AgentTeam[]> {
   return request<AgentTeam[]>("/api/v1/agent-teams");
 }
@@ -45,6 +52,7 @@ export type TeamInput = {
   connectionIds: string[];
   envMappingIds: string[];
   timeoutSeconds?: number;
+  autonomy?: TeamAutonomy | null;
   steps: TeamStepInput[];
 };
 

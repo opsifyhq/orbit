@@ -10557,6 +10557,86 @@ async fn settings_write_holder_cannot_attach_other_teams_mappings_or_profiles() 
     }
 }
 
+/// A fixed team level may lower autonomy freely, but raising a step agent above its own
+/// level needs manage access to that agent.
+#[tokio::test]
+async fn fixed_team_autonomy_requires_manage_to_elevate_an_agent() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    app.store
+        .set_resource_visibility(app.org_id, "agents", app.agent_id, "org", None)
+        .await
+        .unwrap();
+    // A custom role can create teams (settings:write) without managing the agent.
+    let role = format!("AutonomyWriter-{}", Uuid::now_v7());
+    app.store
+        .create_custom_role(
+            app.org_id,
+            &role,
+            &["agents:read".into(), "settings:write".into()],
+        )
+        .await
+        .unwrap();
+    let operator = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autonomy-{}@test.local", Uuid::now_v7()),
+            "Autonomy Operator",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_user_role_name(app.org_id, operator.id, &role)
+        .await
+        .unwrap();
+    let token = token_for(&app.store, app.org_id, operator.id, "autonomy").await;
+    let request = json!({
+        "name": "Fixed autonomy", "mode": "pipeline",
+        "steps": [{ "agentId": app.agent_id }],
+        "autonomy": { "mode": "fixed", "level": 4, "approvalMode": "auto" }
+    });
+    let (status, body) = send(
+        &app.router,
+        auth_post("/api/v1/agent-teams", &token, request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "autonomy.level")));
+
+    // The owner can manage the agent and may explicitly set the team level.
+    let (status, team) = send(&app.router, post("/api/v1/agent-teams", request)).await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    assert_eq!(team["definition"]["autonomy"]["level"], 4);
+
+    // The fixed level is snapshotted into the step execution for the worker.
+    let team_id = team["id"].as_str().unwrap();
+    let (status, detail) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "fixed autonomy run" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{detail}");
+    let execution_id = detail["steps"][0]["executionId"].as_str().unwrap();
+    let (status, execution) = send(
+        &app.router,
+        get(&format!("/api/v1/executions/{execution_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{execution}");
+    assert_eq!(execution["input"]["teamAutonomy"]["level"], 4);
+    assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
+}
+
 async fn private_github_connection(app: &TestApp, owner: Uuid, name: &str) -> Uuid {
     let github = app
         .store
