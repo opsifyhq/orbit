@@ -324,7 +324,14 @@ pub struct AgentTeamSpec {
     /// Optional explicit team autonomy policy.
     #[serde(default)]
     pub autonomy: Option<Value>,
+    /// The agents in order. For `mode: workflow` this lists each agent once and may be
+    /// left out.
+    #[serde(default)]
     pub steps: Vec<AgentTeamStepSpec>,
+    /// The workflow graph for `mode: workflow`. Same shape as the API's `workflow`, with
+    /// `agent: <name>` on each step instead of `agentId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]

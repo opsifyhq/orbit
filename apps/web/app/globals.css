@@ -278,3 +278,36 @@
     cursor: not-allowed;
   }
 }
+
+/* Workflow canvas (React Flow): use ORBIT's tokens instead of the library's palette. */
+.orbit-workflow .react-flow {
+  --xy-background-color: transparent;
+  --xy-node-boxshadow-selected: none;
+  --xy-controls-button-background-color: hsl(var(--card));
+  --xy-controls-button-background-color-hover: hsl(var(--muted));
+  --xy-controls-button-color: hsl(var(--foreground));
+  --xy-controls-button-border-color: hsl(var(--border));
+  --xy-controls-box-shadow: 0 1px 2px hsl(240 30% 10% / 0.08);
+  --xy-attribution-background-color: transparent;
+  --xy-handle-background-color: hsl(var(--card));
+  --xy-handle-border-color: hsl(var(--border-strong));
+}
+.orbit-workflow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) - 3px);
+}
+.orbit-workflow .react-flow__attribution {
+  font-size: 10px;
+  opacity: 0.6;
+}
+.orbit-workflow .react-flow__node:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+  border-radius: calc(var(--radius) + 2px);
+}
+@keyframes orbit-line-flow {
+  to {
+    stroke-dashoffset: -10;
+  }
+}

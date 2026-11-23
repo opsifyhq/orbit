@@ -5,16 +5,18 @@ import type { TeamModel } from "@/lib/teams";
 import type { AgentSummary, AgentTeam } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export type TeamMode = "pipeline" | "native";
+export type TeamMode = "pipeline" | "native" | "workflow";
 
 export const MODE_LABEL: Record<TeamMode, string> = {
   native: "Native subagents",
   pipeline: "Pipeline",
+  workflow: "Workflow",
 };
 
 export const MODE_HINT: Record<TeamMode, string> = {
   native: "One OpenCode execution. The primary agent runs once and the others are its subagents.",
   pipeline: "One execution per agent. Each agent takes over in turn and receives the previous output.",
+  workflow: "Steps joined by lines. Branch on a result, run steps side by side and loop until the work is right.",
 };
 
 export function teamMode(team: AgentTeam): TeamMode {

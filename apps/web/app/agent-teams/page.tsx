@@ -55,8 +55,10 @@ function LineupText({ team, agentName }: { team: AgentTeam; agentName: (id: stri
   const names = (team.definition.steps ?? []).map((step) => agentName(step.agentId));
   if (!names.length) return <span className="block max-w-full truncate text-muted-foreground">No agents yet</span>;
   const [lead, ...rest] = names;
-  const joiner = teamMode(team) === "native" ? " with " : " → ";
-  const tail = rest.length ? `${joiner}${rest.join(teamMode(team) === "native" ? ", " : " → ")}` : "";
+  // A pipeline is a line of agents; a workflow's order is in its graph, so list them.
+  const mode = teamMode(team);
+  const joiner = mode === "native" ? " with " : mode === "workflow" ? ", " : " → ";
+  const tail = rest.length ? `${joiner}${rest.join(mode === "pipeline" ? " → " : ", ")}` : "";
   return (
     <span className="block max-w-full truncate" title={`${lead}${tail}`}>
       <span className="font-medium text-foreground">{lead}</span>

@@ -13255,3 +13255,402 @@ async fn metrics_follow_an_execution_through_its_lifecycle() {
         .contains("orbit_execution_duration_seconds_count{harness=\"mock\",status=\"cancelled\"}"));
     assert_eq!(sample(&text, "orbit_execution_timeouts_total"), Some(0.0));
 }
+
+// ---------------------------------------------------------------- team workflows (#9)
+
+fn workflow_node(id: &str, agent: Uuid, outcomes: &[&str]) -> Value {
+    json!({ "id": id, "name": format!("Step {id}"), "agentId": agent, "outcomes": outcomes })
+}
+
+fn workflow_edge(from: &str, to: &str, when: &str, outcome: Option<&str>) -> Value {
+    json!({
+        "id": format!("{from}-{to}-{when}-{}", outcome.unwrap_or("")),
+        "from": from,
+        "to": to,
+        "when": when,
+        "outcome": outcome,
+    })
+}
+
+async fn make_workflow_team(app: &TestApp, workflow: Value) -> (StatusCode, Value) {
+    send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": format!("Workflow {}", Uuid::now_v7()),
+                "mode": "workflow",
+                "instructions": "ship it",
+                "workflow": workflow,
+            }),
+        ),
+    )
+    .await
+}
+
+/// End the running step of workflow step `node` with `status` and answer `text`, then
+/// advance the run once.
+async fn finish_workflow_step(
+    app: &TestApp,
+    run_id: Uuid,
+    node: &str,
+    status: orbit_domain::ExecutionStatus,
+    text: &str,
+) {
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    let step = steps
+        .iter()
+        .find(|step| step.node_id.as_deref() == Some(node) && step.status == "running")
+        .unwrap_or_else(|| panic!("no running step for '{node}'"));
+    let execution_id = step.execution_id.unwrap();
+    app.store
+        .claim_execution(execution_id, "test-worker")
+        .await
+        .unwrap();
+    app.store
+        .mark_execution_running(execution_id, None)
+        .await
+        .unwrap();
+    let failed = status != orbit_domain::ExecutionStatus::Succeeded;
+    app.store
+        .finish_execution(
+            execution_id,
+            status,
+            Some(&json!({ "text": text })),
+            failed.then(|| json!({ "message": text })).as_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run)
+        .await
+        .unwrap();
+}
+
+async fn workflow_trace(app: &TestApp, run_id: Uuid) -> Vec<String> {
+    app.store
+        .list_team_steps(run_id)
+        .await
+        .unwrap()
+        .iter()
+        .map(|step| {
+            format!(
+                "{}#{}",
+                step.node_id.clone().unwrap_or_default(),
+                step.attempt
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_workflow_branches_on_an_outcome_and_loops_until_it_changes() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = app.agent_id;
+    let (status, team) = make_workflow_team(
+        &app,
+        json!({
+            "nodes": [
+                workflow_node("build", agent, &[]),
+                workflow_node("test", agent, &["pass", "fail"]),
+                workflow_node("fix", agent, &[]),
+                workflow_node("deploy", agent, &[]),
+            ],
+            "edges": [
+                workflow_edge("start", "build", "always", None),
+                workflow_edge("build", "test", "success", None),
+                workflow_edge("test", "deploy", "outcome", Some("pass")),
+                workflow_edge("test", "fix", "outcome", Some("fail")),
+                workflow_edge("fix", "test", "success", None),
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    // The agent is used by four steps and listed once.
+    assert_eq!(team["definition"]["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        team["definition"]["workflow"]["nodes"][1]["outcomes"],
+        json!(["pass", "fail"])
+    );
+    let team_id: Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    let run_id = start_run(&app, team_id).await;
+    assert_eq!(workflow_trace(&app, run_id).await, ["build#1"]);
+
+    use orbit_domain::ExecutionStatus::Succeeded;
+    finish_workflow_step(&app, run_id, "build", Succeeded, "built").await;
+    // The test step is told how to report its outcome, as system context.
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    let execution = app
+        .store
+        .get_execution_by_id(steps[1].execution_id.unwrap())
+        .await
+        .unwrap();
+    let goal = execution.input["team"]["goal"].as_str().unwrap();
+    assert!(goal.starts_with("ship it"), "{goal}");
+    assert!(goal.contains("OUTCOME: <pass | fail>"), "{goal}");
+    assert_eq!(execution.input["task"], "go");
+    assert_eq!(execution.input["payload"]["previous"]["text"], "built");
+
+    finish_workflow_step(&app, run_id, "test", Succeeded, "2 failures\nOUTCOME: fail").await;
+    finish_workflow_step(&app, run_id, "fix", Succeeded, "patched").await;
+    finish_workflow_step(
+        &app,
+        run_id,
+        "test",
+        Succeeded,
+        "green\n\n**OUTCOME: pass**",
+    )
+    .await;
+    assert_eq!(
+        workflow_trace(&app, run_id).await,
+        ["build#1", "test#1", "fix#1", "test#2", "deploy#1"]
+    );
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    assert_eq!(steps[1].outcome.as_deref(), Some("fail"));
+    assert_eq!(steps[3].outcome.as_deref(), Some("pass"));
+    finish_workflow_step(&app, run_id, "deploy", Succeeded, "live").await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(run.output.unwrap()["text"], "live");
+
+    // The run page reads the graph from the run and the new fields from its steps.
+    let (status, detail) = send(&app.router, get(&format!("/api/v1/team-runs/{run_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["steps"][3]["nodeId"], "test");
+    assert_eq!(detail["steps"][3]["attempt"], 2);
+    assert_eq!(detail["steps"][3]["outcome"], "pass");
+    assert_eq!(
+        detail["run"]["input"]["definition"]["workflow"]["edges"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+}
+
+#[tokio::test]
+async fn a_workflow_runs_branches_in_parallel_and_joins_them() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = app.agent_id;
+    let (status, team) = make_workflow_team(
+        &app,
+        json!({
+            "nodes": [
+                workflow_node("plan", agent, &[]),
+                workflow_node("web", agent, &[]),
+                workflow_node("api", agent, &[]),
+                workflow_node("review", agent, &[]),
+            ],
+            "edges": [
+                workflow_edge("start", "plan", "always", None),
+                workflow_edge("plan", "web", "success", None),
+                workflow_edge("plan", "api", "success", None),
+                workflow_edge("web", "review", "success", None),
+                workflow_edge("api", "review", "success", None),
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let run_id = start_run(&app, team["id"].as_str().unwrap().parse().unwrap()).await;
+    use orbit_domain::ExecutionStatus::Succeeded;
+    finish_workflow_step(&app, run_id, "plan", Succeeded, "the plan").await;
+    assert_eq!(
+        workflow_trace(&app, run_id).await,
+        ["plan#1", "api#1", "web#1"]
+    );
+
+    // Advancing from several replicas at once starts each step once.
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    advance_concurrently(&app.state, &run, 4).await;
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 3);
+
+    finish_workflow_step(&app, run_id, "web", Succeeded, "web done").await;
+    // api is still working, so the join waits.
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 3);
+    finish_workflow_step(&app, run_id, "api", Succeeded, "api done").await;
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    assert_eq!(steps.len(), 4);
+    let review = app
+        .store
+        .get_execution_by_id(steps[3].execution_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        review.input["payload"]["previous"]["Step web"]["text"],
+        "web done"
+    );
+    assert_eq!(
+        review.input["payload"]["previous"]["Step api"]["text"],
+        "api done"
+    );
+    finish_workflow_step(&app, run_id, "review", Succeeded, "approved").await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "succeeded");
+}
+
+#[tokio::test]
+async fn a_failed_workflow_step_fails_the_run_unless_a_line_handles_it() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = app.agent_id;
+    let graph = |handled: bool| {
+        let mut edges = vec![
+            workflow_edge("start", "a", "always", None),
+            workflow_edge("start", "b", "always", None),
+            workflow_edge("a", "c", "success", None),
+        ];
+        if handled {
+            edges.push(workflow_edge("a", "c", "failure", None));
+        }
+        json!({
+            "nodes": [
+                workflow_node("a", agent, &["yes", "no"]),
+                workflow_node("b", agent, &[]),
+                workflow_node("c", agent, &[]),
+            ],
+            "edges": edges,
+        })
+    };
+    use orbit_domain::ExecutionStatus::{Failed, Succeeded};
+
+    // Not handled: the run fails and the other branch is stopped.
+    let (_, team) = make_workflow_team(&app, graph(false)).await;
+    let run_id = start_run(&app, team["id"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!(workflow_trace(&app, run_id).await, ["a#1", "b#1"]);
+    finish_workflow_step(&app, run_id, "a", Failed, "boom").await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "failed");
+    assert_eq!(
+        run.error.as_deref(),
+        Some("step 'Step a' finished with boom")
+    );
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    let sibling = app
+        .store
+        .get_execution_by_id(steps[1].execution_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(sibling.status, "cancelled");
+
+    // Handled: a step that does not report its outcome counts as failed, and the
+    // "failed" line carries on.
+    let (_, team) = make_workflow_team(&app, graph(true)).await;
+    let run_id = start_run(&app, team["id"].as_str().unwrap().parse().unwrap()).await;
+    finish_workflow_step(&app, run_id, "a", Succeeded, "no marker here").await;
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    assert_eq!(steps[0].status, "failed");
+    assert!(steps[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("without reporting an outcome"));
+    // b is still working and cannot reach c, so c starts.
+    assert_eq!(workflow_trace(&app, run_id).await, ["a#1", "b#1", "c#1"]);
+    finish_workflow_step(&app, run_id, "b", Succeeded, "b").await;
+    finish_workflow_step(&app, run_id, "c", Succeeded, "c").await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "succeeded");
+    // Two steps ended the run, so the result names both.
+    let output = run.output.unwrap();
+    assert_eq!(output["Step b"]["text"], "b");
+    assert_eq!(output["Step c"]["text"], "c");
+}
+
+#[tokio::test]
+async fn a_workflow_is_checked_when_the_team_is_saved() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = app.agent_id;
+    let (status, body) = make_workflow_team(
+        &app,
+        json!({
+            "nodes": [workflow_node("a", agent, &[]), workflow_node("b", agent, &[])],
+            "edges": [workflow_edge("start", "a", "always", None)],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("can never run"), "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "No graph", "mode": "workflow" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    // An agent the caller cannot see is refused like in a pipeline.
+    let (status, body) = make_workflow_team(
+        &app,
+        json!({
+            "nodes": [workflow_node("a", Uuid::now_v7(), &[])],
+            "edges": [workflow_edge("start", "a", "always", None)],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("unknown agent"), "{body}");
+}
+
+/// A workflow run without steps is work for the background loop, so the loop and the
+/// request that created the run can both try to start it. Whoever is second must find
+/// the first one's steps instead of creating them again.
+#[tokio::test]
+async fn a_workflow_run_is_started_once_by_whoever_gets_there_first() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = app.agent_id;
+    let (_, team) = make_workflow_team(
+        &app,
+        json!({
+            "nodes": [workflow_node("a", agent, &[]), workflow_node("b", agent, &[])],
+            "edges": [
+                workflow_edge("start", "a", "always", None),
+                workflow_edge("start", "b", "always", None),
+            ],
+        }),
+    )
+    .await;
+    let team_id: Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    // A run row as `create_run` leaves it just before it starts the first steps.
+    let stored = app.store.get_agent_team(app.org_id, team_id).await.unwrap();
+    let run = app
+        .store
+        .create_team_run(
+            app.org_id,
+            team_id,
+            &json!({ "task": "go", "instructions": "", "payload": {}, "definition": stored.definition }),
+            None,
+        )
+        .await
+        .unwrap();
+    let results = advance_concurrently(&app.state, &run, 4).await;
+    assert!(results.iter().all(|result| result.is_ok()), "{results:?}");
+    assert_eq!(workflow_trace(&app, run.id).await, ["a#1", "b#1"]);
+    // Planning again changes nothing while both steps work.
+    orbit_api::handlers::teams::advance(&app.state, run.clone())
+        .await
+        .unwrap();
+    assert_eq!(app.store.list_team_steps(run.id).await.unwrap().len(), 2);
+    let executions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM executions WHERE team_run_id = $1")
+            .bind(run.id)
+            .fetch_one(&raw_pool().await)
+            .await
+            .unwrap();
+    assert_eq!(executions, 2);
+}

@@ -100,7 +100,23 @@ impl MockHarnessAdapter {
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
 
-        if task.contains("fail") {
+        // A workflow step with outcomes is told to end with `OUTCOME: <a | b>`. The mock
+        // follows that instruction so workflows can be tried without a model: it reports
+        // the first listed outcome, or the one a `[outcome:a,b]` marker in the task names
+        // for this run of the step (first label for the first run, and so on).
+        let (task_without_marker, outcome_marker) = split_outcome_marker(&task);
+        let outcome = mock_outcome(
+            &request.instructions.system,
+            outcome_marker.as_deref(),
+            request
+                .input
+                .payload
+                .get("stepAttempt")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1),
+        );
+
+        if task_without_marker.contains("fail") {
             Self::emit(
                 &request.events,
                 HarnessEvent::new(
@@ -147,6 +163,10 @@ impl MockHarnessAdapter {
                 task.chars().count(),
                 request.agent_name
             )
+        };
+        let summary = match &outcome {
+            Some(outcome) => format!("{summary}\n\nOUTCOME: {outcome}"),
+            None => summary,
         };
         let output = serde_json::json!({
             "summary": summary,
@@ -237,5 +257,74 @@ impl HarnessAdapter for MockHarnessAdapter {
             outcome.usage.wall_time_ms = Some(started.elapsed().as_millis() as i64);
         }
         Ok(outcome)
+    }
+}
+
+/// Split a `[outcome:a,b]` marker off a task. Returns the task without it and the labels.
+fn split_outcome_marker(task: &str) -> (String, Option<String>) {
+    let Some(start) = task.find("[outcome:") else {
+        return (task.to_string(), None);
+    };
+    let Some(len) = task[start..].find(']') else {
+        return (task.to_string(), None);
+    };
+    let labels = task[start + "[outcome:".len()..start + len].to_string();
+    let rest = format!("{}{}", &task[..start], &task[start + len + 1..]);
+    (rest, Some(labels))
+}
+
+/// The outcome the mock reports: `None` unless the instructions ask for one.
+fn mock_outcome(system: &str, marker: Option<&str>, attempt: u64) -> Option<String> {
+    let line = system
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("OUTCOME: <"))?;
+    let options: Vec<&str> = line
+        .trim_end_matches('>')
+        .split('|')
+        .map(str::trim)
+        .filter(|option| !option.is_empty())
+        .collect();
+    let wanted: Vec<&str> = marker
+        .map(|labels| labels.split(',').map(str::trim).collect())
+        .unwrap_or_default();
+    let index = (attempt.max(1) as usize - 1).min(wanted.len().saturating_sub(1));
+    wanted
+        .get(index)
+        .copied()
+        .filter(|label| options.contains(label))
+        .or_else(|| options.first().copied())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::{mock_outcome, split_outcome_marker};
+
+    #[test]
+    fn the_mock_reports_the_outcome_a_workflow_step_asks_for() {
+        let system = "Goal\n\nOUTCOME: <pass | fail>\n\nThe platform reads that line.";
+        assert_eq!(mock_outcome(system, None, 1).as_deref(), Some("pass"));
+        assert_eq!(
+            mock_outcome(system, Some("fail,pass"), 1).as_deref(),
+            Some("fail")
+        );
+        assert_eq!(
+            mock_outcome(system, Some("fail,pass"), 2).as_deref(),
+            Some("pass")
+        );
+        assert_eq!(
+            mock_outcome(system, Some("fail,pass"), 5).as_deref(),
+            Some("pass")
+        );
+        assert_eq!(
+            mock_outcome(system, Some("nonsense"), 1).as_deref(),
+            Some("pass")
+        );
+        assert_eq!(mock_outcome("No directive", Some("pass"), 1), None);
+        let (task, marker) = split_outcome_marker("Ship it [outcome:fail,pass] now");
+        assert_eq!(task, "Ship it  now");
+        assert_eq!(marker.as_deref(), Some("fail,pass"));
+        assert_eq!(split_outcome_marker("plain").1, None);
     }
 }

@@ -7,6 +7,22 @@ use uuid::Uuid;
 use crate::models::{AgentTeam, TeamRun, TeamStep};
 use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
+/// A step of a workflow run to create.
+pub struct NewWorkflowStep<'a> {
+    pub run_id: Uuid,
+    pub org_id: Uuid,
+    pub step_index: i32,
+    pub name: &'a str,
+    pub agent_id: Uuid,
+    pub agent_version_id: Uuid,
+    pub skills: &'a [String],
+    pub input: &'a Value,
+    pub execution_id: Option<Uuid>,
+    pub node_id: &'a str,
+    pub attempt: i32,
+    pub activated_by: &'a Value,
+}
+
 impl Store {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_agent_team(
@@ -530,6 +546,73 @@ impl Store {
         .map_err(Into::into)
     }
 
+    /// Create a step of a workflow run. `step_index` is the order of creation; the
+    /// unique `(run_id, step_index)` makes a repeated create a conflict instead of a twin.
+    pub async fn create_workflow_step(&self, step: NewWorkflowStep<'_>) -> StoreResult<TeamStep> {
+        sqlx::query_as::<_, TeamStep>(
+            r#"
+            INSERT INTO team_steps
+                (id, run_id, org_id, step_index, name, agent_id, agent_version_id, skills,
+                 status, input, execution_id, started_at, node_id, attempt, activated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', $9, $10, now(), $11, $12, $13)
+            RETURNING *
+            "#,
+        )
+        .bind(orbit_domain::new_id())
+        .bind(step.run_id)
+        .bind(step.org_id)
+        .bind(step.step_index)
+        .bind(step.name)
+        .bind(step.agent_id)
+        .bind(step.agent_version_id)
+        .bind(step.skills)
+        .bind(step.input)
+        .bind(step.execution_id)
+        .bind(step.node_id)
+        .bind(step.attempt)
+        .bind(step.activated_by)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Close the steps of a run that are still `running`, when the run itself is over
+    /// (cancelled, or failed while other branches were still working). Without this a
+    /// finished run would keep showing a step as running. Returns how many changed.
+    pub async fn close_running_team_steps(
+        &self,
+        run_id: Uuid,
+        status: &str,
+        error: Option<&str>,
+    ) -> StoreResult<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE team_steps
+            SET status = $2, error = $3, finished_at = now(), updated_at = now()
+            WHERE run_id = $1 AND status = 'running'
+            "#,
+        )
+        .bind(run_id)
+        .bind(status)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// The step an execution belongs to, if it is a team step.
+    pub async fn team_step_by_execution(
+        &self,
+        execution_id: Uuid,
+    ) -> StoreResult<Option<TeamStep>> {
+        Ok(sqlx::query_as::<_, TeamStep>(
+            "SELECT * FROM team_steps WHERE execution_id = $1 ORDER BY step_index DESC LIMIT 1",
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn list_team_steps(&self, run_id: Uuid) -> StoreResult<Vec<TeamStep>> {
         Ok(sqlx::query_as::<_, TeamStep>(
             "SELECT * FROM team_steps WHERE run_id = $1 ORDER BY step_index ASC",
@@ -556,10 +639,23 @@ impl Store {
         output: Option<&Value>,
         error: Option<&str>,
     ) -> StoreResult<Option<TeamStep>> {
+        self.finish_team_step_with_outcome(step_id, status, output, error, None)
+            .await
+    }
+
+    /// [`Self::finish_team_step`] that also records the outcome a workflow step reported.
+    pub async fn finish_team_step_with_outcome(
+        &self,
+        step_id: Uuid,
+        status: &str,
+        output: Option<&Value>,
+        error: Option<&str>,
+        outcome: Option<&str>,
+    ) -> StoreResult<Option<TeamStep>> {
         Ok(sqlx::query_as::<_, TeamStep>(
             r#"
             UPDATE team_steps
-            SET status = $2, output = $3, error = $4,
+            SET status = $2, output = $3, error = $4, outcome = $5,
                 finished_at = now(), updated_at = now()
             WHERE id = $1 AND status = 'running'
             RETURNING *
@@ -569,6 +665,7 @@ impl Store {
         .bind(status)
         .bind(output)
         .bind(error)
+        .bind(outcome)
         .fetch_optional(&self.pool)
         .await?)
     }

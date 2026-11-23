@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { exportResource } from "@/components/export-resource-button";
 import { LinkedOutputs } from "@/components/outputs/linked-outputs";
 import { RunTeamDialog } from "@/components/teams/run-team-dialog";
+import { WorkflowView } from "@/components/teams/workflow/workflow-view";
 import { AgentSteps, MODE_HINT, MODE_LABEL, agentLookup, modelLabel, teamMode } from "@/components/teams/team-parts";
 import { TeamQueue } from "@/components/teams/team-queue";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +91,7 @@ export default function AgentTeamPage() {
   });
 
   const agent = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
+  const workflowAgentName = useMemo(() => (id: string) => agent(id).name, [agent]);
   const teamRuns = useMemo(
     // The server already filters by team; the check also covers data cached before it did.
     () => (runs.data ?? []).filter((run) => run.teamId === teamId),
@@ -202,17 +204,31 @@ export default function AgentTeamPage() {
         </TabsList>
 
         <TabsContent value="overview">
+          {/* A workflow is a picture that needs the width; the facts follow below it. */}
+          {mode === "workflow" && definition.workflow ? (
+            <Card className="mb-5">
+              <CardHeader>
+                <CardTitle as="h2">Workflow</CardTitle>
+                <p className="text-[13px] text-muted-foreground">{MODE_HINT[mode]}</p>
+              </CardHeader>
+              <CardContent>
+                <WorkflowView workflow={definition.workflow} agentName={workflowAgentName} />
+              </CardContent>
+            </Card>
+          ) : null}
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] [&>*]:min-w-0">
             <div className="space-y-5">
-              <Card>
-                <CardHeader>
-                  <CardTitle as="h2">Agents</CardTitle>
-                  <p className="text-[13px] text-muted-foreground">{MODE_HINT[mode]}</p>
-                </CardHeader>
-                <CardContent>
-                  <AgentSteps team={data} agent={agent} />
-                </CardContent>
-              </Card>
+              {mode === "workflow" && definition.workflow ? null : (
+                <Card>
+                  <CardHeader>
+                    <CardTitle as="h2">Agents</CardTitle>
+                    <p className="text-[13px] text-muted-foreground">{MODE_HINT[mode]}</p>
+                  </CardHeader>
+                  <CardContent>
+                    <AgentSteps team={data} agent={agent} />
+                  </CardContent>
+                </Card>
+              )}
 
               <Card>
                 <CardHeader>

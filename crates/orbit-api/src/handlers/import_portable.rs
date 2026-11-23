@@ -575,10 +575,47 @@ async fn translate(
                 found.issue("metadata.name", "team name is required");
             }
             let mode = spec.mode.clone().unwrap_or_else(|| "pipeline".into());
-            if !matches!(mode.as_str(), "pipeline" | "native") {
-                found.issue("spec.mode", "mode must be pipeline or native");
+            if !matches!(mode.as_str(), "pipeline" | "native" | "workflow") {
+                found.issue("spec.mode", "mode must be pipeline, native or workflow");
             }
-            if spec.steps.is_empty() {
+            // A workflow names its agents on its steps; resolve them to ids.
+            let workflow = match spec.workflow.clone() {
+                Some(mut value) => {
+                    for (index, node) in value["nodes"]
+                        .as_array_mut()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
+                        let path = format!("spec.workflow.nodes[{index}].agent");
+                        let Some(object) = node.as_object_mut() else {
+                            continue;
+                        };
+                        match object.remove("agent") {
+                            Some(serde_json::Value::String(agent)) => {
+                                let agent_id = resolver
+                                    .resolve(Ref::Agent, &agent, &path, &mut found.unresolved)
+                                    .await;
+                                object.insert("agentId".into(), json!(agent_id));
+                            }
+                            _ => found.issue(path, "agent name is required"),
+                        }
+                    }
+                    match serde_json::from_value::<orbit_domain::WorkflowDefinition>(value) {
+                        Ok(workflow) => Some(workflow),
+                        Err(error) => {
+                            found.issue("spec.workflow", error.to_string());
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            if mode == "workflow" {
+                if spec.workflow.is_none() {
+                    found.issue("spec.workflow", "a workflow team needs a workflow");
+                }
+            } else if spec.steps.is_empty() {
                 found.issue("spec.steps", "at least one step is required");
             }
             let mut steps = Vec::new();
@@ -728,6 +765,7 @@ async fn translate(
                 timeout_seconds: spec.timeout_seconds,
                 autonomy,
                 steps,
+                workflow,
             })))
         }
         PortableKind::Trigger => {

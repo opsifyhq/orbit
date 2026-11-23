@@ -2251,7 +2251,9 @@ export interface components {
             instructions?: string;
             /**
              * @description `pipeline` runs each agent once in order. `native` runs the primary agent only
-             *     and materializes the remaining agents as harness-native subagents.
+             *     and materializes the remaining agents as harness-native subagents. `workflow` runs
+             *     the graph in `workflow`: steps joined by conditional lines, with parallel
+             *     branches, joins and bounded loops.
              */
             mode?: string;
             model?: components["schemas"]["TeamModelOverride"] | null;
@@ -2265,7 +2267,8 @@ export interface components {
             repository?: string | null;
             /** @description Skills materialized for every step in the team. */
             skills?: string[];
-            steps: components["schemas"]["TeamStepInput"][];
+            /** @description The agents in order. Not needed for a workflow. */
+            steps?: components["schemas"]["TeamStepInput"][];
             /**
              * Format: int64
              * @description Per-step wall-clock timeout; defaults to 1 hour for team runs.
@@ -2277,6 +2280,7 @@ export interface components {
              * @description Worker profile used for automatic launch.
              */
             workerProfileId?: string | null;
+            workflow?: components["schemas"]["WorkflowDefinition"] | null;
         };
         CreateTeamRunRequest: {
             /**
@@ -3307,10 +3311,20 @@ export interface components {
             total: number;
         };
         TeamStep: {
+            /**
+             * @description Workflow runs: the lines that started this step, as
+             *     `[{ "edge": lineId, "step": sourceStepIndex | null }]`.
+             */
+            activatedBy: Record<string, never>;
             /** Format: uuid */
             agentId: string;
             /** Format: uuid */
             agentVersionId: string;
+            /**
+             * Format: int32
+             * @description Workflow runs: 1 for the first time the workflow step ran, 2 for the second…
+             */
+            attempt: number;
             /** Format: date-time */
             createdAt: string;
             error?: string | null;
@@ -3322,8 +3336,15 @@ export interface components {
             id: string;
             input: unknown;
             name: string;
+            /**
+             * @description Workflow runs: the id of the workflow step this ran. `null` for pipeline and
+             *     native runs.
+             */
+            nodeId?: string | null;
             /** Format: uuid */
             orgId: string;
+            /** @description Workflow runs: the outcome label the agent reported, if the step has outcomes. */
+            outcome?: string | null;
             output?: unknown;
             /** Format: uuid */
             runId: string;
@@ -3658,6 +3679,61 @@ export interface components {
             target: string;
             workerId: string;
         };
+        WorkflowDefinition: {
+            edges?: components["schemas"]["WorkflowEdge"][];
+            nodes: components["schemas"]["WorkflowNode"][];
+        };
+        /** @description A line from one step (or from `start`) to another. */
+        WorkflowEdge: {
+            /** @description A step id, or `start`. */
+            from: string;
+            id: string;
+            /** @description The outcome label, when `when` is `outcome`. */
+            outcome?: string | null;
+            to: string;
+            /** @description Ignored on lines that leave `start`. */
+            when?: components["schemas"]["WorkflowWhen"];
+        };
+        /** @description A model override for one step. Same shape as the team-level override. */
+        WorkflowModel: {
+            management?: string | null;
+            model?: string | null;
+            provider?: string | null;
+        };
+        /** @description One step of a workflow: an agent and what it should do here. */
+        WorkflowNode: {
+            /** Format: uuid */
+            agentId: string;
+            /** @description Stable id inside the workflow (lower-case letters, digits, `-` and `_`). */
+            id: string;
+            /** @description What this step should do, added to the team goal for this step only. */
+            instructions?: string;
+            /**
+             * Format: int32
+             * @description How often this step may run in one run. Only matters inside a loop.
+             */
+            maxRuns?: number | null;
+            model?: components["schemas"]["WorkflowModel"] | null;
+            name: string;
+            /**
+             * @description Outcome labels the agent chooses from when it finishes, such as `pass` and `fail`.
+             *     Empty when the step has no outcome lines.
+             */
+            outcomes?: string[];
+            position?: components["schemas"]["WorkflowPosition"] | null;
+        };
+        /** @description Where a step sits on the canvas. Presentation only; the engine ignores it. */
+        WorkflowPosition: {
+            /** Format: double */
+            x: number;
+            /** Format: double */
+            y: number;
+        };
+        /**
+         * @description When a line hands work on.
+         * @enum {string}
+         */
+        WorkflowWhen: "always" | "success" | "failure" | "outcome";
     };
     responses: never;
     parameters: never;

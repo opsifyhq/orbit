@@ -32,7 +32,7 @@ API process never executes agent work.
 |---|---|---|
 | An issue that should become a pull request | A manual run, a schedule, or an agent team's issue queue | The agent reads the issue, makes the change, runs the tests, pushes a branch and opens a pull request |
 | Dependency updates and daily briefings | A cron schedule | Saved instructions run on schedule; every run has its own history |
-| Work that needs several roles | An agent team | Agents hand off in sequence or as native subagents; each step is a normal run |
+| Work that needs several roles | An agent team | Agents hand off in sequence, as native subagents, or along a workflow with branches, parallel steps and loops; each step is a normal run |
 | Monitoring and triage | A schedule | The agent classifies, drafts replies and proposes actions for approval |
 | Research and analysis | A manual run | The agent gathers information, summarizes it and marks what it is unsure of |
 
@@ -46,7 +46,8 @@ API process never executes agent work.
 - **Approvals.** A write that needs sign-off pauses the run until someone approves or
   rejects it in the web app.
 - **Agent teams.** A primary agent with subagents, run step by step or as native
-  subagents, optionally fed from a GitHub or GitLab issue queue.
+  subagents, or a workflow drawn on a canvas with branches, parallel steps and loops;
+  optionally fed from a GitHub or GitLab issue queue.
 - **Workers you control.** Runs execute in a local process, a Docker container or a
   Kubernetes pod. The launcher starts and stops workers and gives each one a scoped,
   revocable token.

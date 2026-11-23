@@ -489,6 +489,17 @@ pub struct TeamStep {
     pub updated_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// Workflow runs: the id of the workflow step this ran. `null` for pipeline and
+    /// native runs.
+    pub node_id: Option<String>,
+    /// Workflow runs: 1 for the first time the workflow step ran, 2 for the second…
+    pub attempt: i32,
+    /// Workflow runs: the outcome label the agent reported, if the step has outcomes.
+    pub outcome: Option<String>,
+    /// Workflow runs: the lines that started this step, as
+    /// `[{ "edge": lineId, "step": sourceStepIndex | null }]`.
+    #[schema(value_type = Object)]
+    pub activated_by: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]

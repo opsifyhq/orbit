@@ -38,7 +38,8 @@ export type TeamRepository = components["schemas"]["RepositorySpec"];
 // them, so narrow just those fields while every other field comes from the generated schema.
 export type AgentTeam = Omit<components["schemas"]["AgentTeam"], "definition"> & {
   definition: {
-    mode?: "pipeline" | "native";
+    mode?: "pipeline" | "native" | "workflow";
+    workflow?: Workflow | null;
     instructions?: string;
     repository?: string | null;
     branch?: string | null;
@@ -60,6 +61,8 @@ export type AgentTeam = Omit<components["schemas"]["AgentTeam"], "definition"> &
     steps?: Array<{ agentId: string; model?: { provider?: string | null; model?: string | null; management?: string | null } | null }>;
   };
 };
+
+import type { Workflow } from "./workflow";
 
 export type TeamRun = Omit<components["schemas"]["TeamRun"], "input"> & {
   input: Record<string, unknown>;

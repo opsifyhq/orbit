@@ -22,6 +22,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { teamMode } from "@/components/teams/team-parts";
 import { autonomyName } from "@/lib/presentation";
 import { queryKeys, useHarnesses } from "@/lib/queries";
 import { startTeamRun } from "@/lib/teams";
@@ -51,7 +52,8 @@ export function RunTeamDialog({
 
   function reset(next: boolean) {
     if (next) {
-      setTask(team.definition.instructions ?? "");
+      // Blank runs the team's goal; the goal is shown as the placeholder.
+      setTask("");
       setRepository(team.definition.repository ?? "");
       setHarness("");
       setAutoApprove(false);
@@ -82,11 +84,20 @@ export function RunTeamDialog({
         <DialogHeader>
           <DialogTitle>Run {team.name}</DialogTitle>
           <DialogDescription>
-            The primary agent receives the task. Later agents receive the previous output.
+            {teamMode(team) === "workflow"
+              ? "Every step receives the task, with the output of the steps that led to it."
+              : teamMode(team) === "native"
+                ? "The primary agent receives the task and hands parts of it to its subagents."
+                : "The primary agent receives the task. Later agents receive the previous output."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <Field label="Task for this run" htmlFor="run-task">
+          <Field
+            label="Task for this run"
+            htmlFor="run-task"
+            optional={Boolean(team.definition.instructions)}
+            hint={team.definition.instructions ? "Leave blank to run the team's goal." : undefined}
+          >
             <Textarea
               id="run-task"
               className="min-h-24"

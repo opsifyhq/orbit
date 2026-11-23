@@ -1,11 +1,14 @@
 "use client";
 
 import { LoadFailure } from "@/components/load-failure";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ExternalLink } from "lucide-react";
 
 import { StepNumber, agentLookup, teamMode } from "@/components/teams/team-parts";
+import { WorkflowView } from "@/components/teams/workflow/workflow-view";
+import type { Workflow } from "@/lib/workflow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -15,7 +18,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
 import { useAgentTeam, useAllAgents, useTeamRun } from "@/lib/queries";
-import { formatDateTime, relativeTime } from "@/lib/utils";
+import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
 const DONE_STEP = new Set(["succeeded", "completed"]);
 
@@ -36,6 +39,14 @@ export default function TeamRunPage() {
   const run = useTeamRun(params.runId);
   const team = useAgentTeam(run.data?.run.teamId ?? "");
   const agents = useAllAgents();
+  const agentName = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
+  const workflowAgentName = useMemo(() => (id: string) => agentName(id).name, [agentName]);
+  // Selecting a step on the graph points at its latest row in the list.
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const showStep = useCallback((stepIndex: number) => {
+    setHighlighted(stepIndex);
+    document.getElementById(`team-step-${stepIndex}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
 
   if (run.isLoading) {
     return (
@@ -63,7 +74,9 @@ export default function TeamRunPage() {
   const done = steps.filter((step) => DONE_STEP.has(step.status)).length;
   // A pipeline creates each step when the previous one finishes. Show the agents still to
   // come from the team definition, so the whole line-up and the real total are visible.
-  const agentName = agentLookup(agents.data?.items ?? []);
+  // A workflow run draws the graph it was started with, even if the team changed since.
+  const snapshot = detail.input.definition as { mode?: string; workflow?: Workflow | null } | undefined;
+  const workflow = snapshot?.mode === "workflow" ? (snapshot.workflow ?? null) : null;
   const planned =
     team.data && teamMode(team.data) === "pipeline" && !detail.finishedAt ? (team.data.definition.steps ?? []) : [];
   const upcoming = planned.slice(steps.length);
@@ -87,22 +100,48 @@ export default function TeamRunPage() {
         }
       />
 
-      {detail.error ? (
+      {detail.status === "cancelled" ? (
+        <Callout tone="neutral" title="The run was stopped">
+          {detail.error === "cancelled by operator" ? "Someone cancelled it before it finished." : detail.error}
+        </Callout>
+      ) : detail.error ? (
         <Callout tone="danger" title="The run failed">
           {detail.error}
         </Callout>
+      ) : null}
+
+      {workflow ? (
+        <Card>
+          <CardHeader>
+            <CardTitle as="h2">Workflow</CardTitle>
+            <p className="text-[13px] text-muted-foreground">
+              Coloured steps have run; a dashed step or line was not reached{detail.finishedAt ? "" : " yet"}. Select a
+              step to find it in the list below.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <WorkflowView
+              workflow={workflow}
+              agentName={workflowAgentName}
+              steps={steps}
+              failed={detail.status === "failed"}
+              onSelectStep={showStep}
+            />
+          </CardContent>
+        </Card>
       ) : null}
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] [&>*]:min-w-0">
         <Card>
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <CardTitle as="h2">Steps</CardTitle>
+              <CardTitle as="h2">{workflow ? "Steps, in the order they started" : "Steps"}</CardTitle>
               <p className="tabular text-[13px] text-muted-foreground">
                 {done} of {totalSteps} {totalSteps === 1 ? "step" : "steps"} done
               </p>
             </div>
             <div
+              hidden={Boolean(workflow)}
               role="progressbar"
               aria-label="Steps done"
               aria-valuemin={0}
@@ -122,7 +161,14 @@ export default function TeamRunPage() {
                 {steps.map((step) => {
                   const took = duration(step.startedAt, step.finishedAt);
                   return (
-                    <li key={step.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 sm:px-5">
+                    <li
+                      key={step.id}
+                      id={`team-step-${step.stepIndex}`}
+                      className={cn(
+                        "flex scroll-mt-24 flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors sm:px-5",
+                        highlighted === step.stepIndex && "bg-accent/60",
+                      )}
+                    >
                       <div className="flex min-w-[min(100%,14rem)] flex-1 items-start gap-3">
                         <StepNumber n={step.stepIndex + 1} className="mt-0.5" />
                         <div className="min-w-0 space-y-0.5">
@@ -130,10 +176,18 @@ export default function TeamRunPage() {
                             <Link href={`/agents/${step.agentId}`} className="min-w-0 break-words hover:text-primary hover:underline">
                               {step.name}
                             </Link>
-                            {step.stepIndex === 0 ? <Badge>Primary</Badge> : null}
+                            {workflow ? (
+                              <>
+                                {step.attempt > 1 ? <Badge variant="secondary">Run {step.attempt}</Badge> : null}
+                                {step.outcome ? <Badge>{step.outcome}</Badge> : null}
+                              </>
+                            ) : step.stepIndex === 0 ? (
+                              <Badge>Primary</Badge>
+                            ) : null}
                           </p>
                           <p className="text-xs text-muted-foreground empty:hidden">
                             {[
+                              workflow ? agentName(step.agentId).name : null,
                               took ? `${step.finishedAt ? "Took" : "Running for"} ${took}` : null,
                               step.skills.length ? `${step.skills.length} ${step.skills.length === 1 ? "skill" : "skills"}` : null,
                             ]

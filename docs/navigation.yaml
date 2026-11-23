@@ -176,3 +176,5 @@ sections:
         title: 0013 Bulk lifecycle
       - path: decisions/0014-prometheus-metrics.md
         title: 0014 Prometheus metrics
+      - path: decisions/0015-team-workflows.md
+        title: 0015 Team workflows

@@ -7,7 +7,10 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use orbit_domain::{HarnessKind, TeamAutonomy, TeamAutonomyMode, TriggerSource, ValidationIssue};
+use orbit_domain::{
+    HarnessKind, TeamAutonomy, TeamAutonomyMode, TriggerSource, ValidationIssue,
+    WorkflowDefinition, WorkflowNode, WORKFLOW_MODE,
+};
 use orbit_security::{AuthContext, Permission};
 use orbit_store::{AgentTeam, ExecutionRecord, TeamRun, TeamStep};
 
@@ -50,9 +53,15 @@ pub struct CreateTeamRequest {
     #[serde(default)]
     pub description: String,
     /// `pipeline` runs each agent once in order. `native` runs the primary agent only
-    /// and materializes the remaining agents as harness-native subagents.
+    /// and materializes the remaining agents as harness-native subagents. `workflow` runs
+    /// the graph in `workflow`: steps joined by conditional lines, with parallel
+    /// branches, joins and bounded loops.
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// The workflow graph. Required when `mode` is `workflow`; `steps` is then derived
+    /// from it and may be left out.
+    #[serde(default)]
+    pub workflow: Option<WorkflowDefinition>,
     /// Shared goal/instruction for the team. Passed to every step as configured system
     /// context, never mixed into the run instruction shown as the task.
     #[serde(default)]
@@ -94,6 +103,8 @@ pub struct CreateTeamRequest {
     /// Team-wide autonomy policy. Omitted/follow_primary keeps each step agent's own level.
     #[serde(default)]
     pub autonomy: Option<TeamAutonomy>,
+    /// The agents in order. Not needed for a workflow.
+    #[serde(default)]
     pub steps: Vec<TeamStepInput>,
 }
 
@@ -156,7 +167,11 @@ pub struct TeamDefinition {
     /// Explicit team autonomy. Missing means follow each step agent's level.
     #[serde(default)]
     pub autonomy: Option<TeamAutonomy>,
+    /// The agents in order. For a workflow: every agent it uses, once.
+    #[serde(default)]
     pub steps: Vec<TeamStepDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -190,6 +205,15 @@ impl TeamModelOverride {
 }
 
 impl TeamDefinition {
+    /// The graph, when this team runs as a workflow.
+    pub(crate) fn workflow(&self) -> Option<&WorkflowDefinition> {
+        if self.mode == WORKFLOW_MODE {
+            self.workflow.as_ref()
+        } else {
+            None
+        }
+    }
+
     /// The model override for a step: the step's own, else the team's.
     pub(crate) fn model_override(&self, step_index: usize) -> Option<&TeamModelOverride> {
         self.steps
@@ -209,6 +233,52 @@ pub struct TeamStepDefinition {
 
 fn default_mode() -> String {
     "pipeline".into()
+}
+
+/// Check the mode and, for a workflow, the graph; then derive `steps` from it so access
+/// checks, autonomy elevation, the queue and exports see every agent the workflow uses.
+fn prepare_mode(body: &mut CreateTeamRequest) -> Result<(), ApiError> {
+    if !matches!(body.mode.as_str(), "pipeline" | "native" | WORKFLOW_MODE) {
+        return Err(ApiError::validation(vec![ValidationIssue::new(
+            "mode",
+            "mode must be pipeline, native or workflow",
+        )]));
+    }
+    if body.mode != WORKFLOW_MODE {
+        // A graph kept from an earlier save survives a switch to another mode, as long
+        // as it is still a valid graph.
+        if body
+            .workflow
+            .as_ref()
+            .is_some_and(|workflow| !workflow.validate().is_empty())
+        {
+            body.workflow = None;
+        }
+        return Ok(());
+    }
+    let Some(workflow) = body.workflow.as_mut() else {
+        return Err(ApiError::validation(vec![ValidationIssue::new(
+            "workflow",
+            "a workflow team needs a workflow",
+        )]));
+    };
+    for node in &mut workflow.nodes {
+        node.name = node.name.trim().to_string();
+        node.instructions = node.instructions.trim().to_string();
+    }
+    let issues = workflow.validate();
+    if !issues.is_empty() {
+        return Err(ApiError::validation(issues));
+    }
+    body.steps = workflow
+        .agent_ids()
+        .into_iter()
+        .map(|agent_id| TeamStepInput {
+            agent_id,
+            model: None,
+        })
+        .collect();
+    Ok(())
 }
 
 pub(crate) fn parse_definition(team: &AgentTeam) -> Result<TeamDefinition, ApiError> {
@@ -529,20 +599,15 @@ pub(crate) async fn require_team_use(
 pub async fn create_team(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<CreateTeamRequest>,
+    crate::extract::ApiJson(mut body): crate::extract::ApiJson<CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<AgentTeam>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    prepare_mode(&mut body)?;
     if body.name.trim().is_empty() || body.steps.is_empty() {
         return Err(ApiError::validation(vec![
             ValidationIssue::new("name", "name is required"),
             ValidationIssue::new("steps", "at least one step is required"),
         ]));
-    }
-    if !matches!(body.mode.as_str(), "pipeline" | "native") {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "mode",
-            "mode must be pipeline or native",
-        )]));
     }
     if body
         .timeout_seconds
@@ -700,7 +765,8 @@ pub async fn create_team(
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "workflow": body.workflow,
     });
     let team = state
         .store
@@ -726,21 +792,16 @@ pub async fn update_team(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(team_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<CreateTeamRequest>,
+    crate::extract::ApiJson(mut body): crate::extract::ApiJson<CreateTeamRequest>,
 ) -> Result<Json<AgentTeam>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     require_team_manage(&state, &auth, team_id).await?;
+    prepare_mode(&mut body)?;
     if body.name.trim().is_empty() || body.steps.is_empty() {
         return Err(ApiError::validation(vec![
             ValidationIssue::new("name", "name is required"),
             ValidationIssue::new("steps", "at least one step is required"),
         ]));
-    }
-    if !matches!(body.mode.as_str(), "pipeline" | "native") {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "mode",
-            "mode must be pipeline or native",
-        )]));
     }
     if body
         .timeout_seconds
@@ -898,7 +959,8 @@ pub async fn update_team(
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "workflow": body.workflow,
     });
     let team = state
         .store
@@ -1003,6 +1065,11 @@ pub async fn cancel_run(
         .finish_team_run(run_id, "cancelled", None, Some("cancelled by operator"))
         .await?
         .ok_or_else(|| ApiError::conflict("the team run already ended"))?;
+    // The run is over; its steps must not keep saying they are running.
+    state
+        .store
+        .close_running_team_steps(run_id, "cancelled", None)
+        .await?;
     if let Some(item) = state.store.get_team_queue_item_by_run(run_id).await? {
         if item.status == "running" {
             state
@@ -1068,6 +1135,24 @@ async fn native_subagents(
     Ok(subagents)
 }
 
+/// The workflow step a team step runs, for [`start_step_with`].
+pub(crate) struct WorkflowStepStart<'a> {
+    pub node: &'a WorkflowNode,
+    /// 1 for the first time this workflow step runs in the run.
+    pub attempt: u32,
+    /// The deliveries this start takes (`[{ edge, step }]`).
+    pub activated_by: serde_json::Value,
+}
+
+pub(crate) struct StepStart<'a> {
+    pub step_index: usize,
+    pub agent_id: Uuid,
+    pub model_override: Option<TeamModelOverride>,
+    pub previous_output: Option<&'a serde_json::Value>,
+    pub workflow: Option<WorkflowStepStart<'a>>,
+}
+
+/// Start step `step_index` of a pipeline or native run.
 pub(crate) async fn start_step(
     state: &AppState,
     run: &TeamRun,
@@ -1075,13 +1160,110 @@ pub(crate) async fn start_step(
     step_index: usize,
     previous_output: Option<&serde_json::Value>,
 ) -> Result<TeamStep, ApiError> {
-    // Every team step creates an execution through `create_execution_with_limit`, so
-    // manual runs, scheduled/queue starts and dispatcher auto-run share the same guard.
     let step = definition
         .steps
         .get(step_index)
         .ok_or_else(|| ApiError::internal("team step index out of range"))?;
-    let agent = state.store.get_agent(run.org_id, step.agent_id).await?;
+    start_step_with(
+        state,
+        run,
+        definition,
+        StepStart {
+            step_index,
+            agent_id: step.agent_id,
+            model_override: definition.model_override(step_index).cloned(),
+            previous_output,
+            workflow: None,
+        },
+    )
+    .await
+}
+
+/// The first steps of a new run.
+pub(crate) struct FirstSteps {
+    /// Every step the run has now.
+    pub steps: Vec<TeamStep>,
+    /// The steps this call created. The caller launches workers for these only; steps
+    /// the background loop created were launched by the loop.
+    pub started: Vec<TeamStep>,
+}
+
+/// Start the first step of a new run: step 0 of a pipeline or native team, or the
+/// starting steps of a workflow.
+pub(crate) async fn start_first_steps(
+    state: &AppState,
+    run: &TeamRun,
+    definition: &TeamDefinition,
+) -> Result<FirstSteps, ApiError> {
+    if let Some(workflow) = definition.workflow() {
+        return crate::team_workflow::start_run(state, run, definition, workflow).await;
+    }
+    let step = start_step(state, run, definition, 0, None).await?;
+    Ok(FirstSteps {
+        steps: vec![step.clone()],
+        started: vec![step],
+    })
+}
+
+/// Launch the team's worker profile for a step that was just created, when the team asks
+/// for that. `auth` is the caller; background starts pass `None`.
+pub(crate) async fn auto_launch_step(
+    state: &AppState,
+    run: &TeamRun,
+    definition: &TeamDefinition,
+    step: &TeamStep,
+    auth: Option<&AuthContext>,
+) -> Result<(), ApiError> {
+    if !definition.auto_launch {
+        return Ok(());
+    }
+    let (Some(profile_id), Some(execution_id)) = (definition.worker_profile_id, step.execution_id)
+    else {
+        return Ok(());
+    };
+    let background;
+    let auth = match auth {
+        Some(auth) => auth,
+        None => {
+            background = AuthContext {
+                user_id: run.requested_by.unwrap_or(Uuid::nil()),
+                org_id: run.org_id,
+                email: String::new(),
+                display_name: "Agent Team".into(),
+                role: orbit_domain::UserRole::Operator,
+                method: orbit_security::AuthMethod::ApiToken,
+                scopes: vec![],
+                token_id: None,
+            };
+            &background
+        }
+    };
+    crate::handlers::worker_launches::launch_profile_internal(
+        state,
+        auth,
+        profile_id,
+        Some(execution_id),
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn start_step_with(
+    state: &AppState,
+    run: &TeamRun,
+    definition: &TeamDefinition,
+    start: StepStart<'_>,
+) -> Result<TeamStep, ApiError> {
+    // Every team step creates an execution through `create_execution_with_limit`, so
+    // manual runs, scheduled/queue starts and dispatcher auto-run share the same guard.
+    let StepStart {
+        step_index,
+        agent_id,
+        model_override,
+        previous_output,
+        workflow,
+    } = start;
+    let agent = state.store.get_agent(run.org_id, agent_id).await?;
     let version = state.store.get_current_version(run.org_id, &agent).await?;
     let mut spec: orbit_domain::AgentSpec = serde_json::from_value(version.spec.clone())
         .map_err(|error| ApiError::internal(format!("stored agent spec is invalid: {error}")))?;
@@ -1089,7 +1271,6 @@ pub(crate) async fn start_step(
     // Apply the step's (or the team's) model override. Preflight checks the provider of
     // the overridden model, and the override travels with the execution so the worker
     // runs that same model (#305).
-    let model_override = definition.model_override(step_index).cloned();
     if let Some(override_model) = &model_override {
         override_model.apply(&mut spec.model);
     }
@@ -1097,7 +1278,12 @@ pub(crate) async fn start_step(
     // configured system context and the previous step output is delegated context;
     // neither is copied into the task the harness presents as user input.
     let task = run_instruction(&run.input).to_string();
-    let instructions = configured_goal(&run.input);
+    // A workflow step adds its own instructions and, when it has outcomes, how to report
+    // one. Both are configuration, so they travel with the goal as system context.
+    let instructions = match &workflow {
+        Some(step) => crate::team_workflow::step_goal(configured_goal(&run.input), step.node),
+        None => configured_goal(&run.input).to_string(),
+    };
     let previous = previous_output
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".into());
@@ -1195,6 +1381,13 @@ pub(crate) async fn start_step(
             .join("\n");
         team_payload["workspaceRepositories"] = serde_json::json!(manifest);
     }
+    if let Some(step) = &workflow {
+        team_payload["step"] = serde_json::json!({
+            "id": step.node.id,
+            "name": step.node.name,
+            "attempt": step.attempt,
+        });
+    }
     if native {
         team_payload["subagents"] =
             serde_json::Value::Array(native_subagents(state, run.org_id, definition).await?);
@@ -1205,6 +1398,9 @@ pub(crate) async fn start_step(
             "teamRunId": run.id,
             "stepIndex": step_index,
             "agentName": agent.name,
+            "stepName": workflow.as_ref().map(|step| step.node.name.as_str()),
+            // Tells the agent (and the mock harness) which run of the step this is.
+            "stepAttempt": workflow.as_ref().map(|step| step.attempt),
             "previous": previous_output,
             "repository": run.input.get("payload").and_then(|value| value.get("repository")).cloned(),
             "branch": run.input.get("payload").and_then(|value| value.get("branch")).cloned(),
@@ -1257,11 +1453,35 @@ pub(crate) async fn start_step(
                 .timeout_seconds
                 .unwrap_or_else(|| spec.resources.timeout_seconds.max(3600)),
             requested_by: run.requested_by,
-            idempotency_key: Some(&format!("team:{}:{}", run.id, step_index)),
+            // A workflow step is identified by what it runs, not by the order it was
+            // created in: a retried start must find the same execution again.
+            idempotency_key: Some(&match &workflow {
+                Some(step) => format!("team:{}:{}:{}", run.id, step.node.id, step.attempt),
+                None => format!("team:{}:{}", run.id, step_index),
+            }),
             team_run_id: Some(run.id),
             team_step_index: Some(step_index as i32),
         })
         .await?;
+    if let Some(step) = &workflow {
+        return Ok(state
+            .store
+            .create_workflow_step(orbit_store::agent_teams::NewWorkflowStep {
+                run_id: run.id,
+                org_id: run.org_id,
+                step_index: step_index as i32,
+                name: &step.node.name,
+                agent_id: agent.id,
+                agent_version_id: version.id,
+                skills: &definition.skills,
+                input: &execution.input,
+                execution_id: Some(execution.id),
+                node_id: &step.node.id,
+                attempt: step.attempt as i32,
+                activated_by: &step.activated_by,
+            })
+            .await?);
+    }
     let created = state
         .store
         .create_team_step(
@@ -1371,9 +1591,17 @@ pub async fn create_run(
         .store
         .create_team_run(auth.org_id, team.id, &input, Some(auth.user_id))
         .await?;
-    let step = match start_step(&state, &run, &definition, 0, None).await {
-        Ok(step) => step,
+    let first = match start_first_steps(&state, &run, &definition).await {
+        Ok(first) => first,
         Err(error) => {
+            // A workflow may have started some of its parallel first steps already.
+            if let Ok(cancelled) = state
+                .store
+                .request_team_run_cancel(run.org_id, run.id)
+                .await
+            {
+                announce_cancel(&state, run.org_id, &cancelled).await;
+            }
             let _ = state
                 .store
                 .update_team_run(run.id, "failed", None, Some(&error.message))
@@ -1381,24 +1609,14 @@ pub async fn create_run(
             return Err(error);
         }
     };
-    if definition.auto_launch {
-        if let (Some(profile_id), Some(execution_id)) =
-            (definition.worker_profile_id, step.execution_id)
-        {
-            crate::handlers::worker_launches::launch_profile_internal(
-                &state,
-                &auth,
-                profile_id,
-                Some(execution_id),
-            )
-            .await?;
-        }
+    for step in &first.started {
+        auto_launch_step(&state, &run, &definition, step, Some(&auth)).await?;
     }
     Ok((
         StatusCode::CREATED,
         Json(TeamRunDetail {
             run,
-            steps: vec![step],
+            steps: first.steps,
         }),
     ))
 }
@@ -1444,16 +1662,16 @@ pub async fn get_run(
 }
 
 /// How long a replica may hold the per-run advance lease before another may take over.
-const ADVANCE_LEASE_SECS: i64 = 120;
+pub(crate) const ADVANCE_LEASE_SECS: i64 = 120;
 /// How long a run whose next step cannot be started is retried before it is failed.
-const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
+pub(crate) const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
 /// How long a step held back by an hourly quota or the licence's daily execution limit is
 /// retried. Long enough for an hourly quota to clear (#305).
-const LIMITED_STEP_RETRY_WINDOW_SECS: i64 = 3_900;
+pub(crate) const LIMITED_STEP_RETRY_WINDOW_SECS: i64 = 3_900;
 
 /// Limits that clear by themselves: the agent's `maxExecutionsPerHour` (429) and the
 /// licence's rolling daily execution limit (402).
-fn is_temporary_limit(error: &ApiError) -> bool {
+pub(crate) fn is_temporary_limit(error: &ApiError) -> bool {
     matches!(error.code, "rate_limited" | "license_limit")
 }
 
@@ -1490,6 +1708,11 @@ pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
 /// Whether advancing `run` can change anything: false while its current step's execution
 /// is still running (or there is no step yet).
 async fn has_work(state: &AppState, run: &TeamRun) -> anyhow::Result<bool> {
+    if let Some(definition) = run_definition(run) {
+        if let Some(workflow) = definition.workflow() {
+            return crate::team_workflow::has_work(state, run, workflow).await;
+        }
+    }
     let Some(current) = state.store.current_team_step(run.id).await? else {
         return Ok(false);
     };
@@ -1506,7 +1729,17 @@ async fn has_work(state: &AppState, run: &TeamRun) -> anyhow::Result<bool> {
     ))
 }
 
+/// The definition a run was started with, when the run carries a readable snapshot.
+fn run_definition(run: &TeamRun) -> Option<TeamDefinition> {
+    serde_json::from_value(run.input.get("definition")?.clone()).ok()
+}
+
 async fn advance_claimed(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
+    if let Some(definition) = run_definition(&run) {
+        if let Some(workflow) = definition.workflow() {
+            return crate::team_workflow::advance(state, &run, &definition, workflow).await;
+        }
+    }
     let Some(current) = state.store.current_team_step(run.id).await? else {
         return Ok(());
     };
@@ -1572,7 +1805,7 @@ async fn fail_run_for_step(state: &AppState, run: &TeamRun, step: &TeamStep) -> 
 }
 
 /// Human-readable reason recorded on a step whose execution ended outside the harness.
-fn execution_error_message(execution: &ExecutionRecord) -> String {
+pub(crate) fn execution_error_message(execution: &ExecutionRecord) -> String {
     execution
         .error
         .as_ref()
@@ -1593,6 +1826,46 @@ pub(crate) async fn fail_team_run_for_execution(
         return Ok(());
     };
     let run = state.store.get_team_run(execution.org_id, run_id).await?;
+    // A workflow has several steps at once, so find the step by its execution. The run
+    // fails as a whole and its other executions are asked to stop.
+    //
+    // This holds even when a "failed" line leaves the step: the lost worker may have had
+    // side effects, so nothing is run after it automatically (the same reason a queue
+    // item is not retried).
+    if let Some(step) = state.store.team_step_by_execution(execution.id).await? {
+        if step.run_id == run_id && step.node_id.is_some() {
+            if !matches!(step.status.as_str(), "running" | "failed") {
+                return Ok(());
+            }
+            let message = execution_error_message(execution);
+            let _ = state
+                .store
+                .finish_team_step(step.id, "failed", execution.output.as_ref(), Some(&message))
+                .await?;
+            let cancelled = state
+                .store
+                .request_team_run_cancel(run.org_id, run.id)
+                .await?;
+            announce_cancel(state, run.org_id, &cancelled).await;
+            state
+                .store
+                .close_running_team_steps(
+                    run.id,
+                    "cancelled",
+                    Some("stopped because the run ended"),
+                )
+                .await?;
+            let error = format!("step '{}' finished with {}", step.name, message);
+            return finalize_run_no_retry(
+                state,
+                &run,
+                "failed",
+                execution.output.as_ref(),
+                Some(&error),
+            )
+            .await;
+        }
+    }
     let Some(step) = state.store.current_team_step(run_id).await? else {
         return Ok(());
     };
@@ -1623,7 +1896,7 @@ pub(crate) async fn fail_team_run_for_execution(
 /// Move a run to a terminal status (conditionally) and close the queue loop. If closing
 /// the loop fails the queue item stays `running` with a terminal run; the outcome
 /// reconciler (`reconcile_team_outcomes`) retries it on later ticks.
-async fn finalize_run(
+pub(crate) async fn finalize_run(
     state: &AppState,
     run: &TeamRun,
     status: &str,
@@ -1724,30 +1997,9 @@ async fn continue_after_success(
             return Err(anyhow::anyhow!(error.message));
         }
     };
-    if definition.auto_launch {
-        if let (Some(profile_id), Some(execution_id)) =
-            (definition.worker_profile_id, created.execution_id)
-        {
-            let auth = AuthContext {
-                user_id: run.requested_by.unwrap_or(Uuid::nil()),
-                org_id: run.org_id,
-                email: String::new(),
-                display_name: "Agent Team".into(),
-                role: orbit_domain::UserRole::Operator,
-                method: orbit_security::AuthMethod::ApiToken,
-                scopes: vec![],
-                token_id: None,
-            };
-            crate::handlers::worker_launches::launch_profile_internal(
-                state,
-                &auth,
-                profile_id,
-                Some(execution_id),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        }
-    }
+    auto_launch_step(state, run, definition, &created, None)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
     Ok(())
 }
 
