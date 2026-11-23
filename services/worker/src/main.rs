@@ -175,15 +175,14 @@ async fn main() -> anyhow::Result<()> {
         let execution_id = uuid::Uuid::parse_str(&execution_id)
             .context("ORBIT_SINGLE_EXECUTION_ID must be a UUID")?;
         tracing::info!(%execution_id, worker_id = %state.worker_id, "single-execution worker starting");
-        let _ = state
-            .client
-            .heartbeat(&crate::client::HeartbeatRequest {
-                worker_id: &state.worker_id,
-                harnesses: &state.harnesses,
-                target: &state.target,
-                hostname: std::env::var("HOSTNAME").ok().as_deref(),
-            })
-            .await;
+        // Report in before the run starts, then keep the heartbeat fresh for the whole run:
+        // the API fails executions whose worker has been silent for 90 seconds (#298).
+        liveness::beat(&state).await;
+        let heartbeat = liveness::spawn_at(
+            state.clone(),
+            config.heartbeat_interval,
+            tokio::time::Instant::now() + config.heartbeat_interval,
+        );
         // This process is PID 1 in its container, which ignores an unhandled SIGTERM:
         // handle it like the long-running path (cancel, let the adapter stop, report).
         let result = runner::run_single_until(
@@ -193,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
             shutdown_grace(),
         )
         .await;
+        heartbeat.abort();
         let _ = state.client.offline(&state.worker_id).await;
         result?;
         tracing::info!(%execution_id, "single-execution worker finished");
@@ -200,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
-    liveness::spawn(state.clone(), config.heartbeat_interval);
+    let heartbeat = liveness::spawn(state.clone(), config.heartbeat_interval);
 
     // The signal only flips `state.shutdown`; it never drops the dispatch loop, so a claim
     // request already in flight finishes and its execution is tracked and reported.
@@ -225,6 +225,7 @@ async fn main() -> anyhow::Result<()> {
     // Interrupt in-flight executions, wait a bounded grace period for them to report,
     // then report whatever is left as failed ("worker shutdown").
     runner::shutdown(&state, shutdown_grace()).await;
+    heartbeat.abort();
     if let Err(error) = state.client.offline(&state.worker_id).await {
         tracing::warn!(%error, "failed to remove worker heartbeat");
     }

@@ -179,8 +179,8 @@ respect `maxAttempts`. Operators can retry, requeue or cancel an item from the U
 | Action | Allowed from | Effect |
 |---|---|---|
 | `retry` | `failed`, `cancelled`, and only while `attempts < maxAttempts` | back to `pending`, consumes an attempt |
-| `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items |
-| `cancel` | `pending`, `running`, `failed` | `cancelled`, detaches the run link |
+| `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items, and refused (409) while the previous run's execution is still stopping |
+| `cancel` | `pending`, `running`, `failed` | `cancelled`; the item's run is cancelled and its live execution is asked to stop (a queued one is cancelled outright) |
 
 Item status is limited to `pending`, `running`, `succeeded`, `failed` and `cancelled`
 (a CHECK constraint since migration 0041).
@@ -193,11 +193,18 @@ bounded:
 - **Advance lease.** A replica must hold a per-run lease (`team_runs.advance_claimed_at`)
   to advance a run. The lease expires after 120 seconds, so a crashed replica never
   strands a run, and a holder whose lease was taken over cannot release the new holder's
-  lease.
+  lease. A run whose current step is still working is skipped with two reads, without
+  taking the lease.
 - **Step-start retry window.** When the next step cannot be started because of a server
   error, the finished step stays `succeeded` and the next tick retries. After 300 seconds
-  since the finished step the run fails with "could not start step N". A client-class
-  refusal (access lost, harness unavailable, quota) fails the run immediately instead.
+  since the finished step the run fails with "could not start step N". A step held back
+  by its agent's `maxExecutionsPerHour` (429) or the licence's daily execution limit (402)
+  waits the same way for up to 65 minutes, because those limits clear by themselves. Any
+  other client-class refusal (access lost, harness unavailable) fails the run immediately.
+- **Model overrides.** A step's model override, else the team's, is recorded with the step
+  execution and applied when the worker fetches its context, so the step runs (and the
+  provider access check covers) the overridden model. Native-team subagents get their
+  step's override the same way.
 - **Stale queue claims.** A queue item that is `running` but has no run attached for more
   than 600 seconds (for example the API died between claiming and creating the run)
   returns to `pending` with the error "start interrupted; re-queued". The same loop also

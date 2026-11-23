@@ -83,6 +83,11 @@ it, and a test never changes those two statuses. Test
 requests go through the outbound network policy
 ([Providers](providers.md#outbound-network-policy)).
 
+Testing needs the `connections:write` permission and use of the connection, because it
+sends the stored credential. When you edit a connection's `baseUrl`, `cloneBaseUrl`, `url`
+or Kubernetes `apiServer`, enter the credential again in the same save: ORBIT does not
+send a stored credential to a new endpoint.
+
 ## X search vs posting auth
 
 X recent search (`posts.search`) works with an app-only bearer token. Publishing

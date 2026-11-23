@@ -17,6 +17,8 @@ Guidelines:
 - Release only from `main` with green CI; never from a branch.
 - One tag ships **all six images** plus the chart and binaries. If any image is missing,
   the release is incomplete (this is why `launcher`/harness images must be in the tag run).
+  CI enforces it: the chart and the GitHub release are published only after every image
+  job succeeded, and pull requests already build the harness images.
 - Do not retag a published version. If a release is broken, fix forward with a patch.
 - A release is not a per-issue event: bundle related work, but do not hold a fix for an
   unrelated unfinished feature.
@@ -173,4 +175,5 @@ GH_TOKEN=$(gh auth token) ORG=opsifyhq REPO=opsifyhq/orbit \
 ```
 
 Run without `DRY_RUN=true` to delete. Every deletion is logged by the workflow. The
-workflow can be started manually with `dry_run=true` to preview.
+workflow can be started manually: `dry_run=true` (the default) previews, `dry_run=false`
+deletes. The weekly schedule always deletes.

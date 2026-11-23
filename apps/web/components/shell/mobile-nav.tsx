@@ -5,7 +5,7 @@ import Link from "next/link";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Menu, Play, Search, X } from "lucide-react";
 
-import { BrandMark, Wordmark } from "@/components/shell/brand";
+import { BrandLockup } from "@/components/shell/brand";
 import { useCommandPalette } from "@/components/shell/command-palette";
 import {
   MOBILE_PRIMARY,
@@ -27,9 +27,8 @@ export function MobileHeader() {
       data-ink
       className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-ink-border bg-ink px-3 text-ink-foreground lg:hidden"
     >
-      <Link href="/" aria-label="ORBIT overview" className="flex h-9 items-center gap-2.5 rounded-md px-1">
-        <BrandMark />
-        <Wordmark />
+      <Link href="/" aria-label="ORBIT overview" className="flex h-9 items-center rounded-md px-1">
+        <BrandLockup />
       </Link>
       <span className="flex-1" />
       <button

@@ -141,6 +141,7 @@ async fn test_app_with_license(
         events_driver: "memory".into(),
         public_base_url: "http://localhost".into(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
+        metrics_access: orbit_api::MetricsAccess::default(),
         max_body_bytes: 2 * 1024 * 1024,
         rate_limiter: Arc::new(RateLimiter::new(DEFAULT_ANON_RATE_LIMIT_PER_MINUTE)),
         cors_origins: vec!["*".into()],
@@ -3693,6 +3694,78 @@ async fn worker_context_withholds_credential_from_unauthorized_principal() {
     );
 }
 
+/// #305: a step's model override reaches the worker context, so the step runs the model
+/// (and provider credential) the team configured, not only the agent's own.
+#[tokio::test]
+async fn team_step_model_override_reaches_the_worker() {
+    let Some(f) = provider_fixture().await else {
+        return;
+    };
+    let issued = orbit_security::issue_worker_token();
+    let token = f
+        .app
+        .store
+        .create_worker_token(
+            f.app.org_id,
+            None,
+            "override-test",
+            &issued.prefix,
+            &issued.hash,
+            &[],
+        )
+        .await
+        .unwrap();
+    // The step agent has no provider of its own; the team step names one.
+    let team = make_team(&f.app, vec![f.app.agent_id], json!({})).await;
+    let mut definition = f
+        .app
+        .store
+        .get_agent_team(f.app.org_id, team)
+        .await
+        .unwrap()
+        .definition;
+    definition["steps"][0]["model"] =
+        json!({ "management": "harness", "provider": f.provider_name });
+    sqlx::query("UPDATE agent_teams SET definition = $2 WHERE id = $1")
+        .bind(team)
+        .bind(&definition)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let run_id = start_run(&f.app, team).await;
+    let execution: Uuid = sqlx::query_scalar("SELECT id FROM executions WHERE team_run_id = $1")
+        .bind(run_id)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    f.app
+        .store
+        .claim_execution(execution, "override-worker")
+        .await
+        .unwrap();
+    f.app
+        .store
+        .bind_execution_worker_token(execution, token.id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &f.app.router,
+        worker_request(
+            "GET",
+            &format!("/api/v1/worker/executions/{execution}/context"),
+            &issued.token,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["model"]["credential"]["value"], "sk-victim-secret",
+        "the step override's provider is used: {}",
+        body["model"]
+    );
+}
+
 #[tokio::test]
 async fn team_run_auto_approve_requires_approvals_decide() {
     let Some(app) = test_app(false).await else {
@@ -4166,6 +4239,86 @@ async fn advance_resumes_after_step_finished_without_next_step() {
     assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 2);
 }
 
+/// #305: a step held back by its agent's hourly quota waits for the quota instead of
+/// failing the run, and fails only when the longer limit window has passed.
+#[tokio::test]
+async fn a_temporary_limit_at_a_later_step_does_not_fail_the_run() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app.store.list_users(app.org_id).await.unwrap()[0].id;
+    let limited = bound_agent(&app, owner, None, Some(1)).await;
+    // Use up the second agent's hourly quota.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{limited}/executions"),
+            json!({ "task": "earlier" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let team = make_team(&app, vec![app.agent_id, limited], json!({})).await;
+    let run_id = start_run(&app, team).await;
+    succeed_current_step(&app, run_id).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run_id)
+            .await
+            .unwrap()
+            .status,
+        "running",
+        "a quota clears by itself"
+    );
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 1);
+
+    // Past the limit window the run fails visibly.
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    sqlx::query("UPDATE team_steps SET finished_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(step.id)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+}
+
+/// #305: while the current step's execution is still working, a tick does not write the
+/// advance lease.
+#[tokio::test]
+async fn advancing_a_busy_run_takes_no_lease() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let run_id = start_run(&app, team).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&app.state, run)
+        .await
+        .unwrap();
+    let claimed: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT advance_claimed_at FROM team_runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_one(&raw_pool().await)
+            .await
+            .unwrap();
+    assert!(claimed.is_none(), "a queued step needs no lease");
+}
+
 #[tokio::test]
 async fn failed_next_step_start_is_retried_then_fails_the_run() {
     let Some(app) = test_app(true).await else {
@@ -4275,6 +4428,201 @@ async fn concurrent_queue_start_creates_exactly_one_run() {
         .unwrap();
     assert_eq!(stored.status, "running");
     assert!(stored.team_run_id.is_some());
+}
+
+/// The step execution of a team run, by run id.
+async fn run_execution(run: Uuid) -> (Uuid, String, bool) {
+    sqlx::query_as::<_, (Uuid, String, bool)>(
+        "SELECT id, status, cancel_requested FROM executions WHERE team_run_id = $1",
+    )
+    .bind(run)
+    .fetch_one(&raw_pool().await)
+    .await
+    .unwrap()
+}
+
+async fn start_queue_run(app: &TestApp, team: Uuid, key: &str) -> (Uuid, Uuid) {
+    let item = queue_item(app, team, key, 1).await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/run"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap()
+        .team_run_id
+        .expect("run attached");
+    (item, run)
+}
+
+/// #299: cancelling a queue item must stop its step execution, not only the run row,
+/// and the item cannot start a second run while that execution is still stopping.
+#[tokio::test]
+async fn cancelling_a_queue_item_stops_its_execution() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+
+    // Claimed by a worker: the execution is asked to stop.
+    let (item, run) = start_queue_run(&app, team, "gh#299a").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/cancel"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, exec_status, cancel_requested) = run_execution(run).await;
+    assert_eq!(exec_status, "dispatched");
+    assert!(cancel_requested, "the worker must be told to stop");
+    assert_eq!(
+        app.store
+            .get_team_run(app.org_id, run)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+
+    // While that execution is still stopping, the item cannot be requeued.
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/requeue"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/retry"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    sqlx::query("UPDATE executions SET status = 'cancelled', finished_at = now() WHERE id = $1")
+        .bind(execution)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/requeue"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "pending");
+
+    // Not yet claimed: the execution is cancelled outright.
+    let (item, run) = start_queue_run(&app, team, "gh#299b").await;
+    let (status, _) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{item}/cancel"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, exec_status, _) = run_execution(run).await;
+    assert_eq!(exec_status, "cancelled");
+}
+
+#[tokio::test]
+async fn team_runs_can_be_cancelled_directly() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let (item, run) = start_queue_run(&app, team, "gh#299c").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/team-runs/{run}/cancel"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["run"]["status"], "cancelled");
+    let (_, _, cancel_requested) = run_execution(run).await;
+    assert!(cancel_requested);
+    assert_eq!(
+        app.store
+            .get_team_queue_item(app.org_id, item)
+            .await
+            .unwrap()
+            .status,
+        "cancelled",
+        "the queue item of a cancelled run is cancelled too"
+    );
+
+    let (status, _) = send(
+        &app.router,
+        post(&format!("/api/v1/team-runs/{run}/cancel"), json!({})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a finished run cannot be cancelled again"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_team_stops_its_executions() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let (_, run) = start_queue_run(&app, team, "gh#299d").await;
+    let (execution, _, _) = run_execution(run).await;
+    app.store
+        .claim_execution(execution, "worker-299")
+        .await
+        .unwrap();
+
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/agent-teams/{team}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app.router, request).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let cancel_requested: bool =
+        sqlx::query_scalar("SELECT cancel_requested FROM executions WHERE id = $1")
+            .bind(execution)
+            .fetch_one(&raw_pool().await)
+            .await
+            .unwrap();
+    assert!(
+        cancel_requested,
+        "a detached execution must still be stopped"
+    );
 }
 
 #[tokio::test]
@@ -5015,6 +5363,131 @@ async fn claim_as(app: &TestApp, token: &str, worker_id: &str) -> Option<Uuid> {
     body["execution"]["execution"]["id"]
         .as_str()
         .map(|id| Uuid::parse_str(id).unwrap())
+}
+
+/// #306: unknown event and memory kinds are validation errors, not database errors.
+#[tokio::test]
+async fn worker_event_and_memory_kinds_are_validated() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "worker-kinds").await;
+    queue_execution(&app, "kinds").await;
+    let claimed = claim_as(&app, &token, "worker-kinds")
+        .await
+        .expect("claimed");
+    let events = format!("/api/v1/worker/executions/{claimed}/events");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            &events,
+            &token,
+            Some(json!({ "kind": "worker_oom", "level": "error", "message": "x" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            &events,
+            &token,
+            Some(json!({ "kind": "error", "level": "error", "message": "x", "data": { "code": "worker_oom" } })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app.router,
+        worker_request(
+            "POST",
+            "/api/v1/worker/memory/store",
+            &token,
+            Some(json!({ "executionId": claimed, "kind": "long_term", "content": "x" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// #306: generating bootstrap output must not revoke the tokens of running workers, is a
+/// POST (a GET must not change state), and a live launch cannot be deleted.
+#[tokio::test]
+async fn bootstrap_keeps_existing_worker_tokens_and_live_launches_are_kept() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let profile = d2_profile(&app, &format!("bootstrap-{}", Uuid::now_v7())).await;
+    let issued = orbit_security::issue_worker_token();
+    let launched = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            Some(profile),
+            "launch:running",
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/v1/worker-profiles/{profile}/bootstrap");
+    for _ in 0..2 {
+        let (status, body) = send(&app.router, post(&path, json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let tokens = app.store.list_worker_tokens(app.org_id).await.unwrap();
+    let profile_tokens: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.profile_id == Some(profile))
+        .collect();
+    assert_eq!(
+        profile_tokens.len(),
+        3,
+        "one launch token plus one per generation"
+    );
+    assert!(
+        profile_tokens
+            .iter()
+            .all(|token| token.revoked_at.is_none()),
+        "bootstrap output must not revoke other tokens"
+    );
+    assert!(profile_tokens.iter().any(|token| token.id == launched.id));
+    let (status, _) = send(&app.router, get(&path)).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+
+    let launch = app
+        .store
+        .create_worker_launch(
+            app.org_id,
+            profile,
+            "orbit-worker-live",
+            "docker",
+            "orbit-worker:test",
+            Some(launched.id),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let delete = |id: Uuid| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/worker-launches/{id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, body) = send(&app.router, delete(launch.id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    sqlx::query("UPDATE worker_launches SET status = 'stopped' WHERE id = $1")
+        .bind(launch.id)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (status, body) = send(&app.router, delete(launch.id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 }
 
 #[tokio::test]
@@ -7031,6 +7504,90 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
 }
 
+/// #303: harness settings in an agent spec are validated by the adapter, and settings
+/// that choose what the worker executes are refused.
+#[tokio::test]
+async fn agent_harness_settings_are_validated_and_restricted() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let with_harness_config = |config: Value| {
+        let mut body = definition();
+        body["metadata"]["name"] = json!(format!("harness-{}", Uuid::now_v7().simple()));
+        body["spec"]["harnessConfig"] = config;
+        body
+    };
+    for (config, path) in [
+        (
+            json!({ "opencode": { "binary": "/bin/sh" } }),
+            "spec.harnessConfig.opencode.binary",
+        ),
+        (
+            json!({ "opencode": { "extraArgs": ["--x"] } }),
+            "spec.harnessConfig.opencode.extraArgs",
+        ),
+        (
+            json!({ "opencode": { "orbitMcp": { "command": ["/bin/sh"] } } }),
+            "spec.harnessConfig.opencode.orbitMcp",
+        ),
+        (
+            json!({ "pi": { "skills": ["/etc"] } }),
+            "spec.harnessConfig.pi.skills[0]",
+        ),
+        (
+            json!({ "opencode": { "workspaceSubdir": "../other" } }),
+            "spec.harnessConfig.opencode.workspaceSubdir",
+        ),
+        (
+            json!({ "no-such-harness": {} }),
+            "spec.harnessConfig.no-such-harness",
+        ),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            post("/api/v1/agents", with_harness_config(config.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{config}: {body}");
+        assert!(
+            body["error"]["details"]
+                .as_array()
+                .is_some_and(|details| details.iter().any(|detail| detail["path"] == path)),
+            "{path} not reported: {body}"
+        );
+    }
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agents",
+            with_harness_config(json!({ "opencode": { "model": "m", "workspaceSubdir": "app" } })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["agent"]["id"]
+        .as_str()
+        .or_else(|| body["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    // Updates are validated the same way.
+    let mut update = with_harness_config(json!({ "opencode": { "binary": "/bin/sh" } }));
+    update["metadata"]["name"] = body["agent"]["name"].clone();
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/agents/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "definition": update }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
 #[tokio::test]
 async fn connection_base_urls_are_validated_on_create_and_update() {
     let Some(app) = test_app(true).await else {
@@ -7085,6 +7642,152 @@ async fn connection_base_urls_are_validated_on_create_and_update() {
     assert!(body["error"]["details"]
         .as_array()
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "baseUrl")));
+}
+
+/// #321: a stored credential must not follow an edited endpoint, as for providers.
+#[tokio::test]
+async fn connection_credential_does_not_follow_an_edited_endpoint() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "github",
+                "name": "Endpoint edit",
+                "config": { "baseUrl": "https://93.184.216.34" },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("/api/v1/connections/{}", body["id"].as_str().unwrap());
+
+    // A new host without a new credential is refused.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "config": { "baseUrl": "https://93.184.216.35" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "credential")));
+
+    // The same endpoint (modulo a trailing slash) and other fields may change freely.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "name": "Renamed", "config": { "baseUrl": "https://93.184.216.34/", "defaultRepository": "acme/x" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A new host together with its credential is accepted.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &path,
+            json!({ "config": { "baseUrl": "https://93.184.216.35" }, "credential": "new-token" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// #321: the Kubernetes endpoint is checked like every other connection URL, and a test
+/// sends the credential, so it needs write permission and use of the connection.
+#[tokio::test]
+async fn kubernetes_api_server_is_guarded_and_testing_needs_write() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "kubernetes",
+                "name": "Metadata cluster",
+                "config": { "authMode": "service_account", "apiServer": "https://169.254.169.254" },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "apiServer")));
+
+    // A loopback API server stored before this check is refused when the test connects,
+    // and the response does not echo what the address returned.
+    let kubernetes = app
+        .store
+        .list_connectors(app.org_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|connector| connector.slug == "kubernetes")
+        .unwrap();
+    let user = owner_user(&app).await;
+    let reference = format!("connection/{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &reference,
+            &orbit_security::SecretValue::new("dummy-token"),
+            "test",
+        )
+        .await
+        .unwrap();
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            kubernetes.id,
+            "Loopback cluster",
+            &json!({ "authMode": "service_account", "apiServer": "https://127.0.0.1:6443" }),
+            &[],
+            Some(&reference),
+            Some(user.id),
+        )
+        .await
+        .unwrap();
+    let test_path = format!("/api/v1/connections/{}/test", connection.id);
+    let (status, body) = send(&app.router, post(&test_path, json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], false, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("request refused"),
+        "{body}"
+    );
+
+    // A viewer can see the connection but cannot make ORBIT send its credential.
+    let viewer = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "conn-viewer@test.local",
+            "Viewer",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    let token = token_for(&app.store, app.org_id, viewer.id, "conn-viewer").await;
+    let (status, _) = send(&app.router, auth_post(&test_path, &token, json!({}))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -9306,6 +10009,105 @@ async fn d2_fixture(app: &TestApp) -> D2Fixture {
 /// App whose router sees an enterprise license, so premium role endpoints reach their
 /// permission checks instead of stopping at the feature gate. The key is registered only
 /// for this test binary; no production key or secret is involved.
+/// #324: `settings:write` alone does not reach the organization-wide access toggles, and
+/// access teams are changed only by privileged users or their own leads.
+#[tokio::test]
+async fn settings_write_has_a_ceiling_for_toggles_and_access_teams() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/access",
+            m,
+            &json!({ "teamIsolation": false }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/approvals",
+            m,
+            &json!({ "approvalsRequireDifferentApprover": false }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/oidc",
+            m,
+            &json!({ "settings": { "groupRoles": { format!("g-{}", Uuid::now_v7()): "owner" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Mallory is not a lead of Team A: she cannot rename or delete it.
+    let team_path = format!("/api/v1/teams/{}", fx.team_a);
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &team_path,
+            m,
+            json!({ "name": "Taken", "slug": format!("taken-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("DELETE")
+            .uri(&team_path)
+            .header("authorization", format!("Bearer {m}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // As a lead she can rename her own team.
+    app.store
+        .upsert_team_member(fx.team_a, fx.mallory.id, "lead")
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &team_path,
+            m,
+            json!({ "name": "Team A", "slug": format!("team-a2-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The Default team keeps its slug, so the delete guard cannot be lifted by a rename.
+    let default_team = app
+        .store
+        .ensure_default_access_team(app.org_id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &format!("/api/v1/teams/{}", default_team.id),
+            "test-token",
+            json!({ "name": "Default", "slug": format!("renamed-{}", Uuid::now_v7()) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
 async fn licensed_test_app() -> Option<TestApp> {
     let mut app = test_app(true).await?;
     use ed25519_dalek::{Signer, SigningKey};
@@ -9598,6 +10400,355 @@ async fn settings_write_holder_cannot_attach_other_teams_mappings_or_profiles() 
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {body}");
     }
+}
+
+async fn private_github_connection(app: &TestApp, owner: Uuid, name: &str) -> Uuid {
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let reference = orbit_security::new_secret_ref("connection");
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &reference,
+            &orbit_security::SecretValue::new("dummy-token"),
+            "test",
+        )
+        .await
+        .unwrap();
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            name,
+            &json!({ "baseUrl": "https://127.0.0.1:9" }),
+            &[],
+            Some(&reference),
+            Some(owner),
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "connections", connection.id, owner).await;
+    connection.id
+}
+
+/// #322: a team author cannot attach a connection they cannot use as a work source, and
+/// the dispatcher stops using a work-source credential its team owner cannot use.
+#[tokio::test]
+async fn work_source_connections_require_use_by_the_team_owner() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let bob = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("ws-bob-{}@test.local", Uuid::now_v7()),
+            "Bob",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let foreign = private_github_connection(&app, bob.id, "Bob's GitHub").await;
+    let work_source = json!({
+        "provider": "github",
+        "enabled": true,
+        "connectionId": foreign,
+        "repository": "acme/issues",
+        "pollSeconds": 60
+    });
+
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agent-teams",
+            &fx.mallory_token,
+            json!({
+                "name": "ws", "mode": "pipeline",
+                "steps": [{ "agentId": app.agent_id }],
+                "workSource": work_source,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "workSource.connectionId")));
+
+    // A team stored with that work source (for example before this check existed) and
+    // owned by Mallory: the dispatcher refuses to use Bob's credential for it.
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "workSource": work_source }),
+    )
+    .await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team, fx.mallory.id)
+        .await
+        .unwrap();
+    let _ = orbit_api::dispatcher::dispatch_tick(&app.state).await;
+    let stored = app.store.get_agent_team(app.org_id, team).await.unwrap();
+    let error = stored.last_poll_error.unwrap_or_default();
+    assert!(error.contains("can no longer use"), "poll error: {error}");
+}
+
+/// #322: replay only returns an execution of the agent the caller targets, and keys the
+/// platform generates cannot be supplied by callers.
+#[tokio::test]
+async fn idempotent_replay_is_scoped_to_the_target_agent() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let path = format!("/api/v1/agents/{}/executions", app.agent_id);
+    let request = |key: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(json!({ "task": "replay" }).to_string()))
+            .unwrap()
+    };
+    let key = format!("client-{}", Uuid::now_v7());
+    let (status, first) = send(&app.router, request(&key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    let (status, again) = send(&app.router, request(&key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{again}");
+    assert_eq!(again["id"], first["id"], "same agent, same key: replay");
+
+    let other = create_demo_agent(&app.store, app.org_id, owner_user(&app).await.id).await;
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agents/{other}/executions"))
+            .header("content-type", "application/json")
+            .header("idempotency-key", &key)
+            .body(Body::from(json!({ "task": "replay" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(!body.to_string().contains(first["id"].as_str().unwrap()));
+
+    for reserved in ["team:x:0", "trigger:x:1", "runtime:x:first", "Rerun:x:y"] {
+        let (status, body) = send(&app.router, request(reserved)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{reserved}: {body}"
+        );
+    }
+}
+
+/// Claim a fresh execution of `agent` requested by `requested_by` and fetch its worker
+/// context with a worker token.
+async fn worker_context_for(
+    app: &TestApp,
+    agent: &orbit_store::Agent,
+    version: &orbit_store::AgentVersion,
+    requested_by: Uuid,
+    input: Value,
+) -> (StatusCode, Value) {
+    let issued = orbit_security::issue_worker_token();
+    let worker = format!("ctx-worker-{}", Uuid::now_v7());
+    let token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            None,
+            &worker,
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    let execution = app
+        .store
+        .create_execution(orbit_store::executions::NewExecution {
+            org_id: app.org_id,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: orbit_domain::HarnessKind::Mock,
+            trigger_source: orbit_domain::TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input,
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(requested_by),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    app.store
+        .claim_execution(execution.id, &worker)
+        .await
+        .unwrap()
+        .expect("queued");
+    app.store
+        .bind_execution_worker_token(execution.id, token.id)
+        .await
+        .unwrap();
+    send(
+        &app.router,
+        worker_request(
+            "GET",
+            &format!("/api/v1/worker/executions/{}/context", execution.id),
+            &issued.token,
+            None,
+        ),
+    )
+    .await
+}
+
+/// #322: env mappings named by a team run are checked again when the run starts.
+#[tokio::test]
+async fn team_env_mappings_are_checked_for_the_run_principal() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = owner_user(&app).await;
+    let mapping = app
+        .store
+        .create_env_mapping(
+            app.org_id,
+            &format!("private-{}", Uuid::now_v7().simple()),
+            "",
+            &json!([{ "envVar": "TOKEN", "secretKey": "x" }]),
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "env_mappings", mapping.id, owner.id).await;
+    let mut definition: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).unwrap();
+    definition.metadata.name = format!("env-user-{}", Uuid::now_v7().simple());
+    let (agent, version) = app
+        .store
+        .create_agent(app.org_id, Some(owner.id), &definition)
+        .await
+        .unwrap();
+    let carol = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("env-carol-{}@test.local", Uuid::now_v7()),
+            "Carol",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let input = json!({ "task": "x", "team": { "envMappingIds": [mapping.id] } });
+
+    let (status, body) = worker_context_for(&app, &agent, &version, carol.id, input.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains(&mapping.name), "{body}");
+
+    // The mapping's owner may use it.
+    let (status, body) = worker_context_for(&app, &agent, &version, owner.id, input).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// #322: skills are referenced by slug, so a referenced skill cannot be deleted (its
+/// slug could be registered again by someone else), and the worker context refuses a
+/// skill the run's principal cannot use.
+#[tokio::test]
+async fn skills_are_protected_by_reference_and_checked_at_run_time() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = owner_user(&app).await;
+    let skill = app
+        .store
+        .create_skill(
+            app.org_id,
+            &format!("ref-{}", Uuid::now_v7().simple()),
+            "Referenced",
+            "",
+            "body",
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    let mut definition: orbit_domain::AgentDefinition =
+        serde_json::from_value(definition()).unwrap();
+    definition.metadata.name = format!("skill-user-{}", Uuid::now_v7().simple());
+    definition.spec.skills = vec![skill.slug.clone()];
+    let (agent, version) = app
+        .store
+        .create_agent(app.org_id, Some(owner.id), &definition)
+        .await
+        .unwrap();
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/skills/{}", skill.id))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app.router, delete).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains(&agent.name), "{body}");
+
+    // An agent team that names the skill also holds it.
+    let team_skill = app
+        .store
+        .create_skill(
+            app.org_id,
+            &format!("team-{}", Uuid::now_v7().simple()),
+            "Team skill",
+            "",
+            "body",
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "skills": [team_skill.slug] }),
+    )
+    .await;
+    let (status, body) = send(
+        &app.router,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/skills/{}", team_skill.id))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A run requested by an operator who cannot use the (private) skill fails closed.
+    let carol = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("skill-carol-{}@test.local", Uuid::now_v7()),
+            "Carol",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    make_private(&app.store, app.org_id, "skills", skill.id, owner.id).await;
+    let (status, body) =
+        worker_context_for(&app, &agent, &version, carol.id, json!({ "task": "x" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains(&skill.slug), "{body}");
 }
 
 #[tokio::test]
@@ -10724,102 +11875,367 @@ async fn license_phase_transitions_are_audited() {
     assert_eq!(entries[1].metadata["to"], "grace");
 }
 
+// ------------------------------------------------------------------ Prometheus metrics
+
+async fn scrape(router: &axum::Router, request: Request<Body>) -> (StatusCode, String, String) {
+    let (status, headers, bytes) = send_raw(router, request).await;
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (status, content_type, String::from_utf8(bytes).unwrap())
+}
+
+/// Value of the first sample line that starts with `prefix`.
+fn sample(text: &str, prefix: &str) -> Option<f64> {
+    text.lines()
+        .find(|line| line.starts_with(prefix))
+        .and_then(|line| line.rsplit_once(' '))
+        .and_then(|(_, value)| value.parse().ok())
+}
+
 #[tokio::test]
-async fn worker_audit_accepts_only_worker_action_names() {
+async fn metrics_label_requests_by_route_template_and_report_state() {
     let Some(app) = test_app(true).await else {
         return;
     };
-    let token = worker_token(&app.store, app.org_id, "worker-audit").await;
-    let queued = queue_execution(&app, "audit execution").await;
-    let claimed = claim_as(&app, &token, "worker-audit")
-        .await
-        .expect("claimed");
-    assert_eq!(claimed, queued);
+    let missing = Uuid::now_v7();
+    let (status, _) = send(&app.router, get("/api/v1/agents")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&app.router, get(&format!("/api/v1/agents/{missing}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app.router, get(&format!("/no/such/route/{missing}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // A name that looks like a user or platform action is refused with the envelope.
-    let (status, body) = send(
-        &app.router,
-        worker_request(
-            "POST",
-            "/api/v1/worker/audit",
-            &token,
-            Some(json!({ "executionId": claimed, "action": "member.role_changed" })),
+    let (status, content_type, text) = scrape(&app.router, get("/metrics")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "text/plain; version=0.0.4");
+
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"/api/v1/agents\",status_class=\"2xx\"}"
         ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(body["error"]["code"], "validation_error");
-    let forged = app
-        .store
-        .list_audit_logs(app.org_id, 10, None, Some("member.role_changed"))
-        .await
-        .unwrap();
-    assert!(forged.0.is_empty());
+        Some(1.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"/api/v1/agents/{agent_id}\",status_class=\"4xx\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_requests_total{method=\"GET\",route=\"unmatched\",status_class=\"4xx\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(sample(&text, "orbit_http_errors_total"), Some(2.0));
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_http_request_duration_seconds_count{method=\"GET\",route=\"/api/v1/agents\"}"
+        ),
+        Some(1.0)
+    );
+    // The scrape itself is the one request still open.
+    assert_eq!(sample(&text, "orbit_http_in_flight_requests"), Some(1.0));
 
-    for action in orbit_contracts::WORKER_AUDIT_ACTIONS {
-        let (status, body) = send(
-            &app.router,
-            worker_request(
-                "POST",
-                "/api/v1/worker/audit",
-                &token,
-                Some(json!({ "executionId": claimed, "action": action, "metadata": {} })),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NO_CONTENT, "{action}: {body}");
-        let rows = app
-            .store
-            .list_audit_logs(app.org_id, 10, None, Some(action))
-            .await
-            .unwrap();
-        assert_eq!(rows.0.len(), 1, "{action}");
+    // Current-state gauges. The test database is shared, so counts are lower bounds.
+    assert!(text.contains(&format!(
+        "orbit_info{{version=\"{}\",environment=\"test\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"community\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"active\"}"),
+        Some(0.0)
+    );
+    assert!(!text.contains("orbit_license_limit{"));
+    assert!(sample(&text, "orbit_license_usage{resource=\"agents\"}").unwrap() >= 1.0);
+    assert!(sample(&text, "orbit_license_usage{resource=\"seats\"}").unwrap() >= 1.0);
+    for status in ["queued", "dispatched", "running", "awaiting_approval"] {
+        assert!(
+            sample(
+                &text,
+                &format!("orbit_executions_in_flight{{status=\"{status}\"}}")
+            )
+            .is_some(),
+            "{status}"
+        );
+    }
+    assert!(sample(&text, "orbit_workers_online").is_some());
+    assert!(sample(&text, "orbit_worker_launches{status=\"running\"}").is_some());
+    assert!(sample(&text, "orbit_db_pool_connections{state=\"idle\"}").is_some());
+    assert_eq!(
+        sample(&text, "orbit_harness_available{kind=\"mock\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_metrics_collect_errors_total"),
+        Some(0.0)
+    );
+
+    // No identifiers or names: not the request path, the org slug or the user.
+    assert!(!text.contains(&missing.to_string()));
+    assert!(!text.contains("api-test-"));
+    assert!(!text.contains("api@test.local"));
+}
+
+#[tokio::test]
+async fn metrics_report_license_limits_and_rate_limited_requests() {
+    let Some(app) = test_app_with_license(
+        true,
+        Some(licensed(&["teams"], json!({ "agents": 25, "seats": 10 }))),
+    )
+    .await
+    else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.rate_limiter = Arc::new(RateLimiter::new(1));
+    let router = build_router(state);
+    let from = |path: &str| {
+        Request::builder()
+            .uri(path)
+            .extension(ConnectInfo(SocketAddr::from(([203, 0, 113, 77], 5000))))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, _) = send(&router, from("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+    // `/metrics` on the public port shares the anonymous budget.
+    let (status, _, _) = scrape(&router, from("/metrics")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    let (status, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        sample(&text, "orbit_rate_limited_total"),
+        Some(1.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_phase{phase=\"active\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_limit{resource=\"agents\"}"),
+        Some(25.0)
+    );
+    assert_eq!(
+        sample(&text, "orbit_license_limit{resource=\"seats\"}"),
+        Some(10.0)
+    );
+    assert!(!text.contains("orbit_license_limit{resource=\"workers\"}"));
+    // The customer name on the license is never exported.
+    assert!(!text.contains("Test customer"));
+}
+
+#[tokio::test]
+async fn metrics_token_is_required_when_configured() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.metrics_access.token = Some("scrape-secret".into());
+    let router = build_router(state);
+    let with = |authorization: Option<&str>| {
+        let mut request = Request::builder().uri("/metrics");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+
+    let (status, headers, bytes) = send_raw(&router, with(None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(headers.get("www-authenticate").unwrap(), "Bearer");
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "unauthorized", "{body}");
+    assert!(!String::from_utf8_lossy(&bytes).contains("orbit_"));
+
+    for wrong in [
+        "Bearer nope",
+        "Bearer scrape-secret-and-more",
+        "scrape-secret",
+        "Basic scrape-secret",
+    ] {
+        let (status, _, _) = send_raw(&router, with(Some(wrong))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{wrong}");
+    }
+
+    let (status, _, text) = scrape(&router, with(Some("Bearer scrape-secret"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("# TYPE orbit_http_requests_total counter"));
+    assert!(!text.contains("scrape-secret"));
+}
+
+#[tokio::test]
+async fn dedicated_metrics_listener_moves_metrics_off_the_public_port() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut state = app.state.clone();
+    state.metrics_access.dedicated_listener = true;
+    state.metrics_access.token = Some("scrape-secret".into());
+
+    let public = build_router(state.clone());
+    let (status, body) = send(&public, get("/metrics")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, _) = send(&public, get("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let dedicated = orbit_api::build_metrics_router(state);
+    let (status, _, _) = scrape(&dedicated, get("/metrics")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let authorized = Request::builder()
+        .uri("/metrics")
+        .header("authorization", "Bearer scrape-secret")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, text) = scrape(&dedicated, authorized).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("orbit_uptime_seconds"));
+    let (status, _) = send(&dedicated, get("/healthz")).await;
+    assert_eq!(status, StatusCode::OK);
+    // Nothing else is reachable on the metrics port.
+    for path in ["/api/v1/agents", "/api/v1/meta", "/docs", "/readyz"] {
+        let (status, _) = send(&dedicated, get(path)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
     }
 }
 
 #[tokio::test]
-async fn license_usage_is_only_shown_to_owners_and_admins() {
-    let Some(app) = test_app_with_license(true, Some(licensed(&[], json!({ "seats": 1 })))).await
-    else {
+async fn metrics_follow_an_execution_through_its_lifecycle() {
+    let Some(app) = test_app(true).await else {
         return;
     };
+    // Wire the store to the metrics registry the way the API binary does.
+    let metrics = Arc::new(orbit_api::metrics::Metrics::new());
+    let store = app.store.clone().with_execution_observer(metrics.clone());
+    let mut state = app.state.clone();
+    state.store = store.clone();
+    state.metrics = metrics;
+    let router = build_router(state);
 
-    // The dev identity is an Owner: usage and the near-limit warning are included.
-    let (status, body) = send(&app.router, get("/api/v1/license")).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["usage"]["seats"].as_i64().unwrap() >= 1, "{body}");
-    assert!(
-        body["warnings"]
-            .as_array()
+    let create = |key: String| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agents/{}/executions", app.agent_id))
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(json!({ "task": "measure" }).to_string()))
             .unwrap()
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().starts_with("seats:")),
-        "{body}"
-    );
+    };
+    let key = Uuid::now_v7().to_string();
+    let (status, body) = send(&router, create(key.clone())).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    // An idempotent replay returns the same execution and is not counted again.
+    let (status, replay) = send(&router, create(key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
+    assert_eq!(replay["id"], body["id"]);
 
-    // A Viewer has settings:read but sees neither installation-wide counts nor the
-    // warnings that quote them.
-    let viewer = app
-        .store
-        .ensure_user(
-            app.org_id,
-            "license-viewer@test.local",
-            "Viewer",
-            UserRole::Viewer,
+    let (_, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_created_total{harness=\"mock\",trigger_source=\"manual\"}"
+        ),
+        Some(1.0),
+        "{text}"
+    );
+    assert!(!text.contains("orbit_executions_started_total{"));
+
+    store.claim_execution(id, "metrics-worker").await.unwrap();
+    assert!(store
+        .mark_execution_running(id, None)
+        .await
+        .unwrap()
+        .is_some());
+    store
+        .finish_execution(
+            id,
+            orbit_domain::ExecutionStatus::Succeeded,
+            Some(&json!({ "text": "done" })),
+            None,
+            None,
+            None,
         )
         .await
+        .unwrap()
+        .expect("finished");
+    // A second report for a finished run changes nothing and is not counted.
+    assert!(store
+        .finish_execution(
+            id,
+            orbit_domain::ExecutionStatus::Failed,
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    // A run cancelled while still queued completes without ever starting.
+    let (status, queued) = send(&router, create(Uuid::now_v7().to_string())).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    let queued_id = Uuid::parse_str(queued["id"].as_str().unwrap()).unwrap();
+    store
+        .request_execution_cancel(app.org_id, queued_id)
+        .await
         .unwrap();
-    let token = token_for(&app.store, app.org_id, viewer.id, "license-viewer").await;
-    let (status, body) = send(&app.router, auth_get("/api/v1/license", &token)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body.get("usage").is_none(), "{body}");
-    assert_eq!(body["license"]["tier"], "enterprise");
-    assert!(
-        !body["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().contains("used")),
-        "{body}"
+
+    let (_, _, text) = scrape(&router, get("/metrics")).await;
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_created_total{harness=\"mock\",trigger_source=\"manual\"}"
+        ),
+        Some(2.0),
+        "{text}"
     );
+    assert_eq!(
+        sample(&text, "orbit_executions_started_total{harness=\"mock\"}"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_completed_total{status=\"succeeded\",harness=\"mock\"}"
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_executions_completed_total{status=\"cancelled\",harness=\"mock\"}"
+        ),
+        Some(1.0)
+    );
+    assert!(!text.contains("orbit_executions_completed_total{status=\"failed\""));
+    assert_eq!(
+        sample(&text, "orbit_execution_queue_wait_seconds_count"),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &text,
+            "orbit_execution_duration_seconds_count{harness=\"mock\",status=\"succeeded\"}"
+        ),
+        Some(1.0)
+    );
+    assert!(!text
+        .contains("orbit_execution_duration_seconds_count{harness=\"mock\",status=\"cancelled\"}"));
+    assert_eq!(sample(&text, "orbit_execution_timeouts_total"), Some(0.0));
 }

@@ -152,6 +152,12 @@ differs per render. Set `launcher.token` explicitly (or put `launcher-token` in
 Production guardrails. Included from templates/validate.yaml so it runs on every render.
 */}}
 {{- define "orbit.validate" -}}
+{{- if and .Values.monitoring.annotations .Values.monitoring.token.existingSecret -}}
+{{- fail "monitoring.annotations=true cannot be combined with monitoring.token.existingSecret: annotation-based discovery cannot send a bearer token. Use monitoring.serviceMonitor.enabled=true, or drop the token and restrict the metrics port with monitoring.port and a NetworkPolicy." -}}
+{{- end -}}
+{{- if and .Values.monitoring.serviceMonitor.enabled .Values.monitoring.token.existingSecret .Values.monitoring.serviceMonitor.namespace (ne (toString .Values.monitoring.serviceMonitor.namespace) .Release.Namespace) -}}
+{{- fail "monitoring.serviceMonitor.namespace must be the release namespace when monitoring.token.existingSecret is set: the ServiceMonitor reads the token Secret from its own namespace." -}}
+{{- end -}}
 {{- if and .Values.ingress.enabled (eq (toString .Values.auth.mode) "dev") .Values.auth.dev.allowAnonymous (not .Values.auth.acknowledgeInsecureDev) -}}
 {{- fail "ingress.enabled=true with auth.mode=dev and auth.dev.allowAnonymous=true exposes an anonymous Owner UI. Use auth.mode=oidc (see values-prod.example.yaml), set auth.dev.allowAnonymous=false, disable the ingress, or set auth.acknowledgeInsecureDev=true for a throwaway local/test cluster." -}}
 {{- end -}}
@@ -166,4 +172,22 @@ Production guardrails. Included from templates/validate.yaml so it runs on every
 {{- fail "platform.environment=production with the bundled PostgreSQL requires a non-default postgresql.password (or use externalDatabase.enabled=true)." -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Port name and number Prometheus scrapes: the dedicated metrics port when
+`monitoring.port` is set, otherwise the API port.
+*/}}
+{{- define "orbit.metricsPortName" -}}
+{{- if .Values.monitoring.port -}}metrics{{- else -}}http{{- end -}}
+{{- end -}}
+{{- define "orbit.metricsPort" -}}
+{{- if .Values.monitoring.port -}}{{ .Values.monitoring.port }}{{- else -}}{{ .Values.api.port }}{{- end -}}
+{{- end -}}
+
+{{/* prometheus.io/* discovery annotations for the API pod and Service. */}}
+{{- define "orbit.scrapeAnnotations" -}}
+prometheus.io/scrape: "true"
+prometheus.io/path: "/metrics"
+prometheus.io/port: {{ include "orbit.metricsPort" . | quote }}
 {{- end -}}

@@ -301,6 +301,57 @@ async fn http_json(
     Ok(payload)
 }
 
+/// The team's owner can no longer use the connection its work source names (#322).
+#[derive(Debug)]
+pub(crate) struct WorkSourceAccessLost {
+    pub connection: String,
+}
+
+impl std::fmt::Display for WorkSourceAccessLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the team's owner can no longer use work source connection '{}'",
+            self.connection
+        )
+    }
+}
+
+impl std::error::Error for WorkSourceAccessLost {}
+
+/// Load a work source's connection for background polling and outcome writes, which run
+/// without a caller. The team's owner stands in for the caller: the credential is only
+/// used while that user may still use the connection, the same stored-identity rule run
+/// paths follow (#140, #193). Teams without an owner keep platform authority.
+pub(crate) async fn work_source_connection(
+    state: &crate::state::AppState,
+    team: &orbit_store::AgentTeam,
+    connection_id: Uuid,
+) -> anyhow::Result<orbit_store::Connection> {
+    let connection = state
+        .store
+        .get_connection(team.org_id, connection_id)
+        .await?;
+    if let Some(owner) = team.owner_user_id {
+        let access = crate::access::AccessScope::load_for_user(state, team.org_id, owner)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("could not load the team owner's access: {}", error.message)
+            })?;
+        if !access.can_use(
+            connection.owner_user_id,
+            connection.owner_team_id,
+            &connection.visibility,
+        ) {
+            return Err(WorkSourceAccessLost {
+                connection: connection.name.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(connection)
+}
+
 pub async fn list_github_issues(
     client: &reqwest::Client,
     base_url: &str,

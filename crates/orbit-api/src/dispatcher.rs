@@ -89,7 +89,7 @@ async fn dispatch_team_locked(
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
 
-    let connector = WorkSourceConnection::new(state, team.org_id, source).await?;
+    let connector = WorkSourceConnection::new(state, team, source).await?;
     let client = connector.client.clone();
     let base_url = connector.base_url.clone();
     let token = connector.token.clone();
@@ -274,13 +274,14 @@ struct WorkSourceConnection {
 impl WorkSourceConnection {
     async fn new(
         state: &AppState,
-        org_id: Uuid,
+        team: &AgentTeam,
         source: &WorkSourceDefinition,
     ) -> anyhow::Result<Self> {
         let connection_id = source
             .connection_id
             .ok_or_else(|| anyhow::anyhow!("work source has no connection"))?;
-        let connection = state.store.get_connection(org_id, connection_id).await?;
+        let connection =
+            crate::work_sources::work_source_connection(state, team, connection_id).await?;
         let token = match &connection.credential_ref {
             Some(reference) => state
                 .store

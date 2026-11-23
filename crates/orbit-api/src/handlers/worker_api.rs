@@ -350,6 +350,7 @@ pub async fn heartbeat(
             "worker id is already registered by another worker token",
         ));
     }
+    state.metrics.worker_heartbeat();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -402,13 +403,20 @@ pub async fn claim(
     };
     let execution = match claimed {
         Some(execution) => execution,
-        None => return Ok(Json(ClaimResponse { execution: None })),
+        None => {
+            state.metrics.worker_claim("empty");
+            return Ok(Json(ClaimResponse { execution: None }));
+        }
     };
     match build_context(&state, auth.org_id, profile.as_ref(), &execution).await {
-        Ok(context) => Ok(Json(ClaimResponse {
-            execution: Some(context),
-        })),
+        Ok(context) => {
+            state.metrics.worker_claim("claimed");
+            Ok(Json(ClaimResponse {
+                execution: Some(context),
+            }))
+        }
         Err(error) => {
+            state.metrics.worker_claim("error");
             let message = error.message.clone();
             fail_claimed(&state, &execution, &message).await;
             Err(error)
@@ -474,9 +482,14 @@ async fn build_context(
         Some(user_id) => Some(AccessScope::load_for_user(state, org_id, user_id).await?),
         None => None,
     };
+    // A team step runs the model its team configured, not only the agent's own (#305).
+    // Applied before resolution, so the provider access check covers the model used.
+    if let Some(override_model) = execution.input.get("team").and_then(model_override_in) {
+        override_model.apply(&mut spec.model);
+    }
     let model = resolve_model(&state.store, org_id, &spec, access.as_ref()).await?;
     let mut subagent_models = Vec::new();
-    for (agent_id, name) in team_subagents(execution) {
+    for (agent_id, name, subagent_override) in team_subagents(execution) {
         let agent = state
             .store
             .get_agent(org_id, agent_id)
@@ -487,9 +500,12 @@ async fn build_context(
             .get_current_version(org_id, &agent)
             .await
             .map_err(|_| ApiError::conflict(format!("subagent '{name}' has no current version")))?;
-        let sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
+        let mut sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
             ApiError::internal(format!("subagent '{name}' spec is invalid: {error}"))
         })?;
+        if let Some(override_model) = &subagent_override {
+            override_model.apply(&mut sub_spec.model);
+        }
         let resolved = resolve_model(&state.store, org_id, &sub_spec, access.as_ref()).await?;
         subagent_models.push(WorkerSubagentModel {
             agent_id,
@@ -499,13 +515,37 @@ async fn build_context(
     let grants = resolve_grants(&state.store, org_id, &spec).await;
     let mut slugs = spec.skills.clone();
     slugs.extend(execution.skills.iter().cloned());
-    if let Some(profile) = profile {
-        slugs.extend(profile.skill_slugs.iter().cloned());
-    }
+    let profile_slugs: std::collections::BTreeSet<String> = profile
+        .map(|profile| profile.skill_slugs.iter().cloned().collect())
+        .unwrap_or_default();
+    slugs.extend(profile_slugs.iter().cloned());
     slugs.sort();
     slugs.dedup();
     let skills = state.store.skills_by_slugs(org_id, &slugs).await?;
-    let env = resolve_team_env(&state.store, org_id, execution, &spec, profile).await;
+    // Skills are referenced by slug, and a slug can name a different skill than the one
+    // the agent author chose. The run principal must be able to use every skill the
+    // agent or the run asks for; the worker profile's own skills are the profile
+    // manager's choice (#322).
+    if let Some(access) = access.as_ref() {
+        if let Some(skill) = skills.iter().find(|skill| {
+            !profile_slugs.contains(&skill.slug)
+                && !access.can_use(skill.owner_user_id, skill.owner_team_id, &skill.visibility)
+        }) {
+            return Err(ApiError::forbidden(format!(
+                "the run's principal cannot use skill '{}'",
+                skill.slug
+            )));
+        }
+    }
+    let env = resolve_team_env(
+        &state.store,
+        org_id,
+        execution,
+        &spec,
+        profile,
+        access.as_ref(),
+    )
+    .await?;
     let tool_policies = require_loaded_policies(
         execution.id,
         state
@@ -540,7 +580,13 @@ fn team_ids(execution: &ExecutionRecord, key: &str) -> Vec<Uuid> {
         .unwrap_or_default()
 }
 
-fn team_subagents(execution: &ExecutionRecord) -> Vec<(Uuid, String)> {
+type SubagentRef = (
+    Uuid,
+    String,
+    Option<crate::handlers::teams::TeamModelOverride>,
+);
+
+fn team_subagents(execution: &ExecutionRecord) -> Vec<SubagentRef> {
     execution
         .input
         .get("team")
@@ -556,11 +602,21 @@ fn team_subagents(execution: &ExecutionRecord) -> Vec<(Uuid, String)> {
                         .and_then(|value| value.as_str())
                         .unwrap_or("subagent")
                         .to_string();
-                    Some((agent_id, name))
+                    Some((agent_id, name, model_override_in(item)))
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The team or step model override the API recorded with a team execution (#305).
+fn model_override_in(
+    value: &serde_json::Value,
+) -> Option<crate::handlers::teams::TeamModelOverride> {
+    value
+        .get("modelOverride")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 async fn merge_team_connections(
@@ -615,7 +671,8 @@ async fn resolve_team_env(
     execution: &ExecutionRecord,
     spec: &AgentSpec,
     profile: Option<&WorkerProfile>,
-) -> Vec<ResolvedEnv> {
+    access: Option<&AccessScope>,
+) -> Result<Vec<ResolvedEnv>, ApiError> {
     let mut resolved = Vec::new();
     if let Some(profile) = profile {
         // CLI credentials come from the team's shared connections *and* the agent's own
@@ -693,6 +750,20 @@ async fn resolve_team_env(
         let Ok(mapping) = store.get_env_mapping(org_id, mapping_id).await else {
             continue;
         };
+        // Checked when the team was saved, and again here: access removed since then
+        // must not keep handing the mapping's secrets to runs (#322).
+        if access.is_some_and(|access| {
+            !access.can_use(
+                mapping.owner_user_id,
+                mapping.owner_team_id,
+                &mapping.visibility,
+            )
+        }) {
+            return Err(ApiError::forbidden(format!(
+                "the run's principal cannot use environment mapping '{}'",
+                mapping.name
+            )));
+        }
         let Ok(items) = serde_json::from_value::<Vec<EnvMapping>>(mapping.mappings) else {
             continue;
         };
@@ -728,7 +799,7 @@ async fn resolve_team_env(
             }
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 async fn fail_claimed(state: &AppState, execution: &ExecutionRecord, message: &str) {
@@ -812,12 +883,19 @@ pub async fn event(
             )))
         }
     };
+    // Unknown kinds would otherwise reach the CHECK constraint and surface as a 500.
+    let kind = orbit_domain::ExecutionEventKind::parse(&body.kind).ok_or_else(|| {
+        ApiError::validation(vec![orbit_domain::ValidationIssue::new(
+            "kind",
+            format!("unknown event kind '{}'", body.kind),
+        )])
+    })?;
     let event = state
         .store
         .append_execution_event(
             execution.org_id,
             execution.id,
-            &body.kind,
+            kind.as_str(),
             level,
             &body.message,
             &body.data,
@@ -1418,6 +1496,12 @@ pub async fn store_memory(
     }
     let (agent_id, retention_days) =
         memory_agent(&state, &auth, body.execution_id, body.agent_id).await?;
+    // After the ownership check, so an unbound execution is a 404 whatever the body says.
+    if !matches!(body.kind.as_str(), "short_term" | "summary") {
+        return Err(ApiError::validation(vec![
+            orbit_domain::ValidationIssue::new("kind", "memory kind must be short_term or summary"),
+        ]));
+    }
     let expires_at = retention_days.map(|days| Utc::now() + chrono::Duration::days(days));
     state
         .store

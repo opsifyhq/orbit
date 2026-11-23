@@ -112,6 +112,7 @@ async fn env() -> Option<Env> {
         events_driver: "memory".into(),
         public_base_url: "http://localhost".into(),
         metrics: Arc::new(orbit_api::metrics::Metrics::new()),
+        metrics_access: orbit_api::MetricsAccess::default(),
         max_body_bytes: 2 * 1024 * 1024,
         rate_limiter: Arc::new(RateLimiter::new(DEFAULT_ANON_RATE_LIMIT_PER_MINUTE)),
         cors_origins: vec!["*".into()],

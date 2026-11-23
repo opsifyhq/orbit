@@ -23,6 +23,9 @@ pub struct ApiConfig {
     pub body_limit_bytes: usize,
     /// Requests per 60-second window allowed per source IP on public/unauthenticated routes.
     pub anon_rate_limit_per_minute: u32,
+    /// Peers whose `X-Forwarded-For` the anonymous rate limit believes
+    /// (`ORBIT_TRUSTED_PROXIES`, comma-separated CIDRs or addresses).
+    pub trusted_proxies: Vec<crate::rate_limit::TrustedProxy>,
     pub auth: AuthConfig,
     pub master_key: String,
     pub launcher_url: Option<String>,
@@ -34,6 +37,11 @@ pub struct ApiConfig {
     /// Days after which terminal executions, team runs and worker launches are archived.
     /// `0` disables the retention loop.
     pub archive_after_days: Option<u32>,
+    /// Dedicated listener for `/metrics` (`ORBIT_METRICS_ADDR`). When set, the main
+    /// listener no longer serves `/metrics`.
+    pub metrics_addr: Option<String>,
+    /// Bearer token a scraper must present (`ORBIT_METRICS_TOKEN`). Unset = open.
+    pub metrics_token: Option<String>,
 }
 
 impl ApiConfig {
@@ -73,6 +81,14 @@ impl ApiConfig {
                 ),
                 DEFAULT_ANON_RATE_LIMIT_PER_MINUTE,
             ),
+            trusted_proxies: {
+                let (proxies, invalid) =
+                    crate::rate_limit::parse_trusted_proxies(&env_or("ORBIT_TRUSTED_PROXIES", ""));
+                if !invalid.is_empty() {
+                    tracing::warn!(?invalid, "ignoring invalid ORBIT_TRUSTED_PROXIES entries");
+                }
+                proxies
+            },
             auth,
             master_key,
             launcher_url: std::env::var("ORBIT_LAUNCHER_URL")
@@ -90,6 +106,8 @@ impl ApiConfig {
                 .parse::<u32>()
                 .ok()
                 .filter(|days| *days > 0),
+            metrics_addr: env_opt("ORBIT_METRICS_ADDR"),
+            metrics_token: env_opt("ORBIT_METRICS_TOKEN"),
         })
     }
 

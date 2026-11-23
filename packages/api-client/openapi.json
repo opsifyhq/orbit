@@ -3237,6 +3237,40 @@
         }
       }
     },
+    "/api/v1/team-runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "agent-teams"
+        ],
+        "summary": "Stop a team run: request cancellation of its live executions, mark the run\n`cancelled` and cancel the queue item it was started for, if any.",
+        "operationId": "cancel_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamRunDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "the run already ended"
+          }
+        }
+      }
+    },
     "/api/v1/teams": {
       "get": {
         "tags": [
@@ -4112,10 +4146,12 @@
       }
     },
     "/api/v1/worker-profiles/{profile_id}/bootstrap": {
-      "get": {
+      "post": {
         "tags": [
           "workers"
         ],
+        "summary": "Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.",
+        "description": "Each call issues one new worker token for the profile and leaves the existing ones\nalone: launched and previously bootstrapped workers keep running (#306). Rotating\nevery token of a profile is the separate, explicit `POST …/token`.",
         "operationId": "bootstrap",
         "parameters": [
           {
@@ -4405,10 +4441,17 @@
         "tags": [
           "system"
         ],
+        "summary": "Prometheus scrape endpoint. Open unless `ORBIT_METRICS_TOKEN` is set, in which case\nthe scraper must send it as a bearer token.",
         "operationId": "metrics",
         "responses": {
           "200": {
-            "description": "Prometheus metrics"
+            "description": "Prometheus metrics in the text exposition format (0.0.4)",
+            "content": {
+              "text/plain": {}
+            }
+          },
+          "401": {
+            "description": "A metrics token is configured and the request did not present it"
           }
         }
       }

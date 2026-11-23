@@ -18,7 +18,10 @@ per execution (or per Agent Team step) and constrained by the worker profile.
   subagents are used).
 - **Worker profile**: declares supported harnesses/capabilities and placement.
 - Harness-specific options live under `harnessConfig.<kind>` and are validated by the
-  selected adapter, not stored as part of the agent identity.
+  selected adapter when the agent is saved, not stored as part of the agent identity.
+  Settings that choose what the worker executes (`binary`, `extraArgs`), carry the policy
+  hook (`orbitMcp`) or point at a shared server (`serverUrl`) are the platform's and are
+  refused in agent specs (#303).
 
 ## Resolution
 

@@ -138,6 +138,28 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(team)))
 }
 
+/// Renaming or deleting a team changes who can see and use its resources: Owners,
+/// Admins and the team's own leads may do it, not anyone with `settings:write` (#324).
+async fn require_team_admin(
+    state: &AppState,
+    auth: &AuthContext,
+    team_id: Uuid,
+) -> Result<(), ApiError> {
+    let access = crate::access::AccessScope::load(state, auth).await?;
+    if access.is_privileged()
+        || access
+            .teams
+            .get(&team_id)
+            .is_some_and(|role| role == "lead")
+    {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "only Owners, Admins and the team's leads can change or delete a team",
+        ))
+    }
+}
+
 #[utoipa::path(patch, path = "/api/v1/teams/{team_id}", tag = "teams", request_body = TeamRequest, responses((status = 200, body = AccessTeam)))]
 pub async fn update(
     State(state): State<AppState>,
@@ -147,8 +169,16 @@ pub async fn update(
 ) -> Result<Json<AccessTeam>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::FEATURE_TEAMS)?;
-    state.store.get_access_team(auth.org_id, team_id).await?;
+    let existing = state.store.get_access_team(auth.org_id, team_id).await?;
+    require_team_admin(&state, &auth, team_id).await?;
     let (name, slug) = validated(&body)?;
+    // The Default team is recognised by its slug; renaming it away would also lift the
+    // delete guard below (#324).
+    if existing.slug == "default" && slug != "default" {
+        return Err(ApiError::conflict(
+            "the Default team's slug cannot be changed",
+        ));
+    }
     let team = state
         .store
         .update_access_team(auth.org_id, team_id, &name, &slug)
@@ -174,6 +204,7 @@ pub async fn delete(
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::FEATURE_TEAMS)?;
     let team = state.store.get_access_team(auth.org_id, team_id).await?;
+    require_team_admin(&state, &auth, team_id).await?;
     if team.slug == "default" {
         return Err(ApiError::conflict("the Default team cannot be deleted"));
     }

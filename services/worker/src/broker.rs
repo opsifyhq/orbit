@@ -85,12 +85,16 @@ impl BrokerState {
             .ok_or_else(|| "execution has no connector connection".to_string())
     }
 
+    /// The workspace directory, connection and repository a repo tool acts on. The
+    /// repository is `None` for a single-repository workspace without a team manifest;
+    /// `git::push` then uses the execution input or the connection default, as the clone
+    /// did.
     fn repo_target(
         &self,
         repository: Option<&str>,
-    ) -> Result<(std::path::PathBuf, uuid::Uuid), String> {
+    ) -> Result<(std::path::PathBuf, uuid::Uuid, Option<String>), String> {
         if self.repo_specs.is_empty() {
-            return Ok((self.workspace.clone(), self.connection_id()?));
+            return Ok((self.workspace.clone(), self.connection_id()?, None));
         }
         if self.repo_specs.len() == 1 {
             let spec = &self.repo_specs[0];
@@ -99,7 +103,11 @@ impl BrokerState {
             } else {
                 self.workspace.join(&spec.path)
             };
-            return Ok((path, spec.connection_id.unwrap_or(self.connection_id()?)));
+            return Ok((
+                path,
+                spec.connection_id.unwrap_or(self.connection_id()?),
+                Some(spec.repository.clone()),
+            ));
         }
         let repository = repository
             .ok_or_else(|| {
@@ -122,7 +130,11 @@ impl BrokerState {
         } else {
             self.workspace.join(&spec.path)
         };
-        Ok((path, spec.connection_id.unwrap_or(self.connection_id()?)))
+        Ok((
+            path,
+            spec.connection_id.unwrap_or(self.connection_id()?),
+            Some(spec.repository.clone()),
+        ))
     }
 }
 
@@ -694,7 +706,10 @@ async fn start_with_http(
         connection = Some(conn);
     }
 
-    if tools.is_empty() && tool_policies.is_empty() {
+    // A harness with native tools (bash, edit, write) always gets the policy endpoint, so
+    // autonomy and approval mode apply to those tools even when the agent has no connector
+    // tools and the organization no tool policies (#303). The mock harness has none.
+    if tools.is_empty() && tool_policies.is_empty() && !has_native_tools(&execution.harness_kind) {
         return Ok(None);
     }
 
@@ -859,7 +874,7 @@ async fn call_tool(
 
     let result = if matches!(tool.capability.as_str(), "repo.commit" | "repo.push") {
         let repository = call.arguments.get("repository").and_then(Value::as_str);
-        let (workspace, connection_id) = match state.repo_target(repository) {
+        let (workspace, connection_id, target_repository) = match state.repo_target(repository) {
             Ok(target) => target,
             Err(error) => {
                 return tool_error(&state, tool, &call.arguments, &error).await;
@@ -872,17 +887,7 @@ async fn call_tool(
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty());
             match message {
-                Some(message) => {
-                    crate::git::commit(
-                        &state.client,
-                        state.execution.id,
-                        connection_id,
-                        &workspace,
-                        message,
-                        &state.cancel,
-                    )
-                    .await
-                }
+                Some(message) => crate::git::commit(&workspace, message, &state.cancel).await,
                 None => Err(anyhow::anyhow!("commit message is required")),
             }
         } else {
@@ -893,6 +898,8 @@ async fn call_tool(
                         &state.client,
                         state.execution.id,
                         connection_id,
+                        target_repository.as_deref(),
+                        &state.execution.input,
                         &workspace,
                         branch,
                         &state.cancel,
@@ -997,9 +1004,32 @@ struct PolicyCheck {
 /// `task`/`subagent` only dispatch an internal subagent; the subagent's own tool calls
 /// are checked by the same policy hook. Treating the dispatch as an external side effect
 /// blocked native Agent Teams at Observe/Recommend before any work could start.
+/// Harnesses that run tools of their own, which must go through `/policy`.
+fn has_native_tools(harness_kind: &str) -> bool {
+    !matches!(harness_kind, "mock")
+}
+
+/// The broker's own MCP tools reach a policy hook under the harness's MCP naming
+/// (OpenCode: `orbit_<tool>`, Claude-style `mcp__orbit__<tool>`), or bare. They are
+/// checked by the broker when they are called, so `/policy` lets them through instead of
+/// treating an unknown name as a write that needs approval.
+fn broker_tool<'a>(tools: &'a [ToolSpec], name: &str) -> Option<&'a ToolSpec> {
+    let name = name.trim();
+    let bare = name
+        .strip_prefix("mcp__orbit__")
+        .or_else(|| name.strip_prefix("orbit_"))
+        .unwrap_or(name);
+    tools.iter().find(|tool| tool.name == bare)
+}
+
 fn native_tool_effect(tool: &str) -> CapabilityEffect {
     match tool.trim().to_ascii_lowercase().as_str() {
         "read" | "grep" | "glob" | "list" | "ls" | "find" => CapabilityEffect::Read,
+        // Harness-internal state with no workspace or external effect: OpenCode's todo
+        // list, clarifying questions and skill loading, and Pi's codemode, which the
+        // Pi read-only baseline already allows. Every tool now goes through this check
+        // (#303), so these must not need an approval.
+        "todowrite" | "todoread" | "question" | "skill" | "codemode" => CapabilityEffect::Read,
         "bash" | "shell" | "webfetch" | "websearch" => CapabilityEffect::ExternalSideEffect,
         "task" | "subagent" => CapabilityEffect::Read,
         _ => CapabilityEffect::Write,
@@ -1081,6 +1111,17 @@ async fn policy_check(
             Json(json!({
                 "decision": "deny",
                 "reason": reason,
+                "argumentsHash": args_hash,
+            })),
+        )
+            .into_response();
+    }
+    if let Some(tool) = broker_tool(&state.tools, &request.tool) {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "decision": "allow",
+                "reason": format!("ORBIT tool {}: checked by the broker when it runs", tool.name),
                 "argumentsHash": args_hash,
             })),
         )
@@ -2018,6 +2059,129 @@ mod tests {
         .unwrap()
         .expect("X binding exposes posts.create");
         (handle, control_plane, x_api, workspace)
+    }
+
+    #[test]
+    fn harness_internal_tools_are_reads() {
+        for tool in ["todowrite", "todoread", "question", "skill", "codemode"] {
+            assert_eq!(native_tool_effect(tool), CapabilityEffect::Read, "{tool}");
+        }
+        assert_eq!(native_tool_effect("apply_patch"), CapabilityEffect::Write);
+    }
+
+    async fn policy_status(handle: &BrokerHandle, tool: &str, arguments: Value) -> u16 {
+        reqwest::Client::new()
+            .post(format!("{}/policy", handle.url))
+            .bearer_auth(&handle.token)
+            .json(&json!({ "tool": tool, "arguments": arguments }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
+    /// #303: a harness with native tools gets the policy endpoint even without connector
+    /// tools or tool policy rules, so autonomy applies to bash, edit and write.
+    #[tokio::test]
+    async fn native_tool_harnesses_always_get_the_policy_endpoint() {
+        let (client, _control_plane) = spawn_control_plane(json!({})).await;
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "instructions": { "system": "test" },
+            "autonomy": { "level": 1 }
+        }))
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = || BrokerRuntime {
+            http: reqwest::Client::new(),
+            pause: orbit_contracts::PauseClock::with_budget(Duration::from_secs(5)),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        let mut execution = broker_execution();
+        execution.harness_kind = "opencode".into();
+        let handle = start_with_http(
+            client.clone(),
+            &spec,
+            &execution,
+            workspace.path(),
+            &[],
+            runtime(),
+        )
+        .await
+        .unwrap()
+        .expect("an OpenCode run always gets the policy endpoint");
+        assert_eq!(
+            policy_status(&handle, "read", json!({ "path": "a" })).await,
+            200
+        );
+        assert_eq!(
+            policy_status(&handle, "bash", json!({ "command": "rm -rf x" })).await,
+            403
+        );
+        // A tool the policy does not know by name is a write: it fails closed.
+        assert_eq!(policy_status(&handle, "multiedit", json!({})).await, 403);
+
+        // The mock harness has no native tools and still runs without a broker.
+        let mock = broker_execution();
+        assert!(
+            start_with_http(client, &spec, &mock, workspace.path(), &[], runtime())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// #303: ORBIT's own MCP tools pass the native policy hook under their MCP names; the
+    /// broker checks them itself when they are called.
+    #[tokio::test]
+    async fn broker_tools_pass_the_native_policy_hook() {
+        let (x_url, _x_api) = spawn_x_api(None).await;
+        let (connection_id, connection) = x_connection(&x_url);
+        let (client, _control_plane) = spawn_control_plane(connection).await;
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "instructions": { "system": "test" },
+            "connectors": [{
+                "connector": "x",
+                "connectionId": connection_id,
+                "capabilities": ["posts.create"]
+            }],
+            "autonomy": { "level": 1 }
+        }))
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut execution = broker_execution();
+        execution.harness_kind = "opencode".into();
+        let handle = start_with_http(
+            client,
+            &spec,
+            &execution,
+            workspace.path(),
+            &[],
+            BrokerRuntime {
+                http: reqwest::Client::new(),
+                pause: orbit_contracts::PauseClock::with_budget(Duration::from_secs(5)),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("broker");
+        for name in [
+            "orbit_x_posts_create",
+            "mcp__orbit__x_posts_create",
+            "x_posts_create",
+        ] {
+            assert_eq!(
+                policy_status(&handle, name, json!({ "text": "hi" })).await,
+                200,
+                "{name}"
+            );
+        }
+        // A look-alike name is not a broker tool.
+        assert_eq!(
+            policy_status(&handle, "orbit_x_posts_create_now", json!({})).await,
+            403
+        );
     }
 
     async fn broker_call(handle: &BrokerHandle, name: &str, arguments: Value) -> Value {

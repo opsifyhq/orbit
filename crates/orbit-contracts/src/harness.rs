@@ -60,6 +60,13 @@ pub struct HarnessDescriptor {
     pub docs_url: Option<String>,
 }
 
+/// Harness settings that only the platform may set: the CLI binary, raw CLI arguments,
+/// the execution-scoped MCP bridge (which carries the policy hook) and a shared server
+/// URL. An agent spec is author-controlled, so the API rejects these in
+/// `spec.harnessConfig` and the worker removes them from configs saved earlier (#303).
+pub const PLATFORM_ONLY_HARNESS_SETTINGS: &[&str] =
+    &["binary", "extraArgs", "orbitMcp", "serverUrl"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessConfig {

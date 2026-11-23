@@ -19,6 +19,27 @@ pub struct DevIdentity {
     pub role: orbit_domain::UserRole,
 }
 
+/// Exposure of the Prometheus endpoint (see `docs/development/observability.md`).
+#[derive(Clone, Default)]
+pub struct MetricsAccess {
+    /// Bearer token a scraper must present. `None` leaves the endpoint open, which is
+    /// only appropriate on a network that untrusted clients cannot reach.
+    pub token: Option<String>,
+    /// True when `/metrics` is served on its own listener (`ORBIT_METRICS_ADDR`); the
+    /// main listener then does not serve it at all.
+    pub dedicated_listener: bool,
+}
+
+impl std::fmt::Debug for MetricsAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the token.
+        f.debug_struct("MetricsAccess")
+            .field("token", &self.token.as_ref().map(|_| "<set>"))
+            .field("dedicated_listener", &self.dedicated_listener)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
@@ -32,6 +53,8 @@ pub struct AppState {
     pub events_driver: String,
     pub public_base_url: String,
     pub metrics: Arc<Metrics>,
+    /// Who may read `/metrics`, and on which listener it is served.
+    pub metrics_access: MetricsAccess,
     pub max_body_bytes: usize,
     /// Per-source-IP limiter for public/unauthenticated routes only.
     pub rate_limiter: Arc<RateLimiter>,

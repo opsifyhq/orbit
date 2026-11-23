@@ -53,6 +53,8 @@ services:
       ORBIT_NATS_URL: nats://nats:4222
       ORBIT_CORS_ORIGINS: ${ORBIT_CORS_ORIGINS:-http://localhost:3000}
       ORBIT_PUBLIC_BASE_URL: ${ORBIT_PUBLIC_BASE_URL:-http://localhost:8080}
+      # The web container proxies browser traffic; believe its X-Forwarded-For.
+      ORBIT_TRUSTED_PROXIES: ${ORBIT_TRUSTED_PROXIES:-172.16.0.0/12}
       ORBIT_WORKER_API_URL: http://host.docker.internal:8080
       ORBIT_LAUNCHER_URL: http://launcher:8090
       ORBIT_LAUNCHER_TOKEN: ${ORBIT_LAUNCHER_TOKEN:-orbit-dev-launcher-token}
