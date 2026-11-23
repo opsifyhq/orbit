@@ -5017,6 +5017,23 @@ mod output_delivery {
         .unwrap()
     }
 
+    /// Other tests in the shared database may add deliveries to the same global queue,
+    /// so one tick is not guaranteed to reach this output. Stop as soon as its attempt
+    /// count advances.
+    async fn deliver_until(app: &TestApp, output_id: Uuid, attempts: i32) {
+        for _ in 0..100 {
+            deliver_pending(&app.state).await;
+            if rows(app, output_id)
+                .await
+                .first()
+                .is_some_and(|row| row.1 >= attempts)
+            {
+                return;
+            }
+        }
+        panic!("delivery for {output_id} did not reach {attempts} attempts");
+    }
+
     async fn make_due(app: &TestApp, output_id: Uuid) {
         sqlx::query("UPDATE output_deliveries SET next_attempt_at = now() WHERE output_id = $1")
             .bind(output_id)
@@ -5169,7 +5186,7 @@ mod output_delivery {
         hook.status.store(404, Ordering::SeqCst);
         let output = make_output(&app, &hook, "slack").await;
         finished_execution(&app).await;
-        deliver_pending(&app.state).await;
+        deliver_until(&app, output.id, 1).await;
         assert_eq!(
             rows(&app, output.id).await,
             vec![("failed".to_string(), 1, Some(404))]
@@ -5183,7 +5200,7 @@ mod output_delivery {
         hook.status.store(503, Ordering::SeqCst);
         let output = make_output(&app, &hook, "mattermost").await;
         finished_execution(&app).await;
-        deliver_pending(&app.state).await;
+        deliver_until(&app, output.id, 1).await;
         assert_eq!(
             rows(&app, output.id).await,
             vec![("pending".to_string(), 1, Some(503))]
@@ -5191,14 +5208,14 @@ mod output_delivery {
         deliver_pending(&app.state).await;
         assert_eq!(hook.count(), 1, "backoff holds the retry");
         make_due(&app, output.id).await;
-        deliver_pending(&app.state).await;
+        deliver_until(&app, output.id, 2).await;
         assert_eq!(hook.count(), 2);
         sqlx::query("UPDATE output_deliveries SET attempts = 4, next_attempt_at = now() WHERE output_id = $1")
             .bind(output.id)
             .execute(app.store.pool())
             .await
             .unwrap();
-        deliver_pending(&app.state).await;
+        deliver_until(&app, output.id, 5).await;
         assert_eq!(
             rows(&app, output.id).await,
             vec![("dead".to_string(), 5, Some(503))]
@@ -5209,7 +5226,7 @@ mod output_delivery {
         hook.status.store(429, Ordering::SeqCst);
         let output = make_output(&app, &hook, "slack").await;
         finished_execution(&app).await;
-        deliver_pending(&app.state).await;
+        deliver_until(&app, output.id, 1).await;
         assert_eq!(rows(&app, output.id).await[0].0, "pending");
     }
 

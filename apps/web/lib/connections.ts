@@ -113,3 +113,23 @@ export function useConnection(id: string | undefined) {
     data: connections.data?.find((connection) => connection.id === id),
   };
 }
+
+/** Kubernetes capabilities map to the resources the connection may touch. */
+const KUBERNETES_RESOURCES: Record<string, string[]> = {
+  "namespaces.list": ["namespaces"],
+  "pods.list": ["pods"],
+  "pods.get": ["pods"],
+  "pods.logs": ["pods/log"],
+  "deployments.list": ["deployments"],
+  "deployments.get": ["deployments"],
+  "events.list": ["events"],
+};
+
+/**
+ * Resource-level allowlist for a Kubernetes connection. The connector still checks
+ * agent-level capability scopes; this list prevents a connection from ever touching a
+ * resource class it was not set up for. Advanced config can override it.
+ */
+export function kubernetesResources(scopes: string[]): string[] {
+  return [...new Set(scopes.flatMap((scope) => KUBERNETES_RESOURCES[scope] ?? []))].sort();
+}
