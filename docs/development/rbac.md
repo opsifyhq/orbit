@@ -91,6 +91,14 @@ Nobody can give out more than they hold:
 - Only an owner can assign the Owner role or change a user who is an owner.
 - Assigning a role (or replacing one) is refused when either role contains permissions
   the caller does not hold.
+- The same applies to sign-in mappings: changing the OIDC default role or a group-to-role
+  mapping to a role with permissions the caller does not hold returns `403`. Mappings an
+  Owner set earlier do not block edits of other OIDC fields.
+- Team isolation (`PUT /settings/access`) and four-eyes approvals
+  (`PUT /settings/approvals`) affect the whole organization and need every permission (an
+  Owner), not only `settings:write`.
+- Access teams are renamed or deleted only by Owners, Admins and the team's own leads. The
+  Default team's slug cannot change, so it cannot be renamed and then deleted.
 
 ## API tokens
 
