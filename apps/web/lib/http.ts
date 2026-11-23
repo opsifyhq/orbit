@@ -85,12 +85,13 @@ export async function apiErrorFromResponse(response: Response): Promise<ApiError
 }
 
 /**
- * A 401 with a token means the session is gone: forget the token and go to the login
- * screen. Every helper that calls the API (generated client via `unwrap`, JSON, raw and
- * SSE) funnels through here so a stale token is handled the same way.
+ * A 401 means the session is gone: forget the token and go to the login screen. Every
+ * helper that calls the API (generated client via `unwrap`, JSON, raw and SSE) funnels
+ * through here so a stale token is handled the same way. The redirect must not depend on
+ * a token still being present: another caller may have cleared it already, and staying on
+ * the page would leave every later 401 silently unanswered.
  */
 export function handleUnauthorized() {
-  if (!getAccessToken()) return;
   setAccessToken(null);
   const current = currentLocationPath();
   if (typeof window !== "undefined" && !current.split(/[?#]/, 1)[0].startsWith("/login")) {

@@ -1534,7 +1534,7 @@ async fn private_agent_teams_and_runs_are_hidden_from_other_users() {
 
     let (status, body) = send(&app.router, auth_get("/api/v1/team-runs", &alice_token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body
+    assert!(body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -9136,12 +9136,33 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let runs = body.as_array().unwrap();
+    let runs = body["items"].as_array().unwrap();
     assert_eq!(runs.len(), 2);
     assert!(runs.iter().all(|run| run["teamId"] == teams[0].to_string()));
+    assert_eq!(body["total"], 2);
 
     let (_, body) = send(&app.router, get("/api/v1/team-runs?limit=3")).await;
-    assert_eq!(body.as_array().unwrap().len(), 3);
+    let first = body["items"].as_array().unwrap();
+    assert_eq!(first.len(), 3);
+    assert_eq!(body["total"], 6);
+
+    // The cursor reaches the older half without repeating the first page.
+    let cursor = body["nextCursor"].as_str().expect("a next page exists");
+    let (_, body) = send(
+        &app.router,
+        get(&format!("/api/v1/team-runs?limit=3&cursor={cursor}")),
+    )
+    .await;
+    let second = body["items"].as_array().unwrap();
+    assert_eq!(second.len(), 3);
+    assert!(body["nextCursor"].is_null());
+    let first_ids: Vec<_> = first
+        .iter()
+        .map(|run| run["id"].as_str().unwrap())
+        .collect();
+    assert!(second
+        .iter()
+        .all(|run| !first_ids.contains(&run["id"].as_str().unwrap())));
 }
 
 #[tokio::test]

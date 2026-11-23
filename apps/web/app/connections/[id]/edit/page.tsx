@@ -46,10 +46,11 @@ export default function EditConnectionPage() {
     );
   }
 
-  async function handleSubmit(input: ConnectionInput) {
+  async function handleSubmit(input: ConnectionInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       await updateConnection(connectionId, input);
+      await commitAccess();
       await queryClient.invalidateQueries({ queryKey: queryKeys.connections });
       toast.success("Connection saved");
       router.push(`/connections/${connectionId}`);

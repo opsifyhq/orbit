@@ -81,7 +81,7 @@ function EditAgentEditor({ agentId }: { agentId: string }) {
     spec: parsedSpec.data,
   };
 
-  async function handleSubmit(definition: AgentDefinition) {
+  async function handleSubmit(definition: AgentDefinition, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     setServerIssues([]);
     try {
@@ -94,6 +94,8 @@ function EditAgentEditor({ agentId }: { agentId: string }) {
           },
         }),
       );
+      // Access changes are committed only now that the agent itself was saved.
+      await commitAccess();
       // This save is now the baseline; the refresh below must not look like someone else's.
       startedFrom.current = updated.currentVersion;
       await queryClient.invalidateQueries({ queryKey: queryKeys.agent(agentId) });

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { request } from "./http";
+import { request, requestRaw } from "./http";
 
 /**
  * Embedded documentation endpoints (`/api/v1/docs`). The JSON shapes are in the
@@ -141,11 +141,6 @@ export function headingIdsByLine(markdown: string): Map<number, string> {
  * token; an `<img>` cannot send one. `NEXT_PUBLIC_ORBIT_API_URL` may be server-only.
  */
 export async function fetchDocAsset(href: string): Promise<Blob> {
-  const { getAccessToken } = await import("./api");
-  const token = getAccessToken();
-  const response = await fetch(href, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const response = await requestRaw(href, { sameOrigin: true });
   return response.blob();
 }

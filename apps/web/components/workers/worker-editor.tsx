@@ -25,6 +25,7 @@ import {
   useWorkerProfileEnvMappings,
 } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { errorMessage } from "@orbit/api-client";
 
 import { SectionCard, SectionNav, SectionPills } from "./editor-nav";
@@ -94,6 +95,8 @@ export function WorkerEditor({
         },
   );
   const { values } = form;
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ accessDirty }, { enabled: Boolean(editing) });
   const [confirmRelaunch, setConfirmRelaunch] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
@@ -202,18 +205,23 @@ export function WorkerEditor({
             body,
           }),
         );
+        // Access is a separate write: only attempt it once the profile itself was saved.
+        const accessFailed = (await accessRef.current?.save()) === false;
         if (applyNow) {
           for (const item of activeProfileLaunches) {
             await stopWorkerLaunch(item.id);
           }
           await launchWorkerProfile(editing.id);
         }
-        return profile;
+        return { profile, accessFailed };
       }
-      return unwrap(await api.POST("/api/v1/worker-profiles", { body }));
+      const profile = unwrap(await api.POST("/api/v1/worker-profiles", { body }));
+      return { profile, accessFailed: false };
     },
-    onSuccess: (profile, applyNow) => {
-      if (applyNow) {
+    onSuccess: ({ profile, accessFailed }, applyNow) => {
+      if (accessFailed) {
+        toast.warning("Profile saved, but access could not be updated");
+      } else if (applyNow) {
         toast.success("Profile saved and worker relaunched");
       } else {
         toast.success(
@@ -245,7 +253,6 @@ export function WorkerEditor({
       if (first) goToSection(first);
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
     if (needsRelaunch) {
       setConfirmRelaunch(true);
       return;
@@ -403,7 +410,12 @@ export function WorkerEditor({
 
           {/* Kept mounted while hidden: Save reads the pending access edits from it. */}
           <SectionCard id="sharing" active={active} onGo={goToSection} keepMounted>
-            <ResourceAccessFields ref={accessRef} resource="worker_profiles" resourceId={editing?.id} />
+            <ResourceAccessFields
+              ref={accessRef}
+              resource="worker_profiles"
+              resourceId={editing?.id}
+              onDirtyChange={setAccessDirty}
+            />
           </SectionCard>
         </div>
       </div>

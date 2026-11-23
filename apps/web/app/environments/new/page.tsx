@@ -21,10 +21,11 @@ function NewEnvironment() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(input: EnvironmentInput) {
+  async function handleSubmit(input: EnvironmentInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       const created = await createEnvMapping(input);
+      await commitAccess();
       await queryClient.invalidateQueries({ queryKey: ["env-mappings"] });
       toast.success("Environment created");
       router.push(`/environments/${created.id}`);

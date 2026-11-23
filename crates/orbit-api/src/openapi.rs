@@ -247,6 +247,7 @@ use crate::handlers;
         handlers::access_teams::TeamMemberRequest,
         TeamResourceItem,
         TeamResourcesPage,
+        TeamRunPage,
         TeamAccessSummary,
         TeamResourceCounts,
         TeamRoleCounts,

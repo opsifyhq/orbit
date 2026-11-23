@@ -29,15 +29,23 @@ export type ResourceAccessHandle = {
   save: () => Promise<boolean>;
 };
 
-type ResourceAccessProps = { resource: string; resourceId?: string };
+/** The parent commits this only after its own save succeeded. */
+export type ResourceSubmit<T> = (value: T, commitAccess: () => Promise<void>) => Promise<void> | void;
+
+type ResourceAccessProps = {
+  resource: string;
+  resourceId?: string;
+  /** Lets the surrounding form count access edits as unsaved changes. */
+  onDirtyChange?: (dirty: boolean) => void;
+};
 
 /**
  * Who can see and use a shareable resource. Lives in the resource's edit form. Access is
- * stored separately from the resource, so the parent form calls the exposed `save()`
- * before saving the resource itself.
+ * stored separately from the resource: the Save access button commits it explicitly, and
+ * a parent form commits pending edits only after the resource itself was saved.
  */
 export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAccessProps>(
-  function ResourceAccessFields({ resource, resourceId }, ref) {
+  function ResourceAccessFields({ resource, resourceId, onDirtyChange }, ref) {
   const queryClient = useQueryClient();
   const labelId = useId();
   const teamFieldId = useId();
@@ -78,36 +86,40 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
         method: "PATCH",
         body: JSON.stringify({ visibility, ownerTeamId: teamId || null }),
       }),
-    onSuccess: () => {
-      toast.success("Access updated");
-      void queryClient.invalidateQueries({ queryKey: ["sharing", resource, resourceId] });
-      void queryClient.invalidateQueries({ queryKey: [resource] });
-    },
-    onError: (error) => toast.error(errorMessage(error)),
   });
 
   const changed =
     sharing.data !== undefined &&
     (sharing.data.visibility !== visibility || (sharing.data.ownerTeamId ?? "") !== teamId);
 
+  useEffect(() => {
+    onDirtyChange?.(changed);
+  }, [changed, onDirtyChange]);
+
+  /** One place for both the explicit button and the parent form's deferred commit. */
+  async function commit(): Promise<boolean> {
+    if (!enabled || !resourceId || !changed || license.isLoading) return true;
+    if (visibility === "team" && !teamId) {
+      toast.error("Choose the team that owns this resource");
+      return false;
+    }
+    try {
+      await save.mutateAsync();
+      toast.success("Access updated");
+      onDirtyChange?.(false);
+      void queryClient.invalidateQueries({ queryKey: ["sharing", resource, resourceId] });
+      void queryClient.invalidateQueries({ queryKey: [resource] });
+      return true;
+    } catch (error) {
+      toast.error(`Access could not be updated: ${errorMessage(error)}`);
+      return false;
+    }
+  }
+
   useImperativeHandle(
     ref,
-    () => ({
-      async save() {
-        if (!enabled || !resourceId || !changed || license.isLoading) return true;
-        if (visibility === "team" && !teamId) {
-          toast.error("Choose the team that owns this resource");
-          return false;
-        }
-        try {
-          await save.mutateAsync();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-    }),
-    [changed, enabled, license.isLoading, resourceId, save, teamId, visibility],
+    () => ({ save: () => commit() }),
+    [commit],
   );
 
   if (license.isLoading) return null;
@@ -191,7 +203,7 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => save.mutate()}
+              onClick={() => void commit()}
               loading={save.isPending}
               disabled={!changed || (visibility === "team" && !teamId)}
             >
