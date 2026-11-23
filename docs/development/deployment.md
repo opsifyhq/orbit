@@ -426,6 +426,7 @@ Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explain
 | `ORBIT_CA_SECRET_NAME`, `ORBIT_CA_SECRET_KEY` | unset, `ca-bundle.crt` | Custom CA Secret mounted into launched workers |
 | `ORBIT_WORKER_AUTH_SECRETS` | `orbit-opencode-auth*,orbit-pi-auth*` | Allowlist for a profile's `authSecretName` (also read by the launcher) |
 | `ORBIT_ARCHIVE_AFTER_DAYS` | `30` | Archive terminal runs older than this; `0` disables |
+| `ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS` | `30` | Delete terminal output deliveries older than this; `0` keeps them |
 | `ORBIT_AUDIT_RETENTION_DAYS` | `0` | Delete audit entries older than this; `0` keeps them |
 | `ORBIT_EXECUTION_TIMEOUT_GRACE_SECONDS` | `300` | Slack added to a run's timeout before the platform ends a run that is still `running` |
 | `ORBIT_WORKER_STALE_RETENTION_HOURS` | `24` | Hours a worker heartbeat row is kept after the worker disappears (minimum 1) |

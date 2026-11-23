@@ -121,7 +121,10 @@ Content-Type: application/json
 
 `message_thread_id` is omitted when no topic is configured. Text is split on line boundaries
 into messages below Telegram's 4096-character limit, and every part carries a
-`[ORBIT delivery <id> — part n/N]` footer when sent from the outbox.
+`[ORBIT delivery <id> — part n/N]` footer when sent from the outbox. The delivery records how
+many parts Telegram accepted; a retry after a failure on a later part resumes after that
+counter instead of reposting the earlier parts. A crash between accepting a part and
+recording the counter can still repeat that one part, so delivery remains at-least-once.
 
 ## Test
 
@@ -159,7 +162,8 @@ Delivery is **at-least-once** and driven by a background outbox loop on every AP
 - **Idempotency**: every delivery sends its id as `Idempotency-Key` and
   `X-Orbit-Delivery-Id` headers (and `deliveryId` in `webhook` bodies). Telegram parts use
   `<delivery-id>-<part>` as the idempotency key. Slack/Mattermost/Telegram ignore the headers;
-  receivers should de-duplicate on the delivery id shown in the message footer.
+  receivers should de-duplicate on the delivery id shown in the message footer. Telegram
+  retries resume from the last accepted part (see above), so earlier parts are not reposted.
 - **Failures**:
 
 | Result | Action |
@@ -197,6 +201,11 @@ to an owner or admin, because it reports on every agent's runs.
 Outputs that name an agent or team need manage access to it; an organization-wide output
 is visible to everyone with `settings:read`.
 
+Terminal delivery rows (`succeeded`, `failed`, `dead`, `skipped`) are pruned after 30 days
+by the background reaper; pending and in-flight deliveries are never removed. Set
+`ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS` (Helm `platform.outputDeliveryRetentionDays`) to a
+different number of days, or `0` to keep delivery history forever.
+
 ## Testing Telegram
 
 No real bot token or chat id is needed for the automated mock-server suite; it covers
@@ -216,5 +225,4 @@ A live check is deliberately manual because it needs a real bot token and destin
 5. Delete or disable the output afterwards. Never commit the token or chat id to a workspace,
    fixture or issue.
 
-Not yet implemented: HMAC signing for generic webhooks, placeholders in the note, and
-pruning old delivery rows.
+Not yet implemented: HMAC signing for generic webhooks and placeholders in the note.

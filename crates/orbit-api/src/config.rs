@@ -37,6 +37,8 @@ pub struct ApiConfig {
     /// Days after which terminal executions, team runs and worker launches are archived.
     /// `0` disables the retention loop.
     pub archive_after_days: Option<u32>,
+    /// Days after which terminal output deliveries are pruned. `0` keeps them forever.
+    pub output_delivery_retention_days: Option<u32>,
     /// Dedicated listener for `/metrics` (`ORBIT_METRICS_ADDR`). When set, the main
     /// listener no longer serves `/metrics`.
     pub metrics_addr: Option<String>,
@@ -102,10 +104,11 @@ impl ApiConfig {
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             ca_secret_key: env_or("ORBIT_CA_SECRET_KEY", "ca-bundle.crt"),
-            archive_after_days: env_or("ORBIT_ARCHIVE_AFTER_DAYS", "30")
-                .parse::<u32>()
-                .ok()
-                .filter(|days| *days > 0),
+            archive_after_days: parse_retention_days("ORBIT_ARCHIVE_AFTER_DAYS", 30),
+            output_delivery_retention_days: parse_retention_days(
+                "ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS",
+                30,
+            ),
             metrics_addr: env_opt("ORBIT_METRICS_ADDR"),
             metrics_token: env_opt("ORBIT_METRICS_TOKEN"),
         })
@@ -255,6 +258,21 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Retention days in days: unset/invalid falls back to `default`, `0` disables pruning.
+fn parse_retention_days(key: &str, default: u32) -> Option<u32> {
+    match env_opt(key).as_deref() {
+        None => Some(default),
+        Some("0") => None,
+        Some(value) => match value.parse::<u32>() {
+            Ok(days) if days > 0 => Some(days),
+            _ => {
+                tracing::warn!(key, value, "invalid retention days; using default");
+                Some(default)
+            }
+        },
+    }
+}
+
 /// Invalid or non-positive values fall back to the default instead of disabling the
 /// anonymous rate limit by accident.
 fn parse_positive_u32(value: &str, default: u32) -> u32 {
@@ -322,6 +340,29 @@ mod tests {
         )
         .expect("composed");
         assert_eq!(url, "postgres://orbit@db:5432/orbit?sslmode=disable");
+    }
+
+    #[test]
+    fn retention_days_defaults_to_a_window_and_zero_disables_it() {
+        // A missing variable cannot be forced inside a parallel test; exercise the parser
+        // with the same values `from_env` passes for set variables.
+        assert_eq!(
+            parse_retention_days("ORBIT_TEST_RETENTION_UNSET", 30),
+            Some(30)
+        );
+        std::env::set_var("ORBIT_TEST_RETENTION_DAYS", "7");
+        assert_eq!(
+            parse_retention_days("ORBIT_TEST_RETENTION_DAYS", 30),
+            Some(7)
+        );
+        std::env::set_var("ORBIT_TEST_RETENTION_DAYS", "0");
+        assert_eq!(parse_retention_days("ORBIT_TEST_RETENTION_DAYS", 30), None);
+        std::env::set_var("ORBIT_TEST_RETENTION_DAYS", "bad");
+        assert_eq!(
+            parse_retention_days("ORBIT_TEST_RETENTION_DAYS", 30),
+            Some(30)
+        );
+        std::env::remove_var("ORBIT_TEST_RETENTION_DAYS");
     }
 
     #[test]

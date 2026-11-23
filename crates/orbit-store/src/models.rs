@@ -720,6 +720,9 @@ pub struct OutputDeliveryJob {
     pub team_run_id: Option<Uuid>,
     pub attempts: i32,
     pub claim_token: Uuid,
+    /// Multi-part messages (Telegram) already accepted by the destination on previous
+    /// attempts. A retry resumes after this part.
+    pub parts_sent: i32,
 }
 
 /// One delivery of an output, for showing its history. `task` and `agent_name` come from

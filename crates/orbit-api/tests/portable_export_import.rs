@@ -122,6 +122,7 @@ async fn env() -> Option<Env> {
         ca_secret_name: None,
         ca_secret_key: "ca-bundle.crt".into(),
         archive_after_days: None,
+        output_delivery_retention_days: None,
         license: orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
             token: None,
             file: None,

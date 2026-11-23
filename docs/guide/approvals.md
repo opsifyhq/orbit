@@ -26,12 +26,15 @@ whatever the approval mode. At level 4 (Autonomous) allowlisted writes run witho
 approval unless a rule or the approval mode asks. Native harness tools such as `bash` and
 `edit` follow the same rules.
 
-While a request is open, the run is in the `awaiting_approval` state and its timeout clock
-is paused. A request stays open for up to 15 minutes. A request that nobody answers
+While a request is open the worker waits on it and the run's timeout clock is paused for
+that wait (the run normally remains `running`; `awaiting_approval` is kept for older and
+imported runs). A request stays open for up to 15 minutes. A request that nobody answers
 expires and counts like a rejection: the action is refused, and the agent cannot ask for
 the same action again in that run. A run can only wait a limited total time for approvals;
 once that is used up, further calls that need approval are denied and waiting counts
-toward the run's timeout. A run can have at most 50 pending requests.
+toward the run's timeout. A run can have at most 50 pending requests. When a run ends or is
+cancelled, its pending requests are expired in the same transaction and can no longer be
+decided (409).
 
 ## Decide in the queue
 

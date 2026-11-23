@@ -151,6 +151,7 @@ async fn test_app_with_license(
         ca_secret_name: None,
         ca_secret_key: "ca-bundle.crt".into(),
         archive_after_days: None,
+        output_delivery_retention_days: None,
         shutdown: shutdown.clone(),
         license: license.map(LicenseHandle::from_status).unwrap_or_else(|| {
             orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
