@@ -575,7 +575,7 @@ export function ConnectionForm({
                 <Field
                   label="Namespaces"
                   htmlFor="connection-namespaces"
-                  hint="Comma-separated. Empty allows only the default namespace."
+                  hint="Comma-separated. Empty allows only the default namespace; * follows the kubeconfig/RBAC."
                 >
                   <Input
                     id="connection-namespaces"

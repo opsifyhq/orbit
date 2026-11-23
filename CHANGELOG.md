@@ -14,6 +14,8 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   comma-separated namespace field, and derive `allowedResources` from the selected
   capabilities (Advanced config can override it). The connection test falls back to a
   configured namespace when cluster-wide namespace listing is not permitted.
+- `namespaces: ["*"]` lets a Kubernetes connection follow the kubeconfig/RBAC namespace
+  access instead of an explicit allowlist.
 - Array and object connection config fields can be typed normally; they commit on blur
   instead of parsing every keystroke.
 

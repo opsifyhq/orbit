@@ -24,7 +24,9 @@ by ORBIT as well as RBAC, and an empty list denies:
   non-empty value in Advanced config overrides that derivation.
 
 - `namespaces` empty: only `defaultNamespace` may be used; with neither set, every
-  namespaced tool is refused. `namespaces.list` returns only allowed namespaces.
+  namespaced tool is refused. Use `["*"]` to let the kubeconfig/RBAC decide which
+  namespaces are reachable. `namespaces.list` returns only allowed namespaces unless the
+  wildcard is set.
 - `allowedResources` empty: every tool is refused.
 
 For example:
