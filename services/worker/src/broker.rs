@@ -2246,10 +2246,16 @@ mod tests {
             json!({ "authMode": "service_account", "apiServer": "https://cluster.example" }),
             json!([{ "id": "pods.list", "effect": "read" }]),
         );
+        let (gitlab_id, gitlab) = connection_record(
+            "gitlab",
+            json!({ "baseUrl": "https://gitlab.example/api/v4" }),
+            json!([{ "id": "merge_requests.comment", "effect": "write" }]),
+        );
         let connections = Arc::new(std::collections::HashMap::from([
             (x_id, x),
             (github_id, github),
             (kube_id, kube),
+            (gitlab_id, gitlab),
         ]));
         let app = Router::new().route(
             "/api/v1/worker/connections/{id}",
@@ -2268,7 +2274,8 @@ mod tests {
             "connectors": [
                 { "connector": "x", "connectionId": x_id, "capabilities": ["posts.search"] },
                 { "connector": "github", "connectionId": github_id, "capabilities": ["issues.list"] },
-                { "connector": "kubernetes", "connectionId": kube_id, "capabilities": ["pods.list"] }
+                { "connector": "kubernetes", "connectionId": kube_id, "capabilities": ["pods.list"] },
+                { "connector": "gitlab", "connectionId": gitlab_id, "capabilities": ["merge_requests.comment"] }
             ],
             "autonomy": { "level": 4, "approvalMode": "auto" }
         }))
@@ -2311,6 +2318,10 @@ mod tests {
         );
         assert!(
             names.contains(&"kubernetes_pods_list".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"gitlab_merge_requests_comment".to_string()),
             "{names:?}"
         );
     }
