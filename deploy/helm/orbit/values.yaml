@@ -176,10 +176,52 @@ outbound:
   # Comma-separated hostnames, IPs or CIDRs exempt from the block, e.g. "ollama.internal,10.0.0.0/8".
   allowedHosts: ""
 
-# Optional NetworkPolicy restricting ingress to the launcher (port 8090) to the API pods.
+# Optional NetworkPolicy restricting ingress to the launcher (port 8090) to the API pods
+# and, with a dedicated `monitoring.port`, the metrics port to `monitoring.allowFrom`.
 # Off by default because it needs a CNI that enforces NetworkPolicy. Egress is untouched.
 networkPolicy:
   enabled: false
+
+# Prometheus metrics (see docs/development/observability.md). The API serves the text
+# exposition format at /metrics. The chart's ingress never routes /metrics, so by default
+# the endpoint is reachable only from inside the cluster.
+monitoring:
+  # Add prometheus.io/scrape, prometheus.io/path and prometheus.io/port annotations to
+  # the API pods and Service, for a Prometheus that discovers targets by annotation.
+  # Cannot be combined with `token` (annotation discovery cannot send one).
+  annotations: false
+  # Dedicated metrics port. 0 serves /metrics on the API port (`api.port`). A non-zero
+  # port (for example 9090) starts a second listener that serves only /metrics and
+  # /healthz, and the API port then stops serving /metrics. Use it to keep scrapes out
+  # of the anonymous rate limit and to isolate the port with a NetworkPolicy.
+  port: 0
+  # Require scrapers to send a bearer token. The Secret must be in the release
+  # namespace; the ServiceMonitor below references the same Secret.
+  token:
+    existingSecret: ""
+    key: token
+  # Prometheus Operator ServiceMonitor (needs the monitoring.coreos.com/v1 CRDs).
+  serviceMonitor:
+    enabled: false
+    # Namespace for the ServiceMonitor. Empty = release namespace. Must be the release
+    # namespace when `token.existingSecret` is set (the Secret is read from there).
+    namespace: ""
+    # Extra labels, e.g. the `release: kube-prometheus-stack` label your Prometheus selects on.
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    # http or https (https when a service mesh or sidecar terminates TLS in front of the API).
+    scheme: http
+    tlsConfig: {}
+    relabelings: []
+    metricRelabelings: []
+  # With `networkPolicy.enabled=true` and a dedicated `port`, only these peers may reach
+  # the metrics port (NetworkPolicyPeer list). Empty allows any peer.
+  # Example:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  allowFrom: []
 
 # Offline enterprise license (Ed25519-signed JWS). See docs/decisions/0010.
 # No installation ID or online activation is required. Provide either an existing Secret

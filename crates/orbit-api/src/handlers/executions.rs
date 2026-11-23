@@ -422,7 +422,6 @@ pub async fn execute_agent(
         tracing::warn!(execution_id = %execution.id, error = %err, "failed to append execution event");
     }
 
-    state.metrics.inc_executions();
     audit::record(
         &state,
         &auth,

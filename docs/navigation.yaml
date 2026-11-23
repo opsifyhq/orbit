@@ -94,6 +94,8 @@ sections:
         title: Deployment
       - path: development/licensing.md
         title: Installing a license
+      - path: development/observability.md
+        title: Metrics (Prometheus)
       - path: development/releasing.md
         title: Releasing
 
@@ -172,3 +174,5 @@ sections:
         title: 0012 Decouple agent and harness
       - path: decisions/0013-bulk-lifecycle.md
         title: 0013 Bulk lifecycle
+      - path: decisions/0014-prometheus-metrics.md
+        title: 0014 Prometheus metrics

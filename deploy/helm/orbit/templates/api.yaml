@@ -16,8 +16,11 @@ spec:
       labels:
         {{- include "orbit.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
-      {{- if or .Values.podAnnotations .Values.secrets.create }}
+      {{- if or .Values.podAnnotations .Values.secrets.create .Values.monitoring.annotations }}
       annotations:
+        {{- if .Values.monitoring.annotations }}
+        {{- include "orbit.scrapeAnnotations" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.secrets.create }}
         checksum/config: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
@@ -43,6 +46,10 @@ spec:
           ports:
             - containerPort: {{ .Values.api.port }}
               name: http
+            {{- if .Values.monitoring.port }}
+            - containerPort: {{ .Values.monitoring.port }}
+              name: metrics
+            {{- end }}
           env:
             - name: ORBIT_ENV
               value: {{ .Values.platform.environment | quote }}
@@ -50,6 +57,17 @@ spec:
               value: "0.0.0.0:{{ .Values.api.port }}"
             - name: ORBIT_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
+            {{- if .Values.monitoring.port }}
+            - name: ORBIT_METRICS_ADDR
+              value: "0.0.0.0:{{ .Values.monitoring.port }}"
+            {{- end }}
+            {{- if .Values.monitoring.token.existingSecret }}
+            - name: ORBIT_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.monitoring.token.existingSecret }}
+                  key: {{ .Values.monitoring.token.key | default "token" }}
+            {{- end }}
             {{- if and .Values.externalDatabase.enabled .Values.externalDatabase.existingSecret }}
             {{- if .Values.externalDatabase.urlKey }}
             - name: ORBIT_DATABASE_URL
@@ -315,12 +333,21 @@ metadata:
   labels:
     {{- include "orbit.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
+  {{- if .Values.monitoring.annotations }}
+  annotations:
+    {{- include "orbit.scrapeAnnotations" . | nindent 4 }}
+  {{- end }}
 spec:
   type: ClusterIP
   ports:
     - port: {{ .Values.api.port }}
       targetPort: http
       name: http
+    {{- if .Values.monitoring.port }}
+    - port: {{ .Values.monitoring.port }}
+      targetPort: metrics
+      name: metrics
+    {{- end }}
   selector:
     {{- include "orbit.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: api

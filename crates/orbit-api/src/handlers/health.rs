@@ -1,11 +1,12 @@
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
 use crate::auth::oidc_public_config;
 use crate::dto::{MetaFeatures, MetaResponse};
+use crate::metrics::{GaugeSample, LICENSE_PHASES};
 use crate::state::AppState;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -54,13 +55,132 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-#[utoipa::path(get, path = "/metrics", tag = "system", responses((status = 200, description = "Prometheus metrics")))]
-pub async fn metrics(State(state): State<AppState>) -> Response {
-    let mut extra = std::collections::BTreeMap::new();
-    extra.insert("version".to_string(), VERSION.to_string());
-    extra.insert("environment".to_string(), state.environment.clone());
-    let body = state.metrics.render(&extra);
+/// Prometheus scrape endpoint. Open unless `ORBIT_METRICS_TOKEN` is set, in which case
+/// the scraper must send it as a bearer token.
+#[utoipa::path(get, path = "/metrics", tag = "system", responses((status = 200, description = "Prometheus metrics in the text exposition format (0.0.4)", content_type = "text/plain"), (status = 401, description = "A metrics token is configured and the request did not present it")))]
+pub async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(expected) = &state.metrics_access.token {
+        if !bearer_matches(&headers, expected) {
+            let mut response =
+                crate::error::ApiError::unauthorized("a metrics token is required").into_response();
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                header::HeaderValue::from_static("Bearer"),
+            );
+            return response;
+        }
+    }
+    state
+        .metrics
+        .set_rate_limited(state.rate_limiter.rejected());
+    let gauges = collect_gauges(&state).await;
+    let body = state.metrics.render(&gauges);
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
+}
+
+/// Compare the presented bearer token with the configured one. Both are hashed first,
+/// so the comparison takes the same time whatever the presented value is.
+fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some(presented) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })
+    else {
+        return false;
+    };
+    Sha256::digest(presented.trim().as_bytes()) == Sha256::digest(expected.as_bytes())
+}
+
+/// Current-state gauges: build info, license, connection pool, harness registry and the
+/// database-backed counts. None of them carries an organization, user or resource name.
+async fn collect_gauges(state: &AppState) -> Vec<GaugeSample> {
+    let mut gauges = vec![GaugeSample::new(
+        "orbit_info",
+        &[("version", VERSION), ("environment", &state.environment)],
+        1.0,
+    )];
+
+    let license = state.license_status();
+    let phase = crate::background::license_phase(&license);
+    for known in LICENSE_PHASES {
+        gauges.push(GaugeSample::new(
+            "orbit_license_phase",
+            &[("phase", known)],
+            if known == phase { 1.0 } else { 0.0 },
+        ));
+    }
+    for resource in ["seats", "agents", "workers", "executions_per_day"] {
+        if let Some(limit) = license.limit(resource) {
+            gauges.push(GaugeSample::new(
+                "orbit_license_limit",
+                &[("resource", resource)],
+                limit as f64,
+            ));
+        }
+    }
+
+    let (open, idle) = state.store.pool_stats();
+    gauges.push(GaugeSample::new(
+        "orbit_db_pool_connections",
+        &[("state", "idle")],
+        idle as f64,
+    ));
+    gauges.push(GaugeSample::new(
+        "orbit_db_pool_connections",
+        &[("state", "active")],
+        open.saturating_sub(idle) as f64,
+    ));
+
+    let mut harnesses = state.registry.descriptors();
+    harnesses.sort_by_key(|descriptor| descriptor.kind.as_str());
+    for descriptor in harnesses {
+        let available =
+            descriptor.implementation_status == orbit_domain::ImplementationStatus::Available;
+        gauges.push(GaugeSample::new(
+            "orbit_harness_available",
+            &[("kind", descriptor.kind.as_str())],
+            if available { 1.0 } else { 0.0 },
+        ));
+    }
+
+    if let Some(snapshot) = state
+        .metrics
+        .snapshot(&state.store, crate::background::HEARTBEAT_STALE_SECONDS)
+        .await
+    {
+        for (status, count) in &snapshot.executions_in_flight {
+            gauges.push(GaugeSample::new(
+                "orbit_executions_in_flight",
+                &[("status", status)],
+                *count as f64,
+            ));
+        }
+        gauges.push(GaugeSample::new(
+            "orbit_workers_online",
+            &[],
+            snapshot.workers_online as f64,
+        ));
+        for (status, count) in &snapshot.worker_launches {
+            gauges.push(GaugeSample::new(
+                "orbit_worker_launches",
+                &[("status", status)],
+                *count as f64,
+            ));
+        }
+        for (resource, count) in &snapshot.license_usage {
+            gauges.push(GaugeSample::new(
+                "orbit_license_usage",
+                &[("resource", resource)],
+                *count as f64,
+            ));
+        }
+    }
+    gauges
 }
 
 #[utoipa::path(get, path = "/api/v1/meta", tag = "system", responses((status = 200, body = MetaResponse)))]

@@ -340,6 +340,7 @@ pub async fn probe_provider(
         None => None,
     };
     let result = probe_endpoint(kind, &provider.config, credential.as_deref()).await;
+    state.metrics.provider_probe(kind.as_str(), result.ok);
 
     // Persist discovered models so agent/worker selectors can use them without a manual
     // catalog edit. Keep any existing settings/catalog merge semantics.
@@ -369,6 +370,7 @@ pub async fn probe_provider(
 /// Probe an unsaved provider config (create dialog).
 #[utoipa::path(post, path = "/api/v1/providers/probe", tag = "providers", request_body = ProbeProviderRequest, responses((status = 200, body = ProviderProbeResponse)))]
 pub async fn probe_unsaved(
+    State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     crate::extract::ApiJson(body): crate::extract::ApiJson<ProbeProviderRequest>,
 ) -> Result<Json<ProviderProbeResponse>, ApiError> {
@@ -387,9 +389,9 @@ pub async fn probe_unsaved(
         return Err(ApiError::validation(report.issues));
     }
     // Never persist or log the credential used for this probe.
-    Ok(Json(
-        probe_endpoint(kind, &config, body.credential.as_deref()).await,
-    ))
+    let result = probe_endpoint(kind, &config, body.credential.as_deref()).await;
+    state.metrics.provider_probe(kind.as_str(), result.ok);
+    Ok(Json(result))
 }
 
 async fn probe_endpoint(

@@ -1,4 +1,4 @@
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -44,7 +44,16 @@ pub async fn instrument(
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
-    state.metrics.inc_requests();
+    // The route template keeps the label set bounded; a request that matched no route
+    // (the 404 fallback) is grouped instead of labelled with its caller-chosen path.
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".to_string());
+    let metric_method = method.as_str().to_string();
+    let started = std::time::Instant::now();
+    let in_flight = InFlight::start(state.metrics.clone());
 
     let response = REQUEST_ID
         .scope(request_id.clone(), async move {
@@ -53,15 +62,47 @@ pub async fn instrument(
         })
         .await;
 
-    if response.status().is_client_error() || response.status().is_server_error() {
-        state.metrics.inc_errors();
-    }
+    in_flight.finish(
+        &metric_method,
+        &route,
+        response.status().as_u16(),
+        started.elapsed(),
+    );
 
     let mut response = response;
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(HEADER, value);
     }
     response
+}
+
+/// Keeps `orbit_http_in_flight_requests` right when a request is dropped before it is
+/// answered (client disconnect, shutdown): the guard then releases the slot unrecorded.
+struct InFlight {
+    metrics: Option<std::sync::Arc<crate::metrics::Metrics>>,
+}
+
+impl InFlight {
+    fn start(metrics: std::sync::Arc<crate::metrics::Metrics>) -> Self {
+        metrics.http_started();
+        Self {
+            metrics: Some(metrics),
+        }
+    }
+
+    fn finish(mut self, method: &str, route: &str, status: u16, elapsed: std::time::Duration) {
+        if let Some(metrics) = self.metrics.take() {
+            metrics.http_finished(method, route, status, elapsed);
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Some(metrics) = self.metrics.take() {
+            metrics.http_abandoned();
+        }
+    }
 }
 
 /// Extracted request id.
