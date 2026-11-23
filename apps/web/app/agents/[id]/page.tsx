@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 
 import { RunAgentDialog } from "@/components/agents/run-agent-dialog";
+import { LinkedOutputs } from "@/components/outputs/linked-outputs";
 import { ExecutionListHeader, ExecutionRow } from "@/components/executions/execution-row";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,7 @@ import { api } from "@/lib/api";
 import { errorStatus, request, requestRaw } from "@/lib/http";
 import { copyText } from "@/lib/browser";
 import { agentSpecSchema } from "@orbit/contracts";
-import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useSkills } from "@/lib/queries";
+import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useOutputs, useSkills } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import { formatDateTime, relativeTime, titleCase } from "@/lib/utils";
 import { autonomyName, brandName, capabilityLabel, cronDescription } from "@/lib/presentation";
@@ -61,6 +62,7 @@ export default function AgentDetailPage() {
   const confirm = useConfirm();
   const agent = useAgent(agentId);
   const skillList = useSkills();
+  const outputs = useOutputs();
   const versions = useAgentVersions(agentId);
   const executions = useExecutions({ agentId, limit: 20 });
 
@@ -576,6 +578,8 @@ export default function AgentDetailPage() {
                   )}
                 </CardContent>
               </Card>
+
+              <LinkedOutputs outputs={outputs.data ?? []} scope="agent" id={agentId} />
             </div>
           </div>
         </TabsContent>

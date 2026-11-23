@@ -5,8 +5,10 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 
 ## UI
 
-The Work wizard's **Then** section ([Start work](start-work.md)) lists the enabled outputs
-that apply to the selected agent or team before the run is created.
+Agent and Agent Team detail pages show their linked outputs and an **Add output** link
+that opens Output Studio with that agent/team preselected. The Work wizard's **Then**
+section ([Start work](start-work.md)) lists the enabled outputs that apply to the selected
+agent or team before the run is created.
 
 **Outputs** lists every output with whether it will send: **On**, **Failing** (its last
 message was refused or gave up), **Off**, or **Cannot send** (no credential or no events),

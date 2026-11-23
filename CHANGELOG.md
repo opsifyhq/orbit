@@ -8,6 +8,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- Agent and Agent Team pages show their linked outputs and can create a new output with
+  that scope preselected; Work's Then section links to the same scoped creation form.
+
 ### Changed
 
 - Kubernetes connections use an authentication dropdown, kubeconfig file upload, a
