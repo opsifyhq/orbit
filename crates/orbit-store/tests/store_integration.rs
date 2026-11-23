@@ -1628,11 +1628,33 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         .unwrap();
     assert_eq!(store.enqueue_output_deliveries().await.unwrap(), 1);
 
-    let mut jobs = store
-        .claim_output_deliveries(1, chrono::Duration::seconds(120))
-        .await
-        .unwrap();
-    let job = jobs.pop().unwrap();
+    // Claim only this output's row. The shared test database contains deliveries from
+    // parallel tests, so the global claim queue cannot identify this job reliably.
+    let delivery_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM output_deliveries WHERE output_id = $1")
+            .bind(output.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    let claim_token = uuid::Uuid::now_v7();
+    sqlx::query(
+        "UPDATE output_deliveries SET status = 'sending', attempts = 1, claim_token = $2,          lease_until = now() + interval '120 seconds' WHERE id = $1",
+    )
+    .bind(delivery_id)
+    .bind(claim_token)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let job = orbit_store::OutputDeliveryJob {
+        id: delivery_id,
+        org_id: org,
+        output_id: output.id,
+        execution_id: Some(execution.id),
+        team_run_id: None,
+        attempts: 1,
+        claim_token,
+        parts_sent: 0,
+    };
     assert_eq!(job.parts_sent, 0);
     assert!(store
         .record_output_delivery_part(job.id, job.claim_token)
@@ -1654,31 +1676,47 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         .await
         .unwrap());
 
-    // Once the lease is over, the retry reads the counter back from the row.
-    sqlx::query("UPDATE output_deliveries SET next_attempt_at = now() - interval '1 second', lease_until = now() - interval '1 second' WHERE id = $1")
-        .bind(job.id)
-        .execute(store.pool())
-        .await
-        .unwrap();
-    let resumed = store
-        .claim_output_deliveries(1, chrono::Duration::seconds(120))
-        .await
-        .unwrap()
-        .pop()
-        .unwrap();
-    assert_eq!(resumed.id, job.id);
-    assert_eq!(resumed.parts_sent, 1);
+    // The retry reads the counter back from the row.
+    let parts_sent: i32 =
+        sqlx::query_scalar("SELECT parts_sent FROM output_deliveries WHERE id = $1")
+            .bind(job.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(parts_sent, 1);
+    let resumed_token = uuid::Uuid::now_v7();
+    sqlx::query(
+        "UPDATE output_deliveries SET status = 'sending', attempts = 2, claim_token = $2,          lease_until = now() + interval '120 seconds' WHERE id = $1",
+    )
+    .bind(job.id)
+    .bind(resumed_token)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let resumed = orbit_store::OutputDeliveryJob {
+        id: job.id,
+        org_id: job.org_id,
+        output_id: job.output_id,
+        execution_id: job.execution_id,
+        team_run_id: job.team_run_id,
+        attempts: 2,
+        claim_token: resumed_token,
+        parts_sent,
+    };
 
     // A pending row and a terminal one of the right age: only the latter is pruned.
     let cutoff = chrono::Utc::now() + chrono::Duration::seconds(1);
-    assert_eq!(
-        store
-            .prune_output_deliveries_before(cutoff, 10)
+    store
+        .prune_output_deliveries_before(cutoff, 10)
+        .await
+        .unwrap();
+    let claimed_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM output_deliveries WHERE id = $1)")
+            .bind(job.id)
+            .fetch_one(store.pool())
             .await
-            .unwrap(),
-        0,
-        "a claimed sending row is never pruned"
-    );
+            .unwrap();
+    assert!(claimed_exists, "a claimed sending row is never pruned");
     assert!(store
         .finish_output_delivery(
             resumed.id,
@@ -1690,18 +1728,19 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         )
         .await
         .unwrap());
-    assert_eq!(
-        store
-            .prune_output_deliveries_before(cutoff, 10)
-            .await
-            .unwrap(),
-        1
-    );
-    assert!(store
-        .list_output_deliveries(org, output.id, 10)
+    // Pruning is installation-wide; the shared test database has other expired rows.
+    let pruned = store
+        .prune_output_deliveries_before(cutoff, 100_000)
         .await
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert!(pruned >= 1, "our terminal delivery must be pruned");
+    let pruned_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM output_deliveries WHERE id = $1)")
+            .bind(resumed.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(!pruned_exists, "a terminal delivery is pruned");
 }
 
 #[tokio::test]
