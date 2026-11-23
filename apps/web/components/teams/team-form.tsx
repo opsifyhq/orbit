@@ -29,6 +29,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { AUTONOMY_LEVELS } from "@orbit/contracts";
 import { brandName } from "@/lib/presentation";
 import {
   useAllAgents,
@@ -38,7 +39,7 @@ import {
   useSkills,
   useWorkerProfiles,
 } from "@/lib/queries";
-import type { TeamInput, TeamModel, TeamStepInput } from "@/lib/teams";
+import type { TeamAutonomy, TeamInput, TeamModel, TeamStepInput } from "@/lib/teams";
 import type { AgentTeam, TeamRepository, WorkSource } from "@/lib/types";
 
 import { MODE_HINT, MODE_LABEL, StepNumber, modelLabel, type TeamMode } from "./team-parts";
@@ -81,6 +82,9 @@ interface Draft {
   workerProfileId: string;
   autoLaunch: boolean;
   timeout: string;
+  autonomyMode: "follow_primary" | "fixed";
+  autonomyLevel: string;
+  autonomyApproval: "auto" | "always" | "writes";
 }
 
 function draftFrom(team?: AgentTeam): Draft {
@@ -105,6 +109,9 @@ function draftFrom(team?: AgentTeam): Draft {
     workerProfileId: definition?.workerProfileId ?? "",
     autoLaunch: definition?.autoLaunch ?? false,
     timeout: definition?.timeoutSeconds ? String(definition.timeoutSeconds) : "",
+    autonomyMode: definition?.autonomy?.mode === "fixed" ? "fixed" : "follow_primary",
+    autonomyLevel: String(definition?.autonomy?.level ?? 4),
+    autonomyApproval: definition?.autonomy?.approvalMode ?? "auto",
   };
 }
 
@@ -135,6 +142,10 @@ function toInput(draft: Draft): TeamInput {
     connectionIds: draft.connectionIds,
     envMappingIds: draft.envMappingIds,
     timeoutSeconds: draft.timeout ? Number(draft.timeout) : undefined,
+    autonomy:
+      draft.autonomyMode === "fixed"
+        ? ({ mode: "fixed", level: Number(draft.autonomyLevel), approvalMode: draft.autonomyApproval } satisfies TeamAutonomy)
+        : null,
     steps: draft.steps.map((step) => ({ agentId: step.agentId, model: cleanModel(step.model) })),
   };
 }
@@ -964,6 +975,53 @@ export function TeamForm({
                   onChange={(event) => set("timeout", event.target.value)}
                 />
               </Field>
+              <Field
+                label="Team autonomy"
+                htmlFor="team-autonomy"
+                hint="Follow each agent's own level, or make one level apply to every step and native subagent."
+                className="sm:col-span-2"
+              >
+                <Select
+                  id="team-autonomy"
+                  value={draft.autonomyMode}
+                  onChange={(event) => set("autonomyMode", event.target.value as Draft["autonomyMode"])}
+                >
+                  <option value="follow_primary">Follow each agent&apos;s level</option>
+                  <option value="fixed">Fixed for this team</option>
+                </Select>
+              </Field>
+              {draft.autonomyMode === "fixed" ? (
+                <>
+                  <Field
+                    label="Autonomy level"
+                    htmlFor="team-autonomy-level"
+                    hint="Raising a step agent above its own level requires manage access to that agent."
+                  >
+                    <Select
+                      id="team-autonomy-level"
+                      value={draft.autonomyLevel}
+                      onChange={(event) => set("autonomyLevel", event.target.value)}
+                    >
+                      {AUTONOMY_LEVELS.map((level) => (
+                        <option key={level.level} value={level.level}>
+                          Level {level.level} — {level.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Approval mode" htmlFor="team-autonomy-approval">
+                    <Select
+                      id="team-autonomy-approval"
+                      value={draft.autonomyApproval}
+                      onChange={(event) => set("autonomyApproval", event.target.value as Draft["autonomyApproval"])}
+                    >
+                      <option value="auto">Follow the level</option>
+                      <option value="always">Always ask</option>
+                      <option value="writes">Ask for writes</option>
+                    </Select>
+                  </Field>
+                </>
+              ) : null}
             </div>
             <CheckboxField
               title="Start the worker automatically"

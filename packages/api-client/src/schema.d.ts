@@ -2236,6 +2236,7 @@ export interface components {
         };
         CreateTeamRequest: {
             autoLaunch?: boolean;
+            autonomy?: components["schemas"]["TeamAutonomy"] | null;
             /** @description Optional base/working branch for repository checkout. */
             branch?: string | null;
             connectionIds?: string[];
@@ -2278,7 +2279,10 @@ export interface components {
             workerProfileId?: string | null;
         };
         CreateTeamRunRequest: {
-            /** @description Explicitly allow bound writes for this run without per-call approvals (L4). */
+            /**
+             * @description Ask the worker to auto-approve approvals for this run. It only applies when the
+             *     execution's level is already L3+, and never raises the level.
+             */
             autoApprove?: boolean;
             /** @description Override the agent's stored harness for this run. */
             harnessOverride?: string | null;
@@ -3138,6 +3142,22 @@ export interface components {
             /** @description Member counts by team role. Decimal role names avoid colliding with reserved words. */
             roles: components["schemas"]["TeamRoleCounts"];
         };
+        /**
+         * @description An explicit team-wide autonomy policy. `follow_primary` is the backward-compatible
+         *     default; `fixed` is snapshotted into a run so later agent/team edits cannot change an
+         *     in-flight run.
+         */
+        TeamAutonomy: {
+            approvalMode?: components["schemas"]["ApprovalMode"] | null;
+            /** Format: int32 */
+            level?: number | null;
+            mode?: components["schemas"]["TeamAutonomyMode"];
+        };
+        /**
+         * @description How an Agent Team chooses the autonomy level for its executions.
+         * @enum {string}
+         */
+        TeamAutonomyMode: "follow_primary" | "fixed";
         TeamMember: {
             /** Format: date-time */
             createdAt: string;

@@ -71,18 +71,31 @@ environment mappings are resolved into the execution environment for every step.
 avoids duplicating the same GitLab/cloud integration on each step agent; credentials stay
 in the broker and are never passed to the harness.
 
+## Team autonomy
+
+A team can either follow each step agent's own autonomy (`follow_primary`, the default)
+or declare one fixed level for the whole run. The fixed policy applies to every pipeline
+step and, for native teams, to the primary and all subagents.
+
+Setting a fixed level above a step agent's own level is an explicit elevation: it requires
+manage access to that agent and is written to the audit log as
+`team.autonomy_elevated`. Lowering autonomy never needs extra access. The run stores a
+snapshot of the policy, so editing an agent or the team later cannot change an in-flight
+run.
+
 ## Auto-approve
 
 Starting a run with `autoApprove: true` requires the `approvals:decide` permission;
-without it the API returns 403. The checkbox is "Auto-approve writes for this run" in the
-"Run <team>" dialog. In [Start work](start-work.md) the "Auto-approve writes"
+without it the API returns 403. The checkbox is "Auto-approve approvals for this run" in
+the "Run <team>" dialog. In [Start work](start-work.md) the "Auto-approve writes"
 option is shown disabled. The API marks each step execution with a server-set
 `approvalOverride: "auto"`. The worker applies it only to step agents whose own autonomy
 level is Prepare (L3) or higher, and only by switching the approval mode to `Auto`. It
 never raises the level: Observe (L1) and Recommend (L2) agents still deny every write. At
 L3 `Auto` mode still requires approval for writes (only L4 runs them unattended), so in
-practice the override lifts `Always` and `Writes` approval modes on L4 agents. The legacy
-numeric `autonomyOverride` is ignored.
+practice the override lifts `Always` and `Writes` approval modes on L4 agents. A fixed
+team autonomy is applied after this override and therefore wins. The legacy numeric
+`autonomyOverride` is ignored.
 
 ## Reruns
 

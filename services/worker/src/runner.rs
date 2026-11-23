@@ -392,6 +392,13 @@ async fn run_execution_inner(
             .get(orbit_domain::APPROVAL_OVERRIDE_KEY)
             .and_then(|value| value.as_str()),
     );
+    // A fixed team policy is a server-created snapshot. It wins over the per-run
+    // auto-approve override, so a team set to "always ask" cannot be loosened by a run.
+    if let Some(value) = execution.input.get(orbit_domain::TEAM_AUTONOMY_KEY) {
+        if let Ok(autonomy) = serde_json::from_value::<orbit_domain::TeamAutonomy>(value.clone()) {
+            orbit_domain::apply_team_autonomy(&mut spec.autonomy, Some(&autonomy));
+        }
+    }
     let harness_kind = match execution.harness_kind.parse::<orbit_domain::HarnessKind>() {
         Ok(kind) => kind,
         Err(_) => {

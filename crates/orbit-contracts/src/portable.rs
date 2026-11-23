@@ -321,6 +321,9 @@ pub struct AgentTeamSpec {
     pub env_mappings: Vec<String>,
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Optional explicit team autonomy policy.
+    #[serde(default)]
+    pub autonomy: Option<Value>,
     pub steps: Vec<AgentTeamStepSpec>,
 }
 

@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.27.0"
+    "version": "0.28.3"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -6194,6 +6194,17 @@
           "autoLaunch": {
             "type": "boolean"
           },
+          "autonomy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TeamAutonomy",
+                "description": "Team-wide autonomy policy. Omitted/follow_primary keeps each step agent's own level."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "branch": {
             "type": [
               "string",
@@ -6309,7 +6320,7 @@
         "properties": {
           "autoApprove": {
             "type": "boolean",
-            "description": "Explicitly allow bound writes for this run without per-call approvals (L4)."
+            "description": "Ask the worker to auto-approve approvals for this run. It only applies when the\nexecution's level is already L3+, and never raises the level."
           },
           "harnessOverride": {
             "type": [
@@ -8973,6 +8984,41 @@
             "description": "Member counts by team role. Decimal role names avoid colliding with reserved words."
           }
         }
+      },
+      "TeamAutonomy": {
+        "type": "object",
+        "description": "An explicit team-wide autonomy policy. `follow_primary` is the backward-compatible\ndefault; `fixed` is snapshotted into a run so later agent/team edits cannot change an\nin-flight run.",
+        "properties": {
+          "approvalMode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "mode": {
+            "$ref": "#/components/schemas/TeamAutonomyMode"
+          }
+        }
+      },
+      "TeamAutonomyMode": {
+        "type": "string",
+        "description": "How an Agent Team chooses the autonomy level for its executions.",
+        "enum": [
+          "follow_primary",
+          "fixed"
+        ]
       },
       "TeamMember": {
         "type": "object",

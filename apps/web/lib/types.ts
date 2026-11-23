@@ -52,6 +52,11 @@ export type AgentTeam = Omit<components["schemas"]["AgentTeam"], "definition"> &
     connectionIds?: string[];
     envMappingIds?: string[];
     timeoutSeconds?: number | null;
+    autonomy?: {
+      mode?: "follow_primary" | "fixed";
+      level?: number | null;
+      approvalMode?: "auto" | "always" | "writes" | null;
+    } | null;
     steps?: Array<{ agentId: string; model?: { provider?: string | null; model?: string | null; management?: string | null } | null }>;
   };
 };
