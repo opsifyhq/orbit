@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- The worker tool broker serves every connector binding (GitHub, GitLab, Kubernetes, X)
+  instead of only the first, so a GitLab capability is no longer a 403 when another
+  connector comes first (#307).
+- Native Agent Team subagents get explicit OpenCode permissions at L4, so they receive
+  shell/edit/write tools instead of stopping at the interactive default.
+- GitLab 403 responses now name the missing `api` scope or project role.
+
 ## [0.28.1] - 2026-11-23
 
 ### Fixed
