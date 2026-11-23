@@ -43,7 +43,10 @@ To create one, choose **New connection**. Connection Studio shows one section at
 2. **Account**: a **Name** (shown when choosing a connection for an agent or team), a
    "GitLab URL" or "Webhook URL" where the connector needs one, the **Credential**, and
    the connector's own fields (for GitHub, for example, `allowedRepositories` and
-   `defaultRepository`).
+   `defaultRepository`; for GitLab `allowedProjects`, `groupId` and `allowedGroups`; for
+   Kubernetes the `namespaces` and `allowedResources` allowlists, where an empty list
+   denies, see [Kubernetes connector](kubernetes-connector.md)). Group tools on GitLab may
+   only use `groupId` and `allowedGroups`.
 3. **Capabilities**: tick what agents may do, grouped as Read only, Change data and Act
    outside ORBIT, with **Allow all** or **Clear** per group. With nothing ticked the form
    warns "Nothing allowed yet": agents cannot use the connection.

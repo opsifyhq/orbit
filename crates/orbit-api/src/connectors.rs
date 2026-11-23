@@ -132,7 +132,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
         ConnectorManifest {
             slug: "gitlab".into(),
             name: "GitLab".into(),
-            version: "0.2.0".into(),
+            version: "0.3.0".into(),
             description: "GitLab projects, group issue boards, issues, merge requests and pipelines.".into(),
             auth: vec![AuthMethod::OAuth2, AuthMethod::ApiToken],
             webhooks: true,
@@ -164,10 +164,15 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     "allowedProjects": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional project path allowlist."
+                        "description": "Optional project path (or id) allowlist for project tools and projects.list. Empty means any project the token can access."
                     },
                     "defaultProject": { "type": "string", "description": "Project path used when tool args omit it" },
-                    "groupId": { "type": "string", "description": "Group path for group issues and boards" },
+                    "groupId": { "type": "string", "description": "Group path for group issues and boards; group tools may only use this group and allowedGroups" },
+                    "allowedGroups": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional further group paths that group tools may name. Without groupId or allowedGroups, group tools are refused."
+                    },
                     "boardId": { "type": "integer", "description": "Optional group board id" }
                 }
             }),
@@ -177,7 +182,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
         ConnectorManifest {
             slug: "kubernetes".into(),
             name: "Kubernetes".into(),
-            version: "0.1.0".into(),
+            version: "0.2.0".into(),
             description: "Read-only Kubernetes inspection: namespaces, pods, logs, deployments and events.".into(),
             auth: vec![AuthMethod::ApiToken],
             webhooks: false,
@@ -196,9 +201,9 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     "authMode": { "type": "string", "default": "service_account", "description": "service_account (token) or kubeconfig" },
                     "apiServer": { "type": "string", "default": "https://kubernetes.default.svc", "description": "Required for service_account; ignored for kubeconfig" },
                     "context": { "type": "string", "description": "Kubeconfig context (defaults to current-context)" },
-                    "namespaces": { "type": "array", "items": { "type": "string" }, "description": "Namespace allowlist; empty denies everything except selected defaults" },
+                    "namespaces": { "type": "array", "items": { "type": "string" }, "description": "Namespace allowlist. Empty allows only defaultNamespace; without either, namespaced tools are refused" },
                     "defaultNamespace": { "type": "string", "description": "Namespace used when a tool call omits it" },
-                    "allowedResources": { "type": "array", "items": { "type": "string" }, "description": "e.g. pods, pods/log, deployments, events, namespaces" },
+                    "allowedResources": { "type": "array", "items": { "type": "string" }, "description": "Resource allowlist: pods, pods/log, deployments, events, namespaces, or * for all. Empty denies every tool" },
                     "caCert": { "type": "string", "description": "Public CA certificate PEM (optional)" },
                     "timeoutSeconds": { "type": "integer", "default": 20 },
                     "maxLogBytes": { "type": "integer", "default": 200000 }

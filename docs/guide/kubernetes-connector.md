@@ -16,14 +16,41 @@ Add a **Kubernetes** connection under **Connectors → New connection** (see
   `insecure-skip-tls-verify`. Set `context` to choose a context other than the current one.
 
 Config fields: `namespaces` allowlist, `defaultNamespace`, `allowedResources`
-(`pods`, `pods/log`, `deployments`, `events`, `namespaces`), optional public `caCert`,
-`timeoutSeconds` (default 20), `maxLogBytes` (default 200000). Allowlists are enforced by
-ORBIT as well as RBAC.
+(`pods`, `pods/log`, `deployments`, `events`, `namespaces`, or `*` for all), optional
+public `caCert`, `timeoutSeconds` (default 20), `maxLogBytes` (default 200000). Allowlists
+are enforced by ORBIT as well as RBAC, and an empty list denies:
+
+- `namespaces` empty: only `defaultNamespace` may be used; with neither set, every
+  namespaced tool is refused. `namespaces.list` returns only allowed namespaces.
+- `allowedResources` empty: every tool is refused.
+
+For example:
+
+```json
+{
+  "authMode": "service_account",
+  "apiServer": "https://kubernetes.default.svc",
+  "namespaces": ["payments", "payments-staging"],
+  "defaultNamespace": "payments",
+  "allowedResources": ["pods", "pods/log", "events", "deployments"]
+}
+```
+
+> **Changed in the release after 0.27.0.** Empty `namespaces` and `allowedResources`
+> lists used to allow everything the credential could reach. Connections that relied on
+> that now get "not allowed on this connection" errors; add the namespaces and resources
+> the agents need to the connection.
+
+Pod and deployment results have container `env[].value` and the
+`kubectl.kubernetes.io/last-applied-configuration` annotation replaced with `[redacted]`,
+so plain environment values in a manifest do not reach the agent. `valueFrom` references
+(Secret or ConfigMap name and key) are kept.
 
 ## Test connection
 
 The connection **Test** button parses the credential, connects to the API server and lists
-the namespaces visible to the credential. Unsupported kubeconfig auth, rejected TLS
+the namespaces visible to the credential (the connection's allowlists do not apply to the
+test). Unsupported kubeconfig auth, rejected TLS
 settings and RBAC failures return a readable message; the result is stored as the
 connection's check status. The check is advisory: a failed test marks the connection
 "Check failed" (status `error`), but runs do not check that status, so agents keep using

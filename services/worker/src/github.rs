@@ -91,6 +91,43 @@ fn validate_segment(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates a git ref (commit SHA, branch or tag name) before it becomes part of a
+/// request path. The character set is URL-safe, so a valid ref needs no encoding, and the
+/// rules follow `git check-ref-format`: no `..`, no empty, `.`-leading or `.lock`
+/// components, and no leading or trailing `/`. `?`, `#` and `%` are refused so a ref can
+/// neither cut off the fixed path suffix nor smuggle an encoded segment.
+fn validate_ref(value: &str) -> Result<(), String> {
+    let invalid = || Err(format!("invalid git ref '{value}'"));
+    if value.is_empty()
+        || value.len() > 255
+        || value == "@"
+        || value.contains("..")
+        || value.ends_with('.')
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '+' | '@'))
+    {
+        return invalid();
+    }
+    for component in value.split('/') {
+        if component.is_empty() || component.starts_with('.') || component.ends_with(".lock") {
+            return invalid();
+        }
+    }
+    Ok(())
+}
+
+/// Accepts the `state` filter values GitHub defines for issue and pull request lists.
+fn list_state(args: &Value) -> Result<&str, String> {
+    match args.get("state").and_then(Value::as_str) {
+        None => Ok("open"),
+        Some(state @ ("open" | "closed" | "all")) => Ok(state),
+        Some(other) => Err(format!(
+            "invalid state '{other}'; expected open, closed or all"
+        )),
+    }
+}
+
 fn number(args: &Value) -> Result<u64, String> {
     args.get("number")
         .and_then(Value::as_u64)
@@ -271,12 +308,8 @@ fn request_url(
     let base = &config.base_url;
     Ok(match capability {
         "issues.list" => {
-            let mut url = format!("{base}/repos/{owner}/{repo}/issues?state=open&per_page=20");
-            if let Some(state) = args.get("state").and_then(Value::as_str) {
-                if matches!(state, "open" | "closed" | "all") {
-                    url = url.replace("state=open", &format!("state={state}"));
-                }
-            }
+            let state = list_state(args)?;
+            let mut url = format!("{base}/repos/{owner}/{repo}/issues?state={state}&per_page=20");
             if let Some(labels) = args.get("labels").and_then(Value::as_str) {
                 let labels: String = labels
                     .chars()
@@ -296,7 +329,7 @@ fn request_url(
         "issues.create" => format!("{base}/repos/{owner}/{repo}/issues"),
         "issues.update" => format!("{base}/repos/{owner}/{repo}/issues/{}", number(args)?),
         "pulls.list" => {
-            let state = args.get("state").and_then(Value::as_str).unwrap_or("open");
+            let state = list_state(args)?;
             format!("{base}/repos/{owner}/{repo}/pulls?state={state}&per_page=20")
         }
         "pulls.get" => format!("{base}/repos/{owner}/{repo}/pulls/{}", number(args)?),
@@ -306,6 +339,7 @@ fn request_url(
                 .get("ref")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "check ref (commit or branch) is required".to_string())?;
+            validate_ref(reference)?;
             format!("{base}/repos/{owner}/{repo}/commits/{reference}/check-runs?per_page=20")
         }
         other => return Err(format!("unsupported GitHub capability: {other}")),
@@ -426,5 +460,113 @@ mod tests {
             .unwrap(),
             "https://api.github.com/repos/acme/orbit/commits/feature/check-runs?per_page=20"
         );
+        assert_eq!(
+            request_url(
+                &config,
+                "pulls.list",
+                "acme",
+                "orbit",
+                &json!({"state": "closed"})
+            )
+            .unwrap(),
+            "https://api.github.com/repos/acme/orbit/pulls?state=closed&per_page=20"
+        );
+    }
+
+    fn config() -> GitHubClientConfig {
+        GitHubClientConfig {
+            base_url: "https://api.github.com".into(),
+            token: None,
+            allowed_repositories: vec!["acme/orbit".into()],
+            default_repository: Some("acme/orbit".into()),
+        }
+    }
+
+    #[test]
+    fn check_refs_cannot_leave_the_repository() {
+        let config = config();
+        for reference in [
+            "../../../orgs/acme/members",
+            "main/../../other",
+            "x?per_page=100#",
+            "x#fragment",
+            "%2e%2e/other",
+            "/main",
+            "main/",
+            "feature//x",
+            "feature/.hidden",
+            "main.lock",
+            "with space",
+            "tab\tname",
+            "new\nline",
+            "",
+            "@",
+            "main.",
+        ] {
+            assert!(
+                request_url(
+                    &config,
+                    "checks.list",
+                    "acme",
+                    "orbit",
+                    &json!({"ref": reference})
+                )
+                .is_err(),
+                "ref {reference:?} must be rejected"
+            );
+        }
+        for reference in [
+            "main",
+            "feature/login-form",
+            "v1.2.3",
+            "release/2026.11",
+            "0123456789abcdef0123456789abcdef01234567",
+            "user@fix+1",
+        ] {
+            let url = request_url(
+                &config,
+                "checks.list",
+                "acme",
+                "orbit",
+                &json!({"ref": reference}),
+            )
+            .unwrap_or_else(|error| panic!("ref {reference:?} must be accepted: {error}"));
+            let parsed = reqwest::Url::parse(&url).unwrap();
+            assert_eq!(parsed.host_str(), Some("api.github.com"));
+            assert_eq!(
+                parsed.path(),
+                format!("/repos/acme/orbit/commits/{reference}/check-runs")
+            );
+            assert_eq!(parsed.query(), Some("per_page=20"));
+        }
+    }
+
+    #[test]
+    fn list_state_is_validated() {
+        let config = config();
+        for capability in ["issues.list", "pulls.list"] {
+            for state in ["open&per_page=100", "closed#", "merged", "all/../x"] {
+                assert!(
+                    request_url(
+                        &config,
+                        capability,
+                        "acme",
+                        "orbit",
+                        &json!({"state": state})
+                    )
+                    .is_err(),
+                    "{capability} state {state:?} must be rejected"
+                );
+            }
+            let url = request_url(
+                &config,
+                capability,
+                "acme",
+                "orbit",
+                &json!({"state": "all"}),
+            )
+            .unwrap();
+            assert!(url.contains("state=all&per_page=20"), "{url}");
+        }
     }
 }

@@ -8,6 +8,7 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+<
 ### Added
 
 - The web app shows the running ORBIT version under the logo, in the sidebar, in the phone

@@ -159,6 +159,16 @@ impl KubernetesClientConfig {
         })
     }
 
+    /// The namespaces tools may use. An empty `namespaces` allowlist allows only
+    /// `defaultNamespace`; with neither set, every namespaced tool is refused.
+    fn allowed_namespaces(&self) -> Vec<&str> {
+        if self.namespaces.is_empty() {
+            self.default_namespace.as_deref().into_iter().collect()
+        } else {
+            self.namespaces.iter().map(String::as_str).collect()
+        }
+    }
+
     fn namespace(&self, args: &Value) -> Result<String, String> {
         let namespace = args
             .get("namespace")
@@ -166,20 +176,20 @@ impl KubernetesClientConfig {
             .or(self.default_namespace.as_deref())
             .ok_or("namespace is required (or set config.defaultNamespace)")?;
         validate_segment(namespace, "namespace")?;
-        if !self.namespaces.is_empty() && !self.namespaces.iter().any(|ns| ns == namespace) {
+        if !self.allowed_namespaces().contains(&namespace) {
             return Err(format!(
-                "namespace '{namespace}' is not in the connection allowlist"
+                "namespace '{namespace}' is not allowed on this connection; add it to \
+                 config.namespaces (an empty list allows only config.defaultNamespace)"
             ));
         }
         Ok(namespace.to_string())
     }
 
+    /// An empty `allowedResources` list denies every tool; `*` allows them all.
     fn resource_allowed(&self, resource: &str) -> bool {
-        self.allowed_resources.is_empty()
-            || self
-                .allowed_resources
-                .iter()
-                .any(|item| item == resource || item == "*")
+        self.allowed_resources
+            .iter()
+            .any(|item| item == resource || item == "*")
     }
 
     /// A client bound to the platform's outbound policy: loopback, link-local and
@@ -226,9 +236,18 @@ impl KubernetesClientConfig {
     }
 
     /// Parse and connect, then list the namespaces visible to this credential. Used by the
-    /// connection Test button; RBAC errors surface as a readable message.
+    /// connection Test button; RBAC errors surface as a readable message. The test checks
+    /// the credential itself, so it does not apply the connection's tool allowlists.
     pub async fn test_connection(&self) -> Result<Value, String> {
-        let data = self.invoke("namespaces.list", &json!({})).await?;
+        let response = self.get("/api/v1/namespaces", &[]).await?;
+        let status = response.status();
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|error| format!("invalid Kubernetes response: {error}"))?;
+        if !status.is_success() {
+            return Err(format!("Kubernetes returned {status}: {data}"));
+        }
         let names: Vec<&str> = data
             .get("items")
             .and_then(Value::as_array)
@@ -267,7 +286,8 @@ impl KubernetesClientConfig {
         };
         if !self.resource_allowed(resource) {
             return Err(format!(
-                "resource '{resource}' is not allowed on this connection"
+                "resource '{resource}' is not allowed on this connection; add it to \
+                 config.allowedResources (an empty list denies every tool)"
             ));
         }
         let response = match capability {
@@ -366,16 +386,71 @@ impl KubernetesClientConfig {
         if !status.is_success() {
             return Err(error_message(status, &data));
         }
-        if capability == "namespaces.list" && !self.namespaces.is_empty() {
-            if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
-                items.retain(|item| {
-                    item.pointer("/metadata/name")
-                        .and_then(Value::as_str)
-                        .is_some_and(|name| self.namespaces.iter().any(|ns| ns == name))
-                });
+        match capability {
+            "namespaces.list" => {
+                let allowed = self.allowed_namespaces();
+                if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
+                    items.retain(|item| {
+                        item.pointer("/metadata/name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| allowed.contains(&name))
+                    });
+                }
             }
+            "pods.get" => redact_object(&mut data, "/spec"),
+            "pods.list" => redact_items(&mut data, "/spec"),
+            "deployments.get" => redact_object(&mut data, "/spec/template/spec"),
+            "deployments.list" => redact_items(&mut data, "/spec/template/spec"),
+            _ => {}
         }
         Ok(data)
+    }
+}
+
+/// Placeholder for values removed from tool output.
+const REDACTED: &str = "[redacted]";
+
+/// Annotations that carry a full copy of the object, including environment values.
+const MANIFEST_ANNOTATIONS: &[&str] = &["kubectl.kubernetes.io/last-applied-configuration"];
+
+fn redact_items(list: &mut Value, pod_spec: &str) {
+    if let Some(items) = list.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            redact_object(item, pod_spec);
+        }
+    }
+}
+
+/// Removes plaintext environment values from a pod or workload before an agent sees it.
+/// `valueFrom` references (Secret and ConfigMap names and keys) are kept: they name where a
+/// value lives without revealing it.
+fn redact_object(object: &mut Value, pod_spec: &str) {
+    if let Some(spec) = object.pointer_mut(pod_spec) {
+        for list in ["containers", "initContainers", "ephemeralContainers"] {
+            let Some(containers) = spec.get_mut(list).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for container in containers {
+                let Some(env) = container.get_mut("env").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for variable in env {
+                    if let Some(value) = variable.get_mut("value") {
+                        *value = json!(REDACTED);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(annotations) = object
+        .pointer_mut("/metadata/annotations")
+        .and_then(Value::as_object_mut)
+    {
+        for key in MANIFEST_ANNOTATIONS {
+            if let Some(value) = annotations.get_mut(*key) {
+                *value = json!(REDACTED);
+            }
+        }
     }
 }
 
@@ -549,5 +624,108 @@ users:
         assert!(parsed.namespace(&json!({ "namespace": "other" })).is_err());
         assert!(parsed.resource_allowed("pods"));
         assert!(!parsed.resource_allowed("events"));
+    }
+
+    fn connection(extra: Value) -> KubernetesClientConfig {
+        let mut config = json!({ "authMode": "service_account", "apiServer": "https://cluster" });
+        config
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        KubernetesClientConfig::from_connection(&config, Some("token".into())).unwrap()
+    }
+
+    #[test]
+    fn empty_allowlists_deny() {
+        let open = connection(json!({}));
+        assert!(open
+            .namespace(&json!({ "namespace": "kube-system" }))
+            .is_err());
+        assert!(open.allowed_namespaces().is_empty());
+        for resource in ["namespaces", "pods", "pods/log", "deployments", "events"] {
+            assert!(!open.resource_allowed(resource), "{resource}");
+        }
+
+        let default_only = connection(json!({ "defaultNamespace": "payments" }));
+        assert!(default_only.namespace(&json!({})).is_ok());
+        assert!(default_only
+            .namespace(&json!({ "namespace": "payments" }))
+            .is_ok());
+        assert!(default_only
+            .namespace(&json!({ "namespace": "kube-system" }))
+            .is_err());
+        assert_eq!(default_only.allowed_namespaces(), vec!["payments"]);
+
+        let wildcard = connection(json!({ "allowedResources": ["*"] }));
+        assert!(wildcard.resource_allowed("events"));
+    }
+
+    #[tokio::test]
+    async fn empty_allowlists_refuse_before_any_request() {
+        // Nothing listens on this address; a refusal must come from the allowlist.
+        let client = connection(json!({ "apiServer": "https://127.0.0.1:9" }));
+        let error = client
+            .invoke("pods.list", &json!({ "namespace": "default" }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("allowedResources"), "{error}");
+
+        let client = connection(json!({
+            "apiServer": "https://127.0.0.1:9",
+            "allowedResources": ["pods"]
+        }));
+        let error = client
+            .invoke(
+                "pods.get",
+                &json!({ "namespace": "default", "name": "web" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("not allowed on this connection"), "{error}");
+    }
+
+    #[test]
+    fn pod_and_deployment_env_values_are_redacted() {
+        let container = json!({
+            "name": "app",
+            "env": [
+                { "name": "DATABASE_PASSWORD", "value": "hunter2" },
+                { "name": "TOKEN", "valueFrom": { "secretKeyRef": { "name": "app", "key": "token" } } }
+            ]
+        });
+        let pod_spec = json!({
+            "containers": [container.clone()],
+            "initContainers": [container.clone()],
+            "ephemeralContainers": [container]
+        });
+        let annotations = json!({
+            "kubectl.kubernetes.io/last-applied-configuration": "{\"env\":\"hunter2\"}",
+            "team": "payments"
+        });
+        let mut pod = json!({
+            "metadata": { "name": "web", "annotations": annotations.clone() },
+            "spec": pod_spec.clone()
+        });
+        redact_object(&mut pod, "/spec");
+        let mut deployments = json!({ "items": [{
+            "metadata": { "name": "web", "annotations": annotations },
+            "spec": { "template": { "spec": pod_spec } }
+        }] });
+        redact_items(&mut deployments, "/spec/template/spec");
+
+        for (object, spec) in [
+            (&pod, "/spec"),
+            (&deployments["items"][0], "/spec/template/spec"),
+        ] {
+            let text = object.to_string();
+            assert!(!text.contains("hunter2"), "{text}");
+            for list in ["containers", "initContainers", "ephemeralContainers"] {
+                let env = object.pointer(&format!("{spec}/{list}/0/env")).unwrap();
+                assert_eq!(env[0]["name"], "DATABASE_PASSWORD");
+                assert_eq!(env[0]["value"], REDACTED);
+                assert_eq!(env[1]["valueFrom"]["secretKeyRef"]["key"], "token");
+            }
+            assert_eq!(object["metadata"]["annotations"]["team"], "payments");
+        }
     }
 }
