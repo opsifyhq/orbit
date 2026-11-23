@@ -1,12 +1,10 @@
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { isOrbitManagedProvider } from "@/lib/provider-meta";
 import type { useProviders } from "@/lib/queries";
-import { DEFAULT_WORKER_IMAGES } from "@/lib/worker-images";
 
 import type { WorkerFormApi } from "./worker-form";
-
-const DEFAULT_IMAGES = DEFAULT_WORKER_IMAGES;
 
 export type ProviderRow = NonNullable<ReturnType<typeof useProviders>["data"]>[number];
 
@@ -31,7 +29,7 @@ export function resolveProvider(providers: ProviderRow[], provider: string) {
 /** Provider and model, from the catalogue kept under Models. */
 export function ModelFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
   const { values, set } = form;
-  const { provider, model, image } = values;
+  const { provider, model, harness } = values;
   const { selectedProvider, providerModels } = resolveProvider(providers, provider);
 
   return (
@@ -59,8 +57,9 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
                   : [];
                 if (next?.kind === "harness_managed") {
                   const providerHarness = String(config.harness ?? "");
-                  if (providerHarness) {
-                    set({ harness: providerHarness, image: DEFAULT_IMAGES[providerHarness] ?? image });
+                  if (providerHarness && providerHarness !== harness) {
+                    // Let the API fill the image for the new harness from the installation.
+                    set({ harness: providerHarness, image: "" });
                   }
                 }
                 set({ provider: event.target.value, model: String(config.model ?? "") || catalog[0] || "" });
@@ -84,10 +83,10 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
                     })}
                 </optgroup>
               ) : null}
-              {providers.some((candidate) => candidate.kind === "openai_compatible") ? (
+              {providers.some((candidate) => isOrbitManagedProvider(candidate.kind)) ? (
                 <optgroup label="ORBIT-managed (API key stored in ORBIT)">
                   {providers
-                    .filter((candidate) => candidate.kind === "openai_compatible")
+                    .filter((candidate) => isOrbitManagedProvider(candidate.kind))
                     .map((candidate) => (
                       <option key={candidate.id} value={providerOptionValue(candidate)}>
                         {candidate.name}
@@ -148,7 +147,7 @@ export function AuthSecretField({ form }: { form: WorkerFormApi }) {
       label="Harness auth secret"
       htmlFor="wp-auth"
       optional
-      hint="Only for harness-managed providers such as OpenCode Go. Leave blank for ORBIT-managed providers; their credentials are injected at runtime."
+      hint="Only for providers signed in through the harness. Leave blank for ORBIT-managed providers; their credentials are injected at runtime."
     >
       <Input
         id="wp-auth"

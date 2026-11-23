@@ -25,6 +25,7 @@ import {
   useWorkerProfileEnvMappings,
 } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
+import { brandName } from "@/lib/presentation";
 import { errorMessage } from "@orbit/api-client";
 
 import { SectionCard, SectionNav, SectionPills } from "./editor-nav";
@@ -84,12 +85,15 @@ export function WorkerEditor({
   const editing = editor.profile;
   const attachMappingId = editor.attachMappingId ?? null;
   const queryClient = useQueryClient();
+  const newHarness = editor.harness ?? DEFAULT_WORKER_FORM.harness;
   const form = useWorkerForm(() =>
     editing
       ? valuesFromProfile(editing)
       : {
           ...DEFAULT_WORKER_FORM,
-          harness: editor.harness ?? DEFAULT_WORKER_FORM.harness,
+          // A name derived from the harness, never an OpenCode-specific suggestion.
+          name: newHarness ? `New ${brandName(newHarness)} profile` : DEFAULT_WORKER_FORM.name,
+          harness: newHarness,
           target: editor.target ?? DEFAULT_WORKER_FORM.target,
         },
   );

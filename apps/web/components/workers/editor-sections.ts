@@ -52,6 +52,7 @@ export type EditorIssue = { section: SectionId; message: string };
 export function validateWorkerForm(values: WorkerFormValues): EditorIssue[] {
   const issues: EditorIssue[] = [];
   if (!values.name.trim()) issues.push({ section: "runtime", message: "Give the profile a name." });
+  if (!values.harness) issues.push({ section: "runtime", message: "Choose a harness." });
   if (nativeToolsError(values.nativeToolsText)) {
     issues.push({ section: "permissions", message: "Native tool permissions are not valid JSON." });
   }
@@ -91,12 +92,12 @@ export function sectionSummaries(
     runtime: {
       value: values.name.trim()
         ? [
-            brandName(values.harness),
+            values.harness ? brandName(values.harness) : "Harness not set",
             targetLabel(values.target),
             values.tag ? `tag ${values.tag}` : "follows platform",
           ].join(" · ")
         : "Name not set",
-      missing: !values.name.trim(),
+      missing: !values.name.trim() || !values.harness,
     },
     model: {
       value: values.provider
