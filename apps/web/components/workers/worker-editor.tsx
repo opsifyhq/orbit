@@ -98,6 +98,7 @@ export function WorkerEditor({
   const [attempted, setAttempted] = useState(false);
 
   const providers = useProviders();
+  const providerRows = providers.data ?? [];
   const agents = useAllAgents({ status: "current" });
   const skills = useSkills();
   const connections = useConnections();
@@ -230,7 +231,7 @@ export function WorkerEditor({
     onError: (error) => toast.error(errorMessage(error)),
   });
 
-  const issues = validateWorkerForm(values);
+  const issues = validateWorkerForm(values, providerRows);
   const summaries = sectionSummaries(values, Boolean(editing));
 
   async function requestSave() {
@@ -266,7 +267,6 @@ export function WorkerEditor({
       {saveLabel}
     </Button>
   );
-  const providerRows = providers.data ?? [];
   const runningCount = activeProfileLaunches.length;
 
   return (
