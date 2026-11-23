@@ -34,11 +34,9 @@ export type WorkSource = components["schemas"]["WorkSourceDefinition"] & {
 };
 export type TeamRepository = components["schemas"]["RepositorySpec"];
 
-export type AgentTeam = {
-  id: string;
-  orgId: string;
-  name: string;
-  description: string;
+// The API schema types these JSON columns as `unknown`; the UI reads known keys from
+// them, so narrow just those fields while every other field comes from the generated schema.
+export type AgentTeam = Omit<components["schemas"]["AgentTeam"], "definition"> & {
   definition: {
     mode?: "pipeline" | "native";
     instructions?: string;
@@ -56,64 +54,16 @@ export type AgentTeam = {
     timeoutSeconds?: number | null;
     steps?: Array<{ agentId: string; model?: { provider?: string | null; model?: string | null; management?: string | null } | null }>;
   };
-  createdBy?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastPollAt?: string | null;
-  lastPollError?: string | null;
 };
 
-export type TeamRun = {
-  id: string;
-  orgId: string;
-  teamId: string;
-  status: string;
+export type TeamRun = Omit<components["schemas"]["TeamRun"], "input"> & {
   input: Record<string, unknown>;
-  output?: unknown;
-  error?: string | null;
-  requestedBy?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  finishedAt?: string | null;
 };
 
-export type TeamStep = {
-  id: string;
-  runId: string;
-  orgId: string;
-  stepIndex: number;
-  name: string;
-  agentId: string;
-  agentVersionId: string;
-  skills: string[];
-  status: string;
-  executionId?: string | null;
+export type TeamStep = Omit<components["schemas"]["TeamStep"], "input"> & {
   input: Record<string, unknown>;
-  output?: unknown;
-  error?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string | null;
-  finishedAt?: string | null;
 };
 
 export type TeamRunDetail = { run: TeamRun; steps: TeamStep[] };
 
-export type WorkerLaunch = {
-  id: string;
-  orgId: string;
-  profileId: string;
-  name: string;
-  target: string;
-  status: string;
-  runtimeId?: string | null;
-  image: string;
-  workerId?: string | null;
-  workerTokenId?: string | null;
-  error?: string | null;
-  createdBy?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string | null;
-  stoppedAt?: string | null;
-};
+export type WorkerLaunch = components["schemas"]["WorkerLaunch"];

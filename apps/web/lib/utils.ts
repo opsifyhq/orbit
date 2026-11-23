@@ -100,31 +100,6 @@ export function formatTokens(value?: number | null): string {
   return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
-export const EXECUTION_STATUS_TONE: Record<
-  string,
-  "default" | "secondary" | "destructive" | "outline" | "success" | "warning"
-> = {
-  queued: "secondary",
-  dispatched: "warning",
-  running: "warning",
-  awaiting_approval: "warning",
-  succeeded: "success",
-  failed: "destructive",
-  timed_out: "destructive",
-  cancelled: "outline",
-  rejected: "destructive",
-};
-
-export const AGENT_STATUS_TONE: Record<
-  string,
-  "default" | "secondary" | "destructive" | "outline" | "success" | "warning"
-> = {
-  draft: "secondary",
-  active: "success",
-  paused: "warning",
-  archived: "outline",
-};
-
 export function isTerminalStatus(status?: string | null): boolean {
   return ["succeeded", "failed", "timed_out", "cancelled", "rejected"].includes(
     status ?? "",

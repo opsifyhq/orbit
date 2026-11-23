@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [0.28.1] - 2026-11-23
+
+### Fixed
+
+- OpenCode L4 agents now get explicit `allow` for `bash`, `edit`, `write`, `patch`,
+  `multiedit` and `apply_patch` instead of relying on OpenCode's non-interactive default
+  (ask), which aborted before the ORBIT policy hook could approve. Repository
+  `opencode.json` can no longer disable write tools that the platform authorised at L4.
+
 ## [0.28.0] - 2026-11-23
 
 ### Added

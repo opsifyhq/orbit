@@ -6,6 +6,7 @@ import {
   draftFrom,
   draftIssues,
   endpointLabel,
+  isOrbitManagedProvider,
   parseModels,
   probeBody,
   providerState,
@@ -100,4 +101,11 @@ test("providerState: disabled wins, then a failed test", () => {
   assert.equal(providerState({ enabled: true }), "ready");
   assert.equal(providerState({ enabled: true }, { ok: false, at: 1 }), "failing");
   assert.equal(providerState({ enabled: false }, { ok: false, at: 1 }), "disabled");
+});
+
+test("every non-harness provider kind is ORBIT-managed", () => {
+  assert.equal(isOrbitManagedProvider("openai_compatible"), true);
+  assert.equal(isOrbitManagedProvider("anthropic"), true);
+  assert.equal(isOrbitManagedProvider("a_future_kind"), true);
+  assert.equal(isOrbitManagedProvider("harness_managed"), false);
 });

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 REGISTRY ?= 192.168.1.201:5000
-TAG ?= 0.1.0
+TAG ?= $(shell awk '/^appVersion:/ {gsub(/[",]/, "", $$2); print $$2; exit}' deploy/helm/orbit/Chart.yaml)
 NAMESPACE ?= orbit
 KUBE_CONTEXT ?= microk8s
 VALUES ?= deploy/helm/orbit/values.yaml
@@ -92,15 +92,20 @@ api-client:
 	pnpm api:generate
 
 helm-lint:
-	helm lint deploy/helm/orbit -f deploy/helm/orbit/values.yaml
-	helm lint deploy/helm/orbit -f deploy/helm/orbit/values-prod.example.yaml
+	helm lint deploy/helm/orbit -f deploy/helm/orbit/values.yaml \
+	  --set auth.acknowledgeInsecureDev=true
+	helm lint deploy/helm/orbit -f deploy/helm/orbit/values-prod.example.yaml \
+	  --set auth.acknowledgeInsecureDev=true
 	helm template orbit deploy/helm/orbit -n $(NAMESPACE) \
-	  -f deploy/helm/orbit/values.yaml > /tmp/orbit-rendered.yaml
+	  -f deploy/helm/orbit/values.yaml \
+	  --set auth.acknowledgeInsecureDev=true > /tmp/orbit-rendered.yaml
 	helm template orbit deploy/helm/orbit -n $(NAMESPACE) \
-	  -f deploy/helm/orbit/values-prod.example.yaml > /tmp/orbit-rendered-prod.yaml
+	  -f deploy/helm/orbit/values-prod.example.yaml \
+	  --set auth.acknowledgeInsecureDev=true > /tmp/orbit-rendered-prod.yaml
 
 helm-template:
-	helm template orbit deploy/helm/orbit -n $(NAMESPACE) -f $(VALUES)
+	helm template orbit deploy/helm/orbit -n $(NAMESPACE) -f $(VALUES) \
+	  --set auth.acknowledgeInsecureDev=true
 
 images:
 	REGISTRY=$(REGISTRY) TAG=$(TAG) ./scripts/build-images.sh

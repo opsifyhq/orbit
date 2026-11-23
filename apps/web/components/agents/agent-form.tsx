@@ -37,6 +37,7 @@ import {
   emptyAgentDefinition,
 } from "@orbit/contracts";
 import { cn, titleCase } from "@/lib/utils";
+import { isOrbitManagedProvider } from "@/lib/provider-meta";
 import { connectorIssues, formatValidationPath } from "@/lib/connector-validation";
 import { brandName, cronDescription, effectLabel } from "@/lib/presentation";
 import { browserTimeZone } from "@/lib/schedule";
@@ -221,7 +222,7 @@ export function AgentForm({
   }, [failedSubmits]);
 
   const platformProviders = useMemo(
-    () => providers.data?.filter((p) => p.kind === "openai_compatible") ?? [],
+    () => providers.data?.filter((p) => isOrbitManagedProvider(p.kind)) ?? [],
     [providers.data],
   );
   const harnessProviders = useMemo(
@@ -708,8 +709,8 @@ export function AgentForm({
               htmlFor="agent-management"
               hint={
                 spec.model.management === "harness"
-                  ? "The harness owns the provider list and credentials, for example OpenCode Go."
-                  : "ORBIT resolves an OpenAI-compatible endpoint and injects the credential at run time."
+                  ? "The harness owns the provider list and credentials."
+                  : "ORBIT resolves the provider endpoint and injects the credential at run time."
               }
             >
               <Select
@@ -751,7 +752,6 @@ export function AgentForm({
                         const name = String(config.provider ?? p.name);
                         return name === event.target.value || p.name === event.target.value;
                       });
-                      const kind = selected?.kind;
                       const settings = (selected?.config as Record<string, unknown> | undefined)
                         ?.settings as Record<string, unknown> | undefined;
                       const catalog = Array.isArray(settings?.models)
@@ -768,12 +768,11 @@ export function AgentForm({
                           ...spec.model,
                           provider: event.target.value || undefined,
                           model: defaultModel || undefined,
-                          management:
-                            kind === "harness_managed"
-                              ? "harness"
-                              : kind === "openai_compatible"
-                                ? "platform"
-                                : spec.model.management,
+                          management: selected
+                            ? isOrbitManagedProvider(selected.kind)
+                              ? "platform"
+                              : "harness"
+                            : spec.model.management,
                         },
                       });
                     }}
@@ -863,9 +862,9 @@ export function AgentForm({
 
             {spec.model.management === "platform" && platformProviders.length === 0 ? (
               <Callout tone="warning" title="No ORBIT providers yet">
-                Add an OpenAI-compatible provider under Model providers.
+                Add an ORBIT-managed provider under Model providers.
                 {harnessProviders.length > 0
-                  ? " You can also switch to a model managed by the harness, such as OpenCode Go."
+                  ? " You can also switch to a model managed by the harness."
                   : ""}
               </Callout>
             ) : null}

@@ -25,6 +25,7 @@ import {
   useWorkerProfileEnvMappings,
 } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
+import { brandName } from "@/lib/presentation";
 import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { errorMessage } from "@orbit/api-client";
 
@@ -85,12 +86,15 @@ export function WorkerEditor({
   const editing = editor.profile;
   const attachMappingId = editor.attachMappingId ?? null;
   const queryClient = useQueryClient();
+  const newHarness = editor.harness ?? DEFAULT_WORKER_FORM.harness;
   const form = useWorkerForm(() =>
     editing
       ? valuesFromProfile(editing)
       : {
           ...DEFAULT_WORKER_FORM,
-          harness: editor.harness ?? DEFAULT_WORKER_FORM.harness,
+          // A name derived from the harness, never an OpenCode-specific suggestion.
+          name: newHarness ? `New ${brandName(newHarness)} profile` : DEFAULT_WORKER_FORM.name,
+          harness: newHarness,
           target: editor.target ?? DEFAULT_WORKER_FORM.target,
         },
   );
@@ -101,6 +105,7 @@ export function WorkerEditor({
   const [attempted, setAttempted] = useState(false);
 
   const providers = useProviders();
+  const providerRows = providers.data ?? [];
   const agents = useAllAgents({ status: "current" });
   const skills = useSkills();
   const connections = useConnections();
@@ -238,7 +243,7 @@ export function WorkerEditor({
     onError: (error) => toast.error(errorMessage(error)),
   });
 
-  const issues = validateWorkerForm(values);
+  const issues = validateWorkerForm(values, providerRows);
   const summaries = sectionSummaries(values, Boolean(editing));
 
   async function requestSave() {
@@ -273,7 +278,6 @@ export function WorkerEditor({
       {saveLabel}
     </Button>
   );
-  const providerRows = providers.data ?? [];
   const runningCount = activeProfileLaunches.length;
 
   return (

@@ -1,4 +1,5 @@
 import { brandName } from "@/lib/presentation";
+import { harnessMismatch, type WorkerProviderLike } from "@/lib/worker-harness";
 
 import { targetLabel } from "./shared";
 import { nativeToolsError, type WorkerFormValues } from "./worker-form";
@@ -49,12 +50,18 @@ export function isSectionId(value: string): value is SectionId {
 export type EditorIssue = { section: SectionId; message: string };
 
 /** Problems that stop a save. Everything else the API accepts is left to the API. */
-export function validateWorkerForm(values: WorkerFormValues): EditorIssue[] {
+export function validateWorkerForm(
+  values: WorkerFormValues,
+  providers: WorkerProviderLike[],
+): EditorIssue[] {
   const issues: EditorIssue[] = [];
   if (!values.name.trim()) issues.push({ section: "runtime", message: "Give the profile a name." });
+  if (!values.harness) issues.push({ section: "runtime", message: "Choose a harness." });
   if (nativeToolsError(values.nativeToolsText)) {
     issues.push({ section: "permissions", message: "Native tool permissions are not valid JSON." });
   }
+  const mismatch = harnessMismatch(values.harness, values.provider, providers);
+  if (mismatch) issues.push({ section: "model", message: mismatch.message });
   return issues;
 }
 
@@ -91,12 +98,12 @@ export function sectionSummaries(
     runtime: {
       value: values.name.trim()
         ? [
-            brandName(values.harness),
+            values.harness ? brandName(values.harness) : "Harness not set",
             targetLabel(values.target),
             values.tag ? `tag ${values.tag}` : "follows platform",
           ].join(" · ")
         : "Name not set",
-      missing: !values.name.trim(),
+      missing: !values.name.trim() || !values.harness,
     },
     model: {
       value: values.provider
