@@ -12540,8 +12540,9 @@ async fn execution_limit_guard_is_inactive_without_a_limit() {
         .count_all_executions_since_installation(Utc::now() - Duration::hours(24))
         .await
         .unwrap();
+    // Leave slack for executions created concurrently by other tests in the shared DB.
     app.state.license =
-        LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": used + 1 })));
+        LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": used + 1000 })));
     let guard = app.state.execution_limit_guard().await.unwrap();
     assert!(matches!(
         &guard,
