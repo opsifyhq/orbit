@@ -8,6 +8,7 @@ members = [
   "crates/orbit-security",
   "crates/orbit-harness",
   "crates/orbit-kubernetes",
+  "crates/orbit-s3",
   "crates/orbit-api",
   "services/api",
   "services/worker",
@@ -30,6 +31,7 @@ orbit-events = { path = "crates/orbit-events" }
 orbit-security = { path = "crates/orbit-security" }
 orbit-harness = { path = "crates/orbit-harness" }
 orbit-kubernetes = { path = "crates/orbit-kubernetes" }
+orbit-s3 = { path = "crates/orbit-s3" }
 orbit-api = { path = "crates/orbit-api" }
 
 anyhow = "1"
@@ -75,6 +77,9 @@ base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
+hmac = "0.12"
+quick-xml = "0.38"
+url = "2"
 libc = "0.2"
 croner = "4"
 chrono-tz = "0.10"

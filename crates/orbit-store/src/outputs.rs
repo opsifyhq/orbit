@@ -129,6 +129,24 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("output".into()))
     }
 
+    /// Replace the non-secret S3/configuration object for an output.
+    pub async fn set_output_config(
+        &self,
+        org_id: Uuid,
+        id: Uuid,
+        config: &serde_json::Value,
+    ) -> StoreResult<Output> {
+        sqlx::query_as::<_, Output>(
+            "UPDATE outputs SET config = $3, updated_at = now() WHERE org_id = $1 AND id = $2 RETURNING *",
+        )
+        .bind(org_id)
+        .bind(id)
+        .bind(config)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StoreError::NotFound("output".into()))
+    }
+
     pub async fn delete_output(&self, org_id: Uuid, id: Uuid) -> StoreResult<()> {
         let result = sqlx::query("DELETE FROM outputs WHERE org_id = $1 AND id = $2")
             .bind(org_id)

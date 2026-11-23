@@ -10,6 +10,7 @@ mod mcp_broker;
 mod prompt;
 mod retry;
 mod runner;
+mod s3;
 mod skills;
 mod subagents;
 mod x;

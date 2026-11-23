@@ -11,6 +11,7 @@ export const OUTPUT_KINDS: Array<{ kind: OutputKind; label: string; description:
   { kind: "mattermost", label: "Mattermost", description: "Post to a channel through a Mattermost incoming webhook." },
   { kind: "telegram", label: "Telegram", description: "Send a Bot API message to a chat or channel topic." },
   { kind: "webhook", label: "Webhook", description: "POST JSON with the event, the run and its text to any URL." },
+  { kind: "s3", label: "S3 object storage", description: "Upload the rendered run result to Amazon S3 or RustFS." },
 ];
 
 export function kindLabel(kind: OutputKind): string {

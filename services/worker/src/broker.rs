@@ -83,6 +83,7 @@ enum ConnectorClient {
     Gitlab(GitLabClientConfig),
     Kubernetes(KubernetesClientConfig),
     X(XClientConfig),
+    S3(crate::s3::S3Connector),
 }
 
 impl BrokerState {
@@ -398,6 +399,76 @@ fn kubernetes_tool_specs(
         .collect()
 }
 
+fn s3_tool_specs(
+    capabilities: &[String],
+    effects: &std::collections::BTreeMap<String, CapabilityEffect>,
+) -> Vec<ToolSpec> {
+    capabilities
+        .iter()
+        .map(|capability| {
+            let effect = effects
+                .get(capability)
+                .copied()
+                .unwrap_or(CapabilityEffect::Write);
+            let input_schema = match capability.as_str() {
+                "buckets.list" => json!({ "type": "object", "properties": {} }),
+                "objects.list" => json!({
+                    "type": "object",
+                    "properties": {
+                        "bucket": { "type": "string" },
+                        "prefix": { "type": "string" }
+                    }
+                }),
+                "objects.get" | "objects.delete" => json!({
+                    "type": "object",
+                    "properties": {
+                        "bucket": { "type": "string" },
+                        "key": { "type": "string" }
+                    },
+                    "required": ["key"]
+                }),
+                "objects.put" => json!({
+                    "type": "object",
+                    "properties": {
+                        "bucket": { "type": "string" },
+                        "key": { "type": "string" },
+                        "content": { "type": "string" }
+                    },
+                    "required": ["key", "content"]
+                }),
+                "objects.copy" => json!({
+                    "type": "object",
+                    "properties": {
+                        "fromBucket": { "type": "string" },
+                        "fromKey": { "type": "string" },
+                        "toBucket": { "type": "string" },
+                        "toKey": { "type": "string" }
+                    },
+                    "required": ["fromKey", "toKey"]
+                }),
+                _ => json!({ "type": "object" }),
+            };
+            let description = match capability.as_str() {
+                "buckets.list" => "List accessible S3 buckets.",
+                "objects.list" => "List S3 objects under a prefix.",
+                "objects.get" => "Read an S3 object (size capped).",
+                "objects.put" => "Write an S3 object (size capped).",
+                "objects.delete" => "Delete an S3 object.",
+                "objects.copy" => "Copy an S3 object within the configured buckets.",
+                _ => "S3 capability.",
+            };
+            ToolSpec {
+                capability: capability.clone(),
+                name: format!("s3_{}", capability.replace('.', "_")),
+                description: description.to_string(),
+                effect,
+                input_schema,
+                binding: 0,
+            }
+        })
+        .collect()
+}
+
 /// X broker tools. `posts.search` is intentionally excluded: it stays a read-only
 /// pre-execution hydration step in `crate::connectors`, not a model-callable tool.
 fn x_tool_specs(
@@ -664,7 +735,7 @@ async fn start_with_http(
     for binding in spec.connectors.iter().filter(|b| {
         matches!(
             b.connector.as_str(),
-            "github" | "gitlab" | "kubernetes" | "x"
+            "github" | "gitlab" | "kubernetes" | "x" | "s3"
         ) && !b.capabilities.is_empty()
     }) {
         let connector_slug = binding.connector.clone();
@@ -713,6 +784,7 @@ async fn start_with_http(
             "gitlab" => gitlab_tool_specs(&allowed, &effects),
             "kubernetes" => kubernetes_tool_specs(&allowed, &effects),
             "x" => x_tool_specs(&allowed, &effects),
+            "s3" => s3_tool_specs(&allowed, &effects),
             _ => github_tool_specs(&allowed, &effects),
         };
         if binding_tools.is_empty() {
@@ -732,6 +804,10 @@ async fn start_with_http(
                     .map_err(anyhow::Error::msg)?,
             ),
             "x" => ConnectorClient::X(XClientConfig::from_connection(&conn.config, credential)),
+            "s3" => ConnectorClient::S3(
+                crate::s3::S3Connector::from_connection(&conn.config, credential)
+                    .map_err(anyhow::Error::msg)?,
+            ),
             _ => ConnectorClient::Github(GitHubClientConfig::from_connection(
                 &conn.config,
                 credential,
@@ -975,6 +1051,7 @@ async fn call_tool(
             ConnectorClient::X(config) => {
                 x::invoke(&state.http, config, &tool.capability, &call.arguments).await
             }
+            ConnectorClient::S3(config) => config.invoke(&tool.capability, &call.arguments).await,
         }
     };
 

@@ -4867,7 +4867,7 @@ mod output_delivery {
     use super::*;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use axum::routing::post as route_post;
+    use axum::routing::{post as route_post, put as route_put};
     use orbit_api::handlers::outputs::deliver_pending;
     use orbit_security::SecretValue;
     use orbit_store::Output;
@@ -4924,6 +4924,28 @@ mod output_delivery {
         Hook { url, ..hook }
     }
 
+    async fn start_s3_hook() -> Hook {
+        let hook = Hook {
+            url: String::new(),
+            hits: Arc::new(StdMutex::new(Vec::new())),
+            status: Arc::new(AtomicU16::new(200)),
+            delay_ms: Arc::new(AtomicU64::new(0)),
+        };
+        async fn handle(State(hook): State<Hook>, headers: HeaderMap) -> StatusCode {
+            hook.hits.lock().unwrap().push(headers);
+            StatusCode::from_u16(hook.status.load(Ordering::SeqCst)).unwrap()
+        }
+        let router = axum::Router::new()
+            .route("/{*path}", route_put(handle))
+            .with_state(hook.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        Hook { url, ..hook }
+    }
+
     async fn make_output(app: &TestApp, hook: &Hook, kind: &str) -> Output {
         let secret_ref = format!("secret://output/{}", Uuid::now_v7());
         app.store
@@ -4951,6 +4973,79 @@ mod output_delivery {
             )
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn s3_output_uploads_one_signed_object() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let secret_ref = format!("secret://output/s3-{}", Uuid::now_v7());
+        app.store
+            .put_secret(
+                Some(app.org_id),
+                &secret_ref,
+                &SecretValue::new(
+                    json!({
+                        "accessKeyId": "AK",
+                        "secretAccessKey": "SK"
+                    })
+                    .to_string(),
+                ),
+                "test s3",
+            )
+            .await
+            .unwrap();
+        let output = app
+            .store
+            .create_output(
+                app.org_id,
+                &format!("s3-{}", Uuid::now_v7()),
+                "s3",
+                None,
+                None,
+                &["succeeded".to_string()],
+                &secret_ref,
+                None,
+                None,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        app.store
+            .set_output_config(
+                app.org_id,
+                output.id,
+                &json!({
+                    "provider": "rustfs",
+                    "endpoint": hook.url,
+                    "region": "us-east-1",
+                    "pathStyle": true,
+                    "allowedBuckets": ["orbit"],
+                    "defaultBucket": "orbit",
+                    "keyPrefix": "orbit/"
+                }),
+            )
+            .await
+            .unwrap();
+        finished_execution(&app).await;
+        deliver_pending(&app.state).await;
+        let delivery = rows(&app, output.id).await;
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM output_deliveries WHERE output_id = $1")
+                .bind(output.id)
+                .fetch_one(app.store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            hook.count(),
+            1,
+            "S3 PutObject reached the mock server: {delivery:?} {last_error:?}"
+        );
+        assert_eq!(delivery[0].0, "succeeded", "{delivery:?}");
     }
 
     async fn finished_execution(app: &TestApp) -> Uuid {

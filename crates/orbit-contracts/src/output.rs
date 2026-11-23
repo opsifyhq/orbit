@@ -13,10 +13,11 @@ pub enum OutputKind {
     Mattermost,
     Webhook,
     Telegram,
+    S3,
 }
 
 impl OutputKind {
-    pub const ALL: &'static [&'static str] = &["slack", "mattermost", "webhook", "telegram"];
+    pub const ALL: &'static [&'static str] = &["slack", "mattermost", "webhook", "telegram", "s3"];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -24,6 +25,7 @@ impl OutputKind {
             Self::Mattermost => "mattermost",
             Self::Webhook => "webhook",
             Self::Telegram => "telegram",
+            Self::S3 => "s3",
         }
     }
 
@@ -33,6 +35,7 @@ impl OutputKind {
             "mattermost" => Some(Self::Mattermost),
             "webhook" => Some(Self::Webhook),
             "telegram" => Some(Self::Telegram),
+            "s3" => Some(Self::S3),
             _ => None,
         }
     }

@@ -2,7 +2,7 @@
 
 import { request } from "./http";
 
-export type OutputKind = "slack" | "mattermost" | "webhook" | "telegram";
+export type OutputKind = "slack" | "mattermost" | "webhook" | "telegram" | "s3";
 
 export interface OutputView {
   id: string;
@@ -17,6 +17,7 @@ export interface OutputView {
   hasWebhook: boolean;
   chatId?: string | null;
   messageThreadId?: string | null;
+  config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
   /** The newest delivery, without run details (list responses only). */
@@ -52,6 +53,10 @@ export interface OutputInput {
   chatId?: string | null;
   /** Optional numeric Telegram forum topic id. */
   messageThreadId?: string | null;
+  /** S3 credential JSON: accessKeyId/secretAccessKey/sessionToken. Write-only. */
+  s3Credential?: string;
+  /** Non-secret S3 settings. */
+  config?: Record<string, unknown>;
   template?: string | null;
   enabled: boolean;
 }

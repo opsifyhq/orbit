@@ -8333,6 +8333,9 @@
             ],
             "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
           },
+          "config": {
+            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc."
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -8354,6 +8357,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "s3Credential": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`."
           },
           "teamId": {
             "type": [
@@ -8386,6 +8396,7 @@
           "events",
           "enabled",
           "hasWebhook",
+          "config",
           "createdAt",
           "updatedAt"
         ],
@@ -8402,6 +8413,9 @@
               "string",
               "null"
             ]
+          },
+          "config": {
+            "description": "Non-secret configuration for S3 (empty for other kinds)."
           },
           "createdAt": {
             "type": "string",

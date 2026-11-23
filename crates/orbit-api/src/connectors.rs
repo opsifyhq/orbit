@@ -225,6 +225,37 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             builtin: true,
         },
         ConnectorManifest {
+            slug: "s3".into(),
+            name: "S3 / object storage".into(),
+            version: "0.1.0".into(),
+            description: "Read and write objects in Amazon S3 or RustFS through the tool broker.".into(),
+            auth: vec![AuthMethod::ApiToken],
+            webhooks: false,
+            capabilities: vec![
+                capability("buckets.list", "List buckets", "Lists buckets allowed on the connection.", CapabilityEffect::Read),
+                capability("objects.list", "List objects", "Lists objects under a key prefix.", CapabilityEffect::Read),
+                capability("objects.get", "Get object", "Reads an object, capped by maxObjectBytes.", CapabilityEffect::Read),
+                capability("objects.put", "Put object", "Writes or replaces an object, capped by maxObjectBytes.", CapabilityEffect::ExternalSideEffect),
+                capability("objects.delete", "Delete object", "Deletes an object.", CapabilityEffect::ExternalSideEffect),
+                capability("objects.copy", "Copy object", "Copies an object within the configured buckets.", CapabilityEffect::Write),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "provider": { "type": "string", "default": "amazon", "description": "amazon or rustfs" },
+                    "endpoint": { "type": "string", "description": "Base URL; required for RustFS, optional for Amazon S3" },
+                    "region": { "type": "string", "default": "us-east-1" },
+                    "allowedBuckets": { "type": "array", "items": { "type": "string" }, "description": "Bucket allowlist. Empty denies every operation." },
+                    "defaultBucket": { "type": "string", "description": "Bucket used when a tool omits it" },
+                    "keyPrefix": { "type": "string", "description": "Enforced prefix for every object key; end with /" },
+                    "pathStyle": { "type": "boolean", "default": false, "description": "Force path-style addressing (normally on for RustFS)" },
+                    "maxObjectBytes": { "type": "integer", "default": 10485760, "description": "Read/write size cap" }
+                }
+            }),
+            docs_url: Some("https://docs.aws.amazon.com/AmazonS3/latest/API/".into()),
+            builtin: true,
+        },
+        ConnectorManifest {
             slug: "x".into(),
             name: "X".into(),
             version: "0.2.0".into(),

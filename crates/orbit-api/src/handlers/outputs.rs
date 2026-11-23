@@ -43,6 +43,12 @@ pub struct OutputRequest {
     /// Telegram bot token. Write-only; never returned, logged or published in events.
     #[serde(default)]
     pub bot_token: Option<String>,
+    /// S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`.
+    #[serde(default)]
+    pub s3_credential: Option<String>,
+    /// Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc.
+    #[serde(default)]
+    pub config: serde_json::Value,
     /// Numeric Telegram user/group/channel id (for example `-100…`).
     #[serde(default)]
     pub chat_id: Option<String>,
@@ -75,6 +81,8 @@ pub struct OutputView {
     pub has_webhook: bool,
     pub chat_id: Option<String>,
     pub message_thread_id: Option<String>,
+    /// Non-secret configuration for S3 (empty for other kinds).
+    pub config: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     /// The newest delivery, without run details. Only in list responses, and only once the
@@ -162,6 +170,7 @@ impl From<Output> for OutputView {
             has_webhook: !output.secret_ref.is_empty(),
             chat_id: output.telegram_chat_id,
             message_thread_id: output.telegram_message_thread_id,
+            config: output.config,
             created_at: output.created_at,
             updated_at: output.updated_at,
             last_delivery: None,
@@ -172,6 +181,7 @@ impl From<Output> for OutputView {
 fn credential_field(kind: OutputKind) -> &'static str {
     match kind {
         OutputKind::Telegram => "botToken",
+        OutputKind::S3 => "s3Credential",
         _ => "webhookUrl",
     }
 }
@@ -179,6 +189,7 @@ fn credential_field(kind: OutputKind) -> &'static str {
 fn credential(body: &OutputRequest, kind: OutputKind) -> Option<&str> {
     match kind {
         OutputKind::Telegram => body.bot_token.as_deref(),
+        OutputKind::S3 => body.s3_credential.as_deref(),
         _ => body.webhook_url.as_deref(),
     }
     .map(str::trim)
@@ -206,6 +217,12 @@ async fn guard_credential(kind: OutputKind, value: &str) -> Result<(), ApiError>
                     "botToken must be a Telegram bot token (numeric id:secret)",
                 )]));
             }
+            Ok(())
+        }
+        OutputKind::S3 => {
+            orbit_s3::S3Credentials::from_secret(value).map_err(|message| {
+                ApiError::validation(vec![ValidationIssue::new("s3Credential", message)])
+            })?;
             Ok(())
         }
         _ => guard_webhook_url(value).await,
@@ -248,7 +265,7 @@ fn validated(
     let Some(kind) = OutputKind::parse(&body.kind) else {
         issues.push(ValidationIssue::new(
             "kind",
-            "kind must be slack, mattermost, webhook or telegram",
+            "kind must be slack, mattermost, webhook, telegram or s3",
         ));
         return Err(ApiError::validation(issues));
     };
@@ -469,6 +486,11 @@ pub async fn create(
         )])
     })?;
     guard_credential(kind, value).await?;
+    if kind == OutputKind::S3 {
+        orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("config", message)])
+        })?;
+    }
     let secret_ref = store_credential(&state, auth.org_id, &name, value).await?;
     let output = match state
         .store
@@ -496,6 +518,15 @@ pub async fn create(
             return Err(error.into());
         }
     };
+    let config = if body.config.is_object() {
+        body.config.clone()
+    } else {
+        serde_json::json!({})
+    };
+    let output = state
+        .store
+        .set_output_config(auth.org_id, output.id, &config)
+        .await?;
     audit::record(
         &state,
         &auth,
@@ -522,6 +553,11 @@ pub async fn update(
     require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
     let secret_ref = if let Some(value) = credential(&body, kind) {
         guard_credential(kind, value).await?;
+        if kind == OutputKind::S3 {
+            orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+                ApiError::validation(vec![ValidationIssue::new("config", message)])
+            })?;
+        }
         Some(store_credential(&state, auth.org_id, &name, value).await?)
     } else if existing.kind != kind.as_str() {
         // Switching kinds must not reuse a stored webhook URL as a bot token (or vice versa).
@@ -563,6 +599,15 @@ pub async fn update(
             return Err(error.into());
         }
     };
+    let config = if body.config.is_object() {
+        body.config.clone()
+    } else {
+        serde_json::json!({})
+    };
+    let output = state
+        .store
+        .set_output_config(auth.org_id, output.id, &config)
+        .await?;
     audit::record(
         &state,
         &auth,
@@ -681,6 +726,35 @@ pub async fn send(
             })
         }
     };
+    if kind == OutputKind::S3 {
+        let (config, credentials) =
+            orbit_s3::S3Config::from_connection(&output.config, Some(&secret)).map_err(
+                |message| SendError {
+                    status: None,
+                    message,
+                    retryable: false,
+                },
+            )?;
+        let client = orbit_s3::S3Client::new(config, credentials).map_err(|message| SendError {
+            status: None,
+            message,
+            retryable: false,
+        })?;
+        let key = format!(
+            "{}{}.txt",
+            client.config().key_prefix,
+            delivery_id.unwrap_or_else(Uuid::now_v7)
+        );
+        client
+            .put_object(None, &key, text.as_bytes(), "text/plain; charset=utf-8")
+            .await
+            .map_err(|message| SendError {
+                status: None,
+                message,
+                retryable: true,
+            })?;
+        return Ok(());
+    }
     if kind == OutputKind::Telegram {
         let target = TelegramTarget::parse(
             output.telegram_chat_id.as_deref().unwrap_or(""),
