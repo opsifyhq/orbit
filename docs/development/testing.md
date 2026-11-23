@@ -74,9 +74,8 @@ It fails with a sorted list of problems when:
 
 The Rust tests in `crates/orbit-api/src/docs.rs` cover links and navigation inside the
 embedded handbook; this check also covers root Markdown, the changelog and planning drafts,
-and runs without the Rust toolchain. It is not a CI gate yet: add `pnpm docs:check` to the
-Web job in `.github/workflows/ci.yml`, next to the API client check, to make future drift
-fail pull requests.
+and runs without the Rust toolchain. The Web job in CI runs it, so documentation drift
+fails pull requests.
 
 ## OpenAPI drift gates
 
@@ -103,15 +102,16 @@ tags:
 
 | Job | Checks |
 |---|---|
-| Rust | `./scripts/check-versions.sh`, the tag matches the chart `appVersion` (tags only), `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo audit`, `cargo test --workspace` with PostgreSQL |
-| Web | `pnpm --filter @orbit/web typecheck`, `pnpm --filter @orbit/web test`, the API client check, `pnpm --filter @orbit/web build`, `pnpm audit --audit-level=high` |
+| Rust | `./scripts/check-versions.sh`, the tag matches the chart `appVersion` (tags only), `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo audit`, `cargo test --workspace` with PostgreSQL, and the NATS integration tests against a JetStream server |
+| Web | `pnpm -r typecheck` (web app, API client and contracts), `pnpm docs:check`, `pnpm --filter @orbit/web test`, the API client check, `pnpm --filter @orbit/web build`, `pnpm audit --audit-level=high` |
 | Secret scan | TruffleHog, failing on verified secrets only |
 | Helm | `helm lint`, and `helm template` for the default values, `values-prod.example.yaml` and a variant with the network policy and a fixed worker |
-| Migrations | Pull requests only: a migration that exists on the base branch may not be edited, renamed or deleted |
-| Image build check | Pull requests only: the api, worker, web and launcher Dockerfiles build (nothing is pushed) |
+| Migrations | Pull requests and pushes to `main`: a migration that already exists may not be edited, renamed or deleted |
+| Image build check | Pull requests only: the api, worker, web and launcher Dockerfiles build, and the OpenCode and Pi worker images build on that worker image through a local registry (nothing is published) |
 
 Container images, the Helm chart and the worker binary are published only from `v*`
-tags; see [releasing.md](releasing.md). Images are not scanned for vulnerabilities in CI.
+tags, and the chart and the GitHub release only after all six images were pushed; see
+[releasing.md](releasing.md). Images are not scanned for vulnerabilities in CI.
 
 ## What to run for a change
 

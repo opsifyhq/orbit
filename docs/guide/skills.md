@@ -47,3 +47,9 @@ kept separate from instructions.
 
 `GET/POST /api/v1/skills`, `GET/PATCH/DELETE /api/v1/skills/{id}`,
 `POST /api/v1/skills/bulk/delete`. Creating and changing skills needs `agents:write`.
+
+A skill that an agent, an agent team or a worker profile still uses cannot be deleted
+(409, naming up to five users): agents refer to skills by slug, so a freed slug could be
+registered again by someone else. Remove the skill from those first. When a run starts,
+the user who requested it (for a background run, the agent's owner) must be able to use
+every skill the agent or the run names.

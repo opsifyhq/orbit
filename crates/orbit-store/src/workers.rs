@@ -78,6 +78,10 @@ impl Store {
     ///
     /// This is deliberately conservative: orphaned work is failed, not re-run, to avoid
     /// duplicate side effects. Retries become a separate, idempotency-aware feature.
+    ///
+    /// A `dispatched` run whose worker has never written a heartbeat is skipped: the
+    /// launcher claims the run for the new worker id before the container or Job starts.
+    /// [`Self::reap_unstarted_executions`] ends it if that worker never appears.
     pub async fn reap_orphaned_executions(
         &self,
         stale_after_seconds: i64,
@@ -115,14 +119,23 @@ impl Store {
                 updated_at = now()
             WHERE e.status IN ('dispatched', 'running', 'awaiting_approval')
               AND e.worker_id IS NOT NULL
-              -- Grace period: do not reap work that was just claimed while a worker is
-              -- still starting up and has not written its first heartbeat yet.
+              -- Grace period: do not reap work that was just claimed.
               AND COALESCE(e.started_at, e.created_at) < now() - interval '15 seconds'
               AND ($2::uuid IS NULL OR e.org_id = $2)
               AND NOT EXISTS (
                   SELECT 1 FROM worker_heartbeats h
                   WHERE h.worker_id = e.worker_id
                     AND h.last_heartbeat_at > now() - make_interval(secs => $1)
+              )
+              -- A launch claims its execution for the new worker id before the
+              -- container or Job exists, so a `dispatched` run whose worker has never
+              -- reported is still starting (image pull, scheduling), not lost. Those
+              -- are ended by `reap_unstarted_executions` if the worker never appears.
+              AND (
+                  e.status <> 'dispatched'
+                  OR EXISTS (
+                      SELECT 1 FROM worker_heartbeats h WHERE h.worker_id = e.worker_id
+                  )
               )
             RETURNING e.*
             "#,
@@ -146,6 +159,9 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::WorkerLost);
+        }
         Ok(rows)
     }
 
@@ -164,7 +180,7 @@ impl Store {
         silent_after_seconds: i64,
         cancel_after_seconds: i64,
     ) -> StoreResult<Vec<ExecutionRecord>> {
-        Ok(sqlx::query_as::<_, ExecutionRecord>(
+        let rows = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions e
             SET status = CASE WHEN e.cancel_requested THEN 'cancelled' ELSE 'failed' END,
@@ -198,7 +214,11 @@ impl Store {
         .bind(cancel_after_seconds as f64)
         .bind(org_id)
         .fetch_all(&self.pool)
-        .await?)
+        .await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::NeverStarted);
+        }
+        Ok(rows)
     }
 
     /// End runs stuck `running` past their deadline, regardless of worker heartbeat.
@@ -259,6 +279,9 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        for row in &rows {
+            self.observe_finished(row, crate::observe::FinishCause::TimedOut);
+        }
         Ok(rows)
     }
 

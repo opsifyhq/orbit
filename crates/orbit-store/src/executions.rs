@@ -82,7 +82,10 @@ impl Store {
         .await?;
 
         match inserted {
-            Some(record) => Ok(record),
+            Some(record) => {
+                self.observe_created(&record);
+                Ok(record)
+            }
             None => {
                 let key = new.idempotency_key.ok_or_else(|| {
                     StoreError::Internal("insert conflict without idempotency key".into())
@@ -256,7 +259,7 @@ impl Store {
         execution_id: Uuid,
         session_ref: Option<&str>,
     ) -> StoreResult<Option<ExecutionRecord>> {
-        Ok(sqlx::query_as::<_, ExecutionRecord>(
+        let updated = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions
             SET status = 'running',
@@ -271,7 +274,15 @@ impl Store {
         .bind(execution_id)
         .bind(session_ref)
         .fetch_optional(&self.pool)
-        .await?)
+        .await?;
+        // `now()` is the statement's transaction time, so the two timestamps are equal
+        // only on the first start; a resume after an approval keeps the older one.
+        if let Some(record) = &updated {
+            if record.running_started_at == Some(record.updated_at) {
+                self.observe_started(record);
+            }
+        }
+        Ok(updated)
     }
 
     /// Move an execution to a terminal state. Terminal states are never overwritten,
@@ -297,7 +308,7 @@ impl Store {
             .iter()
             .map(|s| s.as_str().to_string())
             .collect();
-        Ok(sqlx::query_as::<_, ExecutionRecord>(
+        let finished = sqlx::query_as::<_, ExecutionRecord>(
             r#"
             UPDATE executions
             SET status = $2,
@@ -320,7 +331,11 @@ impl Store {
         .bind(session_ref)
         .bind(&from)
         .fetch_optional(&self.pool)
-        .await?)
+        .await?;
+        if let Some(record) = &finished {
+            self.observe_finished(record, crate::observe::FinishCause::Reported);
+        }
+        Ok(finished)
     }
 
     /// Request cancellation. Queued executions are cancelled immediately; running ones
@@ -344,6 +359,7 @@ impl Store {
         .await?;
 
         if let Some(record) = cancelled {
+            self.observe_finished(&record, crate::observe::FinishCause::CancelledWhileQueued);
             return Ok(record);
         }
 

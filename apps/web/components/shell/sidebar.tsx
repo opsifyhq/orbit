@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Play, Search } from "lucide-react";
 
-import { BrandMark, Wordmark } from "@/components/shell/brand";
+import { BrandLockup } from "@/components/shell/brand";
 import { useCommandPalette } from "@/components/shell/command-palette";
 import { NAV_GROUPS, isActivePath,
   isWorkPath, type NavItem } from "@/components/shell/nav";
@@ -121,9 +121,8 @@ export function Sidebar({ pathname, signals }: { pathname: string; signals: NavS
       className="fixed inset-y-0 left-0 z-40 hidden w-[15.5rem] flex-col border-r border-ink-border bg-ink text-ink-foreground lg:flex"
     >
       <div className="flex h-14 shrink-0 items-center px-4">
-        <Link href="/" className="flex items-center gap-2.5 rounded-md" aria-label="ORBIT overview">
-          <BrandMark />
-          <Wordmark />
+        <Link href="/" className="rounded-md" aria-label="ORBIT overview">
+          <BrandLockup />
         </Link>
       </div>
 

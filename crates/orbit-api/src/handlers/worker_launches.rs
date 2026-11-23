@@ -195,7 +195,9 @@ async fn fail_worker_executions(state: &AppState, launch: &WorkerLaunch) {
             .append_execution_event(
                 launch.org_id,
                 execution.id,
-                "worker_oom",
+                // `worker_oom` is the error code in `data`; the event kind must be one the
+                // `execution_events` CHECK constraint accepts (#306).
+                orbit_domain::ExecutionEventKind::Error.as_str(),
                 orbit_domain::LogLevel::Error,
                 &message,
                 &serde_json::json!({
@@ -322,10 +324,10 @@ pub async fn list_launches(
         .into_iter()
         .filter(|launch| launch_visible(&access, &profiles, launch))
         .collect();
-    let mut refreshed = Vec::with_capacity(launches.len());
-    for launch in launches {
-        refreshed.push(refresh(&state, launch).await);
-    }
+    // Each refresh is a launcher call with its own timeout; run them together so a slow or
+    // unreachable launcher costs one timeout, not one per launch (#306).
+    let refreshed =
+        futures::future::join_all(launches.into_iter().map(|launch| refresh(&state, launch))).await;
     Ok(Json(refreshed))
 }
 
@@ -484,14 +486,18 @@ pub(crate) async fn launch_profile_internal(
         single_execution_id,
         timeout_seconds,
     };
-    let result: LauncherStatus = match call_launcher(
+    let launch_started = std::time::Instant::now();
+    let launched = call_launcher(
         state,
         reqwest::Method::POST,
         "/launches",
         Some(serde_json::to_value(&request).unwrap_or_default()),
     )
-    .await
-    {
+    .await;
+    state
+        .metrics
+        .worker_launch_request(launched.is_ok(), launch_started.elapsed());
+    let result: LauncherStatus = match launched {
         Ok(result) => result,
         Err(error) => {
             let _ = state

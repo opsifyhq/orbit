@@ -24,3 +24,33 @@ spec:
         - protocol: TCP
           port: 8090
 {{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.monitoring.port }}
+---
+# The API port stays open to every peer (web proxy, workers, ingress controller); the
+# dedicated metrics port is limited to `monitoring.allowFrom`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orbit.apiHost" . }}
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orbit.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.api.port }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.monitoring.port }}
+      {{- with .Values.monitoring.allowFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

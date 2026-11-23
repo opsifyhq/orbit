@@ -8,22 +8,18 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
-### Security
+<
+### Added
 
-- Connector tools stay inside the connection's allowlists (#323). GitHub `checks.list`
-  rejects refs with `..`, `?`, `#`, `%` or a leading or trailing `/`, and list `state` must
-  be `open`, `closed` or `all`. GitLab group tools accept only `groupId` and the new
-  `allowedGroups`, and `projects.list` is filtered by `allowedProjects`. Kubernetes pod and
-  deployment results redact container `env[].value` and the last-applied-configuration
-  annotation.
+- The web app shows the running ORBIT version under the logo, in the sidebar, in the phone
+  header and on the signed-out screens. It is the API's version (`GET /api/v1/meta`).
 
 ### Changed
 
-- **Breaking:** an empty Kubernetes `namespaces` allowlist now allows only
-  `defaultNamespace`, and an empty `allowedResources` list denies every tool, as the
-  connector manifest described (#323). Add the namespaces and resources agents need to
-  existing Kubernetes connections. The connection Test still lists every namespace the
-  credential can see.
+- New architecture image in the README and `docs/architecture/diagram.md`, redrawn from
+  the current code: workers pull runs through the worker API instead of reading NATS, the
+  tool broker sits inside the worker, the launcher, outputs, issue queues and Anthropic
+  providers are shown, and a numbered strip follows one run. It adapts to light and dark.
 
 ## [0.27.0] - 2026-11-21
 

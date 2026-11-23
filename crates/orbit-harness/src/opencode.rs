@@ -52,8 +52,6 @@ pub struct OpenCodeSettings {
     /// Run a private OpenCode server for the execution (default true) instead of
     /// attaching to a shared background service.
     pub standalone: Option<bool>,
-    /// OpenCode server URL, when using a long-running `opencode serve` instance.
-    pub server_url: Option<String>,
     /// Execution-scoped MCP bridge injected by the worker's tool broker.
     pub orbit_mcp: Option<OrbitMcpBridge>,
     /// Stream OpenCode stderr diagnostics into execution events (default false).
@@ -208,15 +206,12 @@ impl OpenCodeHarnessAdapter {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "binary": { "type": "string", "description": "opencode binary (default: opencode)" },
                     "workspaceSubdir": { "type": "string", "description": "Working directory relative to the execution workspace (no absolute paths or '..')" },
                     "provider": { "type": "string", "description": "harness-managed provider, e.g. opencode-go" },
                     "model": { "type": "string", "description": "model id; provider/model derived when needed" },
                     "agent": { "type": "string" },
-                    "extraArgs": { "type": "array", "items": { "type": "string" }, "maxItems": 32 },
                     "autoApprove": { "type": "boolean", "default": true },
-                    "standalone": { "type": "boolean", "default": true },
-                    "serverUrl": { "type": "string", "description": "opencode serve URL (long-running mode)" }
+                    "standalone": { "type": "boolean", "default": true }
                 }
             }),
             docs_url: Some("https://opencode.ai/docs".into()),
@@ -415,12 +410,6 @@ fn write_open_code_policy_plugin(workspace: &Path) -> std::io::Result<()> {
         r#"import { Plugin } from "@opencode/plugin"
 import { createHash } from "node:crypto"
 
-const POLICY_TOOLS = new Set([
-  "read", "grep", "glob", "list",
-  "bash", "shell", "edit", "write", "patch",
-  "webfetch", "websearch", "subagent", "task", "question",
-])
-
 // Stable hash of the call: tool name + canonical JSON (sorted keys). Must match the
 // broker's `arguments_hash`; approvals are bound to it.
 function canon(value: any): string {
@@ -463,8 +452,11 @@ export default Plugin.define({
   async setup(ctx) {
     const tools = await ctx.tool.list()
     await ctx.tool.transform((editor) => {
+      // Every tool is checked, including ones this file does not know by name (for
+      // example multiedit, apply_patch or tools from other MCP servers): the broker
+      // classifies unknown tools as writes, so new tools fail closed (#303). ORBIT's own
+      // MCP tools are recognised by the broker and allowed here; it checks them itself.
       for (const tool of tools) {
-        if (!POLICY_TOOLS.has(tool.id)) continue
         editor.update(tool.id, (draft: any) => {
           const original = draft.execute
           draft.execute = async (input: any, context: any) => {
@@ -1044,11 +1036,6 @@ impl HarnessAdapter for OpenCodeHarnessAdapter {
                         );
                     }
                 }
-                if let Some(url) = &settings.server_url {
-                    if !(url.starts_with("http://") || url.starts_with("https://")) {
-                        report.push("serverUrl", "must be an http(s) URL");
-                    }
-                }
                 if let Some(sub) = &settings.workspace_subdir {
                     if let Err(message) = crate::paths::validate_relative_subpath(sub) {
                         report.push("workspaceSubdir", message);
@@ -1255,11 +1242,25 @@ mod tests {
         assert_eq!(final_answer(""), "");
     }
 
+    /// #303: the plugin must check every tool, not an allowlist of known names.
     #[test]
-    fn validation_rejects_bad_url() {
+    fn policy_plugin_checks_every_tool() {
+        let workspace = tempfile::tempdir().unwrap();
+        write_open_code_policy_plugin(workspace.path()).unwrap();
+        let source =
+            std::fs::read_to_string(workspace.path().join(".opencode/plugins/orbit-policy.ts"))
+                .unwrap();
+        assert!(!source.contains("POLICY_TOOLS"), "allowlist is back");
+        assert!(!source.contains("continue"), "a tool is skipped");
+        assert!(source.contains("for (const tool of tools)"));
+        assert!(source.contains("checkPolicy(tool.id, input)"));
+    }
+
+    #[test]
+    fn validation_rejects_oversized_extra_arguments() {
         let config = HarnessConfig {
             kind: HarnessKind::OpenCode,
-            settings: serde_json::json!({ "serverUrl": "not-a-url" }),
+            settings: serde_json::json!({ "extraArgs": ["x".repeat(300)] }),
         };
         let report = futures::executor::block_on(OpenCodeHarnessAdapter.validate_config(&config));
         assert!(!report.is_valid());

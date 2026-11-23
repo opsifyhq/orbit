@@ -104,6 +104,17 @@ jobs:
           ORBIT_TEST_DATABASE_URL: postgres://orbit:orbit@localhost:5432/orbit
         run: cargo test --workspace
 
+      # Production uses the NATS event bus, so its integration tests run against a real
+      # JetStream server. They are #[ignore]d for local runs without one. A service
+      # container cannot pass `-js`, hence docker run.
+      - name: cargo test (NATS JetStream integration)
+        env:
+          ORBIT_TEST_NATS_URL: nats://127.0.0.1:4222
+        run: |
+          docker run -d --rm --name nats -p 127.0.0.1:4222:4222 nats:2.11-alpine -js
+          for _ in $(seq 1 20); do nc -z 127.0.0.1 4222 && break; sleep 1; done
+          cargo test -p orbit-events --test nats_integration -- --ignored --test-threads=1
+
   # ---------------------------------------------------------------- frontend
   web:
     name: Web (typecheck + build)
@@ -129,8 +140,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # All workspace packages, not only the web app (api-client, contracts).
       - name: Typecheck
-        run: pnpm --filter @orbit/web typecheck
+        run: pnpm -r typecheck
+
+      - name: Documentation links and paths
+        run: pnpm docs:check
 
       - name: Unit tests
         run: pnpm --filter @orbit/web test
@@ -194,22 +209,40 @@ jobs:
             --set auth.acknowledgeInsecureDev=true \
             --set networkPolicy.enabled=true \
             --set worker.enabled=true --set worker.token=render-check-only > /dev/null
+          helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
+            --set auth.acknowledgeInsecureDev=true \
+            --set networkPolicy.enabled=true \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set monitoring.port=9090 \
+            --set monitoring.token.existingSecret=render-check-only > /dev/null
 
   # ---------------------------------------------------------------- migrations
   # AGENTS.md rule 7: migrations are append-only. A migration that already exists on the
-  # base branch may have been applied somewhere, so a PR may add files but never edit,
-  # rename or delete one.
+  # base branch may have been applied somewhere, so a change may add files but never
+  # edit, rename or delete one. Checked on PRs and on every push to main (direct pushes
+  # and merges of PRs whose base moved), against the previous state of the branch.
   migrations:
     name: Migrations are append-only
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: No existing migration was changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
-          base="origin/${{ github.base_ref }}"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            base="origin/${BASE_REF}"
+          elif [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            base="${BEFORE}"
+          else
+            echo "No previous commit to compare with."
+            exit 0
+          fi
           changed="$(git diff --name-status --no-renames "${base}...HEAD" -- crates/orbit-store/migrations | grep -v '^A' || true)"
           if [ -n "${changed}" ]; then
             echo "::error::Existing migrations were modified or removed. Add a new migration instead."
@@ -220,7 +253,7 @@ jobs:
   # ---------------------------------------------------------------- image build check
   # PR-time proof that the Dockerfiles still build. Nothing is pushed or logged in, so it
   # also works for PRs from forks. Mirrors the `images` matrix (keep them in sync); the
-  # harness worker images extend the pushed worker image and are only built on release.
+  # harness worker images are checked in `harness-images-check`.
   images-check:
     name: Build check (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -255,6 +288,64 @@ jobs:
           # Per-image cache scope so the four builds do not evict each other.
           cache-from: type=gha,scope=check-${{ matrix.name }}
           cache-to: type=gha,mode=min,scope=check-${{ matrix.name }}
+
+  # Harness worker images extend the worker image. On PRs the worker image is pushed to a
+  # throwaway local registry so the OpenCode and Pi Dockerfiles (pinned CLI downloads and
+  # checksums) are built before a release depends on them.
+  harness-images-check:
+    name: Build check (harness images)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          # Lets the builder reach the local registry on localhost:5000.
+          driver-opts: network=host
+
+      - name: Build base worker image (local registry)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: deploy/docker/worker.Dockerfile
+          push: true
+          tags: localhost:5000/orbit-worker:check
+          platforms: linux/amd64
+          # Reuses the cache of the worker build check above.
+          cache-from: type=gha,scope=check-worker
+
+      - name: Build OpenCode worker image (no push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: deploy/docker/worker-opencode.Dockerfile
+          push: false
+          platforms: linux/amd64
+          build-args: |
+            WORKER_BASE=localhost:5000/orbit-worker:check
+          cache-from: type=gha,scope=check-worker-opencode
+          cache-to: type=gha,mode=min,scope=check-worker-opencode
+
+      - name: Build Pi worker image (no push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: deploy/docker/worker-pi.Dockerfile
+          push: false
+          platforms: linux/amd64
+          build-args: |
+            WORKER_BASE=localhost:5000/orbit-worker:check
+          cache-from: type=gha,scope=check-worker-pi
+          cache-to: type=gha,mode=min,scope=check-worker-pi
 
   # ---------------------------------------------------------------- images
   images:
@@ -425,8 +516,9 @@ jobs:
   release:
     name: Release binaries
     runs-on: ubuntu-latest
-    # Like the images and the chart: nothing is published from a tree that fails its tests.
-    needs: [rust, web]
+    # Nothing is published from a tree that fails its tests, and the release is only
+    # created once every image it refers to was built and pushed.
+    needs: [rust, web, images, worker-image, harness-images]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -462,7 +554,8 @@ jobs:
     name: Package Helm chart
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [rust, web]
+    # The chart's appVersion names these images: publish it only after all six exist.
+    needs: [rust, web, images, worker-image, harness-images]
     permissions:
       contents: write
     steps:

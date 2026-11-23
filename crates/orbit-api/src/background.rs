@@ -25,7 +25,9 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         let mut previous = license_phase(&license_state.license_status());
         loop {
             ticker.tick().await;
+            let tick = Tick::start(&license_state, "license");
             license_state.license.reload();
+            tick.done(true);
             let current = license_phase(&license_state.license_status());
             if current != previous {
                 audit_license_transition(&license_state, previous, current).await;
@@ -39,7 +41,9 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            let tick = Tick::start(&output_state, "outputs");
             crate::handlers::outputs::deliver_pending(&output_state).await;
+            tick.done(true);
         }
     }));
 
@@ -51,7 +55,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
-                if let Err(error) = scheduler_tick(&scheduler_state).await {
+                let tick = Tick::start(&scheduler_state, "scheduler");
+                let result = scheduler_tick(&scheduler_state).await;
+                tick.done(result.is_ok());
+                if let Err(error) = result {
                     tracing::error!(%error, "scheduler tick failed");
                 }
             }
@@ -63,8 +70,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            reap(&reaper_state).await;
+            let tick = Tick::start(&reaper_state, "reaper");
+            let reaped = reap(&reaper_state).await;
             revoke_finished_launch_tokens(&reaper_state).await;
+            tick.done(reaped);
         }
     }));
 
@@ -73,6 +82,8 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            let tick = Tick::start(&team_state, "team_runs");
+            let mut ok = true;
             // Page through every running run (keyset on id) so a backlog of long-lived
             // runs cannot starve newer ones.
             let mut after = None;
@@ -82,22 +93,27 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
                     Ok(runs) => {
                         after = runs.last().map(|run| run.id);
                         for run in runs {
-                            if let Err(error) =
-                                crate::handlers::teams::advance(&team_state, run).await
-                            {
-                                tracing::warn!(%error, "team run advance failed");
+                            match crate::handlers::teams::advance(&team_state, run).await {
+                                Ok(_) => team_state.metrics.team_run_advanced(),
+                                Err(error) => {
+                                    ok = false;
+                                    tracing::warn!(%error, "team run advance failed");
+                                }
                             }
                         }
                     }
                     Err(error) => {
+                        ok = false;
                         tracing::warn!(%error, "team run polling failed");
                         break;
                     }
                 }
             }
             if let Err(error) = crate::handlers::teams::reconcile_team_outcomes(&team_state).await {
+                ok = false;
                 tracing::warn!(%error, "team outcome reconciliation failed");
             }
+            tick.done(ok);
         }
     }));
 
@@ -109,7 +125,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
-                if let Err(error) = crate::dispatcher::dispatch_tick(&dispatcher_state).await {
+                let tick = Tick::start(&dispatcher_state, "dispatcher");
+                let result = crate::dispatcher::dispatch_tick(&dispatcher_state).await;
+                tick.done(result.is_ok());
+                if let Err(error) = result {
                     tracing::error!(%error, "work source dispatcher tick failed");
                 }
             }
@@ -121,7 +140,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            if let Err(error) = reconcile_worker_tags(&tag_state).await {
+            let tick = Tick::start(&tag_state, "worker_tags");
+            let result = reconcile_worker_tags(&tag_state).await;
+            tick.done(result.is_ok());
+            if let Err(error) = result {
                 tracing::warn!(%error, "worker tag reconciliation failed");
             }
         }
@@ -132,7 +154,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            if let Err(error) = runtime_tick(&runtime_state).await {
+            let tick = Tick::start(&runtime_state, "runtime");
+            let result = runtime_tick(&runtime_state).await;
+            tick.done(result.is_ok());
+            if let Err(error) = result {
                 tracing::warn!(%error, "agent runtime tick failed");
             }
         }
@@ -160,7 +185,10 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
-                match pruner_state.store.prune_expired_memory().await {
+                let tick = Tick::start(&pruner_state, "memory_pruner");
+                let result = pruner_state.store.prune_expired_memory().await;
+                tick.done(result.is_ok());
+                match result {
                     Ok(n) if n > 0 => tracing::info!(count = n, "pruned expired memory entries"),
                     Ok(_) => {}
                     Err(error) => tracing::warn!(%error, "memory pruning failed"),
@@ -172,9 +200,32 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
     handles
 }
 
+/// Times one pass of a background loop for `orbit_background_tick_duration_seconds`.
+/// A pass that is dropped (shutdown, panic) is not recorded.
+struct Tick {
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
+    name: &'static str,
+    started: std::time::Instant,
+}
+
+impl Tick {
+    fn start(state: &AppState, name: &'static str) -> Self {
+        Self {
+            metrics: state.metrics.clone(),
+            name,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn done(self, ok: bool) {
+        self.metrics
+            .background_tick(self.name, self.started.elapsed(), ok);
+    }
+}
+
 /// Lifecycle phase derived from the verified status. `expired` is distinct from an
 /// unusable license (`invalid`) and from no license at all (`community`).
-fn license_phase(status: &orbit_security::LicenseStatus) -> &'static str {
+pub(crate) fn license_phase(status: &orbit_security::LicenseStatus) -> &'static str {
     if !status.valid {
         return match status.error.as_deref() {
             Some(error) if error.contains("expired") => "expired",
@@ -306,6 +357,7 @@ pub async fn fire_trigger(state: &AppState, trigger: Trigger) -> anyhow::Result<
     let result = fire_trigger_inner(state, trigger.clone()).await;
     match &result {
         Ok(()) => {
+            state.metrics.trigger_fired();
             let _ = state.store.record_trigger_success(trigger.id).await;
         }
         Err(error) => {
@@ -504,7 +556,7 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
 }
 
 /// A worker whose heartbeat stops for this long is considered gone.
-const HEARTBEAT_STALE_SECONDS: i64 = 90;
+pub(crate) const HEARTBEAT_STALE_SECONDS: i64 = 90;
 /// A claimed run with no activity for this long was never started by its worker. Long
 /// enough for a large repository checkout, which reports only when it finishes.
 const UNSTARTED_SILENT_SECONDS: i64 = 600;
@@ -537,7 +589,9 @@ async fn revoke_finished_launch_tokens(state: &AppState) {
     }
 }
 
-async fn reap(state: &AppState) {
+/// Returns `false` when any of the reaper's steps failed (each is logged).
+async fn reap(state: &AppState) -> bool {
+    let mut ok = true;
     // Workers killed by the cluster (SIGKILL, eviction, node loss) cannot call `offline`.
     // Keep their row long enough to explain the gap, then prune it so the UI does not
     // accumulate ghost workers forever.
@@ -555,7 +609,10 @@ async fn reap(state: &AppState) {
             tracing::info!(count, "pruned stale worker heartbeats");
         }
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "pruning stale worker heartbeats failed"),
+        Err(error) => {
+            ok = false;
+            tracing::warn!(%error, "pruning stale worker heartbeats failed");
+        }
     }
 
     match state
@@ -579,7 +636,10 @@ async fn reap(state: &AppState) {
                 .await;
             }
         }
-        Err(error) => tracing::warn!(%error, "execution reaper failed"),
+        Err(error) => {
+            ok = false;
+            tracing::warn!(%error, "execution reaper failed");
+        }
     }
 
     match state
@@ -607,7 +667,10 @@ async fn reap(state: &AppState) {
                 report_reaped(state, &execution, message, &data).await;
             }
         }
-        Err(error) => tracing::warn!(%error, "unstarted execution reaper failed"),
+        Err(error) => {
+            ok = false;
+            tracing::warn!(%error, "unstarted execution reaper failed");
+        }
     }
 
     match state
@@ -632,8 +695,12 @@ async fn reap(state: &AppState) {
                 report_reaped(state, &execution, &message, &data).await;
             }
         }
-        Err(error) => tracing::warn!(%error, "timed-out execution reaper failed"),
+        Err(error) => {
+            ok = false;
+            tracing::warn!(%error, "timed-out execution reaper failed");
+        }
     }
+    ok
 }
 
 /// Record why the platform ended an execution and tell subscribers.

@@ -116,7 +116,8 @@ stopping profiles needs `settings:write`.
   executions on that worker fail with a `worker_oom` event
 
 The profile can also generate copy-paste Docker/Compose/Kubernetes bootstrap output with a
-scoped token. Generating bootstrap output rotates the profile token.
+scoped token. Generating bootstrap output (an explicit **Generate** button in the dialog)
+issues one new token for the profile; workers that are already running keep theirs.
 
 ## Tokens
 

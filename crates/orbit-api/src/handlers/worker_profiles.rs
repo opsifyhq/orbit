@@ -920,7 +920,12 @@ pub async fn delete_profile(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-profiles/{profile_id}/bootstrap", tag = "workers", responses((status = 200, body = WorkerBootstrap)))]
+/// Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.
+///
+/// Each call issues one new worker token for the profile and leaves the existing ones
+/// alone: launched and previously bootstrapped workers keep running (#306). Rotating
+/// every token of a profile is the separate, explicit `POST …/token`.
+#[utoipa::path(post, path = "/api/v1/worker-profiles/{profile_id}/bootstrap", tag = "workers", responses((status = 200, body = WorkerBootstrap)))]
 pub async fn bootstrap(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -943,7 +948,7 @@ pub async fn bootstrap(
             "enable the worker profile before generating bootstrap output",
         ));
     }
-    let issued = issue_profile_token(&state, auth.org_id, &profile, true).await?;
+    let issued = issue_profile_token(&state, auth.org_id, &profile, false).await?;
     let name = profile_workload_name(&profile.harness_kind, profile.id);
     let image_tag = if profile.image_tag.trim().is_empty() {
         crate::images::image_tag()
@@ -1087,7 +1092,7 @@ spec:
     let mut notes = vec![
         "The worker loads its agent allowlist and skills from the profile at startup.".into(),
         "The worker receives only ORBIT_API_URL and a scoped, revocable ORBIT_WORKER_TOKEN; no database, NATS or master key.".into(),
-        "Generating bootstrap output rotates the profile token; re-run it whenever you add a worker.".into(),
+        "Each generation issues a new worker token for this profile and leaves existing workers running; revoke tokens you no longer use.".into(),
         "Credentials are never included here; mount the harness auth Secret/volume.".into(),
         "Pin the image tag to a release and use the generated manifest as a starting point.".into(),
     ];

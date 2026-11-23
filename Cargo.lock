@@ -1723,6 +1723,7 @@ name = "orbit-kubernetes"
 version = "0.27.0"
 dependencies = [
  "base64 0.22.1",
+ "orbit-security",
  "reqwest",
  "serde_json",
  "serde_yaml",
