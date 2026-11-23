@@ -17,7 +17,7 @@ definitions, harnesses, model providers, connectors, triggers, executions and po
 ```
 apps/web/              Next.js + React + Tailwind web app (App Router)
 packages/api-client/   Generated OpenAPI document and TypeScript client (do not hand-edit openapi.json or schema.d.ts)
-packages/contracts/    Zod schemas shared by web and future mobile app
+packages/contracts/    Zod agent-definition schemas used by web (and a future mobile app)
 services/api/          orbit-api binary (control plane HTTP)
 services/worker/       orbit-worker binary (execution plane supervisor; also `orbit-worker mcp-broker`)
 services/launcher/     orbit-launcher binary (starts worker pods, Jobs and containers for the API)

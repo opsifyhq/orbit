@@ -209,7 +209,7 @@ installs it).
 ```
 apps/web/               Next.js web app (App Router, React, Tailwind)
 packages/api-client/    OpenAPI document and generated TypeScript client
-packages/contracts/     Zod schemas shared by web and a future mobile app
+packages/contracts/     Zod agent-definition schemas used by web (and a future mobile app)
 services/api/           orbit-api: the control plane's HTTP server
 services/worker/        orbit-worker: runs harnesses, brokers tools
 services/launcher/      Starts and stops workers on Docker and Kubernetes

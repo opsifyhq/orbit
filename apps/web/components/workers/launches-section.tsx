@@ -32,7 +32,7 @@ function LaunchRow({
   onRelaunch: () => void;
 }) {
   const active = isActive(item);
-  const relaunchRequired = (item as WorkerLaunch & { relaunchRequired?: boolean }).relaunchRequired;
+  const relaunchRequired = item.relaunchRequired;
   return (
     <li className="border-b px-4 py-3 last:border-b-0 sm:px-5">
       <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between md:gap-6">

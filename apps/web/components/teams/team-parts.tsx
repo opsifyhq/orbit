@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import type { TeamModel } from "@/lib/teams";
@@ -48,46 +47,6 @@ export function StepNumber({ n, className }: { n: number; className?: string }) 
       )}
     >
       {n}
-    </span>
-  );
-}
-
-/**
- * The agents of a team on one line: "Planner → Builder → Reviewer" for a pipeline,
- * "Lead with Builder, Tester" for native subagents. Used in lists, where the order is
- * the most useful thing to see at a glance.
- */
-export function AgentLineup({
-  team,
-  agentName,
-  className,
-}: {
-  team: AgentTeam;
-  agentName: (id: string) => string;
-  className?: string;
-}) {
-  const steps = team.definition.steps ?? [];
-  if (!steps.length) {
-    return <span className={cn("text-muted-foreground", className)}>No agents yet</span>;
-  }
-  const names = steps.map((step) => agentName(step.agentId));
-  if (teamMode(team) === "native") {
-    const [lead, ...rest] = names;
-    return (
-      <span className={cn("min-w-0 truncate", className)}>
-        <span className="font-medium text-foreground">{lead}</span>
-        {rest.length ? <span className="text-muted-foreground"> with {rest.join(", ")}</span> : null}
-      </span>
-    );
-  }
-  return (
-    <span className={cn("flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5", className)}>
-      {names.map((name, index) => (
-        <span key={`${name}-${index}`} className="inline-flex min-w-0 items-center gap-1.5">
-          {index > 0 ? <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="then" /> : null}
-          <span className={cn("truncate", index === 0 && "font-medium text-foreground")}>{name}</span>
-        </span>
-      ))}
     </span>
   );
 }
