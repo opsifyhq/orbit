@@ -8,6 +8,8 @@ use uuid::Uuid;
 use orbit_domain::{AgentDefinition, AgentSpec, AgentStatus};
 use orbit_security::{AuthContext, Permission};
 
+use orbit_store::Agent;
+
 use crate::audit;
 use crate::dto::{
     AgentDetail, AgentInstancePage, AgentListQuery, AgentPage, AgentSummary, AgentVersionView,
@@ -21,7 +23,7 @@ async fn require_agent_manage(
     state: &AppState,
     auth: &AuthContext,
     agent_id: Uuid,
-) -> Result<(), ApiError> {
+) -> Result<Agent, ApiError> {
     let agent = state.store.get_agent(auth.org_id, agent_id).await?;
     let access = crate::access::AccessScope::load(state, auth).await?;
     access.require_manage(
@@ -29,7 +31,8 @@ async fn require_agent_manage(
         agent.owner_user_id,
         agent.owner_team_id,
         &agent.visibility,
-    )
+    )?;
+    Ok(agent)
 }
 
 #[utoipa::path(get, path = "/api/v1/agents", tag = "agents", params(AgentListQuery), responses((status = 200, body = AgentPage)))]
@@ -81,8 +84,6 @@ pub async fn create_agent(
     crate::extract::ApiJson(definition): crate::extract::ApiJson<AgentDefinition>,
 ) -> Result<(StatusCode, Json<AgentDetail>), ApiError> {
     auth.require(Permission::AgentsWrite)?;
-    // Installation-wide check and insert are serialised across API replicas.
-    let _agent_limit = state.agent_limit_guard().await?;
     let mut report = state
         .store
         .validate_agent_references(auth.org_id, &definition)
@@ -97,10 +98,13 @@ pub async fn create_agent(
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec).await?;
 
+    // Narrow lock: only the installation-wide count and the insert are serialised.
+    let _agent_limit = state.agent_limit_guard().await?;
     let (agent, _version) = state
         .store
         .create_agent(auth.org_id, Some(auth.user_id), &definition)
         .await?;
+    drop(_agent_limit);
     state
         .store
         .assign_resource_owner(auth.org_id, "agents", agent.id, auth.user_id)
@@ -353,11 +357,20 @@ pub async fn activate_agent(
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<AgentDetail>, ApiError> {
     auth.require(Permission::AgentsWrite)?;
-    require_agent_manage(&state, &auth, agent_id).await?;
+    let agent = require_agent_manage(&state, &auth, agent_id).await?;
+    // Draft and paused agents already count as non-archived. Restoring an archived one
+    // adds a seat to the installation-wide agent count, so it needs the same guard as
+    // creating a new agent.
+    let _agent_limit = if agent.status == AgentStatus::Archived.as_str() {
+        state.agent_limit_guard().await?
+    } else {
+        None
+    };
     state
         .store
         .set_agent_status(auth.org_id, agent_id, AgentStatus::Active)
         .await?;
+    drop(_agent_limit);
     audit::record(
         &state,
         &auth,
