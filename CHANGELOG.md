@@ -6,27 +6,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
-## [Unreleased]
+## [0.28.0] - 2026-11-23
 
-### Fixed
-
-- Git clone/push no longer fails with `cannot exec .orbit-git-askpass-*.sh: text file busy`.
-  The askpass helper is closed before git execs it; Linux returns ETXTBSY when execve()
-  targets a file still open for writing (affects v0.27.0).
-
-
-<
 ### Added
 
-- The web app shows the running ORBIT version under the logo, in the sidebar, in the phone
-  header and on the signed-out screens. It is the API's version (`GET /api/v1/meta`).
+- Prometheus metrics, a dedicated metrics listener/token, ServiceMonitor support and
+  observability docs (#297).
+- The running ORBIT version is shown in the web shell and signed-out screens.
+- A redrawn architecture diagram reflecting the current worker/control-plane flow.
 
 ### Changed
 
-- New architecture image in the README and `docs/architecture/diagram.md`, redrawn from
-  the current code: workers pull runs through the worker API instead of reading NATS, the
-  tool broker sits inside the worker, the launcher, outputs, issue queues and Anthropic
-  providers are shown, and a numbered strip follows one run. It adapts to light and dark.
+- Connector tools stay within their connection allowlists: GitHub refs/state, GitLab
+  groups/projects and Kubernetes pod/deployment redaction (#323). Empty Kubernetes
+  allowlists now deny instead of allow.
+- Multiple connector bindings contribute their tools independently; repository path rules
+  are shared and pod log tails are bounded/UTF-8 safe (#307).
+- Run paths share use checks for work sources, idempotent replay, skills and team env
+  mappings (#322).
+- Worker tokens are kept on bootstrap, launch deletes are guarded and OOM events are
+  recorded (#306).
+- Kubernetes/Docker isolation is hardened: confined launcher, NetworkPolicies, sandboxed
+  Docker containers and production guardrails (#212).
+
+### Fixed
+
+- Single-execution workers stay alive for the reaper (#298).
+- Cancelling a team run stops its step executions (#299).
+- Worker Git uses the connection's custom CA bundle and pushes to the configured
+  repository, not the workspace remote (#300, #301).
+- Kubeconfig/API URLs are guarded against edited credentials and SSRF (#321).
+- Native tools require approval in every run path, with a fail-closed plugin and validated
+  harness config (#303).
+- Team model overrides apply at run time, including temporary-limit and idle-lease
+  handling (#305).
+- Settings role mappings, access toggles and access teams enforce a grant ceiling (#324).
+- Release/image gating, harness-image checks and NATS PR coverage (#312).
+- Small hardening: worker bootstrap, export/license/settings edges and MCP env (#325).
+- Git clone/push no longer fails with `cannot exec .orbit-git-askpass-*.sh: text file busy`.
+  The helper is closed before exec; Linux returned ETXTBSY while the write handle was open.
+- Anonymous routes are rate limited per client IP behind trusted proxies (#302).
 
 ## [0.27.0] - 2026-11-21
 
