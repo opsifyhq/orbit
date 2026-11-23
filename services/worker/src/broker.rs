@@ -38,6 +38,15 @@ struct ToolSpec {
     description: String,
     effect: CapabilityEffect,
     input_schema: Value,
+    /// Index into `BrokerState::bindings`: the connection this tool acts through.
+    binding: usize,
+}
+
+/// One connector binding the broker serves: its connection and API client.
+struct Binding {
+    slug: String,
+    connection: Connection,
+    client: ConnectorClient,
 }
 
 /// Execution-plane collaborators, grouped so the injectable test entry point stays small.
@@ -53,9 +62,8 @@ struct BrokerState {
     workspace: std::path::PathBuf,
     autonomy: AutonomyLevel,
     approval_mode: ApprovalMode,
-    connection: Option<Connection>,
-    connector_slug: String,
-    connector_client: Option<ConnectorClient>,
+    /// Connector bindings with tools, at most one per connector type (#307).
+    bindings: Vec<Binding>,
     tools: Vec<ToolSpec>,
     tool_policies: Vec<ToolPolicyRule>,
     token: String,
@@ -78,34 +86,36 @@ enum ConnectorClient {
 }
 
 impl BrokerState {
-    fn connection_id(&self) -> Result<uuid::Uuid, String> {
-        self.connection
-            .as_ref()
-            .map(|connection| connection.id)
-            .ok_or_else(|| "execution has no connector connection".to_string())
+    fn binding(&self, tool: &ToolSpec) -> &Binding {
+        &self.bindings[tool.binding]
+    }
+
+    /// The connection a tool (by MCP name or capability) acts through, for audit rows.
+    fn connection_for(&self, name: &str) -> Option<&Connection> {
+        self.tools
+            .iter()
+            .find(|tool| tool.name == name || tool.capability == name)
+            .map(|tool| &self.binding(tool).connection)
     }
 
     /// The workspace directory, connection and repository a repo tool acts on. The
     /// repository is `None` for a single-repository workspace without a team manifest;
     /// `git::push` then uses the execution input or the connection default, as the clone
-    /// did.
+    /// did. `default_connection` is the binding that provides the tool.
     fn repo_target(
         &self,
         repository: Option<&str>,
+        default_connection: uuid::Uuid,
     ) -> Result<(std::path::PathBuf, uuid::Uuid, Option<String>), String> {
         if self.repo_specs.is_empty() {
-            return Ok((self.workspace.clone(), self.connection_id()?, None));
+            return Ok((self.workspace.clone(), default_connection, None));
         }
         if self.repo_specs.len() == 1 {
             let spec = &self.repo_specs[0];
-            let path = if spec.path.is_empty() {
-                self.workspace.clone()
-            } else {
-                self.workspace.join(&spec.path)
-            };
+            let path = crate::git::repo_directory(&self.workspace, spec, true);
             return Ok((
                 path,
-                spec.connection_id.unwrap_or(self.connection_id()?),
+                spec.connection_id.unwrap_or(default_connection),
                 Some(spec.repository.clone()),
             ));
         }
@@ -122,17 +132,10 @@ impl BrokerState {
             .ok_or_else(|| {
                 format!("repository '{repository}' is not part of this team workspace")
             })?;
-        let path = if spec.primary && spec.path.is_empty() {
-            self.workspace.clone()
-        } else if spec.path.is_empty() {
-            self.workspace
-                .join(spec.repository.split('/').next_back().unwrap_or("repo"))
-        } else {
-            self.workspace.join(&spec.path)
-        };
+        let path = crate::git::repo_directory(&self.workspace, spec, false);
         Ok((
             path,
-            spec.connection_id.unwrap_or(self.connection_id()?),
+            spec.connection_id.unwrap_or(default_connection),
             Some(spec.repository.clone()),
         ))
     }
@@ -307,6 +310,7 @@ fn github_tool_specs(
                 description: description.to_string(),
                 effect,
                 input_schema,
+                binding: 0,
             }
         })
         .collect()
@@ -369,6 +373,7 @@ fn kubernetes_tool_specs(
                 description: format!("Kubernetes read capability {capability}."),
                 effect,
                 input_schema,
+                binding: 0,
             }
         })
         .collect()
@@ -401,6 +406,7 @@ fn x_tool_specs(
                     .to_string(),
                 effect,
                 input_schema: x_posts_create_input_schema(),
+                binding: 0,
             }
         })
         .collect()
@@ -588,6 +594,7 @@ fn gitlab_tool_specs(
                 description: description.to_string(),
                 effect,
                 input_schema,
+                binding: 0,
             }
         })
         .collect()
@@ -628,20 +635,24 @@ async fn start_with_http(
     tool_policies: &[ToolPolicyRule],
     runtime: BrokerRuntime,
 ) -> anyhow::Result<Option<BrokerHandle>> {
-    let binding = spec.connectors.iter().find(|b| {
+    // Every supported binding contributes its tools (#307). Tool names carry the connector
+    // (`github_…`, `kubernetes_…`), so one binding per connector type is served: the first
+    // that yields tools. A binding without agent tools (for example X `posts.search`,
+    // which is pre-execution hydration) does not take the slot.
+    let mut bindings: Vec<Binding> = Vec::new();
+    let mut tools = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for binding in spec.connectors.iter().filter(|b| {
         matches!(
             b.connector.as_str(),
             "github" | "gitlab" | "kubernetes" | "x"
         ) && !b.capabilities.is_empty()
-    });
-
-    let mut connection = None;
-    let mut connector_slug = String::new();
-    let mut connector_client = None;
-    let mut tools = Vec::new();
-
-    if let Some(binding) = binding {
-        connector_slug = binding.connector.clone();
+    }) {
+        let connector_slug = binding.connector.clone();
+        if bindings.iter().any(|served| served.slug == connector_slug) {
+            skipped.push(connector_slug);
+            continue;
+        }
         let Some(connection_id) = binding.connection_id else {
             anyhow::bail!(
                 "Connector '{connector_slug}' is bound without a connection; select a connection in Agent Studio"
@@ -676,34 +687,47 @@ async fn start_with_http(
             })
             .cloned()
             .collect();
-        if !allowed.is_empty() {
-            tools = match connector_slug.as_str() {
-                "gitlab" => gitlab_tool_specs(&allowed, &effects),
-                "kubernetes" => kubernetes_tool_specs(&allowed, &effects),
-                "x" => x_tool_specs(&allowed, &effects),
-                _ => github_tool_specs(&allowed, &effects),
-            };
-            let credential = worker_connection
-                .credential
-                .as_ref()
-                .map(|credential| credential.value.clone());
-            connector_client = Some(match connector_slug.as_str() {
-                "gitlab" => ConnectorClient::Gitlab(GitLabClientConfig::from_connection(
-                    &conn.config,
-                    credential,
-                )),
-                "kubernetes" => ConnectorClient::Kubernetes(
-                    KubernetesClientConfig::from_connection(&conn.config, credential)
-                        .map_err(anyhow::Error::msg)?,
-                ),
-                "x" => ConnectorClient::X(XClientConfig::from_connection(&conn.config, credential)),
-                _ => ConnectorClient::Github(GitHubClientConfig::from_connection(
-                    &conn.config,
-                    credential,
-                )),
-            });
+        if allowed.is_empty() {
+            continue;
         }
-        connection = Some(conn);
+        let mut binding_tools = match connector_slug.as_str() {
+            "gitlab" => gitlab_tool_specs(&allowed, &effects),
+            "kubernetes" => kubernetes_tool_specs(&allowed, &effects),
+            "x" => x_tool_specs(&allowed, &effects),
+            _ => github_tool_specs(&allowed, &effects),
+        };
+        if binding_tools.is_empty() {
+            continue;
+        }
+        let credential = worker_connection
+            .credential
+            .as_ref()
+            .map(|credential| credential.value.clone());
+        let connector_client = match connector_slug.as_str() {
+            "gitlab" => ConnectorClient::Gitlab(GitLabClientConfig::from_connection(
+                &conn.config,
+                credential,
+            )),
+            "kubernetes" => ConnectorClient::Kubernetes(
+                KubernetesClientConfig::from_connection(&conn.config, credential)
+                    .map_err(anyhow::Error::msg)?,
+            ),
+            "x" => ConnectorClient::X(XClientConfig::from_connection(&conn.config, credential)),
+            _ => ConnectorClient::Github(GitHubClientConfig::from_connection(
+                &conn.config,
+                credential,
+            )),
+        };
+        let index = bindings.len();
+        for tool in &mut binding_tools {
+            tool.binding = index;
+        }
+        tools.extend(binding_tools);
+        bindings.push(Binding {
+            slug: connector_slug,
+            connection: conn,
+            client: connector_client,
+        });
     }
 
     // A harness with native tools (bash, edit, write) always gets the policy endpoint, so
@@ -720,9 +744,7 @@ async fn start_with_http(
         workspace: workspace.to_path_buf(),
         autonomy,
         approval_mode: spec.autonomy.approval_mode,
-        connection,
-        connector_slug,
-        connector_client,
+        bindings,
         tools,
         tool_policies: tool_policies.to_vec(),
         token: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()),
@@ -750,6 +772,19 @@ async fn start_with_http(
         tools = state.tools.len(),
         "tool broker started on loopback"
     );
+    if !skipped.is_empty() {
+        record_event(
+            &state,
+            "log",
+            LogLevel::Warn,
+            &format!(
+                "only the first binding per connector type is served; ignored another {} binding",
+                skipped.join(", ")
+            ),
+            json!({ "ignoredBindings": skipped }),
+        )
+        .await;
+    }
     Ok(Some(BrokerHandle {
         url: format!("http://{address}"),
         token: state.token.clone(),
@@ -811,22 +846,17 @@ async fn call_tool(
             .into_response();
     };
 
-    let Some(connection) = state.connection.as_ref() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "execution has no connector connection" })),
-        )
-            .into_response();
-    };
+    let connection = &state.binding(tool).connection;
     let grants: Vec<GrantedCapability> = state
         .tools
         .iter()
-        .map(|tool| GrantedCapability {
-            connection_id: connection.id,
-            connector: state.connector_slug.clone(),
-            capability: tool.capability.clone(),
-            effect: tool.effect,
+        .map(|granted| GrantedCapability {
+            connection_id: state.binding(granted).connection.id,
+            connector: state.binding(granted).slug.clone(),
+            capability: granted.capability.clone(),
+            effect: granted.effect,
         })
+        .filter(|granted| granted.connection_id == connection.id)
         .collect();
     let platform = evaluate_capability(
         state.autonomy,
@@ -874,12 +904,13 @@ async fn call_tool(
 
     let result = if matches!(tool.capability.as_str(), "repo.commit" | "repo.push") {
         let repository = call.arguments.get("repository").and_then(Value::as_str);
-        let (workspace, connection_id, target_repository) = match state.repo_target(repository) {
-            Ok(target) => target,
-            Err(error) => {
-                return tool_error(&state, tool, &call.arguments, &error).await;
-            }
-        };
+        let (workspace, connection_id, target_repository) =
+            match state.repo_target(repository, connection.id) {
+                Ok(target) => target,
+                Err(error) => {
+                    return tool_error(&state, tool, &call.arguments, &error).await;
+                }
+            };
         let outcome = if tool.capability == "repo.commit" {
             let message = call
                 .arguments
@@ -911,21 +942,20 @@ async fn call_tool(
         };
         outcome.map_err(|error| error.to_string())
     } else {
-        match state.connector_client.as_ref() {
-            Some(ConnectorClient::Github(config)) => {
+        match &state.binding(tool).client {
+            ConnectorClient::Github(config) => {
                 let args = normalize_github_args(&call.arguments);
                 github::invoke(&state.http, config, &tool.capability, &args).await
             }
-            Some(ConnectorClient::Gitlab(config)) => {
+            ConnectorClient::Gitlab(config) => {
                 gitlab::invoke(&state.http, config, &tool.capability, &call.arguments).await
             }
-            Some(ConnectorClient::Kubernetes(config)) => {
+            ConnectorClient::Kubernetes(config) => {
                 config.invoke(&tool.capability, &call.arguments).await
             }
-            Some(ConnectorClient::X(config)) => {
+            ConnectorClient::X(config) => {
                 x::invoke(&state.http, config, &tool.capability, &call.arguments).await
             }
-            None => Err("execution has no connector client".to_string()),
         }
     };
 
@@ -1182,8 +1212,8 @@ async fn policy_check(
             let action = json!({
                 "capability": call.tool,
                 "connector": "harness",
-                "connectionId": state.connection.as_ref().map(|connection| connection.id),
-                "connectionName": state.connection.as_ref().map(|connection| connection.name.clone()),
+                "connectionId": serde_json::Value::Null,
+                "connectionName": serde_json::Value::Null,
                 "effect": effect.as_str(),
                 "agentName": state.execution.agent_name,
                 "arguments": truncate_json(&call.arguments, 4000),
@@ -1239,14 +1269,12 @@ async fn request_approval(
     arguments: &Value,
     policy: Option<&ToolPolicyOutcome>,
 ) -> anyhow::Result<Approval> {
-    let connection_id = state.connection.as_ref().map(|connection| connection.id);
-    let connection_name = state
-        .connection
-        .as_ref()
-        .map(|connection| connection.name.clone());
+    let binding = state.binding(tool);
+    let connection_id = Some(binding.connection.id);
+    let connection_name = Some(binding.connection.name.clone());
     let action = json!({
         "capability": tool.capability,
-        "connector": state.connector_slug,
+        "connector": binding.slug,
         "connectionId": connection_id,
         "connectionName": connection_name,
         "effect": tool.effect.as_str(),
@@ -1466,7 +1494,12 @@ async fn record_event(
 }
 
 async fn record_audit(state: &BrokerState, action: &str, metadata: Value) {
-    let connection_id = state.connection.as_ref().map(|connection| connection.id);
+    // The connection of the tool the row is about (by capability or tool name).
+    let connection_id = metadata
+        .get("capability")
+        .and_then(Value::as_str)
+        .and_then(|name| state.connection_for(name))
+        .map(|connection| connection.id);
     if let Err(error) = state
         .client
         .audit(state.execution.id, action, connection_id, metadata)
@@ -2181,6 +2214,104 @@ mod tests {
         assert_eq!(
             policy_status(&handle, "orbit_x_posts_create_now", json!({})).await,
             403
+        );
+    }
+
+    /// A connection record for `slug` with the given manifest capabilities.
+    fn connection_record(slug: &str, config: Value, capabilities: Value) -> (Uuid, Value) {
+        let (id, mut value) = x_connection("https://unused.example");
+        value["connection"]["config"] = config;
+        value["connection"]["name"] = json!(format!("{slug} connection"));
+        value["connector"]["slug"] = json!(slug);
+        value["connector"]["capabilities"] = capabilities;
+        (id, value)
+    }
+
+    /// #307: every supported binding contributes its tools, and a binding without agent
+    /// tools (X search) does not hide the others.
+    #[tokio::test]
+    async fn every_connector_binding_contributes_tools() {
+        let (x_id, x) = connection_record(
+            "x",
+            json!({ "baseUrl": "https://x.example" }),
+            json!([{ "id": "posts.search", "effect": "read" }]),
+        );
+        let (github_id, github) = connection_record(
+            "github",
+            json!({ "baseUrl": "https://api.github.example" }),
+            json!([{ "id": "issues.list", "effect": "read" }]),
+        );
+        let (kube_id, kube) = connection_record(
+            "kubernetes",
+            json!({ "authMode": "service_account", "apiServer": "https://cluster.example" }),
+            json!([{ "id": "pods.list", "effect": "read" }]),
+        );
+        let connections = Arc::new(std::collections::HashMap::from([
+            (x_id, x),
+            (github_id, github),
+            (kube_id, kube),
+        ]));
+        let app = Router::new().route(
+            "/api/v1/worker/connections/{id}",
+            get(move |axum::extract::Path(id): axum::extract::Path<Uuid>| {
+                let connections = connections.clone();
+                async move { Json(connections.get(&id).cloned().unwrap_or(Value::Null)) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = WorkerClient::new(url, "worker-token").unwrap();
+
+        let spec: AgentSpec = serde_json::from_value(json!({
+            "instructions": { "system": "test" },
+            "connectors": [
+                { "connector": "x", "connectionId": x_id, "capabilities": ["posts.search"] },
+                { "connector": "github", "connectionId": github_id, "capabilities": ["issues.list"] },
+                { "connector": "kubernetes", "connectionId": kube_id, "capabilities": ["pods.list"] }
+            ],
+            "autonomy": { "level": 4, "approvalMode": "auto" }
+        }))
+        .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let handle = start_with_http(
+            client,
+            &spec,
+            &broker_execution(),
+            workspace.path(),
+            &[],
+            BrokerRuntime {
+                http: reqwest::Client::new(),
+                pause: orbit_contracts::PauseClock::with_budget(Duration::from_secs(5)),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("broker");
+        let tools: Value = reqwest::Client::new()
+            .get(format!("{}/tools", handle.url))
+            .bearer_auth(&handle.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let names: Vec<String> = tools["tools"]
+            .as_array()
+            .or_else(|| tools.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names.contains(&"github_issues_list".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"kubernetes_pods_list".to_string()),
+            "{names:?}"
         );
     }
 
