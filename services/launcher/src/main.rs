@@ -34,6 +34,8 @@ struct AppState {
     /// Harness auth Secrets a launch may mount (`ORBIT_WORKER_AUTH_SECRETS`). The launcher
     /// cannot read Secrets, so the rule is by name, enforced here and not only in the API.
     auth_secrets: orbit_domain::AuthSecretPolicy,
+    /// Capability, privilege, PID and user restrictions for Docker-target containers.
+    docker_sandbox: orbit_domain::DockerSandbox,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
             .filter(|(from, to)| !from.is_empty() && !to.is_empty())
             .collect(),
         auth_secrets: orbit_domain::AuthSecretPolicy::from_env(),
+        docker_sandbox: orbit_domain::DockerSandbox::from_env(),
     };
     let addr = std::env::var("ORBIT_LAUNCHER_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = Router::new()
@@ -448,6 +451,27 @@ impl Drop for EnvFile {
     }
 }
 
+/// Start of `docker run` for a worker container: name, launch label and the sandbox
+/// flags (capabilities dropped, no-new-privileges, PID limit, non-root user, host gateway
+/// only when the API URL needs it). CPU and memory limits are added from the profile.
+fn docker_run_base_args(
+    sandbox: &orbit_domain::DockerSandbox,
+    name: &str,
+    launch_id: Uuid,
+    api_url: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--name".into(),
+        name.to_string(),
+        "--label".into(),
+        format!("orbit.launch-id={launch_id}"),
+    ];
+    args.extend(sandbox.args(api_url));
+    args
+}
+
 async fn launch_docker(state: &AppState, request: &LaunchRequest) -> anyhow::Result<LaunchStatus> {
     let name = pod_name(request.launch_id);
     let _ = Command::new(&state.docker)
@@ -457,16 +481,7 @@ async fn launch_docker(state: &AppState, request: &LaunchRequest) -> anyhow::Res
         .status()
         .await;
     let api_url = rewrite_api(&request.api_url);
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        "-d".into(),
-        "--name".into(),
-        name.clone(),
-        "--label".into(),
-        format!("orbit.launch-id={}", request.launch_id),
-        "--add-host".into(),
-        "host.docker.internal:host-gateway".into(),
-    ];
+    let mut args = docker_run_base_args(&state.docker_sandbox, &name, request.launch_id, &api_url);
     if request.single_execution_id.is_some() {
         // Not `--rm`: status (exit code, OOMKilled) and logs are read after the container
         // exits. Instead label it and prune exited ones past the retention window.
@@ -712,8 +727,9 @@ fn kubernetes_secret_manifest(
     name: &str,
     launch_id: Uuid,
     data: &BTreeMap<String, String>,
+    owner: Option<Value>,
 ) -> Value {
-    json!({
+    let mut manifest = json!({
         "apiVersion": "v1",
         "kind": "Secret",
         "type": "Opaque",
@@ -726,7 +742,11 @@ fn kubernetes_secret_manifest(
             }
         },
         "stringData": data
-    })
+    });
+    if let Some(owner) = owner {
+        manifest["metadata"]["ownerReferences"] = json!([owner]);
+    }
+    manifest
 }
 
 /// Refuse a launch whose profile names a Secret the installer has not allowed, so a
@@ -932,22 +952,29 @@ async fn launch_kubernetes(
             .status()
             .await;
     }
-    // The Secret goes first so the pod can resolve its `secretKeyRef`s; manifests are
-    // piped on stdin, never passed as arguments.
+    // The workload goes first and the Secret follows with its owner reference already
+    // set, so Kubernetes deletes it with the workload (stop, relaunch, Job TTL). The
+    // launcher has no `get` on Secrets, and `kubectl patch` needs one, so the reference
+    // cannot be added afterwards. Pods wait for the Secret (the kubelet retries
+    // `secretKeyRef`s). Manifests are piped on stdin, never passed as arguments.
+    kubectl_create(state, &manifest).await?;
+    let owner = match workload_owner_reference(state, &manifest, &name).await {
+        Ok(owner) => Some(owner),
+        Err(error) => {
+            tracing::warn!(%error, "could not read the workload uid; the worker env Secret is deleted with the next relaunch instead");
+            None
+        }
+    };
     let secret_manifest = kubernetes_secret_manifest(
         &state.namespace,
         &secret_name,
         request.launch_id,
         &secret_data,
+        owner,
     );
-    kubectl_create(state, &secret_manifest).await?;
-    if let Err(error) = kubectl_create(state, &manifest).await {
-        delete_secret(state, &secret_name).await;
+    if let Err(error) = kubectl_create(state, &secret_manifest).await {
+        delete_workload(state, &manifest, &name).await;
         return Err(error);
-    }
-    // Garbage-collect the Secret together with its workload (stop, relaunch, Job TTL).
-    if let Err(error) = own_secret(state, &manifest, &name, &secret_name).await {
-        tracing::warn!(%error, "could not set owner reference on worker env Secret; deleting it with the next relaunch");
     }
     tracing::info!(launch_id = %request.launch_id, workload = %name, "worker workload created");
     Ok(LaunchStatus {
@@ -979,30 +1006,12 @@ async fn kubectl_create(state: &AppState, manifest: &Value) -> anyhow::Result<()
     Ok(())
 }
 
-async fn delete_secret(state: &AppState, name: &str) {
-    let _ = Command::new(&state.kubectl)
-        .args([
-            "-n",
-            &state.namespace,
-            "delete",
-            "secret",
-            name,
-            "--ignore-not-found",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-}
-
-/// Make the worker env Secret owned by its Job/Deployment so Kubernetes deletes it with
-/// the workload.
-async fn own_secret(
+/// Owner reference to a just-created Job/Deployment, for the worker env Secret.
+async fn workload_owner_reference(
     state: &AppState,
     workload: &Value,
     workload_name: &str,
-    secret_name: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Value> {
     let kind = workload["kind"].as_str().unwrap_or("Deployment");
     let api_version = workload["apiVersion"].as_str().unwrap_or("apps/v1");
     let uid = Command::new(&state.kubectl)
@@ -1020,35 +1029,38 @@ async fn own_secret(
     anyhow::ensure!(uid.status.success(), "could not read workload uid");
     let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
     anyhow::ensure!(!uid.is_empty(), "workload uid is empty");
-    let patch = json!({
-        "metadata": { "ownerReferences": [{
-            "apiVersion": api_version,
-            "kind": kind,
-            "name": workload_name,
-            "uid": uid,
-            "blockOwnerDeletion": false
-        }] }
-    });
-    let output = Command::new(&state.kubectl)
+    Ok(owner_reference(api_version, kind, workload_name, &uid))
+}
+
+fn owner_reference(api_version: &str, kind: &str, name: &str, uid: &str) -> Value {
+    json!({
+        "apiVersion": api_version,
+        "kind": kind,
+        "name": name,
+        "uid": uid,
+        "blockOwnerDeletion": false
+    })
+}
+
+/// Remove a workload whose env Secret could not be created; it would never start.
+async fn delete_workload(state: &AppState, workload: &Value, name: &str) {
+    let kind = workload["kind"]
+        .as_str()
+        .unwrap_or("Deployment")
+        .to_ascii_lowercase();
+    let _ = Command::new(&state.kubectl)
         .args([
             "-n",
             &state.namespace,
-            "patch",
-            "secret",
-            secret_name,
-            "--type",
-            "merge",
-            "-p",
-            &patch.to_string(),
+            "delete",
+            &kind,
+            name,
+            "--ignore-not-found",
         ])
-        .output()
-        .await?;
-    anyhow::ensure!(
-        output.status.success(),
-        "kubectl patch failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
 }
 
 async fn kubernetes_status(state: &AppState, name: &str, launch_id: Uuid) -> LaunchStatus {
@@ -1370,8 +1382,22 @@ mod credential_tests {
         }
         assert_eq!(data["ORBIT_WORKER_TOKEN"], "orbit_wk_supersecret");
         assert_eq!(data["OPENAI_API_KEY"], "sk-profile-secret");
-        let secret = kubernetes_secret_manifest("ns", "orbit-worker-x-env", req.launch_id, &data);
+        let secret = kubernetes_secret_manifest(
+            "ns",
+            "orbit-worker-x-env",
+            req.launch_id,
+            &data,
+            Some(owner_reference(
+                "batch/v1",
+                "Job",
+                "orbit-worker-x",
+                "uid-1",
+            )),
+        );
         assert_eq!(secret["kind"], "Secret");
+        assert_eq!(secret["type"], "Opaque");
+        assert_eq!(secret["metadata"]["ownerReferences"][0]["kind"], "Job");
+        assert_eq!(secret["metadata"]["ownerReferences"][0]["uid"], "uid-1");
         assert_eq!(
             secret["metadata"]["labels"]["orbit.launch-id"],
             req.launch_id.to_string()
@@ -1399,7 +1425,33 @@ mod credential_tests {
             image_pull_secret: None,
             image_aliases: Vec::new(),
             auth_secrets: policy,
+            docker_sandbox: orbit_domain::DockerSandbox::default(),
         }
+    }
+
+    #[test]
+    fn docker_run_args_carry_the_sandbox_flags() {
+        let id = Uuid::now_v7();
+        let sandbox = orbit_domain::DockerSandbox::default();
+        let args = docker_run_base_args(&sandbox, "orbit-worker-x", id, "http://orbit-api:8080");
+        let pair = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
+        assert_eq!(args[..2], ["run".to_string(), "-d".to_string()]);
+        assert_eq!(pair("--cap-drop").as_deref(), Some("ALL"));
+        assert_eq!(pair("--security-opt").as_deref(), Some("no-new-privileges"));
+        assert!(pair("--pids-limit").is_some());
+        assert_eq!(pair("--user").as_deref(), Some("10001:10001"));
+        assert_eq!(pair("--label"), Some(format!("orbit.launch-id={id}")));
+        // The API is reachable without the host mapping, so it is not added.
+        assert!(pair("--add-host").is_none());
+        let local = docker_run_base_args(
+            &sandbox,
+            "orbit-worker-x",
+            id,
+            &rewrite_api("http://localhost:8080"),
+        );
+        assert!(local
+            .windows(2)
+            .any(|w| w == ["--add-host", "host.docker.internal:host-gateway"]));
     }
 
     #[tokio::test]

@@ -21,6 +21,14 @@ api:
   tag: ""
   replicas: 1
   port: 8080
+  # Run pending database migrations on start-up (ORBIT_DB_AUTO_MIGRATE). Migrations take
+  # a Postgres advisory lock, so several replicas are safe; set false to run them
+  # yourself before upgrading.
+  autoMigrate: true
+  # PodDisruptionBudget for the API (useful with replicas >= 2).
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
   # Peers whose X-Forwarded-For the anonymous rate limit believes (CIDRs or addresses).
   # Browser traffic reaches the API through the web proxy and the ingress controller,
   # so without this every client shares one budget. The default trusts the private
@@ -50,6 +58,8 @@ worker:
   replicas: 1
   concurrency: 4
   pollIntervalMs: 500
+  # Not read by current workers: schedules run in orbit-api, which claims each trigger
+  # fire atomically, so any number of API replicas is safe. Kept for older workers.
   schedulerEnabled: true
   # Harness kinds this base worker may claim. OpenCode runs in its own worker image.
   harnesses: mock
@@ -159,6 +169,14 @@ launcher:
   # documented `orbit-opencode-auth` / `orbit-pi-auth`; add your own names here. Empty
   # allows none.
   authSecrets: "orbit-opencode-auth*,orbit-pi-auth*"
+  # ValidatingAdmissionPolicies limiting what the launcher ServiceAccount may create:
+  # only orbit-worker-<launch> workloads and Opaque orbit-worker-<launch>-env Secrets,
+  # pods that mount only the auth Secrets above and the CA bundle (never the platform
+  # Secret), and no hostPath, host namespaces, privileged containers or SA token.
+  # Rendered on Kubernetes >= 1.30. The policies are cluster-scoped: disable this when the
+  # installer has only namespace rights, and enforce the same rules another way.
+  admissionPolicy:
+    enabled: true
   resources:
     requests:
       cpu: 50m
@@ -181,6 +199,26 @@ outbound:
 # Off by default because it needs a CNI that enforces NetworkPolicy. Egress is untouched.
 networkPolicy:
   enabled: false
+  worker:
+    # Destinations workers may reach besides DNS and orbit-api.
+    egressCidrs:
+      - 0.0.0.0/0
+      - ::/0
+    # Carved out of egressCidrs: cluster, private and link-local ranges, so an agent
+    # cannot reach in-cluster services or the cloud metadata endpoint directly.
+    egressExcept:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 169.254.0.0/16
+      - fc00::/7
+      - fe80::/10
+    # Extra NetworkPolicy egress rules for workers, e.g. a self-hosted GitLab or model
+    # server on a private address:
+    #   - to: [{ ipBlock: { cidr: 10.20.0.15/32 } }]
+    #     ports: [{ protocol: TCP, port: 443 }]
+    extraEgress: []
 
 # Prometheus metrics (see docs/development/observability.md). The API serves the text
 # exposition format at /metrics. The chart's ingress never routes /metrics, so by default
@@ -342,6 +380,10 @@ externalDatabase:
 nats:
   enabled: true
   image: nats:2.11-alpine
+  # NATS HTTP monitoring (port 8222, unauthenticated). Off by default; when enabled it is
+  # exposed on the pod only, never on the Service.
+  monitoring:
+    enabled: false
   storage: 2Gi
   storageClassName: ""
   # The upstream image defaults to root, so pin the unprivileged `nats` user (1000).

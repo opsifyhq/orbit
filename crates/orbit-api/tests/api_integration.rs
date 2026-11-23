@@ -9900,6 +9900,139 @@ async fn worker_profile_auth_secret_name_must_be_allowed() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
+#[tokio::test]
+async fn profile_editors_cannot_bind_another_teams_auth_secret() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let fx = d2_fixture(&app).await;
+    let m = fx.mallory_token.as_str();
+    let suffix = Uuid::now_v7().simple().to_string();
+    let team_a_secret = format!("orbit-pi-auth-a{}", &suffix[..20]);
+    let team_b_secret = format!("orbit-pi-auth-b{}", &suffix[..20]);
+    let profile_url = |id: &dyn std::fmt::Display| format!("/api/v1/worker-profiles/{id}");
+
+    // An Owner binds team A's Secret to team A's profile.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &profile_url(&fx.profile_id),
+            json!({ "name": "Team A worker", "harnessKind": "mock", "authSecretName": team_a_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Mallory leads team B and manages its profile, but not team A's.
+    let team_b = app
+        .store
+        .create_access_team(app.org_id, "Team B", &format!("team-b-{suffix}"), None)
+        .await
+        .unwrap()
+        .id;
+    app.store
+        .upsert_team_member(team_b, fx.mallory.id, "lead")
+        .await
+        .unwrap();
+    let team_b_profile = d2_profile(&app, "Team B worker").await;
+    app.store
+        .set_resource_visibility(
+            app.org_id,
+            "worker_profiles",
+            team_b_profile,
+            "team",
+            Some(team_b),
+        )
+        .await
+        .unwrap();
+
+    // Pointing team B's profile, or a new profile, at team A's Secret is refused.
+    let (status, body) = send(
+        &app.router,
+        auth_json(
+            "PATCH",
+            &profile_url(&team_b_profile),
+            m,
+            json!({ "name": "Team B worker", "harnessKind": "mock", "authSecretName": team_a_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/worker-profiles",
+            m,
+            json!({ "name": format!("steal-{suffix}"), "harnessKind": "mock", "authSecretName": team_a_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // A Secret no profile is bound to yet also needs an Owner or Admin.
+    let (status, _) = send(
+        &app.router,
+        auth_json(
+            "PATCH",
+            &profile_url(&team_b_profile),
+            m,
+            json!({ "name": "Team B worker", "harnessKind": "mock", "authSecretName": team_b_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let stored = app
+        .store
+        .get_worker_profile(app.org_id, team_b_profile)
+        .await
+        .unwrap();
+    assert_eq!(stored.auth_secret_name, None);
+
+    // Once an Owner binds team B's Secret, Mallory keeps it on edits, reuses it on a
+    // profile of her own, and may clear it.
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &profile_url(&team_b_profile),
+            json!({ "name": "Team B worker", "harnessKind": "mock", "authSecretName": team_b_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_json(
+            "PATCH",
+            &profile_url(&team_b_profile),
+            m,
+            json!({ "name": "Team B worker renamed", "harnessKind": "mock", "authSecretName": team_b_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/worker-profiles",
+            m,
+            json!({ "name": format!("reuse-{suffix}"), "harnessKind": "mock", "authSecretName": team_b_secret }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_json(
+            "PATCH",
+            &profile_url(&team_b_profile),
+            m,
+            json!({ "name": "Team B worker", "harnessKind": "mock" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["authSecretName"], Value::Null);
+}
+
 // ---- #202 / #218: object-level checks behind settings:write, scoped lists ----
 
 struct D2Fixture {

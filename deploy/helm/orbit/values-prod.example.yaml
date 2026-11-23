@@ -28,6 +28,12 @@ api:
   image: orbit-api
   replicas: 2
   port: 8080
+  # Migrations take an advisory lock, so every replica may run them on start-up. Set
+  # false to run them as a separate step before upgrading.
+  autoMigrate: true
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   resources:
     requests:
       cpu: 200m
@@ -44,7 +50,8 @@ worker:
   replicas: 2
   concurrency: 8
   pollIntervalMs: 500
-  schedulerEnabled: false # enable on exactly one replica until HA scheduling lands
+  # Not read by current workers: schedules run in orbit-api and each trigger fire is
+  # claimed atomically, so every API replica may schedule.
   harnesses: mock
 
 opencodeWorker:
@@ -167,6 +174,16 @@ launcher:
   # should be generated with: openssl rand -base64 36
   enabled: true
   image: orbit-launcher
+  # Admission policies limiting what the launcher ServiceAccount may create (needs
+  # Kubernetes >= 1.30 and rights to install cluster-scoped admission policies).
+  admissionPolicy:
+    enabled: true
+
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, ...). Database and NATS
+# accept only orbit-api; workers reach only DNS, orbit-api and public addresses. Add
+# private model servers or Git hosts to networkPolicy.worker.extraEgress.
+networkPolicy:
+  enabled: true
 
 platform:
   environment: production

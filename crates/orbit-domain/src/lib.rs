@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod auth_secret;
 pub mod autonomy;
+pub mod docker_sandbox;
 pub mod error;
 pub mod execution;
 pub mod harness_kind;
@@ -18,6 +19,7 @@ pub mod worker_resources;
 pub use agent::*;
 pub use auth_secret::{is_dns_label, AuthSecretPolicy, AUTH_SECRETS_ENV, DEFAULT_AUTH_SECRETS};
 pub use autonomy::*;
+pub use docker_sandbox::{DockerSandbox, HostGateway};
 pub use error::*;
 pub use execution::*;
 pub use harness_kind::*;

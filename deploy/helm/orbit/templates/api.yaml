@@ -117,7 +117,7 @@ spec:
                   name: {{ include "orbit.secretName" . }}
                   key: master-key
             - name: ORBIT_DB_AUTO_MIGRATE
-              value: "true"
+              value: {{ ne (toString .Values.api.autoMigrate) "false" | toString | quote }}
             - name: ORBIT_EVENTS_DRIVER
               value: "nats"
             - name: ORBIT_NATS_URL

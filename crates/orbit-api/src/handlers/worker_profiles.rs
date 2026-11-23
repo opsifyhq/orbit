@@ -212,6 +212,49 @@ pub(crate) fn validate_auth_secret_name(name: Option<&str>) -> Result<(), ApiErr
         })
 }
 
+/// Bind a harness auth Secret to a profile (#325). The name rule above only says which
+/// Secrets are harness auth at all; it does not say whose. A profile editor may keep the
+/// profile's current Secret or clear it, and may reuse a Secret already bound to another
+/// profile they manage (they can mount it through that profile anyway). Binding any
+/// other Secret, for example another team's, takes an Owner or Admin.
+pub(crate) async fn require_auth_secret_binding(
+    state: &AppState,
+    auth: &AuthContext,
+    access: &crate::access::AccessScope,
+    profile_id: Option<Uuid>,
+    previous: Option<&str>,
+    next: Option<&str>,
+) -> Result<(), ApiError> {
+    let normalize = |name: Option<&str>| {
+        name.map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+    };
+    let Some(next) = normalize(next) else {
+        return Ok(());
+    };
+    if normalize(previous).as_deref() == Some(next.as_str()) || access.is_privileged() {
+        return Ok(());
+    }
+    let bound_elsewhere = state
+        .store
+        .list_worker_profiles(auth.org_id, None)
+        .await?
+        .into_iter()
+        .any(|profile| {
+            Some(profile.id) != profile_id
+                && profile.auth_secret_name.as_deref().map(str::trim) == Some(next.as_str())
+                && access.can_manage(profile.owner_user_id, profile.owner_team_id)
+        });
+    if bound_elsewhere {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!(
+            "authSecretName '{next}' is not bound to a worker profile you manage; an Owner or Admin must bind a new harness auth Secret"
+        )))
+    }
+}
+
 fn default_target() -> String {
     "docker".into()
 }
@@ -544,6 +587,15 @@ pub async fn create_profile(
     validate_inline_env_mappings(&body.env_mappings)?;
     let env = merge_profile_env(None, &body.env)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
+    require_auth_secret_binding(
+        &state,
+        &auth,
+        &access,
+        None,
+        None,
+        body.auth_secret_name.as_deref(),
+    )
+    .await?;
     crate::handlers::env_mappings::validate_profile_mapping_ids(
         &state,
         &auth,
@@ -679,6 +731,15 @@ pub async fn update_profile(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    require_auth_secret_binding(
+        &state,
+        &auth,
+        &access,
+        Some(profile_id),
+        existing.auth_secret_name.as_deref(),
+        body.auth_secret_name.as_deref(),
+    )
+    .await?;
     let env = merge_profile_env(Some(&existing.env), &body.env)?;
     crate::handlers::env_mappings::validate_profile_mapping_ids(
         &state,

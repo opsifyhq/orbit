@@ -47,10 +47,27 @@ rules:
   verbs: ["get", "list", "watch", "create", "delete"]
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["create", "patch", "delete"]   # per-launch env Secret; no read access
+  verbs: ["create", "delete"]   # per-launch env Secret; no read access
 ```
 
 The Helm chart creates a dedicated `ServiceAccount` and `Role`/`RoleBinding` for this.
+
+RBAC cannot limit `create` by name or content, so this Role alone would let anyone with
+the launcher's token create a pod that mounts any Secret in the namespace (the master
+key, the database URL), or delete ORBIT's own workloads. The chart therefore also
+installs three ValidatingAdmissionPolicies that apply only to requests from the
+launcher ServiceAccount (`launcher.admissionPolicy.enabled`, default `true`, rendered on
+Kubernetes 1.30 and later):
+
+| Policy | Allows only |
+|---|---|
+| `<ns>-<release>-launcher-secrets` | Secrets named `orbit-worker-<launch>-env`, of type `Opaque` |
+| `<ns>-<release>-launcher-names` | Pods, Deployments and Jobs named `orbit-worker-<launch>` (create and delete) |
+| `<ns>-<release>-launcher-workloads` | Pod specs whose `secretKeyRef`s name the workload's own `-env` Secret, whose Secret volumes are harness auth Secrets allowed by `launcher.authSecrets` or the CA bundle (never the platform Secret), with no `envFrom` Secrets, projected Secrets or tokens, hostPath, host namespaces, privileged containers or privilege escalation, and the default ServiceAccount without a mounted token |
+
+The policies and bindings are cluster-scoped. If the installer may only create
+namespaced resources, set `launcher.admissionPolicy.enabled=false` and enforce the same
+rules with your own admission controller (Kyverno, Gatekeeper).
 
 ## Image pull secrets
 
@@ -81,6 +98,9 @@ The launcher adds `imagePullSecrets` to every pod it creates.
 | `ORBIT_OPENCODE_AUTH_HOST_PATH` | unset | The same file as the Docker daemon sees it on the **host**; the daemon mounts this path into worker containers. |
 | `ORBIT_PI_AGENT_DIR` | unset | Pi agent directory inside the launcher container (Docker launches). |
 | `ORBIT_PI_AGENT_HOST_DIR` | unset | The same directory as the Docker daemon sees it on the host. |
+| `ORBIT_DOCKER_USER` | `10001:10001` | `--user` for Docker launches; empty keeps the image's user. Invalid values keep the default. |
+| `ORBIT_DOCKER_PIDS_LIMIT` | `4096` | `--pids-limit` for Docker launches; `0` disables it. |
+| `ORBIT_DOCKER_HOST_GATEWAY` | `auto` | Map `host.docker.internal` to the Docker host: `auto` only when the API URL uses that name, `true` always, `false` never. |
 
 ## Security model
 
@@ -93,7 +113,9 @@ The launcher adds `imagePullSecrets` to every pod it creates.
   (`<workload>-env`, labelled `orbit.launch-id`) and referenced with `secretKeyRef`; they
   never appear as plain `value` in the Job/Deployment spec. The launcher sets the workload
   as the Secret's owner, so the Secret is garbage-collected when the workload is deleted
-  (stop, relaunch, Job TTL). It needs only `create`/`patch`/`delete` on `secrets`.
+  (stop, relaunch, Job TTL). The Secret is created right after the workload with the
+  owner reference already set (pods wait for it), so the launcher needs only
+  `create`/`delete` on `secrets`.
   Secrets are only as private as your cluster's etcd: enable encryption at rest.
 - A worker profile's `authSecretName` is mounted into the pod, so it is restricted to the
   installer's allowlist (`ORBIT_WORKER_AUTH_SECRETS` / `launcher.authSecrets`): a valid
@@ -101,15 +123,27 @@ The launcher adds `imagePullSecrets` to every pod it creates.
   names; the launcher refuses them again at launch (it cannot read Secrets, so the check is
   by name, not by label). Profiles saved before this rule that name another Secret fail to
   launch until the name is added to the allowlist or the profile is changed.
+- The allowlist says which Secrets are harness auth, not whose. A profile editor who is
+  not an Owner or Admin may keep a profile's current Secret, clear it, or reuse a Secret
+  that is already bound to another profile they manage; binding any other Secret (for
+  example another team's `orbit-pi-auth-team-b`) returns `403` and needs an Owner or
+  Admin.
 - Docker launches pass the same values through a 0600 `--env-file` that is deleted right
   after `docker run`; nothing secret is in argv. `docker inspect` on the host still shows
   container env, so protect Docker socket access.
 - The token is revoked when the launch stops or fails, and, for single-execution
   launches, when the execution reaches a terminal state (the API checks every 15 s).
 - Worker pods set `automountServiceAccountToken: false`; they have no Kubernetes API access.
-- Optional NetworkPolicy: set `networkPolicy.enabled=true` in the Helm chart to allow
-  ingress to the launcher (port 8090) only from the ORBIT API pods. It needs a CNI that
-  enforces NetworkPolicy and is off by default. Egress is not restricted.
+- NetworkPolicies: with `networkPolicy.enabled=true` (on in `values-prod.example.yaml`,
+  needs a CNI that enforces them) only the API reaches the launcher (8090), the bundled
+  PostgreSQL (5432) and NATS (4222); launched and fixed worker pods accept no
+  connections and may connect only to DNS, the API and addresses outside
+  `networkPolicy.worker.egressExcept` (private, CGNAT and link-local ranges by default).
+  Add private Git hosts or model servers with `networkPolicy.worker.extraEgress`.
+- Docker launches run with `--cap-drop ALL`, `--security-opt no-new-privileges`, a PID
+  limit, the image's `orbit` user (`10001:10001`) and the profile's CPU and memory
+  limits. `host.docker.internal` is mapped only when the API URL uses it. See
+  `ORBIT_DOCKER_USER`, `ORBIT_DOCKER_PIDS_LIMIT` and `ORBIT_DOCKER_HOST_GATEWAY` below.
 - The launcher never exposes kubectl or the Docker socket to the API or web app.
 
 ## Custom CA certificates

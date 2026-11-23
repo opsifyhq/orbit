@@ -1,0 +1,243 @@
+{{- /*
+Admission policies for what the launcher ServiceAccount may create (issue #212).
+
+RBAC cannot scope `create` by name or content, so the launcher's Role alone would let a
+stolen launcher token start a pod that mounts any Secret in the namespace (the master
+key, the database URL) or delete ORBIT's own Deployments. These policies, evaluated by
+the API server for requests from that ServiceAccount only, pin it to what the launcher
+actually does:
+
+- `-secrets`: Secrets are `orbit-worker-<launch>-env` of type Opaque (a
+  service-account-token Secret would mint a token for another ServiceAccount);
+- `-names`: pods, Deployments and Jobs are `orbit-worker-<launch>`, so the launcher
+  cannot create or delete ORBIT's own workloads;
+- `-workloads` (pod specs): env Secrets only from the workload's own `-env` Secret, volume Secrets only
+  from the harness auth allowlist (`launcher.authSecrets`) and the CA bundle, never
+  ORBIT's platform Secrets; no projected Secrets, hostPath, host namespaces, privileged
+  containers or ServiceAccount token.
+
+ValidatingAdmissionPolicy is GA in Kubernetes 1.30. The policies are cluster-scoped, so
+installing them needs permission to create cluster-scoped admission resources; set
+`launcher.admissionPolicy.enabled=false` when the installer only has namespace rights,
+and enforce the same rules with your own admission controller.
+*/ -}}
+{{- if and .Values.launcher.enabled .Values.launcher.admissionPolicy.enabled }}
+{{- if or (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+{{- $fullname := include "orbit.fullname" . }}
+{{- $policyName := printf "%s-%s-launcher" .Release.Namespace $fullname | trunc 50 | trimSuffix "-" }}
+{{- $launcherUser := printf "system:serviceaccount:%s:%s-launcher" .Release.Namespace $fullname }}
+{{- $exact := list }}
+{{- $prefixes := list }}
+{{- range splitList "," (toString .Values.launcher.authSecrets) }}
+{{- $pattern := trim . }}
+{{- if $pattern }}
+{{- if hasSuffix "*" $pattern }}
+{{- $prefixes = append $prefixes (trimSuffix "*" $pattern) }}
+{{- else }}
+{{- $exact = append $exact $pattern }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.caCertificates.enabled .Values.caCertificates.secretName }}
+{{- $exact = append $exact .Values.caCertificates.secretName }}
+{{- end }}
+{{- /* Platform Secrets are refused even when a broad auth pattern would match them. */ -}}
+{{- $denied := list (include "orbit.secretName" .) }}
+{{- range (list .Values.externalDatabase.existingSecret .Values.license.existingSecret .Values.vault.existingSecret) }}
+{{- if . }}
+{{- $denied = append $denied . }}
+{{- end }}
+{{- end }}
+{{- $pull := list }}
+{{- with include "orbit.launcherImagePullSecret" . }}
+{{- $pull = append $pull . }}
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $policyName }}-secrets
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: launcher-only
+      expression: {{ printf "request.userInfo.username == '%s'" $launcherUser | quote }}
+  validations:
+    - expression: >-
+        (request.operation == 'DELETE' ? request.name : object.metadata.name)
+        .matches('^orbit-worker-[0-9a-f]{32}-env$')
+      message: "the launcher may only manage its per-launch orbit-worker-<launch>-env Secrets"
+    - expression: "request.operation == 'DELETE' || (has(object.type) && object.type == 'Opaque')"
+      message: "per-launch Secrets must be of type Opaque"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $policyName }}-secrets
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  policyName: {{ $policyName }}-secrets
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $policyName }}-names
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["pods"]
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["deployments"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["jobs"]
+  matchConditions:
+    - name: launcher-only
+      expression: {{ printf "request.userInfo.username == '%s'" $launcherUser | quote }}
+  validations:
+    - expression: >-
+        (request.operation == 'DELETE' ? request.name : object.metadata.name)
+        .matches('^orbit-worker-[0-9a-f]{8}([0-9a-f]{24})?$')
+      message: "the launcher may only manage orbit-worker-<launch> workloads"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $policyName }}-names
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  policyName: {{ $policyName }}-names
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $policyName }}-workloads
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  matchConditions:
+    - name: launcher-only
+      expression: {{ printf "request.userInfo.username == '%s'" $launcherUser | quote }}
+  variables:
+    - name: spec
+      expression: "request.resource.resource == 'pods' ? object.spec : object.spec.template.spec"
+    - name: containers
+      expression: >-
+        variables.spec.containers +
+        (has(variables.spec.initContainers) ? variables.spec.initContainers : [])
+    - name: volumes
+      expression: "has(variables.spec.volumes) ? variables.spec.volumes : []"
+    - name: envSecret
+      expression: "object.metadata.name + '-env'"
+    - name: mountable
+      expression: {{ toJson $exact | quote }}
+    - name: mountablePrefixes
+      expression: {{ toJson $prefixes | quote }}
+    - name: denied
+      expression: {{ toJson $denied | quote }}
+    - name: pullSecrets
+      expression: {{ toJson $pull | quote }}
+  validations:
+    - expression: >-
+        variables.containers.all(c, !has(c.env) || c.env.all(e,
+          !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef) ||
+          (has(e.valueFrom.secretKeyRef.name) && e.valueFrom.secretKeyRef.name == variables.envSecret)))
+      message: "worker env may only reference the workload's own orbit-worker-<launch>-env Secret"
+    - expression: >-
+        variables.containers.all(c, !has(c.envFrom) || c.envFrom.all(e, !has(e.secretRef)))
+      message: "worker containers may not load a Secret with envFrom"
+    - expression: >-
+        variables.volumes.all(v, !has(v.secret) || (has(v.secret.secretName) &&
+          !(v.secret.secretName in variables.denied) &&
+          (v.secret.secretName in variables.mountable ||
+           variables.mountablePrefixes.exists(p, v.secret.secretName.startsWith(p)))))
+      message: "worker pods may only mount the harness auth Secrets allowed by launcher.authSecrets and the CA bundle"
+    - expression: >-
+        variables.volumes.all(v, !has(v.projected) || !has(v.projected.sources) ||
+          v.projected.sources.all(s, !has(s.secret) && !has(s.serviceAccountToken)))
+      message: "worker pods may not use projected Secrets or ServiceAccount tokens"
+    - expression: "variables.volumes.all(v, !has(v.hostPath))"
+      message: "worker pods may not use hostPath volumes"
+    - expression: >-
+        !has(variables.spec.imagePullSecrets) ||
+        variables.spec.imagePullSecrets.all(s, has(s.name) && s.name in variables.pullSecrets)
+      message: "worker pods may only use the launcher's image pull Secret"
+    - expression: >-
+        (!has(variables.spec.serviceAccountName) || variables.spec.serviceAccountName == 'default') &&
+        (!has(variables.spec.serviceAccount) || variables.spec.serviceAccount == 'default') &&
+        has(variables.spec.automountServiceAccountToken) &&
+        variables.spec.automountServiceAccountToken == false
+      message: "worker pods run as the default ServiceAccount without a mounted token"
+    - expression: >-
+        !(has(variables.spec.hostNetwork) && variables.spec.hostNetwork) &&
+        !(has(variables.spec.hostPID) && variables.spec.hostPID) &&
+        !(has(variables.spec.hostIPC) && variables.spec.hostIPC) &&
+        variables.containers.all(c, !has(c.securityContext) ||
+          ((!has(c.securityContext.privileged) || !c.securityContext.privileged) &&
+           (!has(c.securityContext.allowPrivilegeEscalation) || !c.securityContext.allowPrivilegeEscalation)))
+      message: "worker pods may not use host namespaces, privileged containers or privilege escalation"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $policyName }}-workloads
+  labels:
+    {{- include "orbit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: launcher
+spec:
+  policyName: {{ $policyName }}-workloads
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

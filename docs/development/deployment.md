@@ -157,7 +157,12 @@ Key values (all in `deploy/helm/orbit/values.yaml`):
 | `launcher.token` | generated | Shared bearer token between API and launcher, reused across upgrades |
 | `launcher.authSecrets` | `orbit-opencode-auth*,orbit-pi-auth*` | Secret names (exact or `prefix*`) a worker profile may mount as `authSecretName`. Empty allows none. Sets `ORBIT_WORKER_AUTH_SECRETS` on the API and the launcher |
 | `launcher.imagePullSecret` | empty | Pull secret added to every pod the launcher creates |
-| `networkPolicy.enabled` | `false` | Restricts ingress to the launcher (port 8090) to the API pods. Needs a CNI that enforces NetworkPolicy. Egress is not restricted |
+| `launcher.admissionPolicy.enabled` | `true` | ValidatingAdmissionPolicies that limit what the launcher ServiceAccount may create (names, Secret types, mounted Secrets, host access). Kubernetes 1.30+; cluster-scoped, so disable it when the installer has only namespace rights. See [kubernetes-launcher.md](kubernetes-launcher.md) |
+| `networkPolicy.enabled` | `false` | NetworkPolicies: PostgreSQL, NATS and the launcher accept only the API; worker pods accept nothing and reach only DNS, the API and addresses outside `networkPolicy.worker.egressExcept`. Needs a CNI that enforces NetworkPolicy. On in `values-prod.example.yaml` |
+| `networkPolicy.worker.egressCidrs`, `.egressExcept`, `.extraEgress` | `0.0.0.0/0`, `::/0` minus private, CGNAT and link-local ranges; none | Worker egress. Add private Git hosts or model servers as `extraEgress` rules |
+| `api.autoMigrate` | `true` | Apply migrations on API start-up (`ORBIT_DB_AUTO_MIGRATE`); they take an advisory lock, so several replicas are safe |
+| `api.podDisruptionBudget.enabled`, `.minAvailable` | `false`, `1` | PodDisruptionBudget for the API; on in `values-prod.example.yaml` |
+| `nats.monitoring.enabled` | `false` | NATS HTTP monitoring on port 8222 (pod only, never on the Service) |
 | `outbound.allowPrivate` | `true` | Allow provider, output and work-source URLs that resolve to private ranges. Loopback, link-local and cloud-metadata addresses are always blocked |
 | `outbound.allowedHosts` | empty | Comma-separated hostnames, IPs or CIDRs exempt from the block (never metadata addresses) |
 | `license.*` | empty | `existingSecret` and `key`, or an inline `value`. See [licensing.md](licensing.md) |
@@ -321,7 +326,7 @@ ORBIT on a reachable host or cluster, override at least:
 | Database | `externalDatabase.enabled=true` (preferred), or a non-default `postgresql.password` for the bundled instance |
 | Master key | Your own `secrets.masterKey` or `master-key` in `secrets.existingSecret` (`openssl rand -base64 32`; see ADR 0004) |
 | Launcher | A random `launcher.token` or `launcher-token` key in the existing Secret (`openssl rand -base64 36`). In Compose set `ORBIT_LAUNCHER_TOKEN`; the launcher port is not published |
-| Launcher exposure | `networkPolicy.enabled=true` on a CNI that enforces it, so only the API pods reach the launcher (port 8090) |
+| Launcher exposure | `networkPolicy.enabled=true` on a CNI that enforces it, so only the API pods reach the launcher (8090), the database and NATS, and workers reach only DNS, the API and public addresses. Keep `launcher.admissionPolicy.enabled=true` (Kubernetes 1.30+) so a leaked launcher token cannot mount platform Secrets |
 | Worker secrets | Keep `launcher.authSecrets` as narrow as your auth Secret names allow. Profiles may mount only matching Secrets |
 | Outbound URLs | `outbound.allowPrivate=false` unless you run private model servers, and list the exceptions in `outbound.allowedHosts` |
 | Ingress | `ingress.tls.enabled=true` with a valid certificate Secret; `https://` in `platform.corsOrigins` and `platform.publicBaseUrl` |
@@ -399,6 +404,8 @@ Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explain
 | `ORBIT_EXECUTION_IMAGE`, `ORBIT_EXECUTION_IMAGE_<HARNESS>` | unset | Image for the docker driver; the per-harness form (for example `ORBIT_EXECUTION_IMAGE_OPENCODE`) wins |
 | `ORBIT_DOCKER_BIN` | `docker` | Docker CLI used by the docker driver |
 | `ORBIT_DISPATCH_REWRITE_HOSTS` | on | Set `false` to stop rewriting `localhost` to `host.docker.internal` for dispatched containers |
+| `ORBIT_DISPATCH_CPUS`, `ORBIT_DISPATCH_MEMORY` | `2`, `2g` | `--cpus` and `--memory` for dispatched containers (Docker syntax); `0` disables a limit, invalid values keep the default |
+| `ORBIT_DOCKER_USER`, `ORBIT_DOCKER_PIDS_LIMIT`, `ORBIT_DOCKER_HOST_GATEWAY` | `10001:10001`, `4096`, `auto` | Sandbox for dispatched containers, as for launcher Docker launches; capabilities are always dropped and `no-new-privileges` always set (see [kubernetes-launcher.md](kubernetes-launcher.md)) |
 | `ORBIT_MCP_BROKER_BIN` | `/usr/local/bin/orbit-worker` | Tool broker command; see [local.md](local.md) |
 | `ORBIT_MAX_APPROVAL_WAIT_SECONDS` | `3600` | Same budget as above |
 

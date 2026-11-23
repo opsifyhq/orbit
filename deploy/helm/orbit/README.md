@@ -79,8 +79,9 @@ helm uninstall orbit -n orbit
 kubectl -n orbit delete pvc -l app.kubernetes.io/instance=orbit
 ```
 
-Migrations run automatically when the API starts (`ORBIT_DB_AUTO_MIGRATE`) and are
-append-only.
+Migrations run automatically when the API starts (`api.autoMigrate`, which sets
+`ORBIT_DB_AUTO_MIGRATE`) and are append-only. They take an advisory lock, so several API
+replicas are safe.
 
 ## Values reference
 
@@ -175,7 +176,7 @@ single executions). The settings below only apply to fixed Deployments.
 | `worker.concurrency` | `4` | concurrent executions per worker |
 | `worker.harnesses` | `mock` | comma-separated harness kinds |
 | `worker.pollIntervalMs` | `500` | |
-| `worker.schedulerEnabled` | `true` | run the scheduler on exactly one replica |
+| `worker.schedulerEnabled` | `true` | not read by current workers; schedules run in the API, which claims each fire atomically |
 | `worker.workspace.sizeLimit` | `1Gi` | |
 | `opencodeWorker.enabled` | `false` | fixed OpenCode CLI worker |
 | `opencodeWorker.token` | `""` | required when enabled |
@@ -193,9 +194,13 @@ single executions). The settings below only apply to fixed Deployments.
 | `launcher.token` | `""` | internal API↔launcher token; generated and reused from the release Secret when empty |
 | `launcher.authSecrets` | `orbit-opencode-auth*,orbit-pi-auth*` | harness auth Secrets a worker profile may mount (`authSecretName`): exact names or `prefix*`, comma-separated; enforced by the API and the launcher |
 | `launcher.imagePullSecret` | `""` | registry secret for launched pods; defaults to the first `imagePullSecrets` entry |
+| `launcher.admissionPolicy.enabled` | `true` | ValidatingAdmissionPolicies limiting what the launcher ServiceAccount may create (Kubernetes 1.30+, cluster-scoped) |
 
 The launcher gets namespaced RBAC for Pods/Jobs only; the API never receives cluster
-credentials. Set `launcher.token` explicitly (or provide `launcher-token` in
+credentials. Because RBAC cannot limit `create` by name or content, the chart adds
+admission policies so the launcher can create only `orbit-worker-<launch>` workloads and
+Opaque `-env` Secrets, and only pods that mount the allowed harness auth Secrets (see
+`docs/development/kubernetes-launcher.md`). Set `launcher.token` explicitly (or provide `launcher-token` in
 `secrets.existingSecret`) when the rendered chart is committed or diffed by GitOps,
 because `helm template` cannot look up the stored token.
 
