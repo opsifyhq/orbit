@@ -48,11 +48,12 @@ function EditSkillEditor({ skillId }: { skillId: string }) {
     );
   }
 
-  async function handleSubmit(input: SkillInput) {
+  async function handleSubmit(input: SkillInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     setServerIssues([]);
     try {
       const updated = await updateSkill(skillId, input);
+      await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.skills }),
         queryClient.invalidateQueries({ queryKey: queryKeys.skill(skillId) }),

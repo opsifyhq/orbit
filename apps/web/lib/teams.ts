@@ -87,15 +87,20 @@ export function startTeamRun(
   });
 }
 
+/** The generated schema types `input` as `unknown`; the web view uses the stricter local shape. */
+export type TeamRunPage = { items: TeamRun[]; nextCursor?: string | null; total: number };
+
 export function listTeamRuns(
-  options: { archived?: boolean; teamId?: string; limit?: number } = {},
-): Promise<TeamRun[]> {
+  options: { archived?: boolean; teamId?: string; limit?: number; cursor?: string; q?: string } = {},
+): Promise<TeamRunPage> {
   const params = new URLSearchParams();
   if (options.archived !== undefined) params.set("archived", String(options.archived));
   if (options.teamId) params.set("teamId", options.teamId);
   if (options.limit) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.q) params.set("q", options.q);
   const query = params.toString();
-  return request<TeamRun[]>(`/api/v1/team-runs${query ? `?${query}` : ""}`);
+  return request<TeamRunPage>(`/api/v1/team-runs${query ? `?${query}` : ""}`);
 }
 
 export function getTeamRun(runId: string): Promise<TeamRunDetail> {

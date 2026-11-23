@@ -6,7 +6,11 @@ import Link from "next/link";
 import { ChevronLeft, FilePlus2, FileText, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import {
   SectionCard,
   SectionPills,
@@ -159,14 +163,15 @@ export function SkillForm({
   skill?: Skill;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (input: SkillInput) => Promise<void> | void;
+  onSubmit: ResourceSubmit<SkillInput>;
   cancelHref: string;
   /** Validation details from the last failed save (`path` + `message`). */
   serverIssues?: Array<{ path: string; message: string }>;
 }) {
   const editing = Boolean(skill);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(skill));
-  useUnsavedChanges(draft);
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ draft, accessDirty });
   const [slugTouched, setSlugTouched] = useState(editing);
   const [selectedFile, setSelectedFile] = useState(0);
   const [bodyView, setBodyView] = useState<"write" | "preview">("write");
@@ -279,15 +284,20 @@ export function SkillForm({
       toast.error(local.length === 1 ? local[0].message : "Fix the highlighted sections");
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
     const extra = draft.extra.split(/\r?\n/).filter((line, i, all) => line.trim() !== "" || (i > 0 && i < all.length - 1));
-    await onSubmit({
-      name: draft.name.trim(),
-      slug: draft.slug.trim(),
-      description: draft.description.replace(/\s+/g, " ").trim(),
-      content: composeSkill({ slug: draft.slug.trim(), description: draft.description, body: draft.body, extra }),
-      files: Object.fromEntries(draft.files.map((file) => [file.path, file.content])),
-    });
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(
+      {
+        name: draft.name.trim(),
+        slug: draft.slug.trim(),
+        description: draft.description.replace(/\s+/g, " ").trim(),
+        content: composeSkill({ slug: draft.slug.trim(), description: draft.description, body: draft.body, extra }),
+        files: Object.fromEntries(draft.files.map((file) => [file.path, file.content])),
+      },
+      commitAccess,
+    );
   }
 
   // ------------------------------------------------------------------ summaries
@@ -587,7 +597,12 @@ export function SkillForm({
               </CardHeader>
               <CardContent className="space-y-5">
                 {sectionIssues("sharing")}
-                <ResourceAccessFields ref={accessRef} resource="skills" resourceId={skill?.id} />
+                <ResourceAccessFields
+                  ref={accessRef}
+                  resource="skills"
+                  resourceId={skill?.id}
+                  onDirtyChange={setAccessDirty}
+                />
                 <div className="flex items-center justify-between gap-3 border-t pt-4">
                   <Button type="button" variant="ghost" onClick={() => go("files")}>
                     <ChevronLeft /> {SECTION_TITLES.files}

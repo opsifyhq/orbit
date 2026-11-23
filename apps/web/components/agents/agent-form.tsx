@@ -8,7 +8,11 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Disclosure } from "@/components/ui/disclosure";
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -183,7 +187,7 @@ export function AgentForm({
   initial?: AgentDefinition;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (definition: AgentDefinition) => Promise<void> | void;
+  onSubmit: ResourceSubmit<AgentDefinition>;
   cancelHref?: string;
   /** The saved agent, so its access can be set; omitted while creating. */
   resourceId?: string;
@@ -200,7 +204,8 @@ export function AgentForm({
     initial ? structuredClone(initial) : emptyAgentDefinition(),
   );
   // A definition takes a while to write: do not let a stray click on the sidebar lose it.
-  useUnsavedChanges(definition);
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ definition, accessDirty });
   const [issues, setIssues] = useState<Array<{ path: string; message: string }>>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const meta = useMeta();
@@ -391,8 +396,10 @@ export function AgentForm({
       return;
     }
     setIssues([]);
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition);
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition, commitAccess);
   }
 
   const editing = Boolean(initial);
@@ -1377,7 +1384,12 @@ export function AgentForm({
             title="Access control (RBAC)"
             description="Who can see and use this agent. Saved together with the agent."
           >
-            <ResourceAccessFields ref={accessRef} resource="agents" resourceId={resourceId} />
+            <ResourceAccessFields
+              ref={accessRef}
+              resource="agents"
+              resourceId={resourceId}
+              onDirtyChange={setAccessDirty}
+            />
           </FormSection>
         </div>
       </div>

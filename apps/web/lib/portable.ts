@@ -1,6 +1,7 @@
 "use client";
 
-import { getAccessToken, setAccessToken } from "./api";
+import { ApiError } from "./api-error";
+import { requestRaw } from "./http";
 
 /*
  * Portable export/import (#80).
@@ -63,22 +64,22 @@ export class PortableError extends Error {
   }
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+/** Keep the import dialog's error shape while using the shared auth and 401 handling. */
+function toError(error: unknown): PortableError {
+  if (error instanceof ApiError) {
+    return new PortableError(
+      error.status,
+      error.code ?? "error",
+      error.message,
+      (error.details ?? []) as ImportIssue[],
+    );
+  }
+  return new PortableError(0, "error", error instanceof Error ? error.message : "Request failed", []);
 }
 
-async function toError(response: Response): Promise<PortableError> {
-  if (response.status === 401) setAccessToken(null);
-  const body = (await response.json().catch(() => null)) as {
-    error?: { code?: string; message?: string; details?: ImportIssue[] };
-  } | null;
-  return new PortableError(
-    response.status,
-    body?.error?.code ?? "error",
-    body?.error?.message ?? `HTTP ${response.status}`,
-    body?.error?.details ?? [],
-  );
+/** Same-origin requests so a server-only `NEXT_PUBLIC_ORBIT_API_URL` still works in the browser. */
+function requestPortable(path: string, init?: RequestInit): Promise<Response> {
+  return requestRaw(path, { ...init, sameOrigin: true });
 }
 
 /** Validate (dryRun) or apply an import of YAML, JSON, SKILL.md or a bundle. */
@@ -89,17 +90,16 @@ export async function runImport(
   dryRun: boolean,
 ): Promise<ImportReport> {
   const params = new URLSearchParams({ mode, dryRun: String(dryRun) });
-  const response = await fetch(`/api/v1/import?${params}`, {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      ...authHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ content, filename }),
-  });
-  if (!response.ok) throw await toError(response);
-  return (await response.json()) as ImportReport;
+  try {
+    const response = await requestPortable(`/api/v1/import?${params}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, filename }),
+    });
+    return (await response.json()) as ImportReport;
+  } catch (error) {
+    throw toError(error);
+  }
 }
 
 function filenameFrom(response: Response, fallback: string): string {
@@ -115,11 +115,12 @@ export async function downloadExport(
   name: string,
   format: ExportFormat = "yaml",
 ): Promise<void> {
-  const response = await fetch(`/api/v1/export/${resource}/${resourceId}?format=${format}`, {
-    cache: "no-store",
-    headers: authHeaders(),
-  });
-  if (!response.ok) throw await toError(response);
+  let response: Response;
+  try {
+    response = await requestPortable(`/api/v1/export/${resource}/${resourceId}?format=${format}`);
+  } catch (error) {
+    throw toError(error);
+  }
   const safe = name.replace(/[^a-z0-9._-]+/gi, "-").toLowerCase() || "export";
   const extension = format === "markdown" ? "md" : format;
   const filename = filenameFrom(response, `${safe}.${extension}`);

@@ -5,7 +5,11 @@ import Link from "next/link";
 import { ChevronLeft, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -75,7 +79,7 @@ export function EnvironmentForm({
   copyOf?: EnvMappingRecord;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (input: EnvironmentInput) => Promise<void> | void;
+  onSubmit: ResourceSubmit<EnvironmentInput>;
   cancelHref: string;
   serverIssues?: Array<{ path: string; message: string }>;
 }) {
@@ -85,7 +89,8 @@ export function EnvironmentForm({
   const [name, setName] = useState(mapping?.name ?? (copyOf ? `${copyOf.name} copy` : ""));
   const [description, setDescription] = useState(start?.description ?? "");
   const [rows, setRows] = useState<VariableRow[]>(() => (start?.mappings.length ? toRows(start) : [emptyRow()]));
-  useUnsavedChanges({ name, description, rows });
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ name, description, rows, accessDirty });
   const accessRef = useRef<ResourceAccessHandle>(null);
 
   const connectionById = useMemo(
@@ -149,8 +154,13 @@ export function EnvironmentForm({
       toast.error(local.length === 1 ? local[0].message : "Fix the highlighted sections");
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit({ name: name.trim(), description: description.trim(), mappings: toEntries(rows) });
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(
+      { name: name.trim(), description: description.trim(), mappings: toEntries(rows) },
+      commitAccess,
+    );
   }
 
   // ------------------------------------------------------------------ summaries
@@ -367,7 +377,12 @@ export function EnvironmentForm({
                 <p className="text-[13px] text-muted-foreground">Who can see this environment and attach it to worker profiles.</p>
               </CardHeader>
               <CardContent className="space-y-5">
-                <ResourceAccessFields ref={accessRef} resource="env_mappings" resourceId={mapping?.id} />
+                <ResourceAccessFields
+                  ref={accessRef}
+                  resource="env_mappings"
+                  resourceId={mapping?.id}
+                  onDirtyChange={setAccessDirty}
+                />
                 <div className="flex items-center justify-between gap-3 border-t pt-4">
                   <Button type="button" variant="ghost" onClick={() => go("variables")}>
                     <ChevronLeft /> {SECTION_TITLES.variables}

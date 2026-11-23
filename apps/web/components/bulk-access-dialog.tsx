@@ -87,8 +87,8 @@ export function BulkAccessDialog({
         </DialogHeader>
         {!enabled && license.isSuccess ? (
           <p className="rounded-lg border bg-subtle px-3 py-2.5 text-[13px] text-muted-foreground">
-            Teams and private access need an enterprise license with teams and resource
-            permissions. You can still set Organization visibility.
+            Changing visibility or ownership needs an enterprise license with teams and
+            resource permissions; the API refuses every access update without one.
           </p>
         ) : null}
         <Field label="Visibility" htmlFor="bulk-visibility">
@@ -103,7 +103,12 @@ export function BulkAccessDialog({
           </Select>
         </Field>
         <Field label="Owning team" htmlFor="bulk-owner" optional hint="Leave unchanged unless you need to move the resources.">
-          <Select id="bulk-owner" value={owner} onChange={(event) => setOwner(event.target.value)}>
+          <Select
+            id="bulk-owner"
+            value={owner}
+            onChange={(event) => setOwner(event.target.value)}
+            disabled={!enabled}
+          >
             <option value="">Leave unchanged</option>
             <option value="__none">No owning team</option>
             {(teams.data ?? []).map((team) => (

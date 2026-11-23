@@ -189,16 +189,21 @@ export function ListCount({
   singular,
   plural,
   note,
+  verb = "match",
 }: {
   shown: number;
   total: number;
   singular: string;
   plural: string;
   note?: string;
+  /** "match" for a filtered list, "shown" when the list is paged. */
+  verb?: "match" | "shown";
 }) {
   return (
     <p className="tabular text-[13px] text-muted-foreground">
-      {shown === total ? `${shown} ${shown === 1 ? singular : plural}.` : `${shown} of ${total} ${plural} match.`}
+      {shown === total
+        ? `${shown} ${shown === 1 ? singular : plural}.`
+        : `${shown} of ${total} ${plural} ${verb}.`}
       {note ? ` ${note}` : ""}
     </p>
   );
