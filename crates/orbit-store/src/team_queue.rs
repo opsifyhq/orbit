@@ -364,13 +364,19 @@ impl Store {
     ) -> StoreResult<Option<TeamQueueItem>> {
         Ok(sqlx::query_as::<_, TeamQueueItem>(
             r#"
-            UPDATE team_queue_items
+            UPDATE team_queue_items q
             SET status = 'pending', error = $3, attempts = attempts + 1,
                 team_run_id = NULL, updated_at = now()
-            WHERE org_id = $1 AND id = $2
-              AND status IN ('failed', 'cancelled')
-              AND attempts < max_attempts
-            RETURNING *
+            WHERE q.org_id = $1 AND q.id = $2
+              AND q.status IN ('failed', 'cancelled')
+              AND q.attempts < q.max_attempts
+              -- Never start a second run while the previous run's execution is live.
+              AND NOT EXISTS (
+                  SELECT 1 FROM executions e
+                  WHERE q.team_run_id IS NOT NULL AND e.team_run_id = q.team_run_id
+                    AND e.status IN ('queued', 'dispatched', 'running', 'awaiting_approval')
+              )
+            RETURNING q.*
             "#,
         )
         .bind(org_id)
@@ -389,10 +395,16 @@ impl Store {
     ) -> StoreResult<Option<TeamQueueItem>> {
         Ok(sqlx::query_as::<_, TeamQueueItem>(
             r#"
-            UPDATE team_queue_items
+            UPDATE team_queue_items q
             SET status = 'pending', error = NULL, team_run_id = NULL, updated_at = now()
-            WHERE org_id = $1 AND id = $2 AND status IN ('pending', 'failed', 'cancelled')
-            RETURNING *
+            WHERE q.org_id = $1 AND q.id = $2 AND q.status IN ('pending', 'failed', 'cancelled')
+              -- Never start a second run while the previous run's execution is live.
+              AND NOT EXISTS (
+                  SELECT 1 FROM executions e
+                  WHERE q.team_run_id IS NOT NULL AND e.team_run_id = q.team_run_id
+                    AND e.status IN ('queued', 'dispatched', 'running', 'awaiting_approval')
+              )
+            RETURNING q.*
             "#,
         )
         .bind(org_id)
@@ -401,7 +413,9 @@ impl Store {
         .await?)
     }
 
-    /// Cancel a pending/running/failed item and detach any in-flight run link.
+    /// Cancel a pending/running/failed item. The run link is kept so that
+    /// [`Self::requeue_team_queue_item`] can refuse while that run's execution is still
+    /// stopping; outcome handling ignores items that are no longer `running`.
     /// `None` when it is already terminal (`succeeded`/`cancelled`).
     pub async fn cancel_team_queue_item(
         &self,
@@ -412,7 +426,7 @@ impl Store {
         Ok(sqlx::query_as::<_, TeamQueueItem>(
             r#"
             UPDATE team_queue_items
-            SET status = 'cancelled', error = $3, team_run_id = NULL, updated_at = now()
+            SET status = 'cancelled', error = $3, updated_at = now()
             WHERE org_id = $1 AND id = $2 AND status IN ('pending', 'running', 'failed')
             RETURNING *
             "#,

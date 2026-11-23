@@ -83,10 +83,13 @@ pub async fn create_agent(
     auth.require(Permission::AgentsWrite)?;
     // Installation-wide check and insert are serialised across API replicas.
     let _agent_limit = state.agent_limit_guard().await?;
-    let report = state
+    let mut report = state
         .store
         .validate_agent_references(auth.org_id, &definition)
         .await?;
+    report
+        .issues
+        .extend(validate_harness_config(&state, &definition.spec).await);
     if !report.is_valid() {
         return Err(ApiError::validation(report.issues));
     }
@@ -117,6 +120,66 @@ pub async fn create_agent(
     Ok((StatusCode::CREATED, Json(detail)))
 }
 
+/// Validate an agent's harness settings with the adapter that will run them (#303).
+///
+/// Settings that choose what the worker executes (`binary`, `extraArgs`), carry the
+/// policy hook (`orbitMcp`) or point at a shared server are the platform's, not the agent
+/// author's, and are rejected. Everything else goes through the adapter's own
+/// `validate_config`, so the contract's promise that harness config is validated holds.
+pub(crate) async fn validate_harness_config(
+    state: &AppState,
+    spec: &orbit_domain::AgentSpec,
+) -> Vec<orbit_domain::ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut configs: Vec<(String, orbit_domain::HarnessKind, serde_json::Value)> = Vec::new();
+    for (key, value) in &spec.harness_config {
+        match key.parse::<orbit_domain::HarnessKind>().ok() {
+            Some(kind) => configs.push((format!("spec.harnessConfig.{key}"), kind, value.clone())),
+            None => issues.push(orbit_domain::ValidationIssue::new(
+                format!("spec.harnessConfig.{key}"),
+                "unknown harness",
+            )),
+        }
+    }
+    if let Some(harness) = &spec.harness {
+        if !harness.config.is_null() {
+            configs.push((
+                "spec.harness.config".into(),
+                harness.kind,
+                harness.config.clone(),
+            ));
+        }
+    }
+    for (path, kind, value) in configs {
+        if let Some(map) = value.as_object() {
+            for key in orbit_contracts::PLATFORM_ONLY_HARNESS_SETTINGS {
+                if map.contains_key(*key) {
+                    issues.push(orbit_domain::ValidationIssue::new(
+                        format!("{path}.{key}"),
+                        "set by the platform, not by the agent",
+                    ));
+                }
+            }
+        }
+        let Some(adapter) = state.registry.get(kind) else {
+            continue;
+        };
+        let report = adapter
+            .validate_config(&orbit_contracts::HarnessConfig {
+                kind,
+                settings: value,
+            })
+            .await;
+        for issue in report.issues {
+            issues.push(orbit_domain::ValidationIssue::new(
+                format!("{path}.{}", issue.path),
+                issue.message,
+            ));
+        }
+    }
+    issues
+}
+
 #[utoipa::path(get, path = "/api/v1/agents/{agent_id}", tag = "agents", responses((status = 200, body = AgentDetail)))]
 pub async fn get_agent(
     State(state): State<AppState>,
@@ -137,10 +200,13 @@ pub async fn update_agent(
     auth.require(Permission::AgentsWrite)?;
     require_agent_manage(&state, &auth, agent_id).await?;
     if let Some(definition) = &body.definition {
-        let report = state
+        let mut report = state
             .store
             .validate_agent_references(auth.org_id, definition)
             .await?;
+        report
+            .issues
+            .extend(validate_harness_config(&state, &definition.spec).await);
         if !report.is_valid() {
             return Err(ApiError::validation(report.issues));
         }

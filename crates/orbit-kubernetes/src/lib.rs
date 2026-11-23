@@ -182,8 +182,15 @@ impl KubernetesClientConfig {
                 .any(|item| item == resource || item == "*")
     }
 
+    /// A client bound to the platform's outbound policy: loopback, link-local and
+    /// cloud-metadata addresses (and private ranges when `ORBIT_OUTBOUND_ALLOW_PRIVATE` is
+    /// false) are refused at DNS resolution, and redirects to another host are not
+    /// followed (#321).
     fn client(&self) -> Result<reqwest::Client, String> {
-        let mut builder = reqwest::Client::builder().timeout(self.timeout);
+        let mut builder = orbit_security::guard_client_builder(
+            reqwest::Client::builder().timeout(self.timeout),
+            orbit_security::OutboundPolicy::from_env(),
+        );
         if let Some(pem) = &self.ca_pem {
             let certificate = reqwest::Certificate::from_pem(pem)
                 .map_err(|error| format!("invalid caCert: {error}"))?;
@@ -198,6 +205,13 @@ impl KubernetesClientConfig {
     }
 
     async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+        // The resolver guard does not see IP-literal hosts; check the address up front.
+        orbit_security::check_outbound_url(
+            &self.api_server,
+            &orbit_security::OutboundPolicy::from_env(),
+        )
+        .await
+        .map_err(|error| format!("request refused ({})", error.category()))?;
         let mut request = self.client()?.get(format!("{}{path}", self.api_server));
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -205,7 +219,10 @@ impl KubernetesClientConfig {
         if !query.is_empty() {
             request = request.query(query);
         }
-        request.send().await.map_err(|error| error.to_string())
+        request
+            .send()
+            .await
+            .map_err(|error| orbit_security::describe_request_error(&error))
     }
 
     /// Parse and connect, then list the namespaces visible to this credential. Used by the
@@ -301,10 +318,8 @@ impl KubernetesClientConfig {
                     .await?;
                 let status = response.status();
                 if !status.is_success() {
-                    return Err(format!(
-                        "Kubernetes returned {status}: {}",
-                        response.text().await.unwrap_or_default()
-                    ));
+                    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+                    return Err(error_message(status, &body));
                 }
                 let text = response.text().await.unwrap_or_default();
                 let truncated = text.len() > self.max_log_bytes;
@@ -349,7 +364,7 @@ impl KubernetesClientConfig {
             .await
             .map_err(|error| format!("invalid Kubernetes response: {error}"))?;
         if !status.is_success() {
-            return Err(format!("Kubernetes returned {status}: {data}"));
+            return Err(error_message(status, &data));
         }
         if capability == "namespaces.list" && !self.namespaces.is_empty() {
             if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
@@ -407,9 +422,46 @@ fn validate_segment(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The message of a failed request. Only a Kubernetes `Status` object's message is
+/// passed on (RBAC and not-found errors stay readable); anything else is described by
+/// its status code alone, so a misdirected `apiServer` cannot be used to read arbitrary
+/// responses back through the connection test (#321).
+fn error_message(status: reqwest::StatusCode, body: &Value) -> String {
+    match (
+        body.get("kind").and_then(Value::as_str),
+        body.get("message").and_then(Value::as_str),
+    ) {
+        (Some("Status"), Some(message)) => format!("Kubernetes returned {status}: {message}"),
+        _ => format!("{status} from the API server, which is not a Kubernetes API response"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_kubernetes_status_messages_are_passed_on() {
+        let status = reqwest::StatusCode::FORBIDDEN;
+        let rbac = json!({ "kind": "Status", "message": "namespaces is forbidden" });
+        assert_eq!(
+            error_message(status, &rbac),
+            "Kubernetes returned 403 Forbidden: namespaces is forbidden"
+        );
+        let foreign = json!({ "secret": "value from some other service" });
+        let message = error_message(status, &foreign);
+        assert!(!message.contains("secret"), "{message}");
+        assert!(message.contains("not a Kubernetes API response"));
+    }
+
+    #[tokio::test]
+    async fn loopback_api_server_is_refused_before_connecting() {
+        let config = json!({ "authMode": "service_account", "apiServer": "https://127.0.0.1:1" });
+        let client =
+            KubernetesClientConfig::from_connection(&config, Some("token".into())).unwrap();
+        let error = client.test_connection().await.unwrap_err();
+        assert!(error.starts_with("request refused"), "{error}");
+    }
 
     #[test]
     fn service_account_requires_https_server() {

@@ -1,177 +1,394 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="920" viewBox="0 0 1200 920" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1008" viewBox="0 0 1120 1008" role="img" aria-labelledby="orbit-arch-title orbit-arch-desc">
+  <title id="orbit-arch-title">ORBIT architecture</title>
+  <desc id="orbit-arch-desc">People and API clients talk to orbit-api, the control plane, which keeps all state in PostgreSQL. Workers in the execution plane pull runs from the API with a scoped token, run a harness such as OpenCode or Pi, and pass every tool call through a policy-checking tool broker before it reaches an outside system.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a4a5a"/>
-    </marker>
-    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d4aff"/>
-    </marker>
-    <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2aa7b8"/>
-    </marker>
     <style>
-      .title { font-size: 22px; font-weight: 700; fill: #17171f; }
-      .subtitle { font-size: 12.5px; fill: #6b6b7a; }
-      .layer-label { font-size: 10.5px; font-weight: 700; letter-spacing: 1.4px; fill: #6d4aff; }
-      .box-title { font-size: 13px; font-weight: 650; fill: #17171f; }
-      .box-line { font-size: 11px; fill: #4d4d5c; }
-      .box-muted { font-size: 10.5px; fill: #77778a; }
-      .note { font-size: 10.5px; fill: #6b6b7a; }
-      .arrow-label { font-size: 10px; fill: #5b5b6b; }
-      .layer { fill: #ffffff; stroke: #e1e1ea; stroke-width: 1.2; }
-      .card { fill: #fafaff; stroke: #d9d9e6; stroke-width: 1.1; }
-      .card-accent { fill: #f3f0ff; stroke: #b9a8ff; stroke-width: 1.2; }
-      .card-teal { fill: #eefafb; stroke: #9fdbe3; stroke-width: 1.2; }
-      .card-warm { fill: #fff8ec; stroke: #f0cf98; stroke-width: 1.2; }
-      .dashed { stroke-dasharray: 5 4; }
-      .arrow { stroke: #4a4a5a; stroke-width: 1.4; fill: none; }
-      .arrow-accent { stroke: #6d4aff; stroke-width: 1.6; fill: none; }
-      .arrow-teal { stroke: #2aa7b8; stroke-width: 1.5; fill: none; }
+      /* Hand-written. Colours follow apps/web/app/globals.css; the dark block below mirrors the app's dark theme. */
+      text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: #17171f; }
+      .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-weight: 700; }
+      .title { font-size: 26px; font-weight: 700; letter-spacing: -0.2px; }
+      .sub { font-size: 15px; fill: #5c5c6e; }
+      .plane { font-size: 12px; font-weight: 700; letter-spacing: 1.6px; }
+      .plane-v { fill: #4a3ad1; }
+      .plane-t { fill: #0b7772; }
+      .plane-n { fill: #6a6a7c; }
+      .tag { font-size: 13.5px; fill: #5c5c6e; letter-spacing: 0; font-weight: 400; }
+      .h { font-size: 15px; font-weight: 700; }
+      .cap { font-size: 13.5px; fill: #5c5c6e; }
+      .small { font-size: 13px; fill: #5c5c6e; }
+      .strong { font-weight: 700; fill: #17171f; }
+      .chip-t { font-size: 13.5px; fill: #2c2b3c; }
+      .pill-t { font-size: 12.5px; font-weight: 600; }
+      .num { font-size: 12px; font-weight: 700; fill: #ffffff; }
+
+      .bg { fill: #f6f6fb; }
+      .panel-v { fill: #f3f1ff; stroke: #d5cdff; }
+      .panel-t { fill: #ebf8f6; stroke: #bae3de; }
+      .card { fill: #ffffff; stroke: #dbdbe7; }
+      .card-v { fill: #ffffff; stroke: #b6a9ff; }
+      .card-t { fill: #ffffff; stroke: #8fd0c9; }
+      .card-out { fill: #ffffff; stroke: #bfbfce; stroke-dasharray: 5 4; }
+      .chip { fill: #f3f1ff; stroke: #e0daff; }
+      .pill-v { fill: #ece8ff; }
+      .pill-v-t { fill: #4a3ad1; }
+      .pill-n { fill: #eeeef4; }
+      .pill-n-t { fill: #5c5c6e; }
+      .pill-a { fill: #fff1d6; }
+      .pill-a-t { fill: #7a4a05; }
+      .tile-v { fill: #ece8ff; }
+      .tile-t { fill: #d9f2ef; }
+      .tile-a { fill: #fff1d6; }
+      .tile-n { fill: #eeeef4; }
+      .ico { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+      .ico-v { stroke: #4a3ad1; }
+      .ico-t { stroke: #0b7772; }
+      .ico-a { stroke: #8a5406; }
+      .ico-n { stroke: #5c5c6e; }
+      .ln { fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+      .ln-ink { stroke: #3b3b4c; }
+      .ln-v { stroke: #5b4be8; }
+      .ln-t { stroke: #0e8f89; }
+      .dash { stroke-dasharray: 5 5; }
+      .ah-ink { fill: #3b3b4c; }
+      .ah-v { fill: #5b4be8; }
+      .ah-t { fill: #0e8f89; }
+      .boundary { fill: none; stroke: #c9820f; stroke-width: 1.4; stroke-dasharray: 2 6; stroke-linecap: round; }
+      .lock { fill: #fff6e5; stroke: #edc478; }
+      .lock-t { font-size: 13px; fill: #7a4a05; font-weight: 600; }
+      .badge { fill: #17171f; stroke: #f6f6fb; stroke-width: 2; }
+      .rule { stroke: #dbdbe7; stroke-width: 1; }
+      .sat { fill: #17171f; }
+      .ring-soft { fill: none; stroke: #5b4be8; stroke-opacity: 0.07; stroke-width: 7; }
+      .ring-line { fill: none; stroke: #5b4be8; stroke-opacity: 0.16; stroke-width: 1.2; }
+
+      @media (prefers-color-scheme: dark) {
+        text { fill: #ececf2; }
+        .sub, .tag, .cap, .small { fill: #a5a5b6; }
+        .strong { fill: #ececf2; }
+        .plane-v { fill: #a894ff; }
+        .plane-t { fill: #5fd4cb; }
+        .plane-n { fill: #9494a8; }
+        .chip-t { fill: #dcdcea; }
+        .num { fill: #0d0d14; }
+        .bg { fill: #0d0d14; }
+        .panel-v { fill: #151329; stroke: #2f2a5e; }
+        .panel-t { fill: #0e1f20; stroke: #1e4744; }
+        .card { fill: #191922; stroke: #2f2f3e; }
+        .card-v { fill: #191922; stroke: #4b40ab; }
+        .card-t { fill: #191922; stroke: #2a6f6a; }
+        .card-out { fill: #14141c; stroke: #4a4a60; }
+        .chip { fill: #211e3f; stroke: #322d60; }
+        .pill-v { fill: #2a2553; }
+        .pill-v-t { fill: #c3b6ff; }
+        .pill-n { fill: #262633; }
+        .pill-n-t { fill: #a5a5b6; }
+        .pill-a { fill: #3a2a0c; }
+        .pill-a-t { fill: #f2c277; }
+        .tile-v { fill: #2a2553; }
+        .tile-t { fill: #143a38; }
+        .tile-a { fill: #3a2a0c; }
+        .tile-n { fill: #262633; }
+        .ico-v { stroke: #b9aaff; }
+        .ico-t { stroke: #6fdcd3; }
+        .ico-a { stroke: #f2c277; }
+        .ico-n { stroke: #a5a5b6; }
+        .ln-ink { stroke: #b4b4c6; }
+        .ln-v { stroke: #a894ff; }
+        .ln-t { stroke: #5fd4cb; }
+        .ah-ink { fill: #b4b4c6; }
+        .ah-v { fill: #a894ff; }
+        .ah-t { fill: #5fd4cb; }
+        .boundary { stroke: #e0a040; }
+        .lock { fill: #2a2010; stroke: #6b4e1a; }
+        .lock-t { fill: #f2c277; }
+        .badge { fill: #ececf2; stroke: #0d0d14; }
+        .rule { stroke: #2f2f3e; }
+        .sat { fill: #ececf2; }
+        .ring-soft { stroke: #a894ff; stroke-opacity: 0.08; }
+        .ring-line { stroke: #a894ff; stroke-opacity: 0.2; }
+      }
     </style>
+    <linearGradient id="brand-ring" x1="4" y1="24" x2="28" y2="8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5b4be8"/>
+      <stop offset="0.6" stop-color="#7c6cff"/>
+      <stop offset="1" stop-color="#a894ff"/>
+    </linearGradient>
+    <marker id="ah-ink" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M1 1.4 L9.4 5 L1 8.6 Z" class="ah-ink"/>
+    </marker>
+    <marker id="ah-v" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M1 1.4 L9.4 5 L1 8.6 Z" class="ah-v"/>
+    </marker>
+    <marker id="ah-t" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M1 1.4 L9.4 5 L1 8.6 Z" class="ah-t"/>
+    </marker>
   </defs>
 
-  <rect width="1200" height="920" fill="#f7f7fb"/>
-  <text x="40" y="42" class="title">ORBIT — control plane for persistent AI agents</text>
-  <text x="40" y="64" class="subtitle">Self-hosted · harness-agnostic · model-agnostic · policy-enforced actions · API-first</text>
+  <rect width="1120" height="1008" class="bg"/>
 
-  <!-- Agent experience -->
-  <rect x="40" y="86" width="1120" height="92" rx="14" class="layer"/>
-  <text x="58" y="108" class="layer-label">AGENT EXPERIENCE</text>
-  <rect x="68" y="118" width="452" height="44" rx="9" class="card-accent"/>
-  <text x="86" y="138" class="box-title">Web app — Next.js</text>
-  <text x="86" y="153" class="box-line">Dashboard · Agent Studio · Executions · Approvals · Settings</text>
-  <rect x="538" y="118" width="246" height="44" rx="9" class="card dashed"/>
-  <text x="556" y="138" class="box-title">Native mobile — future</text>
-  <text x="556" y="153" class="box-line">Expo / React Native · shared client</text>
-  <text x="812" y="134" class="box-line">Same versioned API for every client:</text>
-  <text x="812" y="149" class="box-muted">REST /api/v1 · OpenAPI · SSE streams</text>
+  <!-- Header -->
+  <g transform="translate(32 22) scale(1.5)">
+    <g transform="rotate(-25 16 16)">
+      <ellipse cx="16" cy="16" rx="11.5" ry="5.2" fill="none" stroke="url(#brand-ring)" stroke-width="2.6"/>
+      <circle cx="27.5" cy="16" r="3.1" class="sat"/>
+      <circle cx="27.5" cy="16" r="1.6" fill="#7c6cff"/>
+    </g>
+  </g>
+  <text x="92" y="50" class="title">How ORBIT runs an agent</text>
+  <text x="92" y="76" class="sub">The control plane decides and remembers. Workers do the work, and every tool call passes a policy check.</text>
+
+  <!-- Legend -->
+  <path d="M812 44 H842" class="ln ln-ink" marker-end="url(#ah-ink)"/>
+  <text x="852" y="48.500" class="small">request</text>
+  <path d="M924 44 H954" class="ln ln-ink dash" marker-end="url(#ah-ink)"/>
+  <text x="964" y="48.500" class="small">starts, publishes</text>
+
+  <!-- People and clients -->
+  <rect x="56" y="108" width="370" height="68" rx="12" class="card"/>
+  <g transform="translate(72 128)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <rect x="7" y="8" width="14" height="12" rx="2.5" class="ico ico-n"/>
+    <path d="M7 12 H21" class="ico ico-n"/>
+  </g>
+  <text x="112" y="139" class="h">Web app</text>
+  <text x="112" y="159" class="cap">Build agents · watch runs · approve</text>
+
+  <rect x="446" y="108" width="370" height="68" rx="12" class="card"/>
+  <g transform="translate(462 128)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <path d="M9 10.500 L12.500 14 L9 17.500" class="ico ico-n"/>
+    <path d="M14.500 17.500 H19.500" class="ico ico-n"/>
+  </g>
+  <text x="502" y="139" class="h">API clients</text>
+  <text x="502" y="159" class="cap">Scripts, CI and your own tools</text>
+
+  <path d="M241 176 V188 Q241 194 247 194 H625 Q631 194 631 188 V176" class="ln ln-ink"/>
+  <text x="452" y="217" class="small">REST /api/v1 · live events (SSE) · OIDC or API token</text>
 
   <!-- Control plane -->
-  <rect x="40" y="196" width="574" height="330" rx="14" class="layer"/>
-  <text x="58" y="218" class="layer-label">CONTROL PLANE</text>
-  <rect x="64" y="228" width="526" height="106" rx="10" class="card-accent"/>
-  <text x="82" y="248" class="box-title">orbit-api (Axum)</text>
-  <text x="82" y="265" class="box-line">Auth (OIDC / API tokens) · agents &amp; immutable versions</text>
-  <text x="82" y="281" class="box-line">Providers · connections · capability allowlists · policies</text>
-  <text x="82" y="297" class="box-line">Executions · approvals · audit · usage · SSE</text>
-  <text x="82" y="318" class="box-muted">Never executes agent tasks</text>
+  <rect x="32" y="228" width="808" height="286" rx="16" class="panel-v"/>
+  <text x="816" y="254" text-anchor="end" class="plane plane-v"><tspan class="tag">decides and remembers</tspan><tspan dx="12">CONTROL PLANE</tspan></text>
+
+  <rect x="56" y="272" width="760" height="128" rx="12" class="card-v"/>
+  <g transform="translate(68 282)">
+    <rect width="28" height="28" rx="8" class="tile-v"/>
+    <path d="M14 7.500 L20 11 V17 L14 20.500 L8 17 V11 Z" class="ico ico-v"/>
+    <path d="M8 11 L14 14.500 L20 11 M14 14.500 V20.500" class="ico ico-v"/>
+  </g>
+  <text x="106" y="301" class="mono" font-size="15.500">orbit-api</text>
+  <text x="200" y="301" class="cap">the HTTP API and the background loops</text>
 
   <g>
-    <path d="M 78 356 h 244 v 102 a 20 12 0 0 1 -20 12 h -204 a 20 12 0 0 1 -20 -12 z" fill="#f7fbff" stroke="#b7d6ea" stroke-width="1.2"/>
-    <ellipse cx="200" cy="356" rx="122" ry="12" fill="#eaf4fc" stroke="#b7d6ea" stroke-width="1.2"/>
-    <text x="200" y="383" text-anchor="middle" class="box-title">PostgreSQL</text>
-    <text x="200" y="400" text-anchor="middle" class="box-line">durable source of truth</text>
-    <text x="200" y="417" text-anchor="middle" class="box-muted">agents · versions · executions</text>
-    <text x="200" y="432" text-anchor="middle" class="box-muted">events · approvals · audit</text>
-    <text x="200" y="447" text-anchor="middle" class="box-muted">AES-GCM encrypted secrets</text>
+    <rect x="68" y="322" width="178" height="28" rx="8" class="chip"/>
+    <text x="157" y="340.500" text-anchor="middle" class="chip-t">Agents and versions</text>
+    <rect x="254" y="322" width="178" height="28" rx="8" class="chip"/>
+    <text x="343" y="340.500" text-anchor="middle" class="chip-t">Runs and schedules</text>
+    <rect x="440" y="322" width="178" height="28" rx="8" class="chip"/>
+    <text x="529" y="340.500" text-anchor="middle" class="chip-t">Agent teams and queues</text>
+    <rect x="626" y="322" width="178" height="28" rx="8" class="chip"/>
+    <text x="715" y="340.500" text-anchor="middle" class="chip-t">Skills and memory</text>
+
+    <rect x="68" y="358" width="178" height="28" rx="8" class="chip"/>
+    <text x="157" y="376.500" text-anchor="middle" class="chip-t">Policy and approvals</text>
+    <rect x="254" y="358" width="178" height="28" rx="8" class="chip"/>
+    <text x="343" y="376.500" text-anchor="middle" class="chip-t">Encrypted secrets</text>
+    <rect x="440" y="358" width="178" height="28" rx="8" class="chip"/>
+    <text x="529" y="376.500" text-anchor="middle" class="chip-t">Sign-in, roles, sharing</text>
+    <rect x="626" y="358" width="178" height="28" rx="8" class="chip"/>
+    <text x="715" y="376.500" text-anchor="middle" class="chip-t">Audit log and history</text>
   </g>
 
-  <rect x="346" y="344" width="244" height="130" rx="10" class="card"/>
-  <text x="364" y="366" class="box-title">NATS JetStream</text>
-  <text x="364" y="384" class="box-line">orbit.execution.requested</text>
-  <text x="364" y="400" class="box-line">orbit.execution.updated</text>
-  <text x="364" y="416" class="box-line">orbit.trigger.fired</text>
-  <text x="364" y="432" class="box-line">orbit.connector.event</text>
-  <text x="364" y="450" class="box-muted">at-least-once; DB polling</text>
-  <text x="364" y="465" class="box-muted">is the crash-recovery path</text>
+  <path d="M436 194 V270" class="ln ln-ink" marker-end="url(#ah-ink)"/>
+
+  <!-- PostgreSQL -->
+  <path d="M552 400 V428" class="ln ln-v" marker-end="url(#ah-v)"/>
+  <path d="M472 440 V484 C472 489.500 507.800 494 552 494 C596.200 494 632 489.500 632 484 V440" class="card-v"/>
+  <ellipse cx="552" cy="440" rx="80" ry="10" class="card-v"/>
+  <text x="552" y="469" text-anchor="middle" class="h">PostgreSQL</text>
+  <text x="552" y="485" text-anchor="middle" class="small">source of truth</text>
+
+  <!-- NATS -->
+  <path d="M732 400 V432" class="ln ln-v dash" marker-end="url(#ah-v)"/>
+  <rect x="648" y="434" width="168" height="58" rx="12" class="card"/>
+  <text x="732" y="459" text-anchor="middle" class="h">NATS JetStream</text>
+  <text x="732" y="478" text-anchor="middle" class="small">event notifications</text>
+
+  <!-- Outside ORBIT: reached by the control plane -->
+  <text x="872" y="242" class="plane plane-n">OUTSIDE ORBIT</text>
+
+  <path d="M816 294 H870" class="ln ln-v" marker-end="url(#ah-v)"/>
+  <rect x="872" y="256" width="216" height="76" rx="12" class="card-out"/>
+  <text x="888" y="281" class="h">Outputs</text>
+  <text x="888" y="303" class="cap">Slack · Mattermost</text>
+  <text x="888" y="321" class="cap">Telegram · Webhook</text>
+  <g transform="translate(1048 266)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <path d="M7.500 13.500 L20.500 8 L16 20.500 L13.200 15 Z M13.200 15 L20.500 8" class="ico ico-n"/>
+  </g>
+
+  <path d="M816 382 H870" class="ln ln-v" marker-end="url(#ah-v)"/>
+  <rect x="872" y="344" width="216" height="76" rx="12" class="card-out"/>
+  <text x="888" y="369" class="h">Issue queues</text>
+  <text x="888" y="391" class="cap">GitHub · GitLab issues</text>
+  <text x="888" y="409" class="cap">that feed agent teams</text>
+  <g transform="translate(1048 354)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <path d="M12.500 10 H20 M12.500 14 H20 M12.500 18 H20" class="ico ico-n"/>
+    <path d="M8.300 10 H8.700 M8.300 14 H8.700 M8.300 18 H8.700" class="ico ico-n" stroke-width="2.200"/>
+  </g>
+
+  <!-- Decorative orbit in the quiet part of the rail -->
+  <g transform="rotate(-25 980 544)">
+    <ellipse cx="980" cy="544" rx="84" ry="36" class="ring-soft"/>
+    <ellipse cx="980" cy="544" rx="84" ry="36" class="ring-line"/>
+    <circle cx="1064" cy="544" r="4" fill="#7c6cff" fill-opacity="0.45"/>
+  </g>
+
+  <!-- Calls that cross the boundary -->
+  <path d="M100 400 V614" class="ln ln-v" marker-end="url(#ah-v)"/>
+  <text x="112" y="462" class="small">launch · stop</text>
+
+  <path d="M262 400 V614" class="ln ln-t" marker-end="url(#ah-t)"/>
+  <path d="M296 616 V402" class="ln ln-t" marker-end="url(#ah-t)"/>
+  <text x="312" y="456" class="small strong">Worker API</text>
+  <text x="312" y="474" class="small">pull runs · push events</text>
+
+  <!-- Trust boundary -->
+  <path d="M32 542 H840" class="boundary"/>
+  <rect x="466" y="529" width="350" height="26" rx="13" class="lock"/>
+  <g transform="translate(481 535)">
+    <rect x="0" y="5" width="10" height="8" rx="2" class="ico ico-a"/>
+    <path d="M2.500 5 V3.500 A2.500 2.500 0 0 1 7.500 3.500 V5" class="ico ico-a"/>
+  </g>
+  <text x="500" y="546.500" class="lock-t">Workers hold only a scoped, revocable token</text>
 
   <!-- Execution plane -->
-  <rect x="640" y="196" width="520" height="330" rx="14" class="layer"/>
-  <text x="658" y="218" class="layer-label">EXECUTION PLANE</text>
-  <rect x="664" y="228" width="226" height="86" rx="10" class="card"/>
-  <text x="682" y="248" class="box-title">orbit-worker</text>
-  <text x="682" y="265" class="box-line">mock harness · scheduler</text>
-  <text x="682" y="281" class="box-line">durable queue polling</text>
-  <text x="682" y="297" class="box-muted">claims only ORBIT_WORKER_HARNESSES</text>
+  <rect x="32" y="570" width="808" height="302" rx="16" class="panel-t"/>
+  <text x="816" y="596" text-anchor="end" class="plane plane-t"><tspan class="tag">does the work</tspan><tspan dx="12">EXECUTION PLANE</tspan></text>
 
-  <rect x="910" y="228" width="226" height="86" rx="10" class="card-teal"/>
-  <text x="928" y="248" class="box-title">orbit-worker-opencode</text>
-  <text x="928" y="265" class="box-line">OpenCode CLI v2.3.0</text>
-  <text x="928" y="281" class="box-line">per-execution workspace</text>
-  <text x="928" y="297" class="box-muted">AGENTS.md · NDJSON events · cancel</text>
+  <rect x="56" y="616" width="160" height="136" rx="12" class="card"/>
+  <g transform="translate(68 628)">
+    <rect width="28" height="28" rx="8" class="tile-t"/>
+    <path d="M11.500 9.500 L19 14 L11.500 18.500 Z" class="ico ico-t"/>
+  </g>
+  <text x="72" y="682" class="mono" font-size="14.500">orbit-launcher</text>
+  <text x="72" y="702" class="cap">starts and stops</text>
+  <text x="72" y="720" class="cap">workers on Docker</text>
+  <text x="72" y="738" class="cap">or Kubernetes</text>
+  <path d="M216 684 H246" class="ln ln-t dash" marker-end="url(#ah-t)"/>
 
-  <rect x="664" y="324" width="226" height="96" rx="10" class="card-teal"/>
-  <text x="682" y="344" class="box-title">orbit-worker-pi</text>
-  <text x="682" y="361" class="box-line">Pi CLI v1.5.2</text>
-  <text x="682" y="377" class="box-line">per-execution workspace</text>
-  <text x="682" y="393" class="box-muted">.pi/mcp.json · JSON events</text>
-  <text x="682" y="408" class="box-muted">read-only tool allowlist</text>
+  <rect x="248" y="616" width="568" height="232" rx="12" class="card-t"/>
+  <g transform="translate(264 624)">
+    <rect width="28" height="28" rx="8" class="tile-t"/>
+    <rect x="7.500" y="8" width="13" height="5" rx="1.500" class="ico ico-t"/>
+    <rect x="7.500" y="15" width="13" height="5" rx="1.500" class="ico ico-t"/>
+    <path d="M10.300 10.500 H10.700 M10.300 17.500 H10.700" class="ico ico-t" stroke-width="2"/>
+  </g>
+  <text x="302" y="643" class="mono" font-size="15.500">orbit-worker</text>
+  <text x="424" y="643" class="cap">a process, a container or a Kubernetes pod</text>
 
-  <rect x="910" y="324" width="226" height="96" rx="10" class="card-warm"/>
-  <text x="928" y="344" class="box-title">Policy tool broker</text>
-  <text x="928" y="361" class="box-line">execution token · allowlist</text>
-  <text x="928" y="377" class="box-line">autonomy L1–L4 · approvals</text>
-  <text x="928" y="393" class="box-line">credential lease · audit</text>
-  <text x="928" y="408" class="box-muted">credentials never reach harness</text>
+  <!-- Harness -->
+  <rect x="264" y="658" width="536" height="68" rx="10" class="card"/>
+  <g transform="translate(276 678)">
+    <rect width="28" height="28" rx="8" class="tile-t"/>
+    <rect x="9.500" y="9.500" width="9" height="9" rx="2" class="ico ico-t"/>
+    <path d="M12 7 V9.500 M16 7 V9.500 M12 18.500 V21 M16 18.500 V21 M7 12 H9.500 M7 16 H9.500 M18.500 12 H21 M18.500 16 H21" class="ico ico-t"/>
+  </g>
+  <text x="316" y="685" class="h">Harness</text>
+  <rect x="386" y="670.500" width="78" height="21" rx="10.500" class="pill-v"/>
+  <text x="425" y="685.300" text-anchor="middle" class="pill-t pill-v-t">OpenCode</text>
+  <rect x="470" y="670.500" width="34" height="21" rx="10.500" class="pill-v"/>
+  <text x="487" y="685.300" text-anchor="middle" class="pill-t pill-v-t">Pi</text>
+  <rect x="510" y="670.500" width="118" height="21" rx="10.500" class="pill-n"/>
+  <text x="569" y="685.300" text-anchor="middle" class="pill-t pill-n-t">mock, for testing</text>
+  <text x="316" y="710" class="cap">the agent's reasoning loop, in a fresh workspace for each run</text>
 
-  <text x="664" y="448" class="box-line">Harness adapters:</text>
-  <text x="664" y="465" class="box-muted">OpenCode (available) · Pi (available) · Claude Code · generic (planned)</text>
-  <text x="664" y="481" class="box-muted">mock harness for local development and contract tests</text>
+  <path d="M330 726 V760" class="ln ln-t" marker-end="url(#ah-t)"/>
+  <text x="343" y="748" class="small">tool calls over MCP</text>
 
-  <!-- External -->
-  <rect x="40" y="556" width="1120" height="176" rx="14" class="layer"/>
-  <text x="58" y="578" class="layer-label">EXTERNAL SYSTEMS &amp; PROVIDERS</text>
-  <rect x="68" y="592" width="236" height="82" rx="9" class="card"/>
-  <text x="86" y="614" class="box-title">GitHub</text>
-  <text x="86" y="632" class="box-line">issues.list / get / comment / create</text>
-  <text x="86" y="649" class="box-muted">read · approval-gated writes</text>
+  <!-- Tool broker -->
+  <rect x="264" y="762" width="536" height="68" rx="10" class="card"/>
+  <g transform="translate(276 782)">
+    <rect width="28" height="28" rx="8" class="tile-a"/>
+    <path d="M14 7 L20 9.200 V13.600 C20 17.200 17.500 19.900 14 21 C10.500 19.900 8 17.200 8 13.600 V9.200 Z" class="ico ico-a"/>
+    <path d="M11.200 14 L13.300 16 L17 12" class="ico ico-a"/>
+  </g>
+  <text x="316" y="789" class="h">Tool broker</text>
+  <rect x="412" y="774.500" width="74" height="21" rx="10.500" class="pill-a"/>
+  <text x="449" y="789.300" text-anchor="middle" class="pill-t pill-a-t">allowlist</text>
+  <path d="M492 782 L495 785 L492 788" class="ico ico-a"/>
+  <rect x="502" y="774.500" width="112" height="21" rx="10.500" class="pill-a"/>
+  <text x="558" y="789.300" text-anchor="middle" class="pill-t pill-a-t">autonomy level</text>
+  <path d="M620 782 L623 785 L620 788" class="ico ico-a"/>
+  <rect x="630" y="774.500" width="74" height="21" rx="10.500" class="pill-a"/>
+  <text x="667" y="789.300" text-anchor="middle" class="pill-t pill-a-t">approval</text>
+  <text x="316" y="814" class="cap">leases a credential for one call; the harness never sees it</text>
 
-  <rect x="324" y="592" width="210" height="82" rx="9" class="card"/>
-  <text x="342" y="614" class="box-title">X</text>
-  <text x="342" y="632" class="box-line">posts.search · posts.create</text>
-  <text x="342" y="649" class="box-muted">hydration · gated posting</text>
+  <!-- Outside ORBIT: reached by a run -->
+  <path d="M800 692 H870" class="ln ln-t" marker-end="url(#ah-t)"/>
+  <rect x="872" y="654" width="216" height="76" rx="12" class="card-out"/>
+  <text x="888" y="679" class="h">Model providers</text>
+  <text x="888" y="701" class="cap">OpenAI-compatible</text>
+  <text x="888" y="719" class="cap">Anthropic · harness's own</text>
+  <g transform="translate(1048 664)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <path d="M14 7.500 L15.600 12.400 L20.500 14 L15.600 15.600 L14 20.500 L12.400 15.600 L7.500 14 L12.400 12.400 Z" class="ico ico-n"/>
+  </g>
 
-  <rect x="554" y="592" width="210" height="82" rx="9" class="card"/>
-  <text x="572" y="614" class="box-title">GitLab</text>
-  <text x="572" y="632" class="box-line">issues · pipelines · merge requests</text>
-  <text x="572" y="649" class="box-muted">through the policy tool broker</text>
+  <path d="M800 796 H870" class="ln ln-t" marker-end="url(#ah-t)"/>
+  <rect x="872" y="758" width="216" height="76" rx="12" class="card-out"/>
+  <text x="888" y="783" class="h">Connectors</text>
+  <text x="888" y="805" class="cap">GitHub · GitLab</text>
+  <text x="888" y="823" class="cap">Kubernetes · X</text>
+  <g transform="translate(1048 768)">
+    <rect width="28" height="28" rx="8" class="tile-n"/>
+    <circle cx="9.800" cy="18.200" r="2.300" class="ico ico-n"/>
+    <circle cx="18.200" cy="9.800" r="2.300" class="ico ico-n"/>
+    <path d="M11.500 16.500 L16.500 11.500" class="ico ico-n"/>
+  </g>
 
-  <rect x="784" y="592" width="160" height="82" rx="9" class="card"/>
-  <text x="802" y="614" class="box-title">Webhooks</text>
-  <text x="802" y="632" class="box-line">inbound triggers</text>
-  <text x="802" y="649" class="box-muted">HMAC · planned</text>
+  <!-- Step badges -->
+  <g text-anchor="middle">
+    <circle cx="418" cy="212" r="11" class="badge"/><text x="418" y="216.200" class="num">1</text>
+    <circle cx="532" cy="414" r="11" class="badge"/><text x="532" y="418.200" class="num">2</text>
+    <circle cx="279" cy="464" r="11" class="badge"/><text x="279" y="468.200" class="num">3</text>
+    <circle cx="872" cy="654" r="11" class="badge"/><text x="872" y="658.200" class="num">4</text>
+    <circle cx="872" cy="758" r="11" class="badge"/><text x="872" y="762.200" class="num">5</text>
+    <circle cx="872" cy="256" r="11" class="badge"/><text x="872" y="260.200" class="num">6</text>
+  </g>
 
-  <rect x="964" y="592" width="172" height="82" rx="9" class="card"/>
-  <text x="982" y="614" class="box-title">Model providers</text>
-  <text x="982" y="632" class="box-line">OpenAI-compatible</text>
-  <text x="982" y="649" class="box-muted">or harness-managed</text>
+  <!-- A run, step by step -->
+  <path d="M32 896 H1088" class="rule"/>
+  <text x="32" y="920" class="plane plane-n">A RUN, STEP BY STEP</text>
+  <g>
+    <circle cx="43" cy="946" r="11" class="badge"/><text x="43" y="950.200" text-anchor="middle" class="num">1</text>
+    <text x="62" y="951" class="h" font-size="14">A run starts</text>
+    <text x="62" y="970" class="small">manual, scheduled or</text>
+    <text x="62" y="987" class="small">from an issue queue</text>
 
-  <text x="68" y="704" class="note">Credentials are injected by the broker only at action time. External content is untrusted and never mixed with trusted system instructions.</text>
+    <circle cx="219" cy="946" r="11" class="badge"/><text x="219" y="950.200" text-anchor="middle" class="num">2</text>
+    <text x="238" y="951" class="h" font-size="14">It is queued</text>
+    <text x="238" y="970" class="small">stored in PostgreSQL</text>
+    <text x="238" y="987" class="small">before anything runs</text>
 
-  <!-- Arrows -->
-  <line x1="294" y1="162" x2="294" y2="228" class="arrow" marker-end="url(#arrow)"/>
-  <text x="304" y="192" class="arrow-label">REST + SSE</text>
+    <circle cx="395" cy="946" r="11" class="badge"/><text x="395" y="950.200" text-anchor="middle" class="num">3</text>
+    <text x="414" y="951" class="h" font-size="14">Worker claims it</text>
+    <text x="414" y="970" class="small">pulled with a scoped</text>
+    <text x="414" y="987" class="small">token, never pushed</text>
 
-  <line x1="150" y1="334" x2="150" y2="344" class="arrow" marker-end="url(#arrow)"/>
-  <line x1="470" y1="334" x2="470" y2="344" class="arrow" marker-end="url(#arrow)"/>
-  <text x="480" y="342" class="arrow-label">publish / subscribe</text>
+    <circle cx="571" cy="946" r="11" class="badge"/><text x="571" y="950.200" text-anchor="middle" class="num">4</text>
+    <text x="590" y="951" class="h" font-size="14">Harness works</text>
+    <text x="590" y="970" class="small">OpenCode or Pi calls</text>
+    <text x="590" y="987" class="small">your model provider</text>
 
-  <!-- events to execution plane -->
-  <path d="M 590 372 C 616 372 620 300 664 300" class="arrow-accent" marker-end="url(#arrow-accent)"/>
-  <text x="600" y="352" class="arrow-label">events</text>
+    <circle cx="747" cy="946" r="11" class="badge"/><text x="747" y="950.200" text-anchor="middle" class="num">5</text>
+    <text x="766" y="951" class="h" font-size="14">Tools are checked</text>
+    <text x="766" y="970" class="small">a write can wait for</text>
+    <text x="766" y="987" class="small">a person to approve</text>
 
-  <!-- durable DB to execution plane -->
-  <path d="M 200 470 L 200 508 L 640 508 L 640 500" class="arrow dashed" marker-end="url(#arrow)"/>
-  <text x="300" y="500" class="arrow-label">durable queue · approvals · audit · usage (SQL)</text>
-
-  <!-- worker to broker -->
-  <line x1="1010" y1="314" x2="1010" y2="334" class="arrow-teal" marker-end="url(#arrow-teal)"/>
-  <text x="1018" y="329" class="arrow-label">MCP</text>
-
-  <!-- broker to external -->
-  <path d="M 1023 420 L 1023 556" class="arrow-teal" marker-end="url(#arrow-teal)"/>
-  <text x="1013" y="505" text-anchor="end" class="arrow-label">HTTPS · least privilege</text>
-
-  <!-- legend -->
-  <line x1="820" y1="760" x2="860" y2="760" class="arrow" marker-end="url(#arrow)"/>
-  <text x="868" y="764" class="note">request / data flow</text>
-  <line x1="820" y1="782" x2="860" y2="782" class="arrow-accent" marker-end="url(#arrow-accent)"/>
-  <text x="868" y="786" class="note">event / control flow</text>
-  <line x1="820" y1="804" x2="860" y2="804" class="arrow dashed" marker-end="url(#arrow)"/>
-  <text x="868" y="808" class="note">durable state / policy</text>
-
-  <text x="40" y="764" class="note">Public interfaces: /api/v1 (versioned) · MCP tools (execution-scoped) · SSE execution events</text>
-  <text x="40" y="784" class="note">Territory of enforcement: autonomy, capability allowlists, approvals, credentials, isolation</text>
-  <text x="40" y="804" class="note">OpenCode and Pi run in separate worker images; the control plane never runs agent code.</text>
-  <text x="40" y="844" class="note">docs/architecture/diagram.md has detailed Mermaid diagrams</text>
+    <circle cx="923" cy="946" r="11" class="badge"/><text x="923" y="950.200" text-anchor="middle" class="num">6</text>
+    <text x="942" y="951" class="h" font-size="14">Results return</text>
+    <text x="942" y="970" class="small">history is kept and</text>
+    <text x="942" y="987" class="small">outputs are notified</text>
+  </g>
 </svg>

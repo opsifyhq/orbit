@@ -163,6 +163,35 @@ pub struct TeamModelOverride {
     pub management: Option<String>,
 }
 
+impl TeamModelOverride {
+    /// Apply the override to an agent's model settings. Fields the override leaves out
+    /// keep the agent's own value.
+    pub(crate) fn apply(&self, model: &mut orbit_domain::ModelSpec) {
+        if let Some(provider) = &self.provider {
+            model.provider = Some(provider.clone());
+        }
+        if let Some(value) = &self.model {
+            model.model = Some(value.clone());
+        }
+        if let Some(management) = &self.management {
+            model.management = match management.as_str() {
+                "platform" => orbit_domain::ModelManagement::Platform,
+                _ => orbit_domain::ModelManagement::Harness,
+            };
+        }
+    }
+}
+
+impl TeamDefinition {
+    /// The model override for a step: the step's own, else the team's.
+    pub(crate) fn model_override(&self, step_index: usize) -> Option<&TeamModelOverride> {
+        self.steps
+            .get(step_index)
+            .and_then(|step| step.model.as_ref())
+            .or(self.model.as_ref())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamStepDefinition {
@@ -245,6 +274,7 @@ fn validate_requested_repositories(
 async fn validate_work_source_connection(
     state: &AppState,
     org_id: Uuid,
+    access: &crate::access::AccessScope,
     source: &WorkSourceDefinition,
     issues: &mut Vec<ValidationIssue>,
 ) {
@@ -259,6 +289,35 @@ async fn validate_work_source_connection(
         .get_connection_with_connector(org_id, connection_id)
         .await
     {
+        // A connection the caller cannot view is reported exactly like a missing one.
+        Ok(connection)
+            if !access.can_view(
+                connection.connection.owner_user_id,
+                connection.connection.owner_team_id,
+                &connection.connection.visibility,
+            ) =>
+        {
+            issues.push(ValidationIssue::new(
+                "workSource.connectionId",
+                format!("unknown connection '{connection_id}'"),
+            ))
+        }
+        // The dispatcher polls and writes outcomes with this credential (#322).
+        Ok(connection)
+            if !access.can_use(
+                connection.connection.owner_user_id,
+                connection.connection.owner_team_id,
+                &connection.connection.visibility,
+            ) =>
+        {
+            issues.push(ValidationIssue::new(
+                "workSource.connectionId",
+                format!(
+                    "you cannot use connection '{}' for a work source",
+                    connection.connection.name
+                ),
+            ))
+        }
         Ok(connection) => {
             if connection.connector_slug != source.provider {
                 issues.push(ValidationIssue::new(
@@ -453,7 +512,7 @@ pub async fn create_team(
         }
     }
     if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
+        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
     }
     if let Some(profile_id) = body.worker_profile_id {
         let viewable = match state
@@ -639,7 +698,7 @@ pub async fn update_team(
         }
     }
     if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, source, &mut issues).await;
+        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
     }
     if let Some(profile_id) = body.worker_profile_id {
         let viewable = match state
@@ -781,8 +840,80 @@ pub async fn delete_team(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     require_team_manage(&state, &auth, team_id).await?;
+    // Deleting the team detaches its executions (`team_run_id` is ON DELETE SET NULL),
+    // so ask live ones to stop first; nothing would stop them afterwards (#299).
+    let cancelled = state
+        .store
+        .request_team_cancel(auth.org_id, team_id)
+        .await?;
+    announce_cancel(&state, auth.org_id, &cancelled).await;
     state.store.delete_agent_team(auth.org_id, team_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Tell workers about executions whose cancellation was just requested. Workers also
+/// poll the cancel flag, so a lost bus message only delays the stop.
+pub(crate) async fn announce_cancel(
+    state: &AppState,
+    org_id: Uuid,
+    executions: &[orbit_store::ExecutionRecord],
+) {
+    for execution in executions {
+        let event = orbit_contracts::OrbitEvent::new(
+            orbit_contracts::subjects::EXECUTION_CANCEL,
+            "orbit-api",
+            serde_json::json!({ "executionId": execution.id }),
+        )
+        .with_org(org_id);
+        if let Err(error) = state.bus.publish(event).await {
+            tracing::warn!(%error, execution_id = %execution.id, "cancel event publish failed; worker polls the cancel flag");
+        }
+    }
+}
+
+/// Stop a team run: request cancellation of its live executions, mark the run
+/// `cancelled` and cancel the queue item it was started for, if any.
+#[utoipa::path(post, path = "/api/v1/team-runs/{run_id}/cancel", tag = "agent-teams", responses((status = 200, body = TeamRunDetail), (status = 409, description = "the run already ended")))]
+pub async fn cancel_run(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(run_id): Path<Uuid>,
+) -> Result<Json<TeamRunDetail>, ApiError> {
+    auth.require(Permission::ExecutionsCancel)?;
+    let run = state.store.get_team_run(auth.org_id, run_id).await?;
+    require_team_use(&state, &auth, run.team_id).await?;
+    if run.status != "running" {
+        return Err(ApiError::conflict("the team run already ended"));
+    }
+    let cancelled = state
+        .store
+        .request_team_run_cancel(auth.org_id, run_id)
+        .await?;
+    announce_cancel(&state, auth.org_id, &cancelled).await;
+    let run = state
+        .store
+        .finish_team_run(run_id, "cancelled", None, Some("cancelled by operator"))
+        .await?
+        .ok_or_else(|| ApiError::conflict("the team run already ended"))?;
+    if let Some(item) = state.store.get_team_queue_item_by_run(run_id).await? {
+        if item.status == "running" {
+            state
+                .store
+                .cancel_team_queue_item(auth.org_id, item.id, Some("team run cancelled"))
+                .await?;
+        }
+    }
+    crate::audit::record(
+        &state,
+        &auth,
+        "team_run.cancelled",
+        Some("team_run"),
+        Some(run_id),
+        serde_json::json!({ "executions": cancelled.iter().map(|e| e.id).collect::<Vec<_>>() }),
+    )
+    .await;
+    let steps = state.store.list_team_steps(run.id).await?;
+    Ok(Json(TeamRunDetail { run, steps }))
 }
 
 async fn native_subagents(
@@ -791,13 +922,17 @@ async fn native_subagents(
     definition: &TeamDefinition,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     let mut subagents = Vec::new();
-    for step in definition.steps.iter().skip(1) {
+    for (index, step) in definition.steps.iter().enumerate().skip(1) {
         let agent = state.store.get_agent(org_id, step.agent_id).await?;
         let version = state.store.get_current_version(org_id, &agent).await?;
-        let spec: orbit_domain::AgentSpec =
-            serde_json::from_value(version.spec.clone()).map_err(|error| {
+        let mut spec: orbit_domain::AgentSpec = serde_json::from_value(version.spec.clone())
+            .map_err(|error| {
                 ApiError::internal(format!("stored agent spec is invalid: {error}"))
             })?;
+        let model_override = definition.model_override(index).cloned();
+        if let Some(override_model) = &model_override {
+            override_model.apply(&mut spec.model);
+        }
         let mut instructions = spec.instructions.system.clone();
         if !spec.instructions.constraints.is_empty() {
             instructions.push_str("\n\nConstraints:\n");
@@ -819,6 +954,7 @@ async fn native_subagents(
             "description": agent.description,
             "instructions": instructions,
             "model": model,
+            "modelOverride": model_override,
         }));
     }
     Ok(subagents)
@@ -843,24 +979,12 @@ pub(crate) async fn start_step(
     let mut spec: orbit_domain::AgentSpec = serde_json::from_value(version.spec.clone())
         .map_err(|error| ApiError::internal(format!("stored agent spec is invalid: {error}")))?;
 
-    // Apply model override from team or step definition.
-    let step_def = definition.steps.get(step_index);
-    let model_override = step_def
-        .and_then(|s| s.model.clone())
-        .or_else(|| definition.model.clone());
-    if let Some(override_model) = model_override {
-        if let Some(provider) = override_model.provider {
-            spec.model.provider = Some(provider);
-        }
-        if let Some(model) = override_model.model {
-            spec.model.model = Some(model);
-        }
-        if let Some(management) = override_model.management {
-            spec.model.management = match management.as_str() {
-                "platform" => orbit_domain::ModelManagement::Platform,
-                _ => orbit_domain::ModelManagement::Harness,
-            };
-        }
+    // Apply the step's (or the team's) model override. Preflight checks the provider of
+    // the overridden model, and the override travels with the execution so the worker
+    // runs that same model (#305).
+    let model_override = definition.model_override(step_index).cloned();
+    if let Some(override_model) = &model_override {
+        override_model.apply(&mut spec.model);
     }
     // #259: the run instruction is the single task for every step. The team goal is
     // configured system context and the previous step output is delegated context;
@@ -941,6 +1065,8 @@ pub(crate) async fn start_step(
         // Delegated context for later steps; never part of the run instruction.
         "previous": previous,
         "connectionIds": definition.connection_ids,
+        // Set server-side like connectionIds; the worker context applies it (#305).
+        "modelOverride": model_override,
         "envMappingIds": definition.env_mapping_ids,
     });
     if definition.repositories.len() > 1 {
@@ -1204,6 +1330,15 @@ pub async fn get_run(
 const ADVANCE_LEASE_SECS: i64 = 120;
 /// How long a run whose next step cannot be started is retried before it is failed.
 const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
+/// How long a step held back by an hourly quota or the licence's daily execution limit is
+/// retried. Long enough for an hourly quota to clear (#305).
+const LIMITED_STEP_RETRY_WINDOW_SECS: i64 = 3_900;
+
+/// Limits that clear by themselves: the agent's `maxExecutionsPerHour` (429) and the
+/// licence's rolling daily execution limit (402).
+fn is_temporary_limit(error: &ApiError) -> bool {
+    matches!(error.code, "rate_limited" | "license_limit")
+}
 
 /// Advance a running team after its current execution reaches a terminal state.
 ///
@@ -1215,6 +1350,12 @@ const START_STEP_RETRY_WINDOW_SECS: i64 = 300;
 /// next one exists, the next tick sees "last step succeeded, run still running" and
 /// continues from there; a run is never stranded in that state.
 pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
+    // Most ticks find the current step still working. Check that with two reads before
+    // taking the lease, which costs two writes per run per tick on every replica (#305).
+    // The claimed path re-reads everything, so a stale answer here only delays a tick.
+    if !has_work(state, &run).await? {
+        return Ok(());
+    }
     let Some((run, lease)) = state
         .store
         .claim_team_run_advance(run.id, ADVANCE_LEASE_SECS)
@@ -1227,6 +1368,25 @@ pub async fn advance(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
         tracing::warn!(%error, run_id = %run.id, "failed to release team run advance lease");
     }
     result
+}
+
+/// Whether advancing `run` can change anything: false while its current step's execution
+/// is still running (or there is no step yet).
+async fn has_work(state: &AppState, run: &TeamRun) -> anyhow::Result<bool> {
+    let Some(current) = state.store.current_team_step(run.id).await? else {
+        return Ok(false);
+    };
+    if current.status != "running" {
+        return Ok(true);
+    }
+    let Some(execution_id) = current.execution_id else {
+        return Ok(false);
+    };
+    let execution = state.store.get_execution_by_id(execution_id).await?;
+    Ok(matches!(
+        orbit_domain::ExecutionStatus::parse(&execution.status),
+        Some(status) if status.is_terminal()
+    ))
 }
 
 async fn advance_claimed(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
@@ -1333,9 +1493,9 @@ async fn continue_after_success(
     }
     let created = match start_step(state, run, definition, next, finished.output.as_ref()).await {
         Ok(created) => created,
-        // Refused by the preflight (access lost, harness/quota): fail the run instead of
-        // retrying the same step every poll.
-        Err(error) if error.status.is_client_error() => {
+        // Refused by the preflight (access lost, unknown harness): fail the run instead of
+        // retrying the same step every poll. A limit that clears by itself is not a refusal.
+        Err(error) if error.status.is_client_error() && !is_temporary_limit(&error) => {
             return crate::preflight::fail_team_run(state, run, &error).await;
         }
         Err(error) => {
@@ -1346,7 +1506,19 @@ async fn continue_after_success(
                 .finished_at
                 .map(|at| (chrono::Utc::now() - at).num_seconds())
                 .unwrap_or(0);
-            if waited >= START_STEP_RETRY_WINDOW_SECS {
+            let limited = is_temporary_limit(&error);
+            let window = if limited {
+                LIMITED_STEP_RETRY_WINDOW_SECS
+            } else {
+                START_STEP_RETRY_WINDOW_SECS
+            };
+            if limited && waited < window {
+                // Waiting for an hourly quota or the daily licence limit is expected, not
+                // an error to log on every tick.
+                tracing::debug!(run_id = %run.id, step = next + 1, reason = %error.message, "team step waits for a limit");
+                return Ok(());
+            }
+            if waited >= window {
                 let message = format!("could not start step {}: {}", next + 1, error.message);
                 return finalize_run(
                     state,

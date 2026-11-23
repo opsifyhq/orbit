@@ -24,7 +24,7 @@ harness ([OpenCode](https://opencode.ai) and Pi today) that runs in a separate w
 process. ORBIT owns identity, configuration, orchestration, policy and history, and the
 API process never executes agent work.
 
-![ORBIT architecture overview](docs/architecture/orbit-overview.svg)
+![How ORBIT runs an agent: the control plane decides and remembers, workers do the work, and every tool call passes a policy check](docs/architecture/orbit-overview.svg)
 
 ## What you can do with it
 

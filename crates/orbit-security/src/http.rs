@@ -353,6 +353,20 @@ impl reqwest::dns::Resolve for GuardedResolver {
 /// at DNS resolution, and redirects followed only within the same host (never to a
 /// different host, where credentials would otherwise travel).
 pub fn guarded_client_with_policy(timeout: Duration, policy: OutboundPolicy) -> reqwest::Client {
+    build_or_default(guard_client_builder(
+        client_builder_with_custom_ca(timeout),
+        policy,
+    ))
+}
+
+/// Apply the outbound guard (refusing resolver, same-host redirects only) to a client
+/// builder that needs its own TLS settings, such as a Kubernetes client with a cluster CA
+/// or client certificate. IP-literal hosts never reach the resolver: pair this with
+/// [`check_outbound_url`] before each request.
+pub fn guard_client_builder(
+    builder: reqwest::ClientBuilder,
+    policy: OutboundPolicy,
+) -> reqwest::ClientBuilder {
     let redirect = reqwest::redirect::Policy::custom(|attempt| {
         let same_host = attempt
             .previous()
@@ -364,11 +378,9 @@ pub fn guarded_client_with_policy(timeout: Duration, policy: OutboundPolicy) -> 
             attempt.follow()
         }
     });
-    build_or_default(
-        client_builder_with_custom_ca(timeout)
-            .redirect(redirect)
-            .dns_resolver(std::sync::Arc::new(GuardedResolver { policy })),
-    )
+    builder
+        .redirect(redirect)
+        .dns_resolver(std::sync::Arc::new(GuardedResolver { policy }))
 }
 
 /// [`guarded_client_with_policy`] using the policy from the environment.

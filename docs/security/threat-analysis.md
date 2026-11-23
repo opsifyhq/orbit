@@ -144,13 +144,19 @@ workspace.
 
 ### 6. Server-side request forgery (outbound URLs)
 
-**Vector:** a user with write access to providers, outputs or work sources points ORBIT
-at an internal address (cloud metadata, loopback, a management interface).
+**Vector:** a user with write access to providers, connections, outputs or work sources
+points ORBIT at an internal address (cloud metadata, loopback, a management interface),
+or at a host they control to collect the stored credential.
 
 **Mitigations:**
 
-- Outbound URLs for providers, outputs and work sources are checked after DNS
-  resolution (`crates/orbit-security/src/http.rs`). Loopback, link-local, cloud-metadata,
+- Outbound URLs for providers, outputs and work sources, and the connection fields
+  `baseUrl`, `cloneBaseUrl`, `url` and `apiServer`, are checked after DNS resolution
+  (`crates/orbit-security/src/http.rs`). The Kubernetes client uses the same guard and
+  checks its API server (including a kubeconfig's `server`) before every request; its
+  errors pass on Kubernetes `Status` messages only, never other response bodies.
+- A stored credential never follows an edited endpoint: changing a provider's base URL
+  or one of the connection URL fields requires the credential in the same request. Loopback, link-local, cloud-metadata,
   unspecified, multicast and reserved addresses are blocked; metadata addresses can never
   be allowlisted.
 - Private ranges (RFC 1918, CGNAT, IPv6 ULA) are allowed by default so self-hosted model
@@ -181,14 +187,30 @@ Container images are **not** scanned for vulnerabilities in CI; see "Residual ri
 
 - Every API route requires authentication (dev token, API token or OIDC bearer token)
   except `/healthz`, `/readyz`, `/metrics`, `/api/v1/meta`, the two OIDC login endpoints,
-  `/docs` and the OpenAPI document. Worker routes use worker tokens. Keep `/metrics` and
+  `/docs` and the OpenAPI document. Worker routes use worker tokens. Keep
   `/api/v1/meta` (which reports the licence tier and customer) off untrusted networks if
   that matters to you.
+- `/metrics` is unauthenticated by default and reveals operational detail: the version,
+  the API's route templates and request rates, execution and worker counts, the licence
+  phase, usage and limits. It carries no organization, user, agent or execution
+  identifiers, no names and no secrets. The Helm chart's ingress does not route it. To
+  restrict it further, set `ORBIT_METRICS_TOKEN` (bearer token, compared as SHA-256
+  digests; 401 without it) and/or `ORBIT_METRICS_ADDR` (dedicated listener that serves only
+  `/metrics` and `/healthz`; the API port then returns 404 for `/metrics`), and limit the
+  port with `networkPolicy.enabled` and `monitoring.allowFrom`. The API logs a warning at
+  start when it runs in production with neither set. The dedicated listener has no rate
+  limit, so do not publish it. See
+  [Observability](../development/observability.md).
 - Dev auth mode is refused when `ORBIT_ENV=production`, and the Helm chart refuses it
   when `platform.environment=production`.
 - OIDC mode validates JWTs against the provider's JWKS. Discovery and JWKS fetches are
   cached and refreshed at a bounded rate, so unauthenticated requests cannot be turned
   into a stream of calls to the identity provider.
+- Unauthenticated routes are rate limited per client. Behind the web proxy and the
+  ingress every request has the same TCP peer, so the limit keys on `X-Forwarded-For`
+  only for peers in `ORBIT_TRUSTED_PROXIES` (the chart trusts the private ranges by
+  default). A client inside a trusted range can choose its own key; narrow the setting
+  to the pod CIDR where clients share those ranges.
 - API tokens are hashed and always bounded by their owner's current role. Role edits
   follow a grant ceiling (see [rbac.md](../development/rbac.md)).
 - `ORBIT_ALLOW_API_TOKENS=false` disables API tokens entirely.

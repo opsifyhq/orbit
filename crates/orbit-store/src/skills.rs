@@ -134,21 +134,70 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("skill".into()))
     }
 
+    /// Delete a skill that nothing references. Agents and worker profiles name skills
+    /// by slug, so a deleted slug could be registered again by someone else and silently
+    /// load their content into those agents (#322); a referenced skill is a conflict.
     pub async fn delete_skill(&self, org_id: Uuid, skill_id: Uuid) -> StoreResult<()> {
+        let mut tx = self.begin().await?;
+        Self::refuse_referenced_skill(&mut tx, org_id, skill_id).await?;
         let result = sqlx::query("DELETE FROM skills WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(skill_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound("skill".into()));
         }
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Agents (current version), agent teams and worker profiles that reference the
+    /// skill's slug.
+    async fn refuse_referenced_skill(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        org_id: Uuid,
+        skill_id: Uuid,
+    ) -> StoreResult<()> {
+        let referrers: Vec<String> = sqlx::query_scalar(
+            r#"
+            WITH target AS (SELECT slug FROM skills WHERE org_id = $1 AND id = $2)
+            SELECT 'agent ' || a.name
+            FROM agents a
+            JOIN agent_versions v ON v.agent_id = a.id AND v.version = a.current_version
+            JOIN target t ON v.spec -> 'skills' ? t.slug
+            WHERE a.org_id = $1
+            UNION ALL
+            SELECT 'agent team ' || tm.name
+            FROM agent_teams tm
+            JOIN target t ON tm.definition -> 'skills' ? t.slug
+            WHERE tm.org_id = $1
+            UNION ALL
+            SELECT 'worker profile ' || p.name
+            FROM worker_profiles p
+            JOIN target t ON t.slug = ANY(p.skill_slugs)
+            WHERE p.org_id = $1
+            ORDER BY 1
+            LIMIT 5
+            "#,
+        )
+        .bind(org_id)
+        .bind(skill_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        if referrers.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::Conflict(format!(
+            "skill is still used by {}; remove it there first",
+            referrers.join(", ")
+        )))
     }
 
     /// Check delete eligibility with the same SQL as `delete_skill`, then roll back.
     pub async fn check_delete_skill(&self, org_id: Uuid, skill_id: Uuid) -> StoreResult<()> {
         let mut tx = self.begin().await?;
+        Self::refuse_referenced_skill(&mut tx, org_id, skill_id).await?;
         let result = sqlx::query("DELETE FROM skills WHERE org_id = $1 AND id = $2")
             .bind(org_id)
             .bind(skill_id)

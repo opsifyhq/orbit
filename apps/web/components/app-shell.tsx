@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { isNoAccessError, isSessionError } from "@/lib/http";
 import { errorMessage } from "@orbit/api-client";
 import { rememberNoAccessReason } from "@/lib/no-access";
-import { BrandMark, Wordmark } from "@/components/shell/brand";
+import { BrandLockup } from "@/components/shell/brand";
 import { CommandPaletteProvider } from "@/components/shell/command-palette";
 import { MobileHeader, MobileTabBar } from "@/components/shell/mobile-nav";
 import { pageLabel } from "@/components/shell/nav";
@@ -108,9 +108,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <div data-ink className="flex min-h-dvh flex-col bg-background text-ink-foreground">
         <title>{title}</title>
-        <div className="flex h-14 items-center gap-2.5 px-5">
-          <BrandMark />
-          <Wordmark />
+        <div className="flex h-14 items-center px-5">
+          <BrandLockup />
         </div>
         <main id="main" className="flex flex-1 items-center justify-center px-4 pb-20">
           {children}

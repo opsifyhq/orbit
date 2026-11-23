@@ -151,8 +151,10 @@ The launcher adds `imagePullSecrets` to every pod it creates.
 When `caCertificates.enabled=true`, the chart passes the CA Secret name/key to the API
 (`ORBIT_CA_SECRET_NAME`, `ORBIT_CA_SECRET_KEY`). The launcher mounts that Secret into every
 worker Pod/Job at `/etc/ssl/certs/ca-bundle.crt` and sets `SSL_CERT_FILE`,
-`REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS`. This covers harnesses that use the system
-store (Rust workers) and Node/Bun-based harnesses (OpenCode).
+`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `GIT_SSL_CAINFO`. This covers harnesses that
+use the system store (Rust workers), Node/Bun-based harnesses (OpenCode) and git, which in
+the Debian-based worker images does not read `SSL_CERT_FILE`. The worker passes the two
+`GIT_SSL_CA*` variables to the git commands it runs and to the harness process.
 
 The worker pod needs read access to the Secret; the launcher itself does not read it.
 

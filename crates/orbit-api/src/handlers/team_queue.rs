@@ -280,6 +280,22 @@ async fn release_failed_claim(
     }
 }
 
+/// A cancelled item keeps its run link until it is retried or requeued, so a second run is
+/// never started while the first one's execution is still stopping (#299).
+async fn reject_while_previous_run_is_live(
+    state: &AppState,
+    item: &TeamQueueItem,
+) -> Result<(), ApiError> {
+    if let Some(run_id) = item.team_run_id {
+        if state.store.team_run_has_live_executions(run_id).await? {
+            return Err(ApiError::conflict(
+                "the previous run is still stopping; try again once its execution has ended",
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn fetch_item(
     state: &AppState,
     auth: &AuthContext,
@@ -308,6 +324,7 @@ pub async fn retry(
     if item.status == "running" {
         return Err(ApiError::conflict("running items must be cancelled first"));
     }
+    reject_while_previous_run_is_live(&state, &item).await?;
     state
         .store
         .retry_team_queue_item(auth.org_id, item_id, None)
@@ -331,6 +348,7 @@ pub async fn requeue(
     if item.status == "running" {
         return Err(ApiError::conflict("running items must be cancelled first"));
     }
+    reject_while_previous_run_is_live(&state, &item).await?;
     state
         .store
         .requeue_team_queue_item(auth.org_id, item_id)
@@ -356,6 +374,13 @@ pub async fn cancel(
         .await?
         .ok_or_else(|| ApiError::conflict("item is already succeeded or cancelled"))?;
     if let Some(run_id) = run_id {
+        // Stop the work, not only the bookkeeping: the step execution would otherwise run
+        // to completion while the item shows as cancelled (#299).
+        let cancelled = state
+            .store
+            .request_team_run_cancel(auth.org_id, run_id)
+            .await?;
+        crate::handlers::teams::announce_cancel(&state, auth.org_id, &cancelled).await;
         let _ = state
             .store
             .finish_team_run(run_id, "cancelled", None, Some("queue item cancelled"))

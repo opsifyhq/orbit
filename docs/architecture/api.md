@@ -20,14 +20,17 @@ an overview.
   worker tokens.
 - Every response carries `X-Request-Id`; errors include it as `requestId`.
 - Unauthenticated/public routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger)
-  are limited per source IP to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
+  are limited per client to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
   window (default 120). Excess requests return `429 rate_limited` in the standard
   envelope with `Retry-After`. Authenticated API routes and worker-protocol routes are
-  not affected; behind an L7 proxy the peer address is the proxy, so enforce client-IP
-  limits there as well.
+  not affected. The client is the TCP peer, or, when the peer is listed in
+  `ORBIT_TRUSTED_PROXIES`, the right-most `X-Forwarded-For` hop that is not a trusted
+  proxy. IPv6 clients are counted per /64.
 - Idempotent execution creation: send an `Idempotency-Key` header or an `idempotencyKey`
   body field. Keys are scoped to the organization; a repeated key returns the execution
-  that was already created.
+  that was already created, but only for the same agent (otherwise 409). Keys starting
+  with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved for executions ORBIT
+  creates itself and are rejected (422).
 - Keyset pagination on agents, executions, execution events, agent instances and audit
   logs: `?limit=25&cursor=<opaque>` returns `{ "items": [...], "nextCursor": null }`
   (agents also return `total`). Other lists return a plain array.
@@ -79,7 +82,7 @@ validated with field-level `details` and recorded in the audit log.
 |---|---|
 | **System** | |
 | `GET /healthz`, `GET /readyz` | liveness / readiness (database gates; event bus reported as degraded) |
-| `GET /metrics` | Prometheus metrics |
+| `GET /metrics` | Prometheus metrics ([catalogue](../development/observability.md)); optional bearer token, optional dedicated port |
 | `GET /api/v1/meta` | platform version, auth mode, capabilities |
 | `GET /api/v1/docs` | embedded documentation index (sections and pages); authenticated |
 | `GET /api/v1/docs/{*path}` | one page by slug (for example `architecture/overview`): JSON with Markdown, `?format=markdown`, or HTML (`?format=html` / `Accept: text/html`); a path under `assets/` returns an embedded image |
@@ -120,6 +123,7 @@ validated with field-level `details` and recorded in the audit log.
 | `POST /api/v1/agent-teams/{id}/queue/{item_id}/{run,retry,requeue,cancel}` | queue item actions |
 | `GET /api/v1/team-runs` | team runs (`archived`, `teamId`, `limit`) |
 | `GET /api/v1/team-runs/{id}` | one team run with its steps |
+| `POST /api/v1/team-runs/{id}/cancel` | cancel a running team run and request cancellation of its executions |
 | **Build** | |
 | `GET/POST /api/v1/skills`, `GET/PATCH/DELETE /api/v1/skills/{id}` | skills |
 | `POST /api/v1/skills/bulk/delete` | bulk permanent delete (1–500 deduped ids, `dryRun`, per-id failures); skills have no archive state (ADR 0013) |
@@ -140,7 +144,7 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/workers` | live worker heartbeats |
 | `GET/POST /api/v1/worker-profiles`, `GET/PATCH/DELETE /api/v1/worker-profiles/{id}` | worker profiles |
 | `POST /api/v1/worker-profiles/{id}/{enable,disable,token,launch}` | profile lifecycle |
-| `GET /api/v1/worker-profiles/{id}/bootstrap` | generated Docker, Compose or Kubernetes manifests |
+| `POST /api/v1/worker-profiles/{id}/bootstrap` | generated Docker, Compose or Kubernetes manifests; issues one additional worker token for the profile and leaves existing tokens alone |
 | `GET /api/v1/worker-profiles/{id}/env-mappings` | environment mappings attached to a profile |
 | `GET /api/v1/worker-launches`, `GET/DELETE /api/v1/worker-launches/{id}` | launcher-managed workers (`archived`) |
 | `POST /api/v1/worker-launches/{id}/{stop,archive}`, `GET …/logs` | stop / archive a launch, read its logs |

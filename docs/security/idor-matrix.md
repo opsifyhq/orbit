@@ -9,18 +9,19 @@ Enforced by `crates/orbit-api/src/access.rs` (`AccessScope`). Invisible resource
 | Agent versions (`/agents/{id}/versions`) | — | parent visibility (404) | — | — |
 | Agent export / agent executions list | — | parent visibility (404) | — | — |
 | Agent runtime / activate / pause | — | manage (404 if invisible) | manage | — |
-| Skills | yes | yes | yes | — |
+<
+| Skills | yes | yes | yes | the run principal needs **use** of every skill the agent or the run names (the worker profile's own skills excepted); a skill that agents or worker profiles reference cannot be deleted |
 | Connections | yes | yes | yes | **use** required on every run path (see preflight) |
 | Providers | yes | yes | yes | **use** required when an agent binds it, in both platform- and harness-managed models (incl. team subagents); the worker context re-checks the run principal before returning the credential |
 | Worker profiles | yes | yes | yes | claims scoped by owning team |
 | Worker launches (`/worker-launches`) | visibility of the launch's worker profile | same (404 when invisible; owner/admin only if the profile was deleted) | launch, stop and archive need manage on the profile | — |
-| Agent teams (`/agent-teams`) | yes | view (404) | manage; create, change and delete also need `settings:write` | running needs **use**; the agents, worker profiles and environment mappings a team names must be visible to the caller |
+| Agent teams (`/agent-teams`) | yes | view (404) | manage; create, change and delete also need `settings:write` | running needs **use**; the agents, worker profiles and environment mappings a team names must be visible to the caller; the work-source connection needs **use** at save time, and the dispatcher and outcome writer use it only while the team's owner can |
 | Team runs (`/team-runs`, `/agent-teams/{id}/runs`) | via agent team | via agent team | — | follow their agent team |
-| Environment mappings (`/env-mappings`) | yes | view | manage (`settings:write`) | **use** required to attach one to a worker profile |
+| Environment mappings (`/env-mappings`) | yes | view | manage (`settings:write`) | **use** required to attach one to a worker profile; mappings a team run names are checked again for the run principal when the worker fetches its context |
 | Outputs (`/outputs`) | visibility of the target agent or team | same (404 when the target is invisible) | manage the target agent or team; an output with no target (organization-wide) is owner/admin only | — |
 | Triggers | yes | yes | yes | create needs **use** on the target agent and its spec references; fire re-checks the owner |
 | Tool policies | yes | yes | yes | — |
-| Executions | via agent | via agent | cancel via agent | events/SSE via agent |
+| Executions | via agent | via agent | cancel via agent | events/SSE via agent; an idempotent replay only returns an execution of the target agent (409 otherwise), and keys starting with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved |
 | Approvals | via execution → agent | — | decision inherits execution | — |
 | Dashboard summary | agent/execution/approval/connection/trigger counts, recent executions and usage filtered in SQL (`ResourceAccess`, joined via agent) | — | — | pending approvals via execution → agent |
 | Access teams | member list | member | lead/owner/admin | — |

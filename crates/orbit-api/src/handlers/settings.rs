@@ -225,16 +225,17 @@ pub async fn update_oidc(
 ) -> Result<Json<OidcSettings>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let stored_before = state.store.get_platform_setting("oidc").await?;
-    let before = stored_before
+    let previous = stored_before
         .clone()
-        .and_then(|value| serde_json::from_value::<OidcSettings>(value).ok())
-        .map(|settings| oidc_audit_summary(&settings));
+        .and_then(|value| serde_json::from_value::<OidcSettings>(value).ok());
+    let before = previous.as_ref().map(oidc_audit_summary);
     let merged = merge_oidc_settings(stored_before, body.settings)
         .map_err(|issue| ApiError::validation(vec![issue]))?;
     let issues = validate_oidc(&state, &merged);
     if !issues.is_empty() {
         return Err(ApiError::validation(issues));
     }
+    require_oidc_role_ceiling(&auth, previous.as_ref(), &merged)?;
     let value = serde_json::to_value(&merged).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let stored = state
         .store
@@ -251,6 +252,66 @@ pub async fn update_oidc(
     )
     .await;
     Ok(Json(settings))
+}
+
+/// Grant ceiling for OIDC role mappings (#324). A user with `settings:write` must not be
+/// able to give sign-ins a role with permissions they do not hold themselves, for example
+/// by mapping their own IdP group to `owner`. Only mappings that change are checked, so
+/// editing other fields keeps working when an Owner configured higher roles earlier.
+fn require_oidc_role_ceiling(
+    auth: &AuthContext,
+    previous: Option<&OidcSettings>,
+    next: &OidcSettings,
+) -> Result<(), ApiError> {
+    let mut changed: Vec<&str> = Vec::new();
+    let default_role = next.default_role.trim();
+    if !default_role.is_empty()
+        && previous.is_none_or(|previous| previous.default_role.trim() != default_role)
+    {
+        changed.push(default_role);
+    }
+    for (group, role) in &next.group_roles {
+        let unchanged = previous
+            .and_then(|previous| previous.group_roles.get(group))
+            .is_some_and(|before| before.trim() == role.trim());
+        if !unchanged {
+            changed.push(role.trim());
+        }
+    }
+    let held = auth.permissions();
+    for role in changed {
+        let Ok(role) = role.parse::<orbit_domain::UserRole>() else {
+            continue; // validate_oidc reported it
+        };
+        let granted: Vec<String> = Permission::all_for(role)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        if !orbit_security::ungranted_permissions(&held, &granted).is_empty() {
+            return Err(ApiError::forbidden(format!(
+                "you cannot map sign-ins to the {} role, which has permissions you do not hold",
+                role.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Organization-wide switches that weaken isolation or approval controls need every
+/// permission (an Owner, or a custom role that grants all of them), not just
+/// `settings:write` (#324).
+fn require_full_authority(auth: &AuthContext, what: &str) -> Result<(), ApiError> {
+    let all: Vec<String> = Permission::all_for(orbit_domain::UserRole::Owner)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if orbit_security::ungranted_permissions(&auth.permissions(), &all).is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!(
+            "changing {what} requires every permission (an Owner)"
+        )))
+    }
 }
 
 /// Merge OIDC settings stored via the Settings UI into the environment-derived auth
@@ -419,6 +480,7 @@ pub async fn update_access(
     ApiJson(body): ApiJson<AccessSettings>,
 ) -> Result<Json<AccessSettings>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    require_full_authority(&auth, "team isolation")?;
     let before = state
         .store
         .get_platform_setting("team_isolation")
@@ -555,6 +617,7 @@ pub async fn update_approvals(
     Json(body): Json<ApprovalsSettings>,
 ) -> Result<Json<ApprovalsSettings>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
+    require_full_authority(&auth, "approval settings")?;
     let value =
         serde_json::to_value(&body).map_err(|error| ApiError::bad_request(error.to_string()))?;
     state
@@ -573,4 +636,77 @@ pub async fn update_approvals(
     )
     .await;
     Ok(Json(body))
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::*;
+
+    fn settings(default_role: &str, groups: &[(&str, &str)]) -> OidcSettings {
+        let mut value = serde_json::json!({
+            "defaultRole": default_role,
+            "groupRoles": groups.iter().map(|(g, r)| (g.to_string(), serde_json::json!(r))).collect::<serde_json::Map<_, _>>(),
+        });
+        // Every other field takes its serde default.
+        value["issuer"] = serde_json::json!("https://idp.example.com");
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn delegated_admin() -> AuthContext {
+        AuthContext {
+            user_id: uuid::Uuid::now_v7(),
+            org_id: uuid::Uuid::now_v7(),
+            email: "delegate@test.local".into(),
+            display_name: "Delegate".into(),
+            role: orbit_domain::UserRole::Viewer,
+            method: orbit_security::AuthMethod::Dev,
+            // A custom role: settings administration without everything else.
+            scopes: vec![
+                "settings:read".into(),
+                "settings:write".into(),
+                "members:read".into(),
+            ],
+            token_id: None,
+        }
+    }
+
+    fn owner() -> AuthContext {
+        AuthContext {
+            scopes: vec![],
+            role: orbit_domain::UserRole::Owner,
+            ..delegated_admin()
+        }
+    }
+
+    /// #324: settings:write alone cannot map sign-ins to a role above the caller's own.
+    #[test]
+    fn delegated_admins_cannot_raise_oidc_roles() {
+        let before = settings("viewer", &[]);
+        let raise_default = settings("owner", &[]);
+        assert!(
+            require_oidc_role_ceiling(&delegated_admin(), Some(&before), &raise_default).is_err()
+        );
+        let raise_group = settings("viewer", &[("my-group", "admin")]);
+        assert!(
+            require_oidc_role_ceiling(&delegated_admin(), Some(&before), &raise_group).is_err()
+        );
+        assert!(require_oidc_role_ceiling(&owner(), Some(&before), &raise_group).is_ok());
+    }
+
+    #[test]
+    fn unchanged_mappings_do_not_block_other_edits() {
+        // An Owner configured these; a delegated admin may still edit other fields.
+        let before = settings("operator", &[("admins", "owner")]);
+        let next = settings("operator", &[("admins", "owner")]);
+        assert!(require_oidc_role_ceiling(&delegated_admin(), Some(&before), &next).is_ok());
+        // Adding a new owner mapping is still refused.
+        let next = settings("operator", &[("admins", "owner"), ("mine", "owner")]);
+        assert!(require_oidc_role_ceiling(&delegated_admin(), Some(&before), &next).is_err());
+    }
+
+    #[test]
+    fn organization_toggles_need_every_permission() {
+        assert!(require_full_authority(&delegated_admin(), "team isolation").is_err());
+        assert!(require_full_authority(&owner(), "team isolation").is_ok());
+    }
 }

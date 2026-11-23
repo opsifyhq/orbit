@@ -1183,6 +1183,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/team-runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a team run: request cancellation of its live executions, mark the run
+         *     `cancelled` and cancel the queue item it was started for, if any.
+         */
+        post: operations["cancel_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/teams": {
         parameters: {
             query?: never;
@@ -1483,9 +1503,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["bootstrap"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.
+         * @description Each call issues one new worker token for the profile and leaves the existing ones
+         *     alone: launched and previously bootstrapped workers keep running (#306). Rotating
+         *     every token of a profile is the separate, explicit `POST …/token`.
+         */
+        post: operations["bootstrap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1643,6 +1669,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Prometheus scrape endpoint. Open unless `ORBIT_METRICS_TOKEN` is set, in which case
+         *     the scraper must send it as a bearer token.
+         */
         get: operations["metrics"];
         put?: never;
         post?: never;
@@ -5900,6 +5930,34 @@ export interface operations {
             };
         };
     };
+    cancel_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamRunDetail"];
+                };
+            };
+            /** @description the run already ended */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -6766,8 +6824,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Prometheus metrics */
+            /** @description Prometheus metrics in the text exposition format (0.0.4) */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": unknown;
+                };
+            };
+            /** @description A metrics token is configured and the request did not present it */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

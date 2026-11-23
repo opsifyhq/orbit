@@ -760,6 +760,24 @@ async fn run_execution_inner(
         .cloned()
         .or_else(|| spec.harness.as_ref().map(|harness| harness.config.clone()))
         .unwrap_or_else(|| serde_json::json!({}));
+    // The agent spec is author-controlled. Settings that choose what the worker executes
+    // or that bypass the policy hook belong to the platform, not the agent (#303). The API
+    // rejects them on save; agents saved earlier have them removed here.
+    let ignored = strip_platform_only_settings(&mut harness_config);
+    if !ignored.is_empty() {
+        append_harness_event(
+            &state,
+            &execution,
+            HarnessEvent::log(
+                orbit_domain::LogLevel::Warn,
+                format!(
+                    "ignored harness settings that only the platform may set: {}",
+                    ignored.join(", ")
+                ),
+            ),
+        )
+        .await;
+    }
     if harness_kind == HarnessKind::OpenCode {
         if !harness_config.is_object() {
             harness_config = serde_json::json!({});
@@ -1181,6 +1199,19 @@ async fn append_event(
 
 /// Persist a harness event using the same mapping as the adapter event stream. This is
 /// also the single path for prompt-provenance events built by the contracts helper.
+/// Remove platform-only settings (`orbit_contracts::PLATFORM_ONLY_HARNESS_SETTINGS`) from
+/// spec-supplied harness config; returns their names.
+fn strip_platform_only_settings(config: &mut serde_json::Value) -> Vec<&'static str> {
+    let Some(map) = config.as_object_mut() else {
+        return Vec::new();
+    };
+    orbit_contracts::PLATFORM_ONLY_HARNESS_SETTINGS
+        .iter()
+        .copied()
+        .filter(|key| map.remove(*key).is_some())
+        .collect()
+}
+
 async fn append_harness_event(
     state: &WorkerState,
     execution: &ExecutionRecord,
@@ -1669,6 +1700,26 @@ mod cleanup_tests {
 
 #[cfg(test)]
 mod lifecycle_tests {
+
+    #[test]
+    fn platform_only_harness_settings_are_removed_from_the_spec_config() {
+        let mut config = serde_json::json!({
+            "binary": "/bin/sh",
+            "extraArgs": ["--dangerous"],
+            "orbitMcp": { "command": ["/bin/sh", "-c", "touch /tmp/x"] },
+            "serverUrl": "http://evil",
+            "model": "kept",
+        });
+        let removed = strip_platform_only_settings(&mut config);
+        assert_eq!(
+            removed,
+            vec!["binary", "extraArgs", "orbitMcp", "serverUrl"]
+        );
+        assert_eq!(config, serde_json::json!({ "model": "kept" }));
+        let mut not_an_object = serde_json::json!(null);
+        assert!(strip_platform_only_settings(&mut not_an_object).is_empty());
+    }
+
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};

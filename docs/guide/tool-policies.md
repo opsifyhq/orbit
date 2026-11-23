@@ -78,11 +78,13 @@ execution, expire with it, and record the rule, reason, impact and arguments. Ev
 
 The broker does not trust the caller's metadata. The effect is derived from the tool name
 (case-insensitive); `effect`, `capability` and `connection` in the request are ignored
-(a disagreement is logged as a warning).
+(a disagreement is logged as a warning). Every tool call of an OpenCode or Pi run goes
+through this check, also for agents without connectors or rules. ORBIT's own connector
+tools (`orbit_<tool>`) are allowed here and checked by the broker when they run.
 
 | Effect | Tools |
 |---|---|
-| `read` | `read`, `grep`, `glob`, `list`, `ls`, `find`, `task`, `subagent` |
+| `read` | `read`, `grep`, `glob`, `list`, `ls`, `find`, `task`, `subagent`, and the harness-internal `todowrite`, `todoread`, `question`, `skill`, `codemode` |
 | `external_side_effect` | `bash`, `shell`, `webfetch`, `websearch` |
 | `write` | `edit`, `write`, `patch`, `multiedit`, `apply_patch` and **any unknown tool** |
 

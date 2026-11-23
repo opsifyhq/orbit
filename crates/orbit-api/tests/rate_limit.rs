@@ -81,3 +81,55 @@ async fn distinct_source_ips_have_independent_buckets() {
     let (status, _, _) = send(&router, request(11)).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+fn proxied_router(limit: u32) -> Router {
+    Router::new()
+        .route("/public", get(|| async { "ok" }))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(RateLimiter::new(limit).with_trusted_proxies(
+                orbit_api::rate_limit::parse_trusted_proxies("10.0.0.0/8").0,
+            )),
+            enforce,
+        ))
+}
+
+/// A request as the web proxy (10.1.2.3) forwards it for `client`.
+fn via_web_proxy(client: &str) -> Request<Body> {
+    Request::builder()
+        .uri("/public")
+        .header("x-forwarded-for", client)
+        .extension(ConnectInfo(SocketAddr::from(([10, 1, 2, 3], 5000))))
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// #302: behind the web proxy every request has the same TCP peer; clients must still
+/// get separate budgets, so one client cannot block sign-in for everyone.
+#[tokio::test]
+async fn clients_behind_a_trusted_proxy_have_separate_budgets() {
+    let router = proxied_router(1);
+    let (status, _, _) = send(&router, via_web_proxy("198.51.100.1")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&router, via_web_proxy("198.51.100.1")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _, _) = send(&router, via_web_proxy("198.51.100.2")).await;
+    assert_eq!(status, StatusCode::OK, "another client is not affected");
+}
+
+#[tokio::test]
+async fn forwarded_for_from_an_untrusted_peer_is_ignored() {
+    let router = proxied_router(1);
+    let spoofed = |claimed: &str| {
+        Request::builder()
+            .uri("/public")
+            .header("x-forwarded-for", claimed)
+            .extension(ConnectInfo(SocketAddr::from(([203, 0, 113, 50], 5000))))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, _, _) = send(&router, spoofed("198.51.100.1")).await;
+    assert_eq!(status, StatusCode::OK);
+    // A new claimed address does not buy a new budget.
+    let (status, _, _) = send(&router, spoofed("198.51.100.2")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
