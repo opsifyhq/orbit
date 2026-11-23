@@ -120,6 +120,7 @@ replicas are safe.
 | `platform.bodyLimitBytes` | `2097152` | |
 | `api.trustedProxies` | private ranges | Proxies whose `X-Forwarded-For` the anonymous rate limit believes; narrow to the pod CIDR when clients connect from private ranges |
 | `platform.archiveAfterDays` | `30` | archive terminal runs older than N days; `0` disables |
+| `platform.outputDeliveryRetentionDays` | `30` | prune terminal output deliveries older than N days; `0` keeps them |
 | `platform.auditRetentionDays` | `0` | delete audit log entries older than N days; `0` (default) keeps forever |
 
 ### Database and bus

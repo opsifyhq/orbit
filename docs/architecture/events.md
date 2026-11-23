@@ -109,10 +109,12 @@ database or the event bus directly.
 
 - **Scheduler** (`background::scheduler_tick`, every 15s) claims due `schedule` triggers
   with `FOR UPDATE SKIP LOCKED`, so multiple API replicas cannot double-fire one trigger.
+  It repeats bounded claim batches within a tick so more than ten due triggers can fire.
   Each run creates an execution and publishes `orbit.execution.requested`. A firing is
   skipped when the agent is not `active` or already runs its maximum number of concurrent
   executions. Failures increment `consecutive_failures`; a trigger is auto-disabled after
-  `max_failures`.
+  `max_failures`. On shutdown the loop finishes the batch it already claimed within a short
+  grace window instead of dropping those fires.
 - **Team run advance** (every 2s) advances team runs after a step finishes.
 - **Work-source dispatcher** (every 15s) polls GitHub/GitLab issues for Agent Teams with
   an enabled work source, takes a per-team advisory lock, claims issues via labels, and
@@ -128,6 +130,9 @@ database or the event bus directly.
 - **Memory pruner** (hourly) deletes expired agent memory entries.
 - **Retention** (every 6h) archives terminal executions, team runs and worker launches
   older than `ORBIT_ARCHIVE_AFTER_DAYS` (default 30, `0` disables).
+- **Output delivery pruning** (in the 15s reaper) deletes terminal `output_deliveries`
+  rows older than `ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS` (default 30, `0` disables) in
+  bounded batches. Pending and in-flight deliveries are never pruned.
 - **Audit retention** (daily) deletes `audit_logs` rows older than
   `ORBIT_AUDIT_RETENTION_DAYS` (unset or `0`, the default, keeps them forever).
 

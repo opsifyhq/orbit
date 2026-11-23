@@ -13,7 +13,7 @@ use orbit_store::Trigger;
 use tokio::task::JoinHandle;
 
 use crate::state::AppState;
-use crate::supervisor::supervise;
+use crate::supervisor::{supervise, supervise_graceful};
 
 pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
@@ -47,14 +47,20 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         }
     }));
 
-    handles.push(supervise(
+    handles.push(supervise_graceful(
         "scheduler",
         &state,
+        SCHEDULER_SHUTDOWN_GRACE,
         |scheduler_state| async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(15));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
+                // A shutdown request stops new work, but the tick already started (and any
+                // triggers it claimed) is allowed to finish under the supervisor's grace.
+                if scheduler_state.shutdown.is_cancelled() {
+                    break;
+                }
                 let tick = Tick::start(&scheduler_state, "scheduler");
                 let result = scheduler_tick(&scheduler_state).await;
                 tick.done(result.is_ok());
@@ -338,15 +344,34 @@ async fn archive_old_runs(state: &AppState) {
     }
 }
 
+/// A claimed trigger must be fired before shutdown interrupts the loop. The supervisor
+/// allows this long for the in-flight tick; it fits inside the API's shutdown deadline.
+const SCHEDULER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// Triggers claimed per store call (keeps lock/transaction time bounded).
+const TRIGGER_CLAIM_SIZE: i64 = 10;
+/// Repeat claims per tick so a backlog of more than ten due triggers clears promptly.
+/// Each batch advances `next_run_at` before it fires, so nothing is fired twice.
+const MAX_TRIGGER_BATCHES_PER_TICK: usize = 10;
+
 async fn scheduler_tick(state: &AppState) -> anyhow::Result<()> {
     match state.store.repair_stuck_schedule_triggers().await {
         Ok(0) => {}
         Ok(count) => tracing::warn!(count, "repaired schedule triggers with no next run"),
         Err(error) => tracing::warn!(%error, "schedule trigger repair failed"),
     }
-    for trigger in state.store.claim_due_triggers(10).await? {
-        if let Err(error) = fire_trigger(state, trigger).await {
-            tracing::warn!(%error, "scheduled trigger failed");
+    for _ in 0..MAX_TRIGGER_BATCHES_PER_TICK {
+        let batch = state.store.claim_due_triggers(TRIGGER_CLAIM_SIZE).await?;
+        if batch.is_empty() {
+            break;
+        }
+        for trigger in batch {
+            if let Err(error) = fire_trigger(state, trigger).await {
+                tracing::warn!(%error, "scheduled trigger failed");
+            }
+        }
+        // Finish the claimed batch, then stop before claiming another one on shutdown.
+        if state.shutdown.is_cancelled() {
+            break;
         }
     }
     Ok(())
@@ -562,6 +587,10 @@ pub(crate) const HEARTBEAT_STALE_SECONDS: i64 = 90;
 const UNSTARTED_SILENT_SECONDS: i64 = 600;
 /// How long a claimed, never-started run may ignore a cancel request.
 const UNSTARTED_CANCEL_SECONDS: i64 = 60;
+/// Rows pruned per bounded delete; the reaper repeats until the batch is short or the
+/// per-tick cap is reached so a large backlog cannot hold a long transaction open.
+const OUTPUT_DELIVERY_PRUNE_BATCH: i64 = 1000;
+const MAX_OUTPUT_DELIVERY_PRUNE_BATCHES: usize = 10;
 /// Default slack added to `timeout_seconds` before a still-`running` run is ended by the
 /// platform. Override with `ORBIT_EXECUTION_TIMEOUT_GRACE_SECONDS`.
 const DEFAULT_TIMEOUT_GRACE_SECONDS: i64 = 300;
@@ -612,6 +641,33 @@ async fn reap(state: &AppState) -> bool {
         Err(error) => {
             ok = false;
             tracing::warn!(%error, "pruning stale worker heartbeats failed");
+        }
+    }
+
+    if let Some(days) = state.output_delivery_retention_days {
+        let cutoff = Utc::now() - chrono::Duration::days(days as i64);
+        let mut pruned = 0u64;
+        for _ in 0..MAX_OUTPUT_DELIVERY_PRUNE_BATCHES {
+            match state
+                .store
+                .prune_output_deliveries_before(cutoff, OUTPUT_DELIVERY_PRUNE_BATCH)
+                .await
+            {
+                Ok(count) => {
+                    pruned += count;
+                    if count < OUTPUT_DELIVERY_PRUNE_BATCH as u64 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    ok = false;
+                    tracing::warn!(%error, "output delivery pruning failed");
+                    break;
+                }
+            }
+        }
+        if pruned > 0 {
+            tracing::info!(count = pruned, days, "pruned old output deliveries");
         }
     }
 

@@ -171,6 +171,8 @@ spec:
               value: {{ .Values.api.trustedProxies | quote }}
             - name: ORBIT_ARCHIVE_AFTER_DAYS
               value: {{ .Values.platform.archiveAfterDays | quote }}
+            - name: ORBIT_OUTPUT_DELIVERY_RETENTION_DAYS
+              value: {{ .Values.platform.outputDeliveryRetentionDays | quote }}
             - name: ORBIT_AUDIT_RETENTION_DAYS
               value: {{ .Values.platform.auditRetentionDays | quote }}
             {{- with .Values.license }}

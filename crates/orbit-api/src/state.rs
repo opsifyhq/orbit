@@ -67,6 +67,8 @@ pub struct AppState {
     pub ca_secret_key: String,
     /// Archive terminal runs older than this many days. `None` disables retention.
     pub archive_after_days: Option<u32>,
+    /// Prune terminal output deliveries older than this many days. `None` keeps them.
+    pub output_delivery_retention_days: Option<u32>,
     /// Offline enterprise license (hot reloadable).
     pub license: LicenseHandle,
     /// Cancelled on SIGTERM/SIGINT: stops background loops and ends SSE streams.

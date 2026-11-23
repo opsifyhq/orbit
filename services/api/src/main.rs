@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         ca_secret_name: config.ca_secret_name.clone(),
         ca_secret_key: config.ca_secret_key.clone(),
         archive_after_days: config.archive_after_days,
+        output_delivery_retention_days: config.output_delivery_retention_days,
         license: LicenseHandle::load(LicenseSource::from_env()),
         shutdown: shutdown.clone(),
     };

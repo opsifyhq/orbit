@@ -1561,6 +1561,137 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
 }
 
 #[tokio::test]
+async fn delivery_parts_resume_and_pruning_keep_live_rows() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Delivery Reliability Agent"))
+        .await
+        .unwrap();
+    let output = store
+        .create_output(
+            org,
+            "parts-resume",
+            "telegram",
+            Some(agent.id),
+            None,
+            &["succeeded".into()],
+            "secret://output/parts-resume",
+            None,
+            Some("-1001234567890"),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "parts", "payload": {}, "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() } }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 300,
+            requested_by: Some(user),
+            idempotency_key: Some("delivery-parts-1"),
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    store
+        .claim_execution(execution.id, "worker-parts")
+        .await
+        .unwrap();
+    store.mark_execution_running(execution.id, None).await.unwrap();
+    store
+        .finish_execution(
+            execution.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.enqueue_output_deliveries().await.unwrap(), 1);
+
+    let mut jobs = store
+        .claim_output_deliveries(1, chrono::Duration::seconds(120))
+        .await
+        .unwrap();
+    let job = jobs.pop().unwrap();
+    assert_eq!(job.parts_sent, 0);
+    assert!(store
+        .record_output_delivery_part(job.id, job.claim_token)
+        .await
+        .unwrap());
+    assert!(!store
+        .record_output_delivery_part(job.id, uuid::Uuid::now_v7())
+        .await
+        .unwrap());
+    assert!(store
+        .finish_output_delivery(
+            job.id,
+            job.claim_token,
+            orbit_store::outputs::DeliveryOutcome::Retry,
+            None,
+            Some("later part failed"),
+            job.attempts,
+        )
+        .await
+        .unwrap());
+
+    // Once the lease is over, the retry reads the counter back from the row.
+    sqlx::query("UPDATE output_deliveries SET next_attempt_at = now() - interval '1 second', lease_until = now() - interval '1 second' WHERE id = $1")
+        .bind(job.id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let resumed = store
+        .claim_output_deliveries(1, chrono::Duration::seconds(120))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(resumed.id, job.id);
+    assert_eq!(resumed.parts_sent, 1);
+
+    // A pending row and a terminal one of the right age: only the latter is pruned.
+    let cutoff = chrono::Utc::now() + chrono::Duration::seconds(1);
+    assert_eq!(
+        store.prune_output_deliveries_before(cutoff, 10).await.unwrap(),
+        0,
+        "a claimed sending row is never pruned"
+    );
+    assert!(store
+        .finish_output_delivery(
+            resumed.id,
+            resumed.claim_token,
+            orbit_store::outputs::DeliveryOutcome::Succeeded,
+            None,
+            None,
+            resumed.attempts,
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        store.prune_output_deliveries_before(cutoff, 10).await.unwrap(),
+        1
+    );
+    assert!(store.list_output_deliveries(org, output.id, 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn env_mappings_and_outputs_round_trip() {
     let Some(store) = test_store().await else {
         return;
@@ -2454,6 +2585,111 @@ async fn expired_approvals_cannot_be_decided() {
         .await
         .unwrap();
     assert_eq!(decided.status, "approved");
+}
+
+#[tokio::test]
+async fn terminal_executions_expire_their_pending_approvals() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Approval Reliability Agent"))
+        .await
+        .unwrap();
+    let input = serde_json::json!({
+        "task": "gated",
+        "payload": {},
+        "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() }
+    });
+    let make_execution = |key: &'static str| NewExecution {
+        org_id: org,
+        agent_id: agent.id,
+        agent_version_id: version.id,
+        agent_name: &agent.name,
+        harness_kind: HarnessKind::Mock,
+        trigger_source: TriggerSource::Manual,
+        placement: "auto",
+        trigger_id: None,
+        input: input.clone(),
+        session_ref: None,
+        skills: &[],
+        timeout_seconds: 300,
+        requested_by: Some(user),
+        idempotency_key: Some(key),
+        team_run_id: None,
+        team_step_index: None,
+    };
+
+    // finish_execution expires approvals in the same transaction as the terminal state.
+    let running = store
+        .create_execution(make_execution("approvals-finished"))
+        .await
+        .unwrap();
+    store
+        .claim_execution(running.id, "worker-approvals")
+        .await
+        .unwrap();
+    store.mark_execution_running(running.id, None).await.unwrap();
+    let approval = store
+        .create_approval(
+            org,
+            running.id,
+            serde_json::json!({ "action": "x" }),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .finish_execution(
+            running.id,
+            ExecutionStatus::Succeeded,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(store.get_approval(org, approval.id).await.unwrap().status, "expired");
+    let error = store
+        .decide_approval(org, approval.id, "approved", user, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, orbit_store::StoreError::Conflict(_)),
+        "{error}"
+    );
+    assert!(store.get_approval(org, approval.id).await.unwrap().decided_by.is_none());
+
+    // The user cancel path expires approvals too, even before the worker reports back.
+    let queued = store
+        .create_execution(make_execution("approvals-cancelled"))
+        .await
+        .unwrap();
+    let approval = store
+        .create_approval(
+            org,
+            queued.id,
+            serde_json::json!({ "action": "y" }),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(300)),
+        )
+        .await
+        .unwrap();
+    let cancelled = store
+        .request_execution_cancel(org, queued.id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(store.get_approval(org, approval.id).await.unwrap().status, "expired");
+    assert!(matches!(
+        store
+            .decide_approval(org, approval.id, "rejected", user, None)
+            .await
+            .unwrap_err(),
+        orbit_store::StoreError::Conflict(_)
+    ));
 }
 
 /// Pruning takes a database-wide advisory lock and gives up when another caller holds

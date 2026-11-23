@@ -247,13 +247,59 @@ impl Store {
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, org_id, output_id, execution_id, team_run_id, attempts, claim_token
+            RETURNING id, org_id, output_id, execution_id, team_run_id, attempts, claim_token, parts_sent
             "#,
         )
         .bind(limit)
         .bind(lease.num_milliseconds() as f64 / 1000.0)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    /// Record one accepted message part of a multi-part delivery. Conditional on the caller
+    /// still holding the claim, so a late write from a lost lease cannot advance the counter
+    /// of the attempt that replaced it.
+    pub async fn record_output_delivery_part(
+        &self,
+        id: Uuid,
+        claim_token: Uuid,
+    ) -> StoreResult<bool> {
+        let result = sqlx::query(
+            "UPDATE output_deliveries SET parts_sent = parts_sent + 1, updated_at = now() \
+             WHERE id = $1 AND status = 'sending' AND claim_token = $2",
+        )
+        .bind(id)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Delete up to `limit` old, terminal deliveries. Pending and in-flight rows are kept,
+    /// so pruning never loses work. The bounded delete can be called repeatedly per tick.
+    pub async fn prune_output_deliveries_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> StoreResult<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH doomed AS (
+                SELECT id FROM output_deliveries
+                WHERE created_at < $1
+                  AND status IN ('succeeded', 'failed', 'dead', 'skipped')
+                ORDER BY created_at ASC
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM output_deliveries d USING doomed WHERE d.id = doomed.id
+            "#,
+        )
+        .bind(cutoff)
+        .bind(limit)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// The most recent deliveries of one output, newest first, with the task (and agent)
@@ -285,20 +331,76 @@ impl Store {
     }
 
     /// The newest delivery of every output in the organisation that has one.
+    ///
+    /// The lateral subquery fetches one row per output through the
+    /// `output_deliveries(output_id, created_at DESC)` index, so the cost grows with the
+    /// number of outputs instead of the number of deliveries in the organisation.
     pub async fn latest_output_deliveries(&self, org_id: Uuid) -> StoreResult<Vec<OutputDelivery>> {
         Ok(sqlx::query_as::<_, OutputDelivery>(
             r#"
-            SELECT DISTINCT ON (d.output_id) d.id, d.output_id, d.execution_id, d.team_run_id, d.status, d.attempts,
+            SELECT d.id, d.output_id, d.execution_id, d.team_run_id, d.status, d.attempts,
                    d.response_status, d.last_error, d.next_attempt_at, d.created_at, d.updated_at,
                    COALESCE(e.input->>'task', t.input->>'task') AS task, e.agent_name
-            FROM output_deliveries d
+            FROM outputs o
+            JOIN LATERAL (
+                SELECT id, output_id, execution_id, team_run_id, status, attempts,
+                       response_status, last_error, next_attempt_at, created_at, updated_at
+                FROM output_deliveries d
+                WHERE d.org_id = $1 AND d.output_id = o.id
+                ORDER BY d.created_at DESC, d.id DESC
+                LIMIT 1
+            ) d ON true
             LEFT JOIN executions e ON e.id = d.execution_id
             LEFT JOIN team_runs t ON t.id = d.team_run_id
-            WHERE d.org_id = $1
-            ORDER BY d.output_id, d.created_at DESC, d.id DESC
+            WHERE o.org_id = $1
             "#,
         )
         .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Ids of outputs whose target the caller may see, including org-wide outputs.
+    /// One query replaces a per-output lookup in `GET /api/v1/outputs`.
+    pub async fn list_visible_output_ids(
+        &self,
+        org_id: Uuid,
+        access: Option<&crate::access::ResourceAccess>,
+    ) -> StoreResult<Vec<Uuid>> {
+        let (privileged, user_id, team_ids, isolation) = crate::access::binds(access);
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT o.id
+            FROM outputs o
+            LEFT JOIN agents a ON a.id = o.agent_id AND a.org_id = o.org_id
+            LEFT JOIN agent_teams tm ON tm.id = o.team_id AND tm.org_id = o.org_id
+            WHERE o.org_id = $1
+              AND (
+                  (o.agent_id IS NULL AND o.team_id IS NULL)
+                  OR (
+                      o.agent_id IS NOT NULL
+                      AND ($2::bool OR a.owner_user_id = $3
+                           OR CASE WHEN $5::bool AND a.owner_team_id IS NOT NULL
+                                THEN a.owner_team_id = ANY($4)
+                                ELSE a.visibility = 'org'
+                                     OR (a.visibility = 'team' AND a.owner_team_id = ANY($4)) END)
+                  )
+                  OR (
+                      o.team_id IS NOT NULL
+                      AND ($2::bool OR tm.owner_user_id = $3
+                           OR CASE WHEN $5::bool AND tm.owner_team_id IS NOT NULL
+                                THEN tm.owner_team_id = ANY($4)
+                                ELSE tm.visibility = 'org'
+                                     OR (tm.visibility = 'team' AND tm.owner_team_id = ANY($4)) END)
+                  )
+              )
+            "#,
+        )
+        .bind(org_id)
+        .bind(privileged)
+        .bind(user_id)
+        .bind(&team_ids)
+        .bind(isolation)
         .fetch_all(&self.pool)
         .await?)
     }
