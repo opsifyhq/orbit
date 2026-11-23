@@ -47,10 +47,11 @@ function EditAgentTeamEditor({ teamId }: { teamId: string }) {
     );
   }
 
-  async function handleSubmit(input: TeamInput) {
+  async function handleSubmit(input: TeamInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       await updateAgentTeam(teamId, input);
+      await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams }),
         queryClient.invalidateQueries({ queryKey: queryKeys.agentTeam(teamId) }),

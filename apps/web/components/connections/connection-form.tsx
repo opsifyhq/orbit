@@ -5,7 +5,11 @@ import Link from "next/link";
 import { ChevronLeft, Plug } from "lucide-react";
 import { toast } from "sonner";
 
-import { ResourceAccessFields, type ResourceAccessHandle } from "@/components/resource-access-fields";
+import {
+  ResourceAccessFields,
+  type ResourceAccessHandle,
+  type ResourceSubmit,
+} from "@/components/resource-access-fields";
 import { Badge } from "@/components/ui/badge";
 import {
   SectionCard,
@@ -38,6 +42,7 @@ import {
 } from "@/lib/connections";
 import { effectLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
 import type { ConnectionView } from "@/lib/types";
+import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
 import { cn } from "@/lib/utils";
 
 type SectionId = "service" | "account" | "capabilities" | "advanced" | "sharing";
@@ -112,7 +117,7 @@ export function ConnectionForm({
   initialConnector?: string;
   submitLabel: string;
   submitting?: boolean;
-  onSubmit: (input: ConnectionInput) => Promise<void> | void;
+  onSubmit: ResourceSubmit<ConnectionInput>;
   cancelHref: string;
 }) {
   const editing = Boolean(connection);
@@ -128,6 +133,9 @@ export function ConnectionForm({
   const [configText, setConfigText] = useState(JSON.stringify(startConfig, null, 2));
   const [configError, setConfigError] = useState<string | null>(null);
   const [url, setUrl] = useState(urlFromConfig(firstSlug, startConfig));
+  // Access is stored separately; keep pending access edits in the unsaved state too.
+  const [accessDirty, setAccessDirty] = useState(false);
+  useUnsavedChanges({ accessDirty });
   const accessRef = useRef<ResourceAccessHandle>(null);
 
   const connector = connectors.find((item) => item.slug === connectorSlug);
@@ -229,14 +237,19 @@ export function ConnectionForm({
       toast.error(issues.length === 1 ? issues[0].message : "Fix the highlighted sections");
       return;
     }
-    if ((await accessRef.current?.save()) === false) return;
-    await onSubmit({
-      connectorSlug,
-      name: name.trim(),
-      ...(credential ? { credential } : {}),
-      scopes,
-      config: usesUrl ? applyUrl(connectorSlug, parsedConfig ?? {}, url) : (parsedConfig ?? {}),
-    });
+    const commitAccess = async () => {
+      await accessRef.current?.save();
+    };
+    await onSubmit(
+      {
+        connectorSlug,
+        name: name.trim(),
+        ...(credential ? { credential } : {}),
+        scopes,
+        config: usesUrl ? applyUrl(connectorSlug, parsedConfig ?? {}, url) : (parsedConfig ?? {}),
+      },
+      commitAccess,
+    );
   }
 
   // ------------------------------------------------------------------ summaries
@@ -519,7 +532,12 @@ export function ConnectionForm({
                 <p className="text-[13px] text-muted-foreground">Who can see this connection and use it for agents.</p>
               </CardHeader>
               <CardContent className="space-y-5">
-                <ResourceAccessFields ref={accessRef} resource="connections" resourceId={connection?.id} />
+                <ResourceAccessFields
+                  ref={accessRef}
+                  resource="connections"
+                  resourceId={connection?.id}
+                  onDirtyChange={setAccessDirty}
+                />
                 <div className="flex items-center justify-between gap-3 border-t pt-4">
                   <Button type="button" variant="ghost" onClick={() => go("advanced")}>
                     <ChevronLeft /> {SECTION_TITLES.advanced}

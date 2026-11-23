@@ -49,10 +49,11 @@ export default function EditProviderPage() {
   }
   const data = provider.data;
 
-  async function handleSubmit(draft: ProviderDraft) {
+  async function handleSubmit(draft: ProviderDraft, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       await updateProvider(data, draft);
+      await commitAccess();
       await queryClient.invalidateQueries({ queryKey: queryKeys.providers });
       toast.success("Provider saved");
       router.push(`/models/${providerId}`);

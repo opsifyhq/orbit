@@ -11,6 +11,7 @@ use orbit_contracts::{subjects, OrbitEvent};
 use orbit_domain::{AgentStatus, ExecutionStatus, LogLevel, TriggerSource};
 use orbit_store::Trigger;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::supervisor::{supervise, supervise_graceful};
@@ -243,6 +244,37 @@ pub(crate) fn license_phase(status: &orbit_security::LicenseStatus) -> &'static 
         "grace"
     } else {
         "active"
+    }
+}
+
+/// A scheduled/runtime tick that would exceed `executions_per_day` is skipped, not failed:
+/// a failure would auto-disable a trigger or stop a runtime. Report the skip in the audit
+/// log and logs so operators can see why no execution was created.
+pub(crate) async fn audit_license_skip(
+    state: &AppState,
+    org_id: Uuid,
+    target_type: &str,
+    target_id: Uuid,
+    reason: &str,
+) {
+    tracing::warn!(%org_id, target_type, %target_id, reason, "execution skipped: license limit reached");
+    if let Err(error) = state
+        .store
+        .append_audit_log(
+            org_id,
+            "system",
+            None,
+            None,
+            "execution.license_skipped",
+            Some(target_type),
+            Some(target_id),
+            serde_json::json!({ "limit": "executions_per_day", "reason": reason }),
+            None,
+            None,
+        )
+        .await
+    {
+        tracing::error!(%error, "failed to audit skipped execution");
     }
 }
 
@@ -534,9 +566,8 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
         return Ok(());
     }
     let idempotency_key = format!("trigger:{}:{}", trigger.id, fired_at.timestamp_millis());
-    let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+    let execution = match state
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: trigger.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -554,7 +585,15 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
             team_run_id: None,
             team_step_index: None,
         })
-        .await?;
+        .await
+    {
+        Ok(execution) => execution,
+        Err(error) if error.code == "license_limit" => {
+            audit_license_skip(state, trigger.org_id, "trigger", trigger.id, &error.message).await;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     let event = OrbitEvent::new(
         subjects::EXECUTION_REQUESTED,
@@ -1174,9 +1213,8 @@ async fn advance_runtime(
     // Deterministic per tick: the previous execution id only changes once the runtime row
     // is updated below, so a retry after a partial failure reuses the same execution.
     let idempotency_key = runtime_tick_key(runtime.id, runtime.last_execution_id);
-    let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+    let execution = match state
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: runtime.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -1201,7 +1239,32 @@ async fn advance_runtime(
             team_step_index: None,
         })
         .await
-        .map_err(|error| RuntimeTickError::Transient(error.into()))?;
+    {
+        Ok(execution) => execution,
+        Err(error) if error.code == "license_limit" => {
+            audit_license_skip(
+                state,
+                runtime.org_id,
+                "agent_runtime",
+                runtime.id,
+                &error.message,
+            )
+            .await;
+            // Skip this tick without counting it as a failure: the runtime stays
+            // enabled and tries again at its normal interval.
+            let _ = state
+                .store
+                .advance_agent_runtime(
+                    runtime.id,
+                    Some("run skipped: license limit reached"),
+                    chrono::Utc::now()
+                        + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
+                )
+                .await;
+            return Ok(());
+        }
+        Err(error) => return Err(RuntimeTickError::Transient(error.into())),
+    };
     // Does not touch `status`. If the runtime was stopped while this tick was in flight
     // the write is refused: cancel the execution so nothing keeps running for it.
     let recorded = state

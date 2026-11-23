@@ -17,10 +17,11 @@ per execution (or per Agent Team step) and constrained by the worker profile.
 - **Agent Team step**: agent + optional harness (native mode requires OpenCode when
   subagents are used).
 - **Worker profile**: declares supported harnesses/capabilities and placement.
-- Harness-specific options live under `harnessConfig.<kind>` and are validated by the
-  selected adapter when the agent is saved, not stored as part of the agent identity.
-  Settings that choose what the worker executes (`binary`, `extraArgs`), carry the policy
-  hook (`orbitMcp`) or point at a shared server (`serverUrl`) are the platform's and are
+- Harness-specific options live under `harnessConfig.<kind>`. On agent create/update the
+  API calls `validate_config` on the adapter for each configured kind (and on the
+  deprecated `spec.harness.config` of older versions); the platform does not interpret
+  them. Settings that choose what the worker executes (`binary`, `extraArgs`), carry the
+  policy hook (`orbitMcp`) or point at a shared server (`serverUrl`) are the platform's and are
   refused in agent specs (#303).
 
 ## Resolution

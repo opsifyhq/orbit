@@ -11,7 +11,7 @@ use orbit_domain::{HarnessKind, TriggerSource, ValidationIssue};
 use orbit_security::{AuthContext, Permission};
 use orbit_store::{AgentTeam, TeamRun, TeamStep};
 
-use crate::dto::TeamRunListQuery;
+use crate::dto::{TeamRunListQuery, TeamRunPage};
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::work_sources::{
@@ -967,9 +967,8 @@ pub(crate) async fn start_step(
     step_index: usize,
     previous_output: Option<&serde_json::Value>,
 ) -> Result<TeamStep, ApiError> {
-    // Every team step creates an execution. Enforce here so manual runs, scheduled/queue
-    // starts and the work-source dispatcher's auto-run all share the same atomic check.
-    let _execution_limit = state.execution_limit_guard().await?;
+    // Every team step creates an execution through `create_execution_with_limit`, so
+    // manual runs, scheduled/queue starts and dispatcher auto-run share the same guard.
     let step = definition
         .steps
         .get(step_index)
@@ -1124,8 +1123,7 @@ pub(crate) async fn start_step(
             serde_json::json!(orbit_domain::APPROVAL_OVERRIDE_AUTO);
     }
     let execution = state
-        .store
-        .create_execution(orbit_store::executions::NewExecution {
+        .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: run.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -1291,26 +1289,31 @@ pub async fn create_run(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(TeamRunListQuery), responses((status = 200, body = [orbit_store::TeamRun])))]
+#[utoipa::path(get, path = "/api/v1/team-runs", tag = "agent-teams", params(TeamRunListQuery), responses((status = 200, body = TeamRunPage)))]
 pub async fn list_runs(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Query(query): Query<TeamRunListQuery>,
-) -> Result<Json<Vec<TeamRun>>, ApiError> {
+) -> Result<Json<TeamRunPage>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_team_runs(
-                auth.org_id,
-                query.archived,
-                query.team_id,
-                query.limit.unwrap_or(100).clamp(1, 200) as i64,
-                Some(&access.store_access()),
-            )
-            .await?,
-    ))
+    let (items, next_cursor, total) = state
+        .store
+        .list_team_runs(
+            auth.org_id,
+            query.archived,
+            query.team_id,
+            query.cursor.as_deref(),
+            query.q.as_deref(),
+            query.limit.unwrap_or(100).clamp(1, 200) as i64,
+            Some(&access.store_access()),
+        )
+        .await?;
+    Ok(Json(TeamRunPage {
+        items,
+        next_cursor,
+        total,
+    }))
 }
 
 #[utoipa::path(get, path = "/api/v1/team-runs/{run_id}", tag = "agent-teams", responses((status = 200, body = TeamRunDetail)))]

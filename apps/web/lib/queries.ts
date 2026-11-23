@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
 import { listEnvMappings, workerProfileEnvMappings } from "./env-mappings";
@@ -20,9 +20,7 @@ import type {
   MetaResponse,
   ProviderView,
   HarnessView,
-  TriggerRecord,
   ApiTokenView,
-  AgentInstanceView,
   ApprovalWithExecution,
   WorkerView,
   Skill,
@@ -32,7 +30,15 @@ import type {
   TeamRun,
   TeamRunDetail,
 } from "./types";
-import { getAgentTeam, getTeamRun, listAgentTeams, listTeamQueue, listTeamRuns, type TeamQueueItem } from "./teams";
+import {
+  getAgentTeam,
+  getTeamRun,
+  listAgentTeams,
+  listTeamQueue,
+  listTeamRuns,
+  type TeamQueueItem,
+  type TeamRunPage,
+} from "./teams";
 import { workerLaunches } from "./launcher";
 
 export function unwrap<T>(result: {
@@ -68,9 +74,7 @@ export const queryKeys = {
   providers: ["providers"] as const,
   connectors: ["connectors"] as const,
   connections: ["connections"] as const,
-  triggers: (agentId?: string) => ["triggers", agentId ?? "all"] as const,
   tokens: ["api-tokens"] as const,
-  instances: ["agent-instances"] as const,
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
   workers: ["workers"] as const,
   skills: ["skills"] as const,
@@ -417,29 +421,10 @@ export function useConnections() {
   });
 }
 
-export function useTriggers(agentId?: string) {
-  return useQuery<TriggerRecord[]>({
-    queryKey: queryKeys.triggers(agentId),
-    queryFn: async () =>
-      unwrap(
-        await api.GET("/api/v1/triggers", {
-          params: { query: { agentId: agentId } },
-        }),
-      ),
-  });
-}
-
 export function useApiTokens() {
   return useQuery<ApiTokenView[]>({
     queryKey: queryKeys.tokens,
     queryFn: async () => unwrap(await api.GET("/api/v1/api-tokens")),
-  });
-}
-
-export function useAgentInstances() {
-  return useQuery<{ items: AgentInstanceView[]; total: number }>({
-    queryKey: queryKeys.instances,
-    queryFn: async () => unwrap(await api.GET("/api/v1/agent-instances")),
   });
 }
 
@@ -515,14 +500,36 @@ export function useTeamRun(runId: string) {
  * Team runs, newest first. Pass `teamId` for one team's runs: the server filters, so a
  * busy organization cannot push this team's runs out of the page.
  */
-export function useTeamRuns(options: { archived?: boolean; teamId?: string; limit?: number } = {}) {
-  const { archived, teamId, limit } = options;
+export function useTeamRuns(
+  options: { archived?: boolean; teamId?: string; limit?: number; q?: string } = {},
+) {
+  const { archived, teamId, limit, q } = options;
   return useQuery<TeamRun[]>({
-    queryKey: [...queryKeys.teamRuns, archived ?? "all", teamId ?? "any", limit ?? "default"],
-    queryFn: () => listTeamRuns({ archived, teamId, limit }),
+    queryKey: [...queryKeys.teamRuns, archived ?? "all", teamId ?? "any", limit ?? "default", q ?? ""],
+    queryFn: async () => (await listTeamRuns({ archived, teamId, limit, q })).items,
     // Fast while something is running, slow otherwise (new runs still show up).
     refetchInterval: (query) =>
       query.state.data?.some((run) => !TERMINAL_RUN.has(run.status)) ? 3_000 : 15_000,
+  });
+}
+
+/** Paged team runs for the registry list: the server filters and supplies the cursor. */
+export function usePagedTeamRuns(
+  options: { archived?: boolean; q?: string; limit?: number } = {},
+) {
+  const { archived, q, limit } = options;
+  return useInfiniteQuery<TeamRunPage>({
+    queryKey: [...queryKeys.teamRuns, "page", archived ?? "all", q ?? "", limit ?? 100],
+    queryFn: ({ pageParam }) =>
+      listTeamRuns({ archived, q, limit, cursor: typeof pageParam === "string" ? pageParam : undefined }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    refetchInterval: (query) =>
+      query.state.data?.pages.some((page) =>
+        page.items.some((run) => !TERMINAL_RUN.has(run.status)),
+      )
+        ? 3_000
+        : 15_000,
   });
 }
 

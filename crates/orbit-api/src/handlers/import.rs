@@ -146,10 +146,14 @@ pub async fn import_markdown(
             let access = crate::access::AccessScope::load(&state, &auth).await?;
             crate::preflight::require_spec_use(&state, auth.org_id, &access, &definition.spec)
                 .await?;
+            // OpenCode import creates the agent directly; apply the same installation-wide
+            // agent limit as `POST /api/v1/agents` before the insert.
+            let _agent_limit = state.agent_limit_guard().await?;
             let (agent, _) = state
                 .store
                 .create_agent(auth.org_id, Some(auth.user_id), &definition)
                 .await?;
+            drop(_agent_limit);
             state
                 .store
                 .assign_resource_owner(auth.org_id, "agents", agent.id, auth.user_id)

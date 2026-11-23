@@ -103,8 +103,9 @@ page shows "The run failed" with the error.
 - `GET /api/v1/executions/{id}`, `.../events` (query `afterSeq`, `kind`, `tool`, `q`,
   `limit`) and `.../events/stream` (server-sent events).
 - `POST /api/v1/executions/{id}/cancel`, `POST /api/v1/executions/{id}/rerun`.
-- `GET /api/v1/team-runs` (query `teamId`, `archived`, `limit`) and
-  `GET /api/v1/team-runs/{id}`.
+- `GET /api/v1/team-runs` (query `teamId`, `archived`, `q`, `limit`, `cursor`): returns
+  `{ items, nextCursor, total }`; pass `nextCursor` back for older runs.
+  `GET /api/v1/team-runs/{id}` returns one run with its steps.
 - `POST /api/v1/team-runs/{id}/cancel`: stops a running team run. Its live execution is
   asked to stop and the run's queue item, if any, is cancelled. Deleting an agent team
   does the same for all of its runs.

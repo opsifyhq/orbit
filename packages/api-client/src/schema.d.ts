@@ -3266,6 +3266,12 @@ export interface components {
             run: components["schemas"]["TeamRun"];
             steps: components["schemas"]["TeamStep"][];
         };
+        TeamRunPage: {
+            items: components["schemas"]["TeamRun"][];
+            nextCursor?: string | null;
+            /** Format: int64 */
+            total: number;
+        };
         TeamStep: {
             /** Format: uuid */
             agentId: string;
@@ -5895,6 +5901,10 @@ export interface operations {
                 teamId?: string;
                 /** @description Newest first; 1 to 200, default 100. */
                 limit?: number;
+                /** @description Opaque cursor from the previous page. */
+                cursor?: string;
+                /** @description Case-insensitive substring of the task, team name or run status. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -5907,7 +5917,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TeamRun"][];
+                    "application/json": components["schemas"]["TeamRunPage"];
                 };
             };
         };

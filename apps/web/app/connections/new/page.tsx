@@ -20,10 +20,11 @@ function NewConnection() {
   const connectors = useConnectors();
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(input: ConnectionInput) {
+  async function handleSubmit(input: ConnectionInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       const created = await createConnection(input);
+      await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.connections }),
         queryClient.invalidateQueries({ queryKey: queryKeys.connectors }),

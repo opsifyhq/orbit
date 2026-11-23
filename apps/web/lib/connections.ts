@@ -1,6 +1,5 @@
 import type { StatusMeta } from "@/components/ui/status";
 import { api } from "@/lib/api";
-import { effectTone } from "@/lib/presentation";
 import { unwrap, useConnections } from "@/lib/queries";
 import type { ConnectionView } from "@/lib/types";
 
@@ -43,11 +42,6 @@ export function connectionStatus(
   // Degraded, not broken: agents can still use a connection whose last check failed.
   if (health === "error") return { label: "Check failed", tone: "warning", shape: "cross" };
   return { label: "Not checked", tone: "neutral", shape: "ring" };
-}
-
-/** Read = quiet, write and external = amber (red is kept for failures): the approvals scale. */
-export function effectVariant(effect: string | null | undefined): "secondary" | "warning" {
-  return effectTone(effect) === "safe" ? "secondary" : "warning";
 }
 
 export const EFFECT_GROUPS: Array<{ tone: "safe" | "write" | "external"; title: string; hint: string }> = [

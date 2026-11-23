@@ -163,7 +163,3 @@ export function Status({
     </span>
   );
 }
-
-export function isLiveStatus(status: string): boolean {
-  return ["queued", "dispatched", "running", "awaiting_approval"].includes(status);
-}

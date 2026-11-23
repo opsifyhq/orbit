@@ -71,12 +71,16 @@ if you add `--set auth.acknowledgeInsecureDev=true`.
 ### `scripts/deploy.sh` is a development helper
 
 `scripts/deploy.sh` wraps `helm upgrade --install` for the maintainers' microk8s test
-cluster. It always sets `platform.environment=development`,
-`auth.acknowledgeInsecureDev=true` (dev auth behind the ingress),
-`postgresql.storageClassName=hostpath` and `nats.storageClassName=hostpath`, and it
-defaults `INGRESS_HOST` to `orbit.mdk.local` and `REGISTRY` to `192.168.1.201:5000`. It
-does not set `piWorker.tag`. Use it for local clusters only. Its companion scripts take
-the same `REGISTRY` and `TAG` variables, so set them for all three:
+cluster. With no `VALUES` file (or the chart's default `values.yaml`, which `make deploy`
+passes) it renders `values.yaml` with the local overrides
+(`platform.environment=development`, `auth.acknowledgeInsecureDev=true`,
+`postgresql.storageClassName=hostpath`, `nats.storageClassName=hostpath` and an
+`INGRESS_HOST` of `orbit.mdk.local`). With any other values file those overrides are left
+to the values file; the script never enables a fixed worker that the values file disables.
+`TAG` defaults to the chart's `appVersion` and is applied to every workload, including
+`piWorker`. `REGISTRY` defaults to `192.168.1.201:5000` for the dev profile; with another
+values file its `imageRegistry` is kept unless you set `REGISTRY`. Its companion scripts
+take the same `REGISTRY` and `TAG` variables, so set them for all three:
 
 ```bash
 REGISTRY=registry.example.com:5000 TAG=<version> ./scripts/build-images.sh
@@ -150,9 +154,9 @@ Key values (all in `deploy/helm/orbit/values.yaml`):
 | `auth.mode` | `dev` | `dev` or `oidc` |
 | `auth.acknowledgeInsecureDev` | `false` | Required to render dev auth with anonymous access behind the ingress |
 | `auth.oidc.*` | empty | `issuer`, `audience`, `clientId`, `redirectUri`, `jwksUrl` (required in oidc mode), `scopes`, `autoProvision`, `defaultRole`, `roleClaim`, `emailClaim`, `groupRoles`, `teamGroups`, `autoCreateTeams`, `requireMappedGroup`, `syncRoles`, `requireVerifiedEmail`. See [oidc.md](oidc.md). OIDC can also be configured under Settings |
-| `secrets.existingSecret` | empty | Operator-managed Secret. Required keys `database-url` and `master-key`; optional `launcher-token`, `oidc-client-secret`, `worker-token` |
+| `secrets.existingSecret` | empty | Operator-managed Secret. Required keys `database-url` and `master-key`; optional `launcher-token`, `oidc-client-secret` and, for fixed workers, `worker-token` / `opencode-worker-token` / `pi-worker-token` |
 | `secrets.masterKey` | development key | Replace it; the chart refuses the development key when `platform.environment=production` |
-| `worker.*`, `opencodeWorker.*`, `piWorker.*` | disabled | Optional fixed worker Deployments. Each needs a scoped worker token when enabled |
+| `worker.*`, `opencodeWorker.*`, `piWorker.*` | disabled | Optional fixed worker Deployments. Each needs a scoped worker token when enabled: `*.token` when the chart creates the Secret, or `worker-token` / `opencode-worker-token` / `pi-worker-token` in `secrets.existingSecret` |
 | `launcher.enabled` | `true` | Worker launcher: starts worker Deployments and Jobs and receives a per-launch token from the API |
 | `launcher.token` | generated | Shared bearer token between API and launcher, reused across upgrades |
 | `launcher.authSecrets` | `orbit-opencode-auth*,orbit-pi-auth*` | Secret names (exact or `prefix*`) a worker profile may mount as `authSecretName`. Empty allows none. Sets `ORBIT_WORKER_AUTH_SECRETS` on the API and the launcher |
@@ -182,11 +186,19 @@ Key values (all in `deploy/helm/orbit/values.yaml`):
 
 The chart requires no cluster-admin permissions and creates a namespaced ServiceAccount.
 
-## OpenCode harness worker
+## Harness workers (OpenCode and Pi)
 
-OpenCode runs in a separate execution-plane image (`deploy/docker/worker-opencode.Dockerfile`)
-so the control plane and base worker do not bundle harness frameworks. The worker claims
-only `harness_kind=opencode` executions (`ORBIT_WORKER_HARNESSES=opencode`).
+OpenCode and Pi run in separate execution-plane images
+(`deploy/docker/worker-opencode.Dockerfile` and `deploy/docker/worker-pi.Dockerfile`) so
+the control plane and base worker do not bundle harness frameworks. The fixed workers
+below claim only their own executions (`ORBIT_WORKER_HARNESSES=opencode` or `pi`).
+
+The default path needs no fixed worker and no token: create a worker profile with the
+harness and its auth Secret (see [worker profiles](../guide/worker-profiles.md)), then
+start it from **Workers → Launch**. The launcher mints a scoped token per launch. Use a
+fixed Deployment only when you want a long-running worker outside that path.
+
+### Fixed OpenCode worker
 
 ```bash
 # 1. export credentials from a logged-in OpenCode install (contains secrets)
@@ -194,7 +206,24 @@ opencode auth export > /tmp/auth-export.json
 kubectl -n orbit create secret generic orbit-opencode-auth \
   --from-file=auth-export.json=/tmp/auth-export.json
 
-# 2. enable the worker
+# 2. issue a token scoped to the harness (Owner/Admin; Workers → Tokens in the UI does the same)
+TOKEN=$(curl -sf -X POST https://orbit.example.com/api/v1/worker-tokens \
+  -H "Authorization: Bearer $ORBIT_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"fixed-opencode","harnesses":["opencode"]}' | jq -r .token)
+
+# 3. enable the worker (the chart writes the token into its own Secret)
+helm upgrade orbit deploy/helm/orbit -n orbit --reuse-values \
+  --set opencodeWorker.enabled=true \
+  --set opencodeWorker.token="$TOKEN" \
+  --set opencodeWorker.auth.existingSecret=orbit-opencode-auth
+```
+
+With `secrets.existingSecret` (production), the chart does not create a Secret, so store
+the token there instead of passing `--set opencodeWorker.token`:
+
+```bash
+kubectl -n orbit patch secret orbit-secrets --type=merge \
+  -p "{\"stringData\":{\"opencode-worker-token\":\"$TOKEN\"}}"
 helm upgrade orbit deploy/helm/orbit -n orbit --reuse-values \
   --set opencodeWorker.enabled=true \
   --set opencodeWorker.auth.existingSecret=orbit-opencode-auth
@@ -205,6 +234,26 @@ runs as non-root and executes `opencode run --standalone --format json`. Tested 
 OpenCode v2.3.0. Rotate credentials by recreating the Secret and restarting the
 Deployment. For local Docker/OrbStack, mount the exported auth file similarly or run the
 worker with `ORBIT_WORKER_HARNESSES=opencode` and a writable `HOME`.
+
+### Fixed Pi worker
+
+```bash
+# 1. copy the Pi agent directory from a logged-in machine (contains secrets)
+kubectl -n orbit create secret generic orbit-pi-auth \
+  --from-file=auth.json=$HOME/.pi/agent/auth.json
+
+# 2. issue a Pi-only token, then enable the worker
+TOKEN=$(curl -sf -X POST https://orbit.example.com/api/v1/worker-tokens \
+  -H "Authorization: Bearer $ORBIT_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"fixed-pi","harnesses":["pi"]}' | jq -r .token)
+helm upgrade orbit deploy/helm/orbit -n orbit --reuse-values \
+  --set piWorker.enabled=true \
+  --set piWorker.token="$TOKEN" \
+  --set piWorker.auth.existingSecret=orbit-pi-auth
+```
+
+With `secrets.existingSecret`, add the `pi-worker-token` key to that Secret and omit
+`--set piWorker.token`, as for OpenCode above. Tested with Pi v1.5.2.
 
 ## Bundled vs external dependencies
 

@@ -113,8 +113,9 @@ and must not start the harness.
   `effect`)
 - `autonomy`: 1–4 with platform-enforced semantics
 - `resources`: timeout, memory, CPU, max output tokens, max concurrent executions
-- `harness_config`: adapter-owned JSON. The API validates `spec.harnessConfig.<kind>`
-  with the adapter's `validate_config` when an agent is saved, and refuses the settings
+- `harness_config`: adapter-owned JSON. On agent create/update the API calls
+  `validate_config` on the adapter for each configured `spec.harnessConfig.<kind>` (and
+  for the deprecated `spec.harness.config` of older versions), and refuses the settings
   only the platform may set (`binary`, `extraArgs`, `orbitMcp`, `serverUrl`;
   `orbit_contracts::PLATFORM_ONLY_HARNESS_SETTINGS`). The worker also removes them from
   agent specs saved before that check. Pi `skills` paths must stay inside the workspace

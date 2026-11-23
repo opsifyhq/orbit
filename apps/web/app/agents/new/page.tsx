@@ -20,7 +20,7 @@ export default function NewAgentPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(definition: AgentDefinition) {
+  async function handleSubmit(definition: AgentDefinition, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     setServerIssues([]);
     try {
@@ -29,6 +29,7 @@ export default function NewAgentPage() {
           body: toAgentDefinitionBody(definition),
         }),
       );
+      await commitAccess();
       toast.success("Agent created");
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });

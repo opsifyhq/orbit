@@ -19,10 +19,11 @@ export default function NewProviderPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(draft: ProviderDraft) {
+  async function handleSubmit(draft: ProviderDraft, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
       const created = await createProvider(draft);
+      await commitAccess();
       await queryClient.invalidateQueries({ queryKey: queryKeys.providers });
       toast.success("Provider added");
       router.push(`/models/${created.id}`);

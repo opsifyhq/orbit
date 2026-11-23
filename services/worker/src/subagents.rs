@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use orbit_domain::AutonomyLevel;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -57,6 +58,7 @@ pub async fn materialize(
     input: &Value,
     workspace: &Path,
     models: &BTreeMap<Uuid, String>,
+    autonomy: AutonomyLevel,
 ) -> anyhow::Result<Vec<String>> {
     let Some(team) = input.get("team") else {
         return Ok(Vec::new());
@@ -101,6 +103,27 @@ pub async fn materialize(
             serde_json::to_string(description).unwrap_or_else(|_| "\"subagent\"".into())
         ));
         document.push_str("mode: subagent\n");
+        // A subagent uses its own permission set. Without one, OpenCode stops at its
+        // interactive default and the child never gets shell/edit/write, even when the
+        // primary is L4. The ORBIT policy plugin still checks every call; these rules only
+        // let the child reach that hook.
+        if autonomy >= AutonomyLevel::AUTONOMOUS {
+            document.push_str("permissions:\n");
+            document.push_str("  - action: \"*\"\n");
+            document.push_str("    resource: \"*\"\n");
+            document.push_str("    effect: allow\n");
+        } else if autonomy <= AutonomyLevel::RECOMMEND {
+            document.push_str("permissions:\n");
+            document.push_str("  - action: \"*\"\n");
+            document.push_str("    resource: \"*\"\n");
+            document.push_str("    effect: allow\n");
+            document.push_str("  - action: edit\n");
+            document.push_str("    resource: \"*\"\n");
+            document.push_str("    effect: deny\n");
+            document.push_str("  - action: shell\n");
+            document.push_str("    resource: \"*\"\n");
+            document.push_str("    effect: deny\n");
+        }
         if let Some(model) = subagent
             .get("agentId")
             .and_then(Value::as_str)
@@ -146,11 +169,15 @@ mod tests {
             }
         });
         let models = BTreeMap::from([(agent_id, "corp/docs-model".to_string())]);
-        materialize(&input, &dir, &models).await.unwrap();
+        materialize(&input, &dir, &models, AutonomyLevel::AUTONOMOUS)
+            .await
+            .unwrap();
         let body = tokio::fs::read_to_string(dir.join(".opencode/agents/docs-agent.md"))
             .await
             .unwrap();
         assert!(body.contains("model: corp/docs-model"));
+        assert!(body.contains("permissions:"));
+        assert!(body.contains("effect: allow"));
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
@@ -175,7 +202,9 @@ mod tests {
                 }]
             }
         });
-        materialize(&input, &dir, &BTreeMap::new()).await.unwrap();
+        materialize(&input, &dir, &BTreeMap::new(), AutonomyLevel::AUTONOMOUS)
+            .await
+            .unwrap();
         let body = tokio::fs::read_to_string(dir.join(".opencode/agents/reviewer.md"))
             .await
             .unwrap();
@@ -187,6 +216,36 @@ mod tests {
         assert!(delegation.contains("@reviewer"));
         assert!(!delegation.contains(primary));
         assert!(!delegation.contains(own));
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+    #[tokio::test]
+    async fn subagent_permissions_follow_autonomy() {
+        let dir = std::env::temp_dir().join(format!("orbit-subagents-{}", Uuid::now_v7()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let input = json!({
+            "team": {
+                "mode": "native",
+                "subagents": [{ "slug": "worker", "name": "Worker" }]
+            }
+        });
+        materialize(&input, &dir, &BTreeMap::new(), AutonomyLevel::AUTONOMOUS)
+            .await
+            .unwrap();
+        let high = tokio::fs::read_to_string(dir.join(".opencode/agents/worker.md"))
+            .await
+            .unwrap();
+        assert!(high.contains("action: \"*\""));
+        assert!(!high.contains("effect: deny"));
+
+        materialize(&input, &dir, &BTreeMap::new(), AutonomyLevel::RECOMMEND)
+            .await
+            .unwrap();
+        let low = tokio::fs::read_to_string(dir.join(".opencode/agents/worker.md"))
+            .await
+            .unwrap();
+        assert!(low.contains("action: edit"));
+        assert!(low.contains("action: shell"));
+        assert!(low.contains("effect: deny"));
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 }
