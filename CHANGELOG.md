@@ -6,14 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
-## [Unreleased]
+## [0.28.4] - 2026-11-23
 
 ### Added
 
 - S3 object storage as an execution output and a tool-broker connector for Amazon S3 and
   RustFS: rendered runs upload to a bucket/prefix, and agents can list/get/put/delete/copy
   objects under bucket, prefix and size allowlists.
-
+- Agent Teams can declare a fixed autonomy level for every step and native subagent, or
+  follow each agent's own level. Raising a step agent above its own level requires manage
+  access to that agent and is audited as `team.autonomy_elevated`; the policy is
+  snapshotted into the run.
 - Agent and Agent Team pages show their linked outputs and can create a new output with
   that scope preselected; Work's Then section links to the same scoped creation form.
 
@@ -29,20 +32,14 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   access instead of an explicit allowlist.
 - Array and object connection config fields can be typed normally; they commit on blur
   instead of parsing every keystroke.
-
-
-
-### Added
-
-- Agent Teams can declare a fixed autonomy level for every step and native subagent, or
-  follow each agent's own level. Raising a step agent above its own level requires manage
-  access to that agent and is audited as `team.autonomy_elevated`; the policy is
-  snapshotted into the run.
-- The team run dialog now shows a fixed team autonomy and no longer labels auto-approve
-  as a Level 4 override.
+- The team run dialog shows a fixed team autonomy and no longer labels auto-approve as a
+  Level 4 override.
 
 ### Fixed
 
+- Running executions now have a per-execution lease/heartbeat and worker boot identity.
+  A restarted worker fails executions from the previous boot, a live worker that stops
+  reporting a run produces `harness_unresponsive`, and API startup reconciles once (#342).
 - Kubernetes and Docker worker terminations are surfaced with a structured reason
   (`worker_oom`, `worker_evicted`, `worker_exited`, `worker_lost`) plus pod/container name,
   restart count, exit code and termination time. Every in-flight execution on the terminated
