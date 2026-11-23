@@ -129,7 +129,7 @@ Each release publishes container images to `ghcr.io/opsifyhq/orbit` and the Helm
 a release asset, so a test installation needs no build:
 
 ```bash
-ORBIT_VERSION=0.28.1
+ORBIT_VERSION=0.28.2
 helm upgrade --install orbit \
   "https://github.com/opsifyhq/orbit/releases/download/v${ORBIT_VERSION}/orbit-${ORBIT_VERSION}.tgz" \
   --namespace orbit --create-namespace \
