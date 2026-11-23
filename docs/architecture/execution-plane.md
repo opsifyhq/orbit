@@ -81,8 +81,8 @@ token that exists only for that execution.
 - The harness reaches those tools over MCP. The harness spawns a stdio bridge,
   `orbit-worker mcp-broker` by default (`ORBIT_MCP_BROKER_BIN` overrides it), which
   forwards `tools/list` and `tools/call` to the broker with `ORBIT_BROKER_URL` and
-  `ORBIT_BROKER_TOKEN`. `services/mcp-broker` builds the same bridge as a separate
-  binary, `orbit-mcp-broker`.
+  `ORBIT_BROKER_TOKEN`. The same bridge is available as the `orbit-worker mcp-broker`
+  subcommand.
 - `POST /policy` is the hook for native harness tools. The OpenCode plugin and the Pi
   extension call it before each native tool runs; any deny, error or missing broker blocks
   the call. The decision combines the platform decision (autonomy, approval mode) with

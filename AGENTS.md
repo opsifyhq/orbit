@@ -21,7 +21,6 @@ packages/contracts/    Zod agent-definition schemas used by web (and a future mo
 services/api/          orbit-api binary (control plane HTTP)
 services/worker/       orbit-worker binary (execution plane supervisor; also `orbit-worker mcp-broker`)
 services/launcher/     orbit-launcher binary (starts worker pods, Jobs and containers for the API)
-services/mcp-broker/   orbit-mcp-broker binary (MCP stdio bridge to the tool broker; dev scripts use it)
 services/license-cli/  orbit-license-cli (vendor-side licence signing tool, not in runtime images)
 crates/orbit-domain/   Pure domain types + validation + autonomy policy
 crates/orbit-contracts/ Harness/provider/connector/event contracts (traits + DTOs)

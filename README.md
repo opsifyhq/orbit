@@ -213,7 +213,6 @@ packages/contracts/     Zod agent-definition schemas used by web (and a future m
 services/api/           orbit-api: the control plane's HTTP server
 services/worker/        orbit-worker: runs harnesses, brokers tools
 services/launcher/      Starts and stops workers on Docker and Kubernetes
-services/mcp-broker/    MCP endpoint that exposes brokered tools to a harness
 services/license-cli/   Issues and inspects offline licenses
 crates/orbit-*/         domain · contracts · store · events · security · harness · kubernetes · api
 deploy/                 Dockerfiles, Compose stacks and the Helm chart

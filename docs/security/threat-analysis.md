@@ -177,7 +177,7 @@ config, and are deliberately outside the outbound policy:
 - Launcher calls (`crates/orbit-api/src/handlers/worker_launches.rs`) use
   `ORBIT_LAUNCHER_URL`; worker → API calls (`services/worker/src/client.rs`) use
   `ORBIT_API_URL`.
-- The MCP bridge (`services/worker/src/mcp_broker.rs`, `services/mcp-broker/src/main.rs`)
+- The MCP bridge (`services/worker/src/mcp_broker.rs`)
   calls `ORBIT_BROKER_URL`, which the worker sets to its loopback tool broker.
 
 A stored credential never follows an edited endpoint: changing a provider's base URL or
