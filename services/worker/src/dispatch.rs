@@ -103,7 +103,6 @@ pub async fn run(
         ("ORBIT_WORKER_ID", worker_id.clone()),
         ("ORBIT_WORKER_HARNESSES", execution.harness_kind.clone()),
         ("ORBIT_WORKER_TARGET", "docker".into()),
-        ("ORBIT_SCHEDULER_ENABLED", "false".into()),
         ("ORBIT_EXECUTION_DRIVER", "process".into()),
         ("ORBIT_WORKER_POLL_MS", "1000".into()),
         (

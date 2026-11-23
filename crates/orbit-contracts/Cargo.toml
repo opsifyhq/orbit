@@ -16,7 +16,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-thiserror.workspace = true
-http.workspace = true
 utoipa.workspace = true
 serde_yaml.workspace = true

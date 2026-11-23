@@ -58,9 +58,6 @@ worker:
   replicas: 1
   concurrency: 4
   pollIntervalMs: 500
-  # Not read by current workers: schedules run in orbit-api, which claims each trigger
-  # fire atomically, so any number of API replicas is safe. Kept for older workers.
-  schedulerEnabled: true
   # Harness kinds this base worker may claim. OpenCode runs in its own worker image.
   harnesses: mock
   resources:

@@ -107,15 +107,6 @@ impl UserRole {
             Self::Viewer => "viewer",
         }
     }
-
-    /// Can the role mutate agents, connections and executions?
-    pub fn can_operate(&self) -> bool {
-        matches!(self, Self::Owner | Self::Admin | Self::Operator)
-    }
-
-    pub fn can_administer(&self) -> bool {
-        matches!(self, Self::Owner | Self::Admin)
-    }
 }
 
 impl std::str::FromStr for UserRole {

@@ -15,14 +15,6 @@ use orbit_store::{
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
-pub struct PageQuery {
-    pub limit: Option<u32>,
-    pub cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
 pub struct AgentListQuery {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
@@ -41,13 +33,6 @@ pub struct ExecutionListQuery {
     /// One execution status, or several separated by commas (`failed,timed_out`).
     pub status: Option<String>,
     pub agent_id: Option<Uuid>,
-    pub archived: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct ArchiveListQuery {
     pub archived: Option<bool>,
 }
 

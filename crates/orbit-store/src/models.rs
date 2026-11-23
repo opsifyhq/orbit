@@ -384,14 +384,6 @@ pub struct DashboardSummary {
     pub pending_approvals: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionWithAgent {
-    #[serde(flatten)]
-    pub execution: ExecutionRecord,
-    pub agent_slug: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Skill {

@@ -25,13 +25,12 @@ export ORBIT_MASTER_KEY="${ORBIT_MASTER_KEY:-b3JiaXQtZGV2LW1hc3Rlci1rZXktMzItYnl
 export ORBIT_WORKER_HARNESSES="${ORBIT_WORKER_HARNESSES:-opencode}"
 export ORBIT_WORKER_POLL_MS="${ORBIT_WORKER_POLL_MS:-300}"
 export ORBIT_WORKER_CONCURRENCY="${ORBIT_WORKER_CONCURRENCY:-2}"
-export ORBIT_SCHEDULER_ENABLED=false
 export ORBIT_WORKSPACE_ROOT="${ORBIT_WORKSPACE_ROOT:-/tmp/orbit-workspaces}"
-export ORBIT_MCP_BROKER_BIN="${ORBIT_MCP_BROKER_BIN:-$PWD/target/debug/orbit-mcp-broker}"
+export ORBIT_MCP_BROKER_BIN="${ORBIT_MCP_BROKER_BIN:-$PWD/target/debug/orbit-worker}"
 export ORBIT_WORKER_TARGET="${ORBIT_WORKER_TARGET:-docker}"
 export ORBIT_EXECUTION_DRIVER=docker
 export ORBIT_EXECUTION_IMAGE="${ORBIT_EXECUTION_IMAGE:-orbit-worker-opencode:dev}"
 export ORBIT_OPENCODE_AUTH_EXPORT="$AUTH_EXPORT"
 
-cargo build -p orbit-worker -p orbit-mcp-broker
+cargo build -p orbit-worker
 exec cargo run -p orbit-worker

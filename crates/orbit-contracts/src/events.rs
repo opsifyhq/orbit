@@ -100,10 +100,6 @@ impl SubjectFilter {
         Self::new("orbit.>")
     }
 
-    pub fn execution_requested() -> Self {
-        Self::new(subjects::EXECUTION_REQUESTED)
-    }
-
     pub fn as_str(&self) -> &str {
         &self.pattern
     }

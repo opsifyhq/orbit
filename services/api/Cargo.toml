@@ -13,19 +13,14 @@ path = "src/main.rs"
 
 [dependencies]
 orbit-api.workspace = true
-orbit-contracts.workspace = true
-orbit-domain.workspace = true
 orbit-events.workspace = true
 orbit-security.workspace = true
 orbit-store.workspace = true
 orbit-harness.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 anyhow.workspace = true
-serde_json.workspace = true
 axum.workspace = true
-sqlx.workspace = true
 dotenvy.workspace = true
 tokio-util.workspace = true
 futures.workspace = true

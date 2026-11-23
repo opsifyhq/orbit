@@ -126,12 +126,6 @@ impl NatsEventBus {
         })
     }
 
-    /// Override how long `publish` waits for the JetStream ack.
-    pub fn with_ack_timeout(mut self, timeout: Duration) -> Self {
-        self.ack_timeout = timeout;
-        self
-    }
-
     pub fn stream_name(&self) -> &str {
         &self.stream_name
     }

@@ -377,17 +377,6 @@ fn is_unique(err: &sqlx::Error) -> bool {
 }
 
 impl Store {
-    pub async fn count_active_users(&self, org_id: Uuid) -> StoreResult<i64> {
-        Ok(
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM users WHERE org_id = $1 AND status = 'active'",
-            )
-            .bind(org_id)
-            .fetch_one(&self.pool)
-            .await?,
-        )
-    }
-
     /// Installation-wide seat count. Licenses are bought per installation, not per org.
     pub async fn count_active_users_installation(&self) -> StoreResult<i64> {
         Ok(

@@ -360,20 +360,6 @@ impl LogLevel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionEvent {
-    pub id: i64,
-    pub execution_id: Uuid,
-    pub seq: i64,
-    pub kind: ExecutionEventKind,
-    pub level: LogLevel,
-    pub message: String,
-    #[serde(default)]
-    pub data: serde_json::Value,
-    pub created_at: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {

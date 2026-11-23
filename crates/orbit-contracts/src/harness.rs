@@ -75,40 +75,6 @@ pub struct HarnessConfig {
     pub settings: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstanceState {
-    Pending,
-    Starting,
-    Running,
-    Stopping,
-    Stopped,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstanceHealth {
-    pub healthy: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl InstanceHealth {
-    pub fn healthy() -> Self {
-        Self {
-            healthy: true,
-            message: None,
-        }
-    }
-    pub fn unhealthy(message: impl Into<String>) -> Self {
-        Self {
-            healthy: false,
-            message: Some(message.into()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessHealth {
@@ -152,45 +118,6 @@ impl Default for WorkspaceSpec {
             read_only: false,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateInstanceRequest {
-    pub agent_id: Uuid,
-    pub agent_version_id: Uuid,
-    pub agent_name: String,
-    pub harness_config: serde_json::Value,
-    pub resources: orbit_domain::ResourceLimits,
-    #[serde(default)]
-    pub workspace: WorkspaceSpec,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HarnessInstance {
-    pub id: String,
-    pub harness_kind: HarnessKind,
-    pub state: InstanceState,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HarnessInstanceRef {
-    pub harness_kind: HarnessKind,
-    pub id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HarnessInstanceStatus {
-    pub state: InstanceState,
-    pub health: InstanceHealth,
-    #[serde(default)]
-    pub detail: Option<String>,
-    #[serde(default)]
-    pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -474,31 +401,6 @@ impl PauseClock {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResumeRequest {
-    pub execution_id: Uuid,
-    pub session_ref: String,
-    pub input: ExecutionInput,
-    #[serde(default)]
-    pub model: Option<crate::provider::ResolvedModel>,
-    #[serde(default)]
-    pub harness_config: serde_json::Value,
-    /// Extra environment variables for the harness process, resolved by the control
-    /// plane (for example worker-profile connection mappings used by skill scripts).
-    /// Never serialized into events or logs.
-    #[serde(default, skip_serializing)]
-    pub extra_env: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    pub resources: orbit_domain::ResourceLimits,
-    #[serde(default)]
-    pub workspace: WorkspaceSpec,
-    #[serde(skip)]
-    pub events: Option<tokio::sync::mpsc::Sender<HarnessEvent>>,
-    #[serde(skip, default = "default_cancellation")]
-    pub cancel: tokio_util::sync::CancellationToken,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessEventKind {
@@ -712,27 +614,9 @@ pub trait HarnessAdapter: Send + Sync {
 
     async fn health(&self, config: &HarnessConfig) -> Result<HarnessHealth, HarnessError>;
 
-    async fn create_instance(
-        &self,
-        request: CreateInstanceRequest,
-    ) -> Result<HarnessInstance, HarnessError>;
-
-    async fn start_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn stop_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn delete_instance(&self, instance: &HarnessInstanceRef) -> Result<(), HarnessError>;
-    async fn instance_status(
-        &self,
-        instance: &HarnessInstanceRef,
-    ) -> Result<HarnessInstanceStatus, HarnessError>;
-
     /// Run one execution to completion. Must honour cancellation and timeouts and clean
     /// up all child processes/containers before returning.
     async fn execute(&self, request: ExecutionRequest) -> Result<ExecutionOutcome, HarnessError>;
-
-    async fn resume(&self, request: ResumeRequest) -> Result<ExecutionOutcome, HarnessError> {
-        let _ = request;
-        Err(HarnessError::unsupported("session resumption"))
-    }
 }
 
 #[cfg(test)]

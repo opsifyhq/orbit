@@ -10,7 +10,6 @@ repository.workspace = true
 [dependencies]
 orbit-domain.workspace = true
 orbit-contracts.workspace = true
-croner.workspace = true
 orbit-security.workspace = true
 utoipa.workspace = true
 sqlx.workspace = true
