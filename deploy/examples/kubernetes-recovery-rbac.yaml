@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orbit-agent-recovery
+  namespace: orbit
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orbit-agent-recovery
+  namespace: payments
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  # Deleting a pod lets its Deployment/ReplicaSet recreate it. Keep this namespace-scoped.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  # A deployment restart patches the pod template annotation.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orbit-agent-recovery
+  namespace: payments
+subjects:
+  - kind: ServiceAccount
+    name: orbit-agent-recovery
+    namespace: orbit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orbit-agent-recovery

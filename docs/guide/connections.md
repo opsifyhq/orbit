@@ -13,7 +13,8 @@ prompt. Open **Connectors** in the Connect group of the sidebar (`/connections`)
 |---|---|
 | GitHub | Works through ORBIT's tool broker: issues, pull requests, checks, checkout, commit and push |
 | GitLab | Works through the tool broker: projects, group issues and boards, issues, merge requests, pipelines, checkout, commit and push |
-| Kubernetes | Works through the tool broker, read-only; see [Kubernetes connector](kubernetes-connector.md) |
+| Kubernetes | Works through the tool broker; read tools plus restart/delete recovery actions; see [Kubernetes connector](kubernetes-connector.md) |
+| S3 / object storage | Amazon S3 or RustFS; object list/get/put/delete/copy through the broker, with bucket/prefix/size allowlists |
 | X | `posts.search` hydrates recent posts as untrusted context before a run; `posts.create` publishes posts and replies through the tool broker with a user-context token. See [X connector](x-connector.md) |
 | Mock | A stand-in for development and tests that talks to nothing |
 | Telegram | Listed with `messages.list` and `messages.send`, but the worker has no implementation for it yet, so an agent cannot use it |

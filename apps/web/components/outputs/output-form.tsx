@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Bot, Globe, Hash, MessageSquare, Send, Users, Webhook } from "lucide-react";
+import { Bot, Cloud, Globe, Hash, MessageSquare, Send, Users, Webhook } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ const KIND_ICON: Record<OutputKind, ReactNode> = {
   mattermost: <MessageSquare />,
   telegram: <Send />,
   webhook: <Webhook />,
+  s3: <Cloud />,
 };
 
 type Scope = "all" | "agent" | "team";
@@ -52,6 +53,15 @@ type Draft = {
   botToken: string;
   chatId: string;
   messageThreadId: string;
+  s3Provider: "amazon" | "rustfs";
+  s3Endpoint: string;
+  s3Region: string;
+  s3Bucket: string;
+  s3KeyPrefix: string;
+  s3PathStyle: boolean;
+  s3AccessKeyId: string;
+  s3SecretAccessKey: string;
+  s3SessionToken: string;
   scope: Scope;
   agentId: string;
   teamId: string;
@@ -70,6 +80,15 @@ function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: s
     botToken: "",
     chatId: output?.chatId ?? "",
     messageThreadId: output?.messageThreadId ?? "",
+    s3Provider: output?.config?.provider === "rustfs" ? "rustfs" : "amazon",
+    s3Endpoint: String(output?.config?.endpoint ?? ""),
+    s3Region: String(output?.config?.region ?? "us-east-1"),
+    s3Bucket: String(output?.config?.bucket ?? output?.config?.defaultBucket ?? ""),
+    s3KeyPrefix: String(output?.config?.keyPrefix ?? ""),
+    s3PathStyle: Boolean(output?.config?.pathStyle),
+    s3AccessKeyId: "",
+    s3SecretAccessKey: "",
+    s3SessionToken: "",
     scope: teamId ? "team" : agentId ? "agent" : "all",
     agentId,
     teamId,
@@ -128,6 +147,7 @@ export function OutputForm({
   const storedCredential = Boolean(output?.hasWebhook) && output?.kind === draft.kind;
   const kindName = kindLabel(draft.kind);
   const isTelegram = draft.kind === "telegram";
+  const isS3 = draft.kind === "s3";
 
   // ------------------------------------------------------------------ validation
   const issues: Issue[] = [];
@@ -147,6 +167,20 @@ export function OutputForm({
     }
     if (threadId && (!/^\d+$/.test(threadId) || threadId === "0")) {
       issues.push({ section: "destination", message: "The topic id must be a positive number." });
+    }
+  } else if (isS3) {
+    if (!draft.s3Bucket.trim()) issues.push({ section: "destination", message: "Enter the bucket name." });
+    if (draft.s3Provider === "rustfs" && !draft.s3Endpoint.trim()) {
+      issues.push({ section: "destination", message: "Enter the RustFS endpoint." });
+    }
+    if (draft.s3Endpoint.trim() && !/^https?:\/\/\S+$/i.test(draft.s3Endpoint.trim())) {
+      issues.push({ section: "destination", message: "The S3 endpoint must start with https:// or http://." });
+    }
+    if (draft.s3KeyPrefix && !draft.s3KeyPrefix.endsWith("/")) {
+      issues.push({ section: "destination", message: "The key prefix must end with /." });
+    }
+    if (!storedCredential && (!draft.s3AccessKeyId.trim() || !draft.s3SecretAccessKey.trim())) {
+      issues.push({ section: "destination", message: "Enter the access key id and secret access key." });
     }
   } else {
     if (!url && !storedCredential) issues.push({ section: "destination", message: "Enter the webhook URL." });
@@ -213,9 +247,29 @@ export function OutputForm({
             chatId,
             messageThreadId: threadId || null,
           }
-        : url
-          ? { webhookUrl: url }
-          : {}),
+        : isS3
+          ? {
+              ...(draft.s3AccessKeyId.trim() || draft.s3SecretAccessKey.trim()
+                ? {
+                    s3Credential: JSON.stringify({
+                      accessKeyId: draft.s3AccessKeyId.trim(),
+                      secretAccessKey: draft.s3SecretAccessKey.trim(),
+                      ...(draft.s3SessionToken.trim() ? { sessionToken: draft.s3SessionToken.trim() } : {}),
+                    }),
+                  }
+                : {}),
+              config: {
+                provider: draft.s3Provider,
+                endpoint: draft.s3Endpoint.trim() || undefined,
+                region: draft.s3Region.trim() || undefined,
+                bucket: draft.s3Bucket.trim(),
+                keyPrefix: draft.s3KeyPrefix.trim(),
+                pathStyle: draft.s3PathStyle,
+              },
+            }
+          : url
+            ? { webhookUrl: url }
+            : {}),
       template: draft.template.trim() || null,
       enabled: draft.enabled,
     });
@@ -394,6 +448,112 @@ export function OutputForm({
                         value={draft.messageThreadId}
                         placeholder="42"
                         onChange={(event) => set("messageThreadId", event.target.value)}
+                      />
+                    </Field>
+                  </div>
+                </>
+              ) : isS3 ? (
+                <>
+                  <Callout tone="info" title="S3-compatible object storage">
+                    Amazon S3 uses the regional endpoint and virtual-hosted addressing. RustFS
+                    normally needs its own endpoint and path-style addressing. Credentials are
+                    stored encrypted and never shown again.
+                  </Callout>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Provider" htmlFor="output-s3-provider">
+                      <Select
+                        id="output-s3-provider"
+                        value={draft.s3Provider}
+                        onChange={(event) => set("s3Provider", event.target.value as Draft["s3Provider"])}
+                      >
+                        <option value="amazon">Amazon S3</option>
+                        <option value="rustfs">RustFS (S3-compatible)</option>
+                      </Select>
+                    </Field>
+                    <Field label="Bucket" htmlFor="output-s3-bucket">
+                      <Input
+                        id="output-s3-bucket"
+                        value={draft.s3Bucket}
+                        placeholder="orbit-runs"
+                        onChange={(event) => set("s3Bucket", event.target.value)}
+                      />
+                    </Field>
+                    <Field
+                      label="Endpoint"
+                      htmlFor="output-s3-endpoint"
+                      optional={draft.s3Provider === "amazon"}
+                      hint={draft.s3Provider === "rustfs" ? "Required for RustFS." : "Optional VPC/custom endpoint."}
+                    >
+                      <Input
+                        id="output-s3-endpoint"
+                        className="font-mono"
+                        value={draft.s3Endpoint}
+                        placeholder="https://s3.example.com"
+                        onChange={(event) => set("s3Endpoint", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Region" htmlFor="output-s3-region">
+                      <Input
+                        id="output-s3-region"
+                        value={draft.s3Region}
+                        placeholder="us-east-1"
+                        onChange={(event) => set("s3Region", event.target.value)}
+                      />
+                    </Field>
+                    <Field
+                      label="Key prefix"
+                      htmlFor="output-s3-prefix"
+                      optional
+                      hint="Objects are written as <prefix><delivery-id>.txt. End with /."
+                      className="sm:col-span-2"
+                    >
+                      <Input
+                        id="output-s3-prefix"
+                        className="font-mono"
+                        value={draft.s3KeyPrefix}
+                        placeholder="orbit/runs/"
+                        onChange={(event) => set("s3KeyPrefix", event.target.value)}
+                      />
+                    </Field>
+                  </div>
+                  <CheckboxField
+                    title="Path-style addressing"
+                    description="Required for most RustFS deployments; leave off for Amazon S3."
+                    checked={draft.s3PathStyle}
+                    onChange={(event) => set("s3PathStyle", event.target.checked)}
+                  />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label="Access key id"
+                      htmlFor="output-s3-access-key"
+                      hint={storedCredential ? "A credential is stored. Leave these empty to keep it." : undefined}
+                    >
+                      <Input
+                        id="output-s3-access-key"
+                        className="font-mono"
+                        value={draft.s3AccessKeyId}
+                        onChange={(event) => set("s3AccessKeyId", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Secret access key" htmlFor="output-s3-secret-key">
+                      <Input
+                        id="output-s3-secret-key"
+                        type="password"
+                        autoComplete="new-password"
+                        className="font-mono"
+                        value={draft.s3SecretAccessKey}
+                        placeholder={storedCredential ? "••••••••  (stored)" : undefined}
+                        onChange={(event) => set("s3SecretAccessKey", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Session token" htmlFor="output-s3-session-token" optional className="sm:col-span-2">
+                      <Input
+                        id="output-s3-session-token"
+                        type="password"
+                        autoComplete="new-password"
+                        className="font-mono"
+                        value={draft.s3SessionToken}
+                        onChange={(event) => set("s3SessionToken", event.target.value)}
                       />
                     </Field>
                   </div>

@@ -1,7 +1,8 @@
 # Kubernetes connector
 
-Read-only cluster inspection for agents: list namespaces/pods/deployments/events, read pod
-details and bounded logs. No writes, exec, port-forward or Secret access.
+Cluster inspection and controlled recovery for agents: list
+namespaces/pods/deployments/events, read pod details and bounded logs, restart a deployment
+or delete a stuck pod. No arbitrary apply, exec, port-forward or Secret access.
 
 ## Connection
 
@@ -71,11 +72,26 @@ connection that tests successfully behaves the same during an execution.
 `namespaces.list`, `pods.list`, `pods.get`, `pods.logs` (tail/previous, capped),
 `deployments.list`, `deployments.get`, `events.list`.
 
+Recovery capabilities are explicit external side effects:
+
+- `deployments.restart`: patches `kubectl.kubernetes.io/restartedAt` on the pod template,
+  which triggers a normal rolling restart.
+- `pods.delete`: deletes one pod so its Deployment/ReplicaSet recreates it. `gracePeriodSeconds`
+  is optional (0–300, default 0).
+
+They follow autonomy and approvals like any other write: L3 asks, L4 with `auto`
+approval runs immediately, and tool policies can deny them. The connection-level
+`allowedResources` allowlist still applies; the UI derives it from the selected
+capabilities.
+
 ## RBAC example
 
-See `deploy/examples/kubernetes-reader-rbac.yaml` in the repository.
+Read-only: `deploy/examples/kubernetes-reader-rbac.yaml`.
 
-Do not grant Secrets, pods/exec, port-forward, create/delete or cluster-wide access.
+Recovery (delete pods and patch deployments in one namespace):
+`deploy/examples/kubernetes-recovery-rbac.yaml`.
+
+Do not grant Secrets, pods/exec, port-forward, arbitrary create/patch or cluster-wide access.
 
 ## Verification
 

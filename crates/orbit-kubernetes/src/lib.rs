@@ -219,7 +219,14 @@ impl KubernetesClientConfig {
         builder.build().map_err(|error| error.to_string())
     }
 
-    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        content_type: Option<&str>,
+    ) -> Result<reqwest::Response, String> {
         // The resolver guard does not see IP-literal hosts; check the address up front.
         orbit_security::check_outbound_url(
             &self.api_server,
@@ -227,17 +234,30 @@ impl KubernetesClientConfig {
         )
         .await
         .map_err(|error| format!("request refused ({})", error.category()))?;
-        let mut request = self.client()?.get(format!("{}{path}", self.api_server));
+        let mut request = self
+            .client()?
+            .request(method, format!("{}{path}", self.api_server));
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
         if !query.is_empty() {
             request = request.query(query);
         }
+        if let Some(content_type) = content_type {
+            request = request.header(reqwest::header::CONTENT_TYPE, content_type);
+        }
+        if let Some(body) = body {
+            request = request.json(body);
+        }
         request
             .send()
             .await
             .map_err(|error| orbit_security::describe_request_error(&error))
+    }
+
+    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+        self.request(reqwest::Method::GET, path, query, None, None)
+            .await
     }
 
     /// Parse and connect, then list the namespaces visible to this credential. Used by the
@@ -315,9 +335,9 @@ impl KubernetesClientConfig {
     pub async fn invoke(&self, capability: &str, args: &Value) -> Result<Value, String> {
         let resource = match capability {
             "namespaces.list" => "namespaces",
-            "pods.list" | "pods.get" => "pods",
+            "pods.list" | "pods.get" | "pods.delete" => "pods",
             "pods.logs" => "pods/log",
-            "deployments.list" | "deployments.get" => "deployments",
+            "deployments.list" | "deployments.get" | "deployments.restart" => "deployments",
             "events.list" => "events",
             other => return Err(format!("unsupported Kubernetes capability '{other}'")),
         };
@@ -398,6 +418,46 @@ impl KubernetesClientConfig {
                 )
                 .await?
             }
+            "deployments.restart" => {
+                let namespace = self.namespace(args)?;
+                let name = required_name(args)?;
+                let restarted_at = chrono::Utc::now().to_rfc3339();
+                self.request(
+                    reqwest::Method::PATCH,
+                    &format!("/apis/apps/v1/namespaces/{namespace}/deployments/{name}"),
+                    &[],
+                    Some(&json!({
+                        "spec": {
+                            "template": {
+                                "metadata": {
+                                    "annotations": {
+                                        "kubectl.kubernetes.io/restartedAt": restarted_at
+                                    }
+                                }
+                            }
+                        }
+                    })),
+                    Some("application/merge-patch+json"),
+                )
+                .await?
+            }
+            "pods.delete" => {
+                let namespace = self.namespace(args)?;
+                let name = required_name(args)?;
+                let grace = args
+                    .get("gracePeriodSeconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .min(300);
+                self.request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/v1/namespaces/{namespace}/pods/{name}"),
+                    &[],
+                    Some(&json!({ "gracePeriodSeconds": grace })),
+                    None,
+                )
+                .await?
+            }
             "events.list" => {
                 let namespace = self.namespace(args)?;
                 let mut query = Vec::new();
@@ -432,7 +492,9 @@ impl KubernetesClientConfig {
             }
             "pods.get" => redact_object(&mut data, "/spec"),
             "pods.list" => redact_items(&mut data, "/spec"),
-            "deployments.get" => redact_object(&mut data, "/spec/template/spec"),
+            "deployments.get" | "deployments.restart" => {
+                redact_object(&mut data, "/spec/template/spec")
+            }
             "deployments.list" => redact_items(&mut data, "/spec/template/spec"),
             _ => {}
         }
@@ -714,6 +776,22 @@ users:
         assert!(parsed.namespace(&json!({ "namespace": "other" })).is_err());
         assert!(parsed.resource_allowed("pods"));
         assert!(!parsed.resource_allowed("events"));
+    }
+
+    #[tokio::test]
+    async fn write_capabilities_need_their_resource_allowlist() {
+        let parsed = connection(json!({
+            "namespaces": ["payments"],
+            "allowedResources": ["pods"]
+        }));
+        let error = parsed
+            .invoke(
+                "deployments.restart",
+                &json!({ "namespace": "payments", "name": "api" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("resource 'deployments'"), "{error}");
     }
 
     #[test]

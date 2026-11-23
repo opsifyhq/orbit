@@ -8,12 +8,23 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- S3 object storage as an execution output and a tool-broker connector for Amazon S3 and
+  RustFS: rendered runs upload to a bucket/prefix, and agents can list/get/put/delete/copy
+  objects under bucket, prefix and size allowlists.
+
+- Agent and Agent Team pages show their linked outputs and can create a new output with
+  that scope preselected; Work's Then section links to the same scoped creation form.
+
 ### Changed
 
 - Kubernetes connections use an authentication dropdown, kubeconfig file upload, a
   comma-separated namespace field, and derive `allowedResources` from the selected
   capabilities (Advanced config can override it). The connection test falls back to a
   configured namespace when cluster-wide namespace listing is not permitted.
+- Kubernetes connections can restart a deployment or delete a stuck pod through the
+  broker. Both are external side effects, so autonomy and approvals apply.
 - `namespaces: ["*"]` lets a Kubernetes connection follow the kubeconfig/RBAC namespace
   access instead of an explicit allowlist.
 - Array and object connection config fields can be typed normally; they commit on blur

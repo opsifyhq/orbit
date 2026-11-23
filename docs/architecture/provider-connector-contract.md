@@ -160,7 +160,7 @@ transport option (`mcp` capability provider), not the only connector mechanism.
 - **GitHub** through the tool broker (reads implemented; writes are approval-gated and
   still need live end-to-end verification).
 - **GitLab** through the tool broker.
-- **Kubernetes** through the tool broker: read-only inspection using a ServiceAccount
+- **Kubernetes** through the tool broker: inspection and controlled recovery (restart a deployment, delete a pod) using a ServiceAccount
   token or a static kubeconfig (client in `crates/orbit-kubernetes`; see
   [the Kubernetes connector guide](../guide/kubernetes-connector.md)).
 - **X read hydration**: before an execution, the worker resolves `x` bindings with the
@@ -203,7 +203,8 @@ capabilities.
 |---|---|---|---|
 | `github` | invokable through the broker | `api_token` | read: `issues.list`, `issues.get`, `pulls.list`, `pulls.get`, `checks.list`, `repo.checkout`; write: `issues.comment`, `issues.create`, `issues.update`, `pulls.create`, `repo.commit`; external side effect: `repo.push` |
 | `gitlab` | invokable through the broker | `oauth2`, `api_token` (API token implemented) | read: `projects.list`, `group_issues.list`, `boards.list`, `issues.list`, `issues.get`, `merge_requests.list`, `merge_requests.get`, `pipelines.status`, `repo.checkout`; write: `issues.create`, `issues.update`, `issues.comment`, `merge_requests.comment`, `repo.commit`; external side effect: `merge_requests.create`, `merge_requests.approve`, `merge_requests.merge`, `repo.push` |
-| `kubernetes` | invokable through the broker | `api_token` | read: `namespaces.list`, `pods.list`, `pods.get`, `pods.logs`, `deployments.list`, `deployments.get`, `events.list` |
+| `kubernetes` | invokable through the broker | `api_token` | read: `namespaces.list`, `pods.list`, `pods.get`, `pods.logs`, `deployments.list`, `deployments.get`, `events.list`; external side effects: `deployments.restart`, `pods.delete` |
+| `s3` | invokable through the broker; Amazon S3 and RustFS | `api_token` (access-key JSON) | read: `buckets.list`, `objects.list`, `objects.get`; write: `objects.copy`; external side effects: `objects.put`, `objects.delete` |
 | `x` | read hydration + broker posting | `oauth2`, `api_token` (user-context token required for writes) | read: `posts.search`; external side effect: `posts.create` |
 | `mock` | manifest only | none | read: `notes.list`; write: `notes.create` |
 | `telegram` | manifest only | `api_token` | read: `messages.list`; external side effect: `messages.send` |

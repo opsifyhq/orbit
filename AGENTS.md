@@ -26,7 +26,7 @@ crates/orbit-domain/   Pure domain types + validation + autonomy policy
 crates/orbit-contracts/ Harness/provider/connector/event contracts (traits + DTOs)
 crates/orbit-store/    PostgreSQL repositories + SQL migrations
 crates/orbit-events/   Event bus (memory + NATS JetStream)
-crates/orbit-kubernetes/ Kubernetes connector client (read-only cluster access for agents)
+crates/orbit-kubernetes/ Kubernetes connector client (inspection and controlled recovery for agents)
 crates/orbit-security/ Auth abstractions, permissions, secret encryption
 crates/orbit-harness/  Harness registry + adapters (mock, opencode and pi available)
 crates/orbit-api/      HTTP router, handlers, OpenAPI, SSE

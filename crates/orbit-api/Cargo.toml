@@ -12,6 +12,7 @@ orbit-domain.workspace = true
 orbit-contracts.workspace = true
 orbit-store.workspace = true
 orbit-security.workspace = true
+orbit-s3.workspace = true
 orbit-events.workspace = true
 orbit-harness.workspace = true
 orbit-kubernetes.workspace = true

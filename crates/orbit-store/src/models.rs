@@ -706,6 +706,8 @@ pub struct Output {
     pub template: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub telegram_message_thread_id: Option<String>,
+    /// S3 bucket/endpoint/prefix settings; empty for other output kinds.
+    pub config: serde_json::Value,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

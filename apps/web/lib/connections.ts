@@ -120,8 +120,10 @@ const KUBERNETES_RESOURCES: Record<string, string[]> = {
   "pods.list": ["pods"],
   "pods.get": ["pods"],
   "pods.logs": ["pods/log"],
+  "pods.delete": ["pods"],
   "deployments.list": ["deployments"],
   "deployments.get": ["deployments"],
+  "deployments.restart": ["deployments"],
   "events.list": ["events"],
 };
 

@@ -2945,12 +2945,16 @@ export interface components {
             botToken?: string | null;
             /** @description Numeric Telegram user/group/channel id (for example `-100…`). */
             chatId?: string | null;
+            /** @description Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. */
+            config?: unknown;
             enabled?: boolean;
             events?: string[];
             kind: string;
             /** @description Optional numeric Telegram forum topic id. */
             messageThreadId?: string | null;
             name: string;
+            /** @description S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`. */
+            s3Credential?: string | null;
             /** Format: uuid */
             teamId?: string | null;
             template?: string | null;
@@ -2961,6 +2965,8 @@ export interface components {
             /** Format: uuid */
             agentId?: string | null;
             chatId?: string | null;
+            /** @description Non-secret configuration for S3 (empty for other kinds). */
+            config: unknown;
             /** Format: date-time */
             createdAt: string;
             enabled: boolean;
