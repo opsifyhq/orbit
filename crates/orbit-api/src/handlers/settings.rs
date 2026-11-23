@@ -725,6 +725,7 @@ mod verified_email_tests {
     }
 }
 
+#[cfg(test)]
 mod ceiling_tests {
     use super::*;
 
