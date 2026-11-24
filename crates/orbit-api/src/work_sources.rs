@@ -143,7 +143,7 @@ pub fn validate_work_source(source: &WorkSourceDefinition) -> Vec<ValidationIssu
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
             {
-                if !repository.contains('/') || repository.chars().any(char::is_whitespace) {
+                if github_repo_segments(repository).is_err() {
                     issues.push(ValidationIssue::new(
                         "workSource.repository",
                         "repository must be owner/repo",
@@ -236,12 +236,56 @@ pub struct ExternalIssue {
     pub url: Option<String>,
 }
 
+/// `owner/repo`: two non-empty segments with no whitespace and none of the characters
+/// that would end the path of a request URL (`?`, `#`) or add a segment (`/`).
 fn github_repo_segments(repository: &str) -> anyhow::Result<(&str, &str)> {
-    repository
-        .split_once('/')
-        .ok_or_else(|| anyhow::anyhow!("repository must be owner/repo"))
+    let invalid = || anyhow::anyhow!("repository must be owner/repo");
+    let (owner, repo) = repository.split_once('/').ok_or_else(invalid)?;
+    let segment_ok = |segment: &str| {
+        !segment.is_empty()
+            && !segment
+                .chars()
+                .any(|c| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '%'))
+    };
+    if segment_ok(owner) && segment_ok(repo) {
+        Ok((owner, repo))
+    } else {
+        Err(invalid())
+    }
 }
 
+/// The GitHub request that lists a source's open issues. Every part is percent-encoded,
+/// so a label such as `c#` or `c++` is sent as written (#438).
+fn github_issues_url(base_url: &str, source: &WorkSourceDefinition) -> anyhow::Result<String> {
+    let repository = source
+        .repository
+        .as_deref()
+        .map(str::trim)
+        .ok_or_else(|| anyhow::anyhow!("GitHub work source has no repository"))?;
+    let (owner, repo) = github_repo_segments(repository)?;
+    let mut url = format!(
+        "{}/repos/{}/{}/issues?state=open&per_page={}",
+        base_url.trim_end_matches('/'),
+        encode_gitlab_segment(owner),
+        encode_gitlab_segment(repo),
+        source.max_items.clamp(1, 100)
+    );
+    if !source.labels.is_empty() {
+        url.push_str("&labels=");
+        url.push_str(
+            &source
+                .labels
+                .iter()
+                .map(|label| encode_gitlab_segment(label))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    Ok(url)
+}
+
+/// Percent-encode everything but RFC 3986 unreserved characters (one path segment or
+/// one query value). Used for GitLab and GitHub requests alike.
 fn encode_gitlab_segment(value: &str) -> String {
     value
         .bytes()
@@ -461,27 +505,8 @@ pub async fn list_github_issues(
     token: Option<&str>,
     source: &WorkSourceDefinition,
 ) -> anyhow::Result<Vec<ExternalIssue>> {
-    let repository = source
-        .repository
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("GitHub work source has no repository"))?;
-    let (owner, repo) = github_repo_segments(repository)?;
-    let base = base_url.trim_end_matches('/');
-    let mut url = format!(
-        "{base}/repos/{owner}/{repo}/issues?state=open&per_page={}",
-        source.max_items.clamp(1, 100)
-    );
-    if !source.labels.is_empty() {
-        url.push_str("&labels=");
-        url.push_str(
-            &source
-                .labels
-                .iter()
-                .map(|label| label.replace(' ', "%20"))
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-    }
+    let url = github_issues_url(base_url, source)?;
+    let repository = source.repository.as_deref().unwrap_or_default().trim();
 
     let payload = http_json(client, reqwest::Method::GET, &url, token, None, "github").await?;
     let items = payload
@@ -826,6 +851,47 @@ pub async fn comment_gitlab(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_request_encodes_labels_and_repository() {
+        let source = WorkSourceDefinition {
+            provider: "github".into(),
+            repository: Some("acme/app".into()),
+            labels: vec!["c#".into(), "good first issue".into(), "c++".into()],
+            max_items: 10,
+            ..WorkSourceDefinition::default()
+        };
+        assert_eq!(
+            github_issues_url("https://api.github.com/", &source).unwrap(),
+            "https://api.github.com/repos/acme/app/issues?state=open&per_page=10\
+             &labels=c%23,good%20first%20issue,c%2B%2B"
+        );
+    }
+
+    #[test]
+    fn github_repository_rejects_url_syntax() {
+        for repository in [
+            "acme/app?x=1",
+            "acme/app#top",
+            "acme/a/b",
+            "/app",
+            "acme/",
+            "acme",
+        ] {
+            let source = WorkSourceDefinition {
+                provider: "github".into(),
+                enabled: true,
+                repository: Some(repository.into()),
+                ..WorkSourceDefinition::default()
+            };
+            assert!(
+                validate_work_source(&source)
+                    .iter()
+                    .any(|issue| issue.path == "workSource.repository"),
+                "{repository} should be rejected"
+            );
+        }
+    }
 
     #[test]
     fn work_source_validation_requires_connection_and_target() {
