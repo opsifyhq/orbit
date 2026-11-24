@@ -52,8 +52,10 @@ A workflow is a team whose agents are arranged as a graph instead of a line. Cho
 **Outcomes.** An agent that runs a failing test suite still finishes its run
 successfully, so "succeeded" cannot mean "the tests passed". A step with outcomes is
 told to end its answer with a line `OUTCOME: <label>`, and ORBIT reads that line to
-choose the next step. If the agent does not report one of the listed outcomes, the step
-counts as failed.
+choose the next step. ORBIT takes the last such line that names a listed outcome (by the
+whole label or its first word, so `OUTCOME: pass (2 warnings)` counts as `pass`); a later
+line such as `Outcome: see the notes above` does not hide it. If no line names one of the
+listed outcomes, the step counts as failed.
 
 **Limits.** A step on a loop runs at most 3 times in one run unless you set another
 limit (1 to 10) on the step. When a step would run more often, the run fails and says

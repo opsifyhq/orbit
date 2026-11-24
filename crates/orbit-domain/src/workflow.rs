@@ -617,20 +617,53 @@ pub fn outcome_directive(outcomes: &[String]) -> Option<String> {
 
 const OUTCOME_DECORATION: &[char] = &['*', '_', '`', '#', '>', ' ', '\t', '-'];
 
-/// Whether `line` is an `OUTCOME: <label>` line, however the agent decorated it.
-fn is_outcome_line(line: &str) -> bool {
-    line.trim()
-        .trim_start_matches(OUTCOME_DECORATION)
-        .get(..8)
-        .is_some_and(|head| head.eq_ignore_ascii_case("outcome:"))
+/// The text after `OUTCOME:` on `line`, however the agent decorated the line; `None`
+/// when the line is not an outcome line.
+fn outcome_text(line: &str) -> Option<&str> {
+    let line = line.trim().trim_start_matches(OUTCOME_DECORATION);
+    let head = line.get(..8)?;
+    head.eq_ignore_ascii_case("outcome:").then(|| &line[8..])
 }
 
-/// The answer without the `OUTCOME:` line it ends with: what the next step receives. The
-/// line is for the platform; handed on, it would read as an instruction to the next agent,
-/// which then tends to repeat it.
-pub fn without_outcome_line(text: &str) -> String {
+/// The declared outcome `text` names: the whole text (`pass`, `**pass**`, `<pass>.`) or,
+/// failing that, its first word (`pass (2 warnings)`). `None` for prose such as
+/// `see the details above`.
+fn declared_outcome<'a>(text: &str, declared: &'a [String]) -> Option<&'a String> {
+    let clean = |value: &str| {
+        value
+            .trim_matches(|c: char| {
+                OUTCOME_DECORATION.contains(&c)
+                    || matches!(
+                        c,
+                        '<' | '>' | '.' | ',' | ';' | ':' | '!' | '"' | '\'' | '(' | ')'
+                    )
+            })
+            .to_ascii_lowercase()
+    };
+    let whole = clean(text);
+    let first = text
+        .split(|c: char| c.is_whitespace() || matches!(c, '(' | ',' | ';'))
+        .map(clean)
+        .find(|word| !word.is_empty())
+        .unwrap_or_default();
+    declared
+        .iter()
+        .find(|outcome| **outcome == whole)
+        .or_else(|| declared.iter().find(|outcome| **outcome == first))
+}
+
+/// The answer without the `OUTCOME:` line `parse_outcome` read `outcome` from: what the
+/// next step receives. The line is for the platform; handed on, it would read as an
+/// instruction to the next agent, which then tends to repeat it. Other lines that happen
+/// to start with "Outcome:" stay.
+pub fn without_outcome_line(text: &str, outcome: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    match lines.iter().rposition(|line| is_outcome_line(line)) {
+    let is_line = |line: &&str| {
+        outcome_text(line).is_some_and(|rest| {
+            declared_outcome(rest, std::slice::from_ref(&outcome.to_string())).is_some()
+        })
+    };
+    match lines.iter().rposition(is_line) {
         Some(at) => {
             let mut kept: Vec<&str> = lines[..at].to_vec();
             kept.extend(lines[at + 1..].iter().copied());
@@ -640,24 +673,15 @@ pub fn without_outcome_line(text: &str) -> String {
     }
 }
 
-/// Read the outcome a step reported: the last `OUTCOME: <label>` line of its answer.
-/// `None` when there is no such line or the label is not one of `declared`.
+/// Read the outcome a step reported: the last `OUTCOME: <label>` line of its answer whose
+/// label is one of `declared`. Lines that start with "Outcome:" but name no declared
+/// outcome (prose) are skipped. `None` when no line names one.
 pub fn parse_outcome(text: &str, declared: &[String]) -> Option<String> {
-    const DECORATION: &[char] = OUTCOME_DECORATION;
-    for line in text.lines().rev() {
-        let line = line.trim().trim_start_matches(DECORATION);
-        let Some(head) = line.get(..8) else { continue };
-        if !head.eq_ignore_ascii_case("outcome:") {
-            continue;
-        }
-        let label = line[8..]
-            .trim_matches(|c: char| {
-                DECORATION.contains(&c) || matches!(c, '<' | '>' | '.' | '"' | '\'')
-            })
-            .to_ascii_lowercase();
-        return declared.iter().find(|outcome| **outcome == label).cloned();
-    }
-    None
+    text.lines()
+        .rev()
+        .filter_map(outcome_text)
+        .find_map(|rest| declared_outcome(rest, declared))
+        .cloned()
 }
 
 #[cfg(test)]
@@ -1031,15 +1055,36 @@ mod tests {
             Some("pass")
         );
         assert_eq!(parse_outcome("OUTCOME: maybe", &declared), None);
+        // Prose that starts with "Outcome:" does not hide the directive above it (#435).
         assert_eq!(
-            without_outcome_line("All green.\n\n**OUTCOME: pass**\n"),
+            parse_outcome("OUTCOME: pass\nOutcome: see the details above", &declared).as_deref(),
+            Some("pass")
+        );
+        assert_eq!(
+            parse_outcome("OUTCOME: pass (2 warnings)", &declared).as_deref(),
+            Some("pass")
+        );
+        assert_eq!(
+            parse_outcome("OUTCOME: fail\nOUTCOME: maybe later", &declared).as_deref(),
+            Some("fail")
+        );
+        assert_eq!(
+            without_outcome_line("All green.\n\n**OUTCOME: pass**\n", "pass"),
             "All green."
         );
         assert_eq!(
-            without_outcome_line("OUTCOME: fail\nfirst\nOutcome: pass\nafter"),
+            without_outcome_line("OUTCOME: fail\nfirst\nOutcome: pass\nafter", "pass"),
             "OUTCOME: fail\nfirst\nafter"
         );
-        assert_eq!(without_outcome_line("No line here."), "No line here.");
+        // Only the line that was parsed goes; the prose line after it stays.
+        assert_eq!(
+            without_outcome_line("Done.\nOUTCOME: pass\nOutcome: see above", "pass"),
+            "Done.\nOutcome: see above"
+        );
+        assert_eq!(
+            without_outcome_line("No line here.", "pass"),
+            "No line here."
+        );
         assert_eq!(parse_outcome("The outcome: pass", &declared), None);
         assert_eq!(parse_outcome("", &declared), None);
         assert!(outcome_directive(&declared)
