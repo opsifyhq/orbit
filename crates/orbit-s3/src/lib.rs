@@ -513,7 +513,7 @@ fn parse_list(xml: &[u8], item_tag: &str) -> Result<Vec<BTreeMap<String, String>
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => {
-                let name = String::from_utf8_lossy(event.name().as_ref()).to_string();
+                let name = event.name().as_ref().to_string();
                 if name == item_tag {
                     current = Some(BTreeMap::new());
                 } else if current.is_some() {
@@ -522,14 +522,14 @@ fn parse_list(xml: &[u8], item_tag: &str) -> Result<Vec<BTreeMap<String, String>
             }
             Ok(Event::Text(event)) => {
                 if let (Some(item), Some(field)) = (current.as_mut(), field.as_ref()) {
-                    let text = String::from_utf8_lossy(event.as_ref());
+                    let text = event.as_ref();
                     let text =
-                        quick_xml::escape::unescape(&text).map_err(|error| error.to_string())?;
+                        quick_xml::escape::unescape(text).map_err(|error| error.to_string())?;
                     item.insert(field.clone(), text.into_owned());
                 }
             }
             Ok(Event::End(event)) => {
-                let name = String::from_utf8_lossy(event.name().as_ref()).to_string();
+                let name = event.name().as_ref().to_string();
                 if name == item_tag {
                     if let Some(item) = current.take() {
                         items.push(item);
