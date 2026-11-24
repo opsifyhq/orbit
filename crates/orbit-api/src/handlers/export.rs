@@ -413,7 +413,8 @@ pub(crate) async fn build_document(
                 "connections": connections,
                 "envMappings": env_mappings,
                 "timeoutSeconds": definition.timeout_seconds,
-                "autonomy": definition.autonomy,
+                // Elevations are installation-specific authorisations; an import re-authorises.
+                "autonomy": definition.autonomy.as_ref().map(orbit_domain::TeamAutonomy::snapshot),
                 "steps": steps,
             }));
             if let Some(workflow) = workflow {

@@ -502,7 +502,7 @@ pub async fn create(
     })?;
     guard_credential(kind, value).await?;
     if kind == OutputKind::S3 {
-        orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+        orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
@@ -575,10 +575,17 @@ pub async fn update(
         body.agent_ids.clone()
     };
     require_target_manage(&state, &auth, &access, &target_agents, body.team_id).await?;
+    if kind == OutputKind::S3 {
+        // Checked with or without a new credential: an S3 output that cannot write to its
+        // own bucket is refused instead of failing every delivery (#386).
+        orbit_s3::S3Config::parse_output(&body.config).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("config", message)])
+        })?;
+    }
     let secret_ref = if let Some(value) = credential(&body, kind) {
         guard_credential(kind, value).await?;
         if kind == OutputKind::S3 {
-            orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+            orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
                 ApiError::validation(vec![ValidationIssue::new("config", message)])
             })?;
         }
@@ -755,14 +762,12 @@ pub async fn send(
         }
     };
     if kind == OutputKind::S3 {
-        let (config, credentials) =
-            orbit_s3::S3Config::from_connection(&output.config, Some(&secret)).map_err(
-                |message| SendError {
-                    status: None,
-                    message,
-                    retryable: false,
-                },
-            )?;
+        let (config, credentials) = orbit_s3::S3Config::for_output(&output.config, Some(&secret))
+            .map_err(|message| SendError {
+            status: None,
+            message,
+            retryable: false,
+        })?;
         let client = orbit_s3::S3Client::new(config, credentials).map_err(|message| SendError {
             status: None,
             message,
@@ -776,10 +781,10 @@ pub async fn send(
         client
             .put_object(None, &key, text.as_bytes(), "text/plain; charset=utf-8")
             .await
-            .map_err(|message| SendError {
-                status: None,
-                message,
-                retryable: true,
+            .map_err(|error| SendError {
+                status: error.status,
+                message: error.message,
+                retryable: error.retryable,
             })?;
         return Ok(());
     }

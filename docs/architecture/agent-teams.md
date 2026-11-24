@@ -164,8 +164,35 @@ The API dispatcher (`dispatcher.rs`) runs every 15s:
 4. Inserts a `team_queue_item` (unique per `team_id, external_key`).
 5. If `autoRun`, starts pending items via the same queue-item runner the UI uses.
 
+Auto-run acts as the **team owner**: the shared preflight checks the owner's access to the
+team, its agents and connections, and the run records the owner as its requester. A team
+without an owner (or with a disabled owner) does not auto-run; its items stay `pending` and
+`lastPollError` says why, until an owner is set or the items are started by hand. When the
+preflight refuses a claimed item, the item becomes `failed` with the reason (retryable once
+the access is fixed). Later steps of an `autoLaunch` team launch as the run's requester, or
+as the team owner when the requester no longer exists.
+
 Claim failures skip the item without enqueueing. `lastPollAt` / `lastPollError` are
-visible in the UI.
+visible in the UI. An issue whose repository or project is outside the connection's
+`allowedRepositories` / `allowedProjects` is not claimed; the poll error names it.
+
+### Repository scope of queue items
+
+A queue run uses the team's connection credentials, so an item may only target the
+team's own repositories, the same rule as `POST …/runs` (#384):
+
+- `POST …/queue` refuses (422) an item whose `repository`, `payload.repository` or
+  `payload.repositories[].repository` is not the team's `repository`, one of its
+  `repositories[]`, or the work source's `repository` / `project`. For a GitLab work
+  source with a `groupId` path, projects under that group path are accepted too.
+- Starting an item checks the same rule again, so an item stored with a foreign
+  repository is refused and marked `failed` before any run is created. For a GitLab
+  group given by numeric id, items already in the queue (which the dispatcher found in
+  that group) are accepted; new items from callers are not.
+- The outcome writer below only reads and updates issues in the work source's own
+  repository or project (or a project of its group), and only when the connection's
+  `allowedRepositories` / `allowedProjects` (if set) includes it. Otherwise it skips the
+  side effects and closes the item.
 
 ## Closing the loop
 

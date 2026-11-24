@@ -21,6 +21,8 @@ export type TeamAutonomy = {
   mode: "follow_primary" | "fixed";
   level?: number | null;
   approvalMode?: "auto" | "always" | "writes" | null;
+  /** Server-recorded elevations (read-only; recomputed on every save). */
+  elevations?: { agentId: string; baseline: { level: number; approvalMode?: "auto" | "always" | "writes" } }[];
 };
 
 export function listAgentTeams(): Promise<AgentTeam[]> {

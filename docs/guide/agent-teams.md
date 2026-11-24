@@ -21,6 +21,8 @@ An Agent Team coordinates several agents for one outcome. Teams have three modes
   failed labels, `maxItems` (1-100), `maxAttempts` (1-10), `pollSeconds` (60 by default,
   at least 5) and `autoRun`. GitHub needs `repository` (owner/repo); GitLab needs a
   `project` or a `groupId`, and can use a `boardId`.
+  `autoRun` starts claimed items as the team's owner, so the team needs an owner who can
+  use its agents and connections.
 
 `native` mode requires the primary agent to use the OpenCode harness; use `pipeline` mode
 for Pi and other harnesses. The API and Team Studio both refuse a native team whose
@@ -145,11 +147,31 @@ A team can either follow each step agent's own autonomy (`follow_primary`, the d
 or declare one fixed level for the whole run. The fixed policy applies to every pipeline
 step and, for native teams, to the primary and all subagents.
 
-Setting a fixed level above a step agent's own level is an explicit elevation: it requires
-manage access to that agent and is written to the audit log as
-`team.autonomy_elevated`. Lowering autonomy never needs extra access. The run stores a
-snapshot of the policy, so editing an agent or the team later cannot change an in-flight
-run.
+A fixed policy is an explicit **elevation** over a step agent when it is less strict than
+the agent's own policy, by level **or** by approval mode. "Less strict" follows what the
+platform enforces: a higher level, or a policy that lets some write or side effect through
+with less human involvement (deny, then approval, then allow). For example, a fixed
+level 4 with approval mode `auto` over an agent at level 4 with `always` removes every
+approval, so it is an elevation, while level 4 with `always` (or with no team approval
+mode, which keeps each agent's own) is not. Approval modes make no difference below
+level 4, where writes are denied (L1, L2) or always need approval (L3).
+
+An elevation requires manage access to that agent and is written to the audit log as
+`team.autonomy_elevated`, with the agent's level and approval mode at that moment. The
+team stores that baseline per agent (`autonomy.elevations`, recomputed by the server on
+every save; values sent by a client are ignored). Lowering autonomy never needs extra
+access. If an agent cannot be read while the team is saved, the save fails.
+
+The run stores a snapshot of the team policy, but every step is checked against its
+agent's **current** policy when the step starts. A team never runs an agent less strictly
+than that, unless an authorised elevation still holds: the agent is no stricter than the
+recorded baseline. If the agent owner made the agent stricter after the team was saved
+(for example lowered it from L4 to L1 after an incident), or the team has no recorded
+elevation for it (teams saved before this check existed), the step runs with the stricter of the
+two policies. The execution input then carries `teamAutonomyClamped` and the execution log
+a warning. Saving the team again by someone who can manage the agent authorises the
+elevation again. For a native team the check covers the primary and every subagent, and
+the primary execution runs with the strictest result, because subagents inherit it.
 
 ## Auto-approve
 
