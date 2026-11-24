@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- A worker token's last-used time is written at most once a minute instead of on every
+  worker request, which made that row the busiest write in the database while executions
+  ran (#447).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

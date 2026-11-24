@@ -327,6 +327,11 @@ async fn worker_tokens_are_hashed_scoped_and_revocable() {
         .unwrap()
         .expect("token should resolve by hash");
     assert_eq!(found.id, record.id);
+    // #447: the first use is recorded; repeated uses within a minute do not write again.
+    assert!(store.touch_worker_token(record.id).await.unwrap());
+    for _ in 0..5 {
+        assert!(!store.touch_worker_token(record.id).await.unwrap());
+    }
     store.revoke_worker_token(org, record.id).await.unwrap();
     assert!(store
         .find_worker_token_by_hash(&issued.hash)
