@@ -601,6 +601,25 @@ async fn run_execution_inner(
         }
     }
 
+    // Before ORBIT writes its own harness files: a checkout must not add plugins, tools or
+    // agent definitions that the harness would load as code (#428).
+    let removed =
+        crate::harness_files::remove_repository_harness_files(&workspace, &execution.input).await;
+    if !removed.is_empty() {
+        append_event(
+            &state,
+            &execution,
+            ExecutionEventKind::Status,
+            LogLevel::Warn,
+            &format!(
+                "removed {} harness file(s) the repository ships; harnesses only load what ORBIT writes",
+                removed.len()
+            ),
+            serde_json::json!({ "removed": removed }),
+        )
+        .await;
+    }
+
     let mut subagent_model_selectors = std::collections::BTreeMap::new();
     for subagent in &context.subagent_models {
         if let Some(selector) = subagent.model.as_ref().and_then(worker_model_selector) {

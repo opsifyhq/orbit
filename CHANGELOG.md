@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Security
+
+- A cloned repository can no longer add code to the harness process: after checkout the
+  worker removes OpenCode plugins, tools, agents and dependency files, Pi extensions and
+  settings, and code-loading keys of a repository `opencode.json`, before ORBIT writes its
+  own files. The removals are reported as an execution event and never committed (#428).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
