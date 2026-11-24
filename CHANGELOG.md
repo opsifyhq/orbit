@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- API log lines carry the right request id: the request span was entered across an
+  `await`, so on a busy server a line could show another request's id. Refused (4xx) and
+  failed (5xx) requests now leave one `request finished` line with status, route and
+  latency at the default level (#444).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

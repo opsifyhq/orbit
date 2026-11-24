@@ -2,6 +2,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -55,19 +56,30 @@ pub async fn instrument(
     let started = std::time::Instant::now();
     let in_flight = InFlight::start(state.metrics.clone());
 
+    // `instrument` enters the span on every poll of the handler future, so the request id
+    // stays on this request's log lines even when the task moves between threads. An
+    // entered guard held across `.await` attached it to whatever else the thread ran
+    // (#444).
     let response = REQUEST_ID
-        .scope(request_id.clone(), async move {
-            let _guard = span.enter();
-            next.run(request).await
-        })
+        .scope(
+            request_id.clone(),
+            next.run(request).instrument(span.clone()),
+        )
         .await;
 
-    in_flight.finish(
-        &metric_method,
-        &route,
-        response.status().as_u16(),
-        started.elapsed(),
-    );
+    let status = response.status().as_u16();
+    let elapsed = started.elapsed();
+    // Failed requests leave a line at the default level; successful ones (including the
+    // 1 Hz worker polls) only at debug, so normal traffic does not flood the log.
+    let latency_ms = elapsed.as_millis() as u64;
+    if status >= 500 {
+        tracing::warn!(parent: &span, status, latency_ms, route = %route, "request finished");
+    } else if status >= 400 {
+        tracing::info!(parent: &span, status, latency_ms, route = %route, "request finished");
+    } else {
+        tracing::debug!(parent: &span, status, latency_ms, route = %route, "request finished");
+    }
+    in_flight.finish(&metric_method, &route, status, elapsed);
 
     let mut response = response;
     if let Ok(value) = HeaderValue::from_str(&request_id) {
