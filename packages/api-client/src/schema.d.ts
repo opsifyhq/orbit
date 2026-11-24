@@ -49,6 +49,11 @@ export interface paths {
         delete: operations["delete_team"];
         options?: never;
         head?: never;
+        /**
+         * Partial update: fields left out keep their stored value, an explicit `null` clears an
+         *     optional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a
+         *     write over someone else's change with 409.
+         */
         patch: operations["update_team"];
         trace?: never;
     };
@@ -2251,6 +2256,12 @@ export interface components {
             connectionIds?: string[];
             description?: string;
             envMappingIds?: string[];
+            /**
+             * Format: date-time
+             * @description PATCH only: the team's `updatedAt` as the client read it. When the team changed
+             *     since, the update is refused with 409 instead of overwriting the other change.
+             */
+            expectedUpdatedAt?: string | null;
             /** @description Harness for team steps. Falls back to the legacy agent harness or org default. */
             harness?: string | null;
             /**
@@ -2444,7 +2455,15 @@ export interface components {
          */
         EgressMode: "default" | "allowlist" | "denied";
         EnqueueRequest: {
+            /** @description 1 to 500 items. The batch is stored all or nothing. */
             items: components["schemas"]["QueueItemInput"][];
+        };
+        /**
+         * @description A queue item as enqueued: `created` is false when an item with that `externalKey`
+         *     was already queued, which is then returned unchanged.
+         */
+        EnqueuedItem: components["schemas"]["TeamQueueItem"] & {
+            created: boolean;
         };
         EnvMapping: {
             /** Format: date-time */
@@ -3892,11 +3911,26 @@ export interface operations {
                     "application/json": components["schemas"]["AgentTeam"];
                 };
             };
+            /** @description the team changed after `expectedUpdatedAt` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     list: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Items per page, 1 to 500 (default 500). */
+                limit?: number | null;
+                /**
+                 * @description Return the items created before this item: pass the first (oldest) id of the
+                 *     previous page to page back.
+                 */
+                before?: string | null;
+            };
             header?: never;
             path: {
                 team_id: string;
@@ -3905,6 +3939,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description the newest items, oldest first */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3930,12 +3965,22 @@ export interface operations {
             };
         };
         responses: {
+            /** @description every item was already queued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnqueuedItem"][];
+                };
+            };
+            /** @description at least one item was created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TeamQueueItem"][];
+                    "application/json": components["schemas"]["EnqueuedItem"][];
                 };
             };
         };

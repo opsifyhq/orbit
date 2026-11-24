@@ -6,6 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Changed
+
+- `PATCH /api/v1/agent-teams/{id}` is a partial update: fields left out keep their value
+  and `null` clears an optional field (before, a client that left out `autonomy`,
+  `connectionIds` or `workSource` cleared them). `expectedUpdatedAt` refuses a write over
+  someone else's change with 409; the team editor sends it (#432).
+- Manual queue enqueue stores a batch all or nothing (at most 500 items). An item whose
+  `externalKey` is already queued is returned unchanged with `created: false`, and the
+  response is 200 when nothing was new. `GET .../queue` takes `limit` and `before` to page
+  back through older items (#432).
+
+### Added
+
+- Audit entries for team create, update and delete, team run start (with
+  `autoApprove`) and queue enqueue, run, retry, requeue and cancel (#432).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

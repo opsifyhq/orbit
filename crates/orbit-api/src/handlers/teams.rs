@@ -106,6 +106,10 @@ pub struct CreateTeamRequest {
     /// The agents in order. Not needed for a workflow.
     #[serde(default)]
     pub steps: Vec<TeamStepInput>,
+    /// PATCH only: the team's `updatedAt` as the client read it. When the team changed
+    /// since, the update is refused with 409 instead of overwriting the other change.
+    #[serde(default)]
+    pub expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -875,18 +879,55 @@ pub async fn create_team(
         .assign_resource_owner(auth.org_id, "agent_teams", team.id, auth.user_id)
         .await?;
     audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
+    crate::audit::record(
+        &state,
+        &auth,
+        "team.created",
+        Some("agent_team"),
+        Some(team.id),
+        serde_json::json!({ "name": team.name, "mode": body.mode }),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(team)))
 }
 
-#[utoipa::path(patch, path = "/api/v1/agent-teams/{team_id}", tag = "agent-teams", request_body = CreateTeamRequest, responses((status = 200, body = orbit_store::AgentTeam)))]
+/// Partial update: fields left out keep their stored value, an explicit `null` clears an
+/// optional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a
+/// write over someone else's change with 409.
+#[utoipa::path(
+    patch, path = "/api/v1/agent-teams/{team_id}", tag = "agent-teams",
+    request_body = CreateTeamRequest,
+    responses(
+        (status = 200, body = orbit_store::AgentTeam),
+        (status = 409, description = "the team changed after `expectedUpdatedAt`"),
+    )
+)]
 pub async fn update_team(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(team_id): Path<Uuid>,
-    crate::extract::ApiJson(mut body): crate::extract::ApiJson<CreateTeamRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<AgentTeam>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    require_team_manage(&state, &auth, team_id).await?;
+    let stored = require_team_manage(&state, &auth, team_id).await?;
+    let (body, expected_updated_at) = merge_team_patch(&stored, patch)?;
+    replace_team(&state, &auth, team_id, body, expected_updated_at)
+        .await
+        .map(Json)
+}
+
+/// Validate `body` and store it as the team's whole definition. Shared by PATCH (after
+/// merging the patch onto the stored team) and portable import (a full replacement).
+pub(crate) async fn replace_team(
+    state: &AppState,
+    auth: &AuthContext,
+    team_id: Uuid,
+    mut body: CreateTeamRequest,
+    expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<AgentTeam, ApiError> {
+    auth.require(Permission::SettingsWrite)?;
+    let stored = require_team_manage(state, auth, team_id).await?;
+    let expected_updated_at = expected_updated_at.or(body.expected_updated_at);
     prepare_mode(&mut body)?;
     if body.name.trim().is_empty() || body.steps.is_empty() {
         return Err(ApiError::validation(vec![
@@ -923,7 +964,7 @@ pub async fn update_team(
     if !body.repositories.is_empty() {
         issues.extend(validate_repositories(&body.repositories));
     }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
+    let access = crate::access::AccessScope::load(state, auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
     for step in &body.steps {
         if !agent_ids.insert(step.agent_id) {
@@ -947,7 +988,7 @@ pub async fn update_team(
         }
     }
     if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
+        validate_work_source_connection(state, auth.org_id, &access, source, &mut issues).await;
     }
     if let Some(profile_id) = body.worker_profile_id {
         let viewable = match state
@@ -971,7 +1012,7 @@ pub async fn update_team(
     }
     issues.extend(
         crate::preflight::unusable_skill_issues(
-            &state,
+            state,
             auth.org_id,
             &access,
             &body.skills,
@@ -1018,10 +1059,10 @@ pub async fn update_team(
             ));
         }
     }
-    validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
+    validate_native_primary(state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
     let (elevations, autonomy) = validate_team_autonomy(
-        &state,
-        &auth,
+        state,
+        auth,
         &access,
         body.autonomy.as_ref(),
         &body.steps,
@@ -1061,10 +1102,79 @@ pub async fn update_team(
             body.name.trim(),
             body.description.trim(),
             &definition,
+            expected_updated_at,
         )
         .await?;
-    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
-    Ok(Json(team))
+    audit_team_autonomy_elevations(state, auth, team.id, &elevations, autonomy.as_ref()).await;
+    crate::audit::record(
+        state,
+        auth,
+        "team.updated",
+        Some("agent_team"),
+        Some(team.id),
+        serde_json::json!({ "name": team.name, "changed": changed_keys(&stored, &team) }),
+    )
+    .await;
+    Ok(team)
+}
+
+/// The stored team as a request, with the fields of `patch` laid over it (#432). Before,
+/// PATCH replaced the whole team, so a client that left out `autonomy`,
+/// `connectionIds` or `workSource` silently cleared them.
+fn merge_team_patch(
+    stored: &AgentTeam,
+    patch: serde_json::Value,
+) -> Result<(CreateTeamRequest, Option<chrono::DateTime<chrono::Utc>>), ApiError> {
+    let serde_json::Value::Object(mut patch) = patch else {
+        return Err(ApiError::validation(vec![ValidationIssue::new(
+            "body",
+            "the request body must be a JSON object",
+        )]));
+    };
+    let expected_updated_at = match patch.remove("expectedUpdatedAt") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(serde_json::from_value(value).map_err(|_| {
+            ApiError::validation(vec![ValidationIssue::new(
+                "expectedUpdatedAt",
+                "must be an RFC 3339 timestamp, the team's updatedAt",
+            )])
+        })?),
+    };
+    let mut merged = match &stored.definition {
+        serde_json::Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    merged.insert("name".into(), serde_json::json!(stored.name));
+    merged.insert("description".into(), serde_json::json!(stored.description));
+    for (key, value) in patch {
+        merged.insert(key, value);
+    }
+    let body = serde_json::from_value(serde_json::Value::Object(merged)).map_err(|error| {
+        ApiError::validation(vec![ValidationIssue::new("body", error.to_string())])
+    })?;
+    Ok((body, expected_updated_at))
+}
+
+/// Top-level team fields whose stored value changed, for the audit entry.
+fn changed_keys(before: &AgentTeam, after: &AgentTeam) -> Vec<String> {
+    let mut keys = Vec::new();
+    if before.name != after.name {
+        keys.push("name".to_string());
+    }
+    if before.description != after.description {
+        keys.push("description".to_string());
+    }
+    let empty = serde_json::Map::new();
+    let old = before.definition.as_object().unwrap_or(&empty);
+    let new = after.definition.as_object().unwrap_or(&empty);
+    let mut names: std::collections::BTreeSet<&String> = old.keys().collect();
+    names.extend(new.keys());
+    for name in names {
+        if old.get(name) != new.get(name) {
+            keys.push(name.clone());
+        }
+    }
+    keys
 }
 
 #[utoipa::path(get, path = "/api/v1/agent-teams", tag = "agent-teams", responses((status = 200, body = [orbit_store::AgentTeam])))]
@@ -1107,7 +1217,17 @@ pub async fn delete_team(
         .request_team_cancel(auth.org_id, team_id)
         .await?;
     announce_cancel(&state, auth.org_id, &cancelled).await;
+    let team = state.store.get_agent_team(auth.org_id, team_id).await?;
     state.store.delete_agent_team(auth.org_id, team_id).await?;
+    crate::audit::record(
+        &state,
+        &auth,
+        "team.deleted",
+        Some("agent_team"),
+        Some(team_id),
+        serde_json::json!({ "name": team.name, "cancelledExecutions": cancelled.len() }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1846,6 +1966,15 @@ pub async fn create_run(
         .store
         .create_team_run(auth.org_id, team.id, &input, Some(auth.user_id))
         .await?;
+    crate::audit::record(
+        &state,
+        &auth,
+        "team_run.started",
+        Some("team_run"),
+        Some(run.id),
+        serde_json::json!({ "teamId": team.id, "autoApprove": body.auto_approve }),
+    )
+    .await;
     let first = match start_first_steps(&state, &run, &definition).await {
         Ok(first) => first,
         Err(error) => {
