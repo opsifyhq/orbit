@@ -6,9 +6,48 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
-## [Unreleased]
+## [0.28.7] - 2026-11-24
+
+### Fixed
+
+- OIDC JWT validation works with jsonwebtoken 12: enable its `rust_crypto` provider.
+  Without it, valid IdP tokens failed at runtime even though the build and non-signature
+  tests passed. A real RS256 token/JWKS regression test now covers this.
+
+## [0.28.6] - 2026-11-24
+
+### Fixed
+
+- Work-source auto-run starts as the team owner, queue items cannot retarget team
+  credentials outside the configured repositories, and team autonomy elevation is
+  checked at save and at every step start (#383, #384, #385).
+- S3 outputs write to their own configured bucket and permanent S3 errors fail once
+  instead of retrying five times (#386).
+
+### Changed
+
+- Dependency updates: Node 26 images, aes-gcm 0.11, async-nats 0.53, base64 0.23,
+  jsonwebtoken 12, tower-http 0.7 and the GitHub Actions group. Dependabot now groups
+  npm updates within minor/patch; breaking majors are kept for dedicated migrations.
+
+## [0.28.5] - 2026-11-24
 
 ### Added
+
+- Agent, team, connection, provider, skill and environment create forms can set
+  visibility and owning team before the first save; the access patch is applied with the
+  new resource id.
+
+- The Executions list groups repeated scheduled runs per trigger/agent into a collapsed
+  header, while keeping team-run steps grouped as before.
+
+- Dependabot coverage for Cargo, npm, Docker and GitHub Actions, plus a scheduled
+  dependency watcher and `versions.json` source of truth for Rust, Node, PostgreSQL,
+  Helm and the harness/CLI pins.
+
+- Harness inputs over 96 KiB are rejected by the API before a run is created; Pi session
+  storage now lives outside the per-execution workspace so continuous runs can resume.
+  Pi also clears a provider error when a later assistant message succeeds.
 
 - Agent Team **workflows** (#9): a third team mode next to pipeline and native. Steps are
   joined by lines that follow success, failure or an outcome the agent reports
@@ -26,12 +65,32 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Agent Team autonomy (#385): a fixed team policy that asks less than an agent's own
+  approval mode (for example level 4 `auto` over level 4 `always`) now counts as an
+  elevation, needs manage access to that agent and is audited. Each step is checked
+  against the agent's current policy when it starts: if the agent became stricter after
+  the team was saved, the step runs with the stricter policy and logs a warning. Teams
+  with a fixed policy above an agent's own policy that were saved before this release run
+  with the agent's policy until someone who can manage the agent saves them again. The
+  team form now defaults a fixed policy to level 3 with each agent's own approval mode.
+- Agent Team queue items can no longer retarget the team's credentials (#384): enqueue and
+  start refuse repositories outside the team's configuration, and the work-source outcome
+  writer and dispatcher stay inside the source's repository and the connection's
+  `allowedRepositories` / `allowedProjects`.
+- S3 outputs created in the web UI can deliver (#386). An output's configured bucket is
+  its allowlist, so it no longer needs `allowedBuckets`; a config that cannot write to its
+  own bucket is refused when it is saved, and permanent S3 errors (403, 404, blocked
+  endpoint, invalid key) fail the delivery instead of retrying it five times.
 - Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
   still running, and its page says the run was stopped instead of "The run failed".
 - A failed OpenCode run names the reason OpenCode reported (for example a provider that
   refused the request) instead of only "opencode exited with 1".
 - The Run dialog of a team no longer fills in the team's goal as the task. A blank task
   still runs the goal, which is now sent once instead of as both task and context.
+- Work-source auto-run starts team runs again (#383). It acts as the team owner instead of
+  a nil system user that the database refused; a refused preflight marks the queue item
+  failed with the reason, and a team without an owner shows why in its poll status. Later
+  auto-launched steps fall back to the team owner when the requester was deleted.
 
 ## [0.28.4] - 2026-11-23
 
@@ -49,6 +108,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
+- User YAML is parsed with the maintained `serde_norway` fork under the existing
+  `serde_yaml` dependency name. Imports reject anchors/aliases and documents over 1 MiB,
+  and cargo-audit warnings are copied to the CI job summary.
 - Kubernetes connections use an authentication dropdown, kubeconfig file upload, a
   comma-separated namespace field, and derive `allowedResources` from the selected
   capabilities (Advanced config can override it). The connection test falls back to a

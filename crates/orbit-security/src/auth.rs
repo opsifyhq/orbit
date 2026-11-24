@@ -564,9 +564,9 @@ pub fn hash_api_token(token: &str) -> String {
 /// Generate `(plaintext, hash)`. The plaintext is shown to the user exactly once.
 pub fn generate_api_token() -> (String, String) {
     use base64::Engine;
-    use rand::RngCore;
+    use rand_core::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand_core::OsRng.fill_bytes(&mut bytes);
     let token = format!(
         "orbit_sk_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -598,9 +598,9 @@ pub fn issue_api_token() -> IssuedApiToken {
 /// control-plane routes and accept them only on the worker surface.
 pub fn issue_worker_token() -> IssuedApiToken {
     use base64::Engine;
-    use rand::RngCore;
+    use rand_core::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand_core::OsRng.fill_bytes(&mut bytes);
     let token = format!(
         "orbit_wk_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -838,6 +838,83 @@ mod tests {
             assert!(matches!(result, Err(SecurityError::Unauthorized)));
         }
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// jsonwebtoken 10+ requires an explicitly selected crypto provider. Without
+    /// `rust_crypto`/`aws_lc_rs`, validation compiles but panics or fails at runtime.
+    #[tokio::test]
+    async fn a_real_rs256_token_validates() {
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let jwks = r#"{"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":"wZglssB_JLvkbi8PoIDwzrIGAcT2iSp3W-qZ0MdVKdmZ7vAl6xZqV7WLBwb9wLGpGPVXo0WqTmeRgWwKeQAQ9WG1VpD0_z5ZAkAWWO68wtz7BItVWTO7B5W-w9oyTIsDw8j6RfI_xxgGkaxvdN09UGVxhOiZWjVhm2ibhJzyV_mpk8PZgqvs3wXf5TwwoOndtkNlkaSh9fc48WUljG68dg1NMXcXa6dHHcpXSA4ru5saqaMWHFvA26tgp_6ClyXUG7yMibXE-pD0QfD66h_mJWmdi57KL6DCp6IF8GXsO0LQ5m1TwOpbD5O6_ohDGUo9h3e3a9zdutgSBzlEyqwhGw","e":"AQAB"}]}"#;
+        let pem = r#"-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDBmCWywH8ku+Ru
+Lw+ggPDOsgYBxPaJKndb6pnQx1Up2Znu8CXrFmpXtYsHBv3AsakY9VejRapOZ5GB
+bAp5ABD1YbVWkPT/PlkCQBZY7rzC3PsEi1VZM7sHlb7D2jJMiwPDyPpF8j/HGAaR
+rG903T1QZXGE6JlaNWGbaJuEnPJX+amTw9mCq+zfBd/lPDCg6d22Q2WRpKH19zjx
+ZSWMbrx2DU0xdxdrp0cdyldIDiu7mxqpoxYcW8Dbq2Cn/oKXJdQbvIyJtcT6kPRB
+8PrqH+YlaZ2LnsovoMKnogXwZew7QtDmbVPA6lsPk7r+iEMZSj2Hd7dr3N262BIH
+OUTKrCEbAgMBAAECggEAAVm3hZrcfYacA31rjVHo8XWCH41er4/uxjg0O3sbJ9AU
+nVCVNcxxuyE754rPxqzWl6MlKdvot2RMj7ZlD6QFpO3kucZdbHxkWuTUjb6YmClk
+zOAl8m8vHPtD7zzR61ZwP8jin2NJuPCndxOuBrGBEH2squHZKVfEUbULRK5i7bnV
+Lh1sJZP1yUc2s2W0ljAufbTx7TDesF38LXNkjiQIwoghkKbqLuFxx9kpyLnzUwdF
+X5L4c9vyibQ8xTpKWxM5dd8ict9Kn8VUJM5C73kwfYjbYmy5wFKeHYc8abtg1sem
+tO0SebJwxE+7uWjNTJAoVgsxo4vjpomDa1DL2Q3qNQKBgQDpreLMo2EDPvWCIIIq
+8S9xMPXjU6JqFKy+v57wdhPt+HObNjyTSKSYItQvy3gCK9RlyETua9ZNu78PyOMm
+/830Mpgb6ZB7RWvB+DZrh8iGZIPgENBAQUnBk5DUNgHx6T3CuS5Hel2sxpSPTt6M
+w5QZ9+Pk2anp+QXsgbwH1eAE5wKBgQDUFhKN8f3mOa7BqT9N44/b7I9S8SBuQEuS
+furh0c0wiro2cUzmnplpeSxN0Cu9T/q+3CKwmr0JrAqpdbR2i4n43nMfhPIlXjCJ
+eZDk1bf9QoXYA5CQQBNgMRUNuKQOBHgjCf+jyJprmdGzHoXB48gdSdghTI9seNbu
+Rf+eqVWHrQKBgBDO6yNhFRdQrgQgJnzEQG9Z4DXrzCDpP8uwqNQPCjvxxQ8DBbRq
+Yzx2NOEDN6ygTnTLxPmJVC7fNE0EXCJv//ZytTI8yKG1Spz3J6Lwb2ILVNkHHJOi
+npWH8cDx6Y3nAwRAoa2OhbJpzkHIoIVrg/miNQg/B9PGj8CFTGsb3TM9AoGARKXk
+WZezpDqVi0/aEr8OyJPYjHNKGQWssH1uT6vWK9krjwW7a4Z4h8BWC9XO4pcpxW+B
+twJPH/tU9CcKQ7jE7w4p21DwBBJpyYXU1Y0r4ckPg60btOVYoDEi7G8Qgw0FSeop
+mf0LprqCOuUtTGYLVxeY4qZiYiz2/OchZ1zON30CgYBeHr1aZsYBrUd+Z+yyaiob
+//SSH+u0Pd3XNIN/BG8Yw7iL6pNYGSg0rNfMyd3DPv6NIV+6HG8Y1XuUM6wAvsOX
+WS9k6Wf6/M0mbsQAfczPYGX0+Ofd1LGL0tl6fNlMOAG0kkzkidGuF/LbTqr6p/1J
+4TLveODGZiUyrNOJsKm43Q==
+-----END PRIVATE KEY-----"#;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/jwks", listener.local_addr().unwrap());
+        let served = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = served.clone();
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            flag.store(true, Ordering::SeqCst);
+            let mut buffer = [0u8; 2048];
+            let _ = socket.read(&mut buffer).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                jwks.len(),
+                jwks
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        let validator = JwtValidator::new(&oidc_config(&url)).unwrap();
+        let claims = serde_json::json!({
+            "sub": "user-1",
+            "iss": "https://idp.test",
+            "aud": "orbit",
+            "exp": chrono::Utc::now().timestamp() + 300,
+            "email": "user@example.com"
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key".into());
+        let token = encode(
+            &header,
+            &claims,
+            &EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let identity = validator.validate(&token).await.unwrap();
+        assert_eq!(identity.subject, "user-1");
+        assert_eq!(identity.email.as_deref(), Some("user@example.com"));
+        assert!(served.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

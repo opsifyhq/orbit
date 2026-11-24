@@ -306,6 +306,47 @@ impl PiHarnessAdapter {
     }
 }
 
+/// A successful assistant message clears a provider error from an earlier retry. Pi can
+/// emit an errored `message_end` and then continue with a successful one.
+fn apply_message_end(error: &mut Option<String>, value: &Value) {
+    if value.get("type").and_then(Value::as_str) != Some("message_end") {
+        return;
+    }
+    let Some(message) = value.get("message") else {
+        return;
+    };
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    match message.get("stopReason").and_then(Value::as_str) {
+        Some("error") => {
+            *error = message
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        Some(_) => *error = None,
+        None => {}
+    }
+}
+
+/// Default Pi session storage is outside the execution workspace because that directory is
+/// removed after every run. The agent id keeps sessions isolated and resumable across runs.
+fn default_session_dir(workspace: &Path, agent_id: uuid::Uuid) -> Result<PathBuf, HarnessError> {
+    let parent = workspace.parent().unwrap_or(workspace);
+    let dir = parent.join(".pi-sessions").join(agent_id.to_string());
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        HarnessError::new(
+            HarnessErrorKind::Internal,
+            format!(
+                "could not create Pi session directory {}: {error}",
+                dir.display()
+            ),
+        )
+    })?;
+    Ok(dir)
+}
+
 fn build_prompt(request: &ExecutionRequest) -> String {
     let payload = if request.input.payload.is_null() {
         Value::Null
@@ -552,7 +593,9 @@ impl PiHarnessAdapter {
             Some(dir) if !dir.trim().is_empty() => {
                 crate::paths::resolve_confined_dir(&workspace, dir).await?
             }
-            _ => crate::paths::resolve_confined_dir(&workspace, ".pi-sessions").await?,
+            // Sessions must outlive the per-execution workspace so a continuous runtime
+            // can resume them. They are scoped by agent, not execution.
+            _ => default_session_dir(&workspace, request.agent_id)?,
         };
         // Extra skill paths are agent-author input too: `--skill /etc/...` would read worker
         // files into the model context, so they stay inside the workspace (#303).
@@ -713,24 +756,7 @@ impl PiHarnessAdapter {
                         }
                         continue;
                     }
-                    if value.get("type").and_then(Value::as_str) == Some("message_end")
-                        && value
-                            .get("message")
-                            .and_then(|m| m.get("role"))
-                            .and_then(Value::as_str)
-                            == Some("assistant")
-                        && value
-                            .get("message")
-                            .and_then(|m| m.get("stopReason"))
-                            .and_then(Value::as_str)
-                            == Some("error")
-                    {
-                        error = value
-                            .get("message")
-                            .and_then(|m| m.get("errorMessage"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                    }
+                    apply_message_end(&mut error, &value);
                     let (event, next_text) = map_event(&value, &mut usage, text);
                     text = next_text;
                     if let Some(event) = event {
@@ -980,6 +1006,43 @@ mod tests {
         assert_eq!(text.trim(), "hello");
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.output_tokens, Some(4));
+    }
+
+    #[test]
+    fn a_successful_message_clears_a_recovered_error() {
+        let mut error = Some("provider failed".into());
+        apply_message_end(
+            &mut error,
+            &json!({
+                "type": "message_end",
+                "message": { "role": "assistant", "stopReason": "stop" }
+            }),
+        );
+        assert!(error.is_none());
+
+        apply_message_end(
+            &mut error,
+            &json!({
+                "type": "message_end",
+                "message": { "role": "assistant", "stopReason": "error", "errorMessage": "retry" }
+            }),
+        );
+        assert_eq!(error.as_deref(), Some("retry"));
+    }
+
+    #[test]
+    fn default_session_dir_is_outside_the_execution_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("execution");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let agent = uuid::Uuid::now_v7();
+        let dir = default_session_dir(&workspace, agent).unwrap();
+        assert!(dir.starts_with(root.path()));
+        assert!(!dir.starts_with(&workspace));
+        assert_eq!(
+            dir.file_name().unwrap().to_string_lossy(),
+            agent.to_string()
+        );
     }
 
     #[test]

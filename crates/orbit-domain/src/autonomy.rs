@@ -416,6 +416,7 @@ mod tests {
             mode: TeamAutonomyMode::Fixed,
             level: Some(4),
             approval_mode: Some(ApprovalMode::Auto),
+            elevations: Vec::new(),
         };
         assert!(apply_team_autonomy(&mut spec, Some(&autonomy)));
         assert_eq!(spec, spec_at(4, ApprovalMode::Auto));
@@ -428,12 +429,14 @@ mod tests {
             mode: TeamAutonomyMode::FollowPrimary,
             level: Some(4),
             approval_mode: Some(ApprovalMode::Auto),
+            elevations: Vec::new(),
         };
         assert!(!apply_team_autonomy(&mut spec, Some(&follow)));
         let invalid = TeamAutonomy {
             mode: TeamAutonomyMode::Fixed,
             level: Some(9),
             approval_mode: Some(ApprovalMode::Auto),
+            elevations: Vec::new(),
         };
         assert!(!apply_team_autonomy(&mut spec, Some(&invalid)));
         assert_eq!(spec, spec_at(2, ApprovalMode::Always));
@@ -465,6 +468,193 @@ pub struct TeamAutonomy {
     pub level: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_mode: Option<crate::ApprovalMode>,
+    /// Server-recorded elevations (#385): for each step agent the team runs less strictly
+    /// than its own policy, the agent policy that was in force when someone with manage
+    /// access to that agent authorised it. Client-supplied values are discarded on save.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elevations: Vec<TeamAutonomyElevation>,
+}
+
+/// One authorised elevation of a fixed team policy over a step agent's own policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamAutonomyElevation {
+    pub agent_id: uuid::Uuid,
+    /// The agent's own policy when the elevation was authorised.
+    pub baseline: AutonomyPolicy,
+}
+
+/// The part of an autonomy spec that decides what may run without a human: the level and
+/// the approval mode. Ordered by strictness through [`AutonomyPolicy::is_at_least_as_strict_as`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AutonomyPolicy {
+    pub level: u8,
+    #[serde(default)]
+    pub approval_mode: crate::ApprovalMode,
+}
+
+const ALL_EFFECTS: [CapabilityEffect; 3] = [
+    CapabilityEffect::Read,
+    CapabilityEffect::Write,
+    CapabilityEffect::ExternalSideEffect,
+];
+
+fn decision_rank(decision: PolicyDecision) -> u8 {
+    match decision {
+        PolicyDecision::Allow => 0,
+        PolicyDecision::RequireApproval => 1,
+        PolicyDecision::Deny => 2,
+    }
+}
+
+fn approval_mode_rank(mode: crate::ApprovalMode) -> u8 {
+    match mode {
+        crate::ApprovalMode::Auto => 0,
+        crate::ApprovalMode::Writes => 1,
+        crate::ApprovalMode::Always => 2,
+    }
+}
+
+impl AutonomyPolicy {
+    pub fn new(level: u8, approval_mode: crate::ApprovalMode) -> Self {
+        Self {
+            level,
+            approval_mode,
+        }
+    }
+
+    pub fn of(spec: &crate::AutonomySpec) -> Self {
+        Self::new(spec.level, spec.approval_mode)
+    }
+
+    /// An out-of-range level is treated as Observe, the strictest level.
+    fn autonomy_level(&self) -> AutonomyLevel {
+        AutonomyLevel::from_level(self.level).unwrap_or(AutonomyLevel::OBSERVE)
+    }
+
+    /// What the platform decides for an allowlisted capability with this effect. Uses
+    /// [`evaluate_capability`] itself, so the order below can never drift from enforcement.
+    pub fn decision(&self, effect: CapabilityEffect) -> PolicyDecision {
+        let grant = GrantedCapability {
+            connection_id: uuid::Uuid::nil(),
+            connector: String::new(),
+            capability: "probe".into(),
+            effect,
+        };
+        evaluate_capability(
+            self.autonomy_level(),
+            self.approval_mode,
+            "probe",
+            effect,
+            std::slice::from_ref(&grant),
+        )
+    }
+
+    /// `true` when this policy never lets an effect through with less human involvement
+    /// than `other` (allow < approval < deny for every effect) and does not run at a higher
+    /// level, since the level also decides which native tools a harness offers.
+    pub fn is_at_least_as_strict_as(&self, other: &Self) -> bool {
+        self.autonomy_level() <= other.autonomy_level()
+            && ALL_EFFECTS.iter().all(|effect| {
+                decision_rank(self.decision(*effect)) >= decision_rank(other.decision(*effect))
+            })
+    }
+
+    /// The least strict policy that is at least as strict as both.
+    pub fn stricter_of(&self, other: &Self) -> Self {
+        let level = self.autonomy_level().min(other.autonomy_level()).level();
+        let approval_mode =
+            if approval_mode_rank(self.approval_mode) >= approval_mode_rank(other.approval_mode) {
+                self.approval_mode
+            } else {
+                other.approval_mode
+            };
+        Self::new(level, approval_mode)
+    }
+}
+
+impl TeamAutonomy {
+    /// The policy a fixed team runs `agent` with: the team level, and the team approval
+    /// mode or, when the team sets none, the agent's own (see [`apply_team_autonomy`]).
+    /// `None` for follow-primary or an invalid level.
+    pub fn policy_for(&self, agent: AutonomyPolicy) -> Option<AutonomyPolicy> {
+        if self.mode != TeamAutonomyMode::Fixed {
+            return None;
+        }
+        let level = self.level.and_then(AutonomyLevel::from_level)?;
+        Some(AutonomyPolicy::new(
+            level.level(),
+            self.approval_mode.unwrap_or(agent.approval_mode),
+        ))
+    }
+
+    /// Is running `agent` under this team policy an elevation (less strict than the
+    /// agent's own policy, by level or approval mode)?
+    pub fn elevates(&self, agent: AutonomyPolicy) -> bool {
+        self.policy_for(agent)
+            .is_some_and(|team| !team.is_at_least_as_strict_as(&agent))
+    }
+
+    /// The team policy without the server-recorded elevations, as sent to a worker.
+    pub fn snapshot(&self) -> Self {
+        Self {
+            elevations: Vec::new(),
+            ..self.clone()
+        }
+    }
+}
+
+/// The effective fixed team policy for one step agent at run time (#385).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TeamAutonomyResolution {
+    /// Not a fixed policy (or an invalid level): the agent's own policy applies.
+    NotFixed,
+    /// The team policy applies as saved: it is not an elevation over the agent's current
+    /// policy, or an authorised elevation still holds.
+    Applies(TeamAutonomy),
+    /// The agent's policy is now stricter than when an elevation was authorised (or no
+    /// elevation was ever authorised for it): the step runs with the stricter of the two.
+    Clamped {
+        autonomy: TeamAutonomy,
+        requested: AutonomyPolicy,
+        agent: AutonomyPolicy,
+    },
+}
+
+/// Resolve a fixed team policy against a step agent's **current** policy. A team never
+/// runs an agent less strictly than its current policy unless an elevation recorded at
+/// save time still holds: the agent has not become stricter than the recorded baseline.
+pub fn resolve_team_autonomy(
+    autonomy: &TeamAutonomy,
+    agent_id: uuid::Uuid,
+    agent: AutonomyPolicy,
+) -> TeamAutonomyResolution {
+    let Some(requested) = autonomy.policy_for(agent) else {
+        return TeamAutonomyResolution::NotFixed;
+    };
+    if requested.is_at_least_as_strict_as(&agent) {
+        return TeamAutonomyResolution::Applies(autonomy.snapshot());
+    }
+    let authorised = autonomy
+        .elevations
+        .iter()
+        .find(|elevation| elevation.agent_id == agent_id)
+        .is_some_and(|elevation| elevation.baseline.is_at_least_as_strict_as(&agent));
+    if authorised {
+        return TeamAutonomyResolution::Applies(autonomy.snapshot());
+    }
+    let clamped = requested.stricter_of(&agent);
+    TeamAutonomyResolution::Clamped {
+        autonomy: TeamAutonomy {
+            mode: TeamAutonomyMode::Fixed,
+            level: Some(clamped.level),
+            approval_mode: Some(clamped.approval_mode),
+            elevations: Vec::new(),
+        },
+        requested,
+        agent,
+    }
 }
 
 /// Execution-input key carrying the server-created team autonomy snapshot.
@@ -490,4 +680,209 @@ pub fn apply_team_autonomy(
         spec.approval_mode = approval_mode;
     }
     true
+}
+
+#[cfg(test)]
+mod team_strictness_tests {
+    use super::*;
+    use crate::ApprovalMode;
+
+    const MODES: [ApprovalMode; 3] = [
+        ApprovalMode::Auto,
+        ApprovalMode::Writes,
+        ApprovalMode::Always,
+    ];
+
+    fn all() -> Vec<AutonomyPolicy> {
+        (1..=4)
+            .flat_map(|level| {
+                MODES
+                    .iter()
+                    .map(move |mode| AutonomyPolicy::new(level, *mode))
+            })
+            .collect()
+    }
+
+    fn fixed(level: u8, mode: Option<ApprovalMode>) -> TeamAutonomy {
+        TeamAutonomy {
+            mode: TeamAutonomyMode::Fixed,
+            level: Some(level),
+            approval_mode: mode,
+            elevations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn l4_auto_is_less_strict_than_l4_always_and_writes() {
+        let auto = AutonomyPolicy::new(4, ApprovalMode::Auto);
+        for mode in [ApprovalMode::Always, ApprovalMode::Writes] {
+            let strict = AutonomyPolicy::new(4, mode);
+            assert!(strict.is_at_least_as_strict_as(&auto));
+            assert!(!auto.is_at_least_as_strict_as(&strict));
+        }
+    }
+
+    #[test]
+    fn approval_mode_does_not_matter_below_level_four() {
+        for level in 1..=3 {
+            for a in MODES {
+                for b in MODES {
+                    assert!(AutonomyPolicy::new(level, a)
+                        .is_at_least_as_strict_as(&AutonomyPolicy::new(level, b)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_higher_level_is_never_at_least_as_strict() {
+        for low in all() {
+            for high in all() {
+                if high.level > low.level {
+                    assert!(!high.is_at_least_as_strict_as(&low), "{high:?} vs {low:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strictness_is_reflexive_and_transitive() {
+        let policies = all();
+        for a in &policies {
+            assert!(a.is_at_least_as_strict_as(a));
+            for b in &policies {
+                for c in &policies {
+                    if a.is_at_least_as_strict_as(b) && b.is_at_least_as_strict_as(c) {
+                        assert!(a.is_at_least_as_strict_as(c));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stricter_of_is_at_least_as_strict_as_both() {
+        for a in all() {
+            for b in all() {
+                let joined = a.stricter_of(&b);
+                assert!(
+                    joined.is_at_least_as_strict_as(&a),
+                    "{a:?} {b:?} -> {joined:?}"
+                );
+                assert!(
+                    joined.is_at_least_as_strict_as(&b),
+                    "{a:?} {b:?} -> {joined:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decisions_follow_evaluate_capability() {
+        assert_eq!(
+            AutonomyPolicy::new(4, ApprovalMode::Auto).decision(CapabilityEffect::Write),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            AutonomyPolicy::new(4, ApprovalMode::Always).decision(CapabilityEffect::Write),
+            PolicyDecision::RequireApproval
+        );
+        assert_eq!(
+            AutonomyPolicy::new(2, ApprovalMode::Auto).decision(CapabilityEffect::Write),
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            AutonomyPolicy::new(1, ApprovalMode::Always).decision(CapabilityEffect::Read),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn team_elevation_covers_approval_mode() {
+        let agent = AutonomyPolicy::new(4, ApprovalMode::Always);
+        assert!(fixed(4, Some(ApprovalMode::Auto)).elevates(agent));
+        assert!(!fixed(4, Some(ApprovalMode::Always)).elevates(agent));
+        // No team approval mode keeps the agent's own.
+        assert!(!fixed(4, None).elevates(agent));
+        assert!(fixed(4, None).elevates(AutonomyPolicy::new(3, ApprovalMode::Always)));
+        assert!(!fixed(2, Some(ApprovalMode::Auto)).elevates(agent));
+    }
+
+    #[test]
+    fn unauthorised_elevation_is_clamped_to_the_agent() {
+        let agent_id = uuid::Uuid::now_v7();
+        let agent = AutonomyPolicy::new(4, ApprovalMode::Always);
+        match resolve_team_autonomy(&fixed(4, Some(ApprovalMode::Auto)), agent_id, agent) {
+            TeamAutonomyResolution::Clamped { autonomy, .. } => {
+                assert_eq!(autonomy.level, Some(4));
+                assert_eq!(autonomy.approval_mode, Some(ApprovalMode::Always));
+            }
+            other => panic!("expected a clamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn authorised_elevation_holds_until_the_agent_becomes_stricter() {
+        let agent_id = uuid::Uuid::now_v7();
+        let mut team = fixed(4, Some(ApprovalMode::Auto));
+        team.elevations.push(TeamAutonomyElevation {
+            agent_id,
+            baseline: AutonomyPolicy::new(3, ApprovalMode::Auto),
+        });
+        // Same as the baseline, or looser: the elevation holds.
+        for agent in [
+            AutonomyPolicy::new(3, ApprovalMode::Auto),
+            AutonomyPolicy::new(3, ApprovalMode::Always),
+        ] {
+            assert_eq!(
+                resolve_team_autonomy(&team, agent_id, agent),
+                TeamAutonomyResolution::Applies(team.snapshot())
+            );
+        }
+        // Lowered after the team was saved: the step runs at the agent's level.
+        match resolve_team_autonomy(&team, agent_id, AutonomyPolicy::new(1, ApprovalMode::Auto)) {
+            TeamAutonomyResolution::Clamped { autonomy, .. } => {
+                assert_eq!(autonomy.level, Some(1))
+            }
+            other => panic!("expected a clamp, got {other:?}"),
+        }
+        // An elevation recorded for another agent does not count.
+        assert!(matches!(
+            resolve_team_autonomy(
+                &team,
+                uuid::Uuid::now_v7(),
+                AutonomyPolicy::new(3, ApprovalMode::Auto)
+            ),
+            TeamAutonomyResolution::Clamped { .. }
+        ));
+    }
+
+    #[test]
+    fn a_non_elevating_policy_applies_and_snapshots_drop_elevations() {
+        let agent_id = uuid::Uuid::now_v7();
+        let mut team = fixed(2, Some(ApprovalMode::Always));
+        team.elevations.push(TeamAutonomyElevation {
+            agent_id,
+            baseline: AutonomyPolicy::new(4, ApprovalMode::Auto),
+        });
+        match resolve_team_autonomy(&team, agent_id, AutonomyPolicy::new(4, ApprovalMode::Auto)) {
+            TeamAutonomyResolution::Applies(snapshot) => {
+                assert!(snapshot.elevations.is_empty());
+                assert_eq!(snapshot.level, Some(2));
+            }
+            other => panic!("expected the team policy, got {other:?}"),
+        }
+        let follow = TeamAutonomy {
+            mode: TeamAutonomyMode::FollowPrimary,
+            ..fixed(4, None)
+        };
+        assert_eq!(
+            resolve_team_autonomy(
+                &follow,
+                agent_id,
+                AutonomyPolicy::new(1, ApprovalMode::Auto)
+            ),
+            TeamAutonomyResolution::NotFixed
+        );
+    }
 }

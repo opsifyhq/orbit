@@ -285,8 +285,8 @@ export function SkillForm({
       return;
     }
     const extra = draft.extra.split(/\r?\n/).filter((line, i, all) => line.trim() !== "" || (i > 0 && i < all.length - 1));
-    const commitAccess = async () => {
-      await accessRef.current?.save();
+    const commitAccess = async (id?: string) => {
+      await accessRef.current?.save(id);
     };
     await onSubmit(
       {

@@ -5601,6 +5601,23 @@
           }
         }
       },
+      "AutonomyPolicy": {
+        "type": "object",
+        "description": "The part of an autonomy spec that decides what may run without a human: the level and\nthe approval mode. Ordered by strictness through [`AutonomyPolicy::is_at_least_as_strict_as`].",
+        "required": [
+          "level"
+        ],
+        "properties": {
+          "approvalMode": {
+            "$ref": "#/components/schemas/ApprovalMode"
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "AutonomySpec": {
         "type": "object",
         "properties": {
@@ -8358,6 +8375,14 @@
             ],
             "format": "uuid"
           },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Multiple agent targets. Takes precedence over the legacy `agentId`."
+          },
           "botToken": {
             "type": [
               "string",
@@ -8432,6 +8457,7 @@
           "id",
           "name",
           "kind",
+          "agentIds",
           "events",
           "enabled",
           "hasWebhook",
@@ -8446,6 +8472,13 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           "chatId": {
             "type": [
@@ -9052,6 +9085,13 @@
               }
             ]
           },
+          "elevations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamAutonomyElevation"
+            },
+            "description": "Server-recorded elevations (#385): for each step agent the team runs less strictly\nthan its own policy, the agent policy that was in force when someone with manage\naccess to that agent authorised it. Client-supplied values are discarded on save."
+          },
           "level": {
             "type": [
               "integer",
@@ -9062,6 +9102,24 @@
           },
           "mode": {
             "$ref": "#/components/schemas/TeamAutonomyMode"
+          }
+        }
+      },
+      "TeamAutonomyElevation": {
+        "type": "object",
+        "description": "One authorised elevation of a fixed team policy over a step agent's own policy.",
+        "required": [
+          "agentId",
+          "baseline"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baseline": {
+            "$ref": "#/components/schemas/AutonomyPolicy",
+            "description": "The agent's own policy when the elevation was authorised."
           }
         }
       },

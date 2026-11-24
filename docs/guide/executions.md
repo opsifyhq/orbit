@@ -103,6 +103,13 @@ ORBIT archives finished executions, team runs and worker launches older than
 turns it off). History is kept: archived runs leave the default list and appear under
 **Show → Archived**.
 
+## Grouping
+
+The Executions list keeps team-run steps together and collapses repeated **scheduled**
+runs per trigger/agent into one header. Expand a scheduled group to inspect individual
+runs; the header shows the latest status and the number of runs in the group. Team runs
+remain expanded by default and can be collapsed.
+
 ## Team runs
 
 **Agent teams → Team runs** (`/agent-teams/runs`) lists team runs with a filter field

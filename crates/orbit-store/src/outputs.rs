@@ -51,8 +51,9 @@ impl Store {
         sqlx::query_as::<_, Output>(
             r#"
             INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref,
-                                 template, telegram_chat_id, telegram_message_thread_id, enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                 template, telegram_chat_id, telegram_message_thread_id, enabled,
+                                 agent_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             "#,
         )
@@ -68,6 +69,7 @@ impl Store {
         .bind(telegram_chat_id)
         .bind(telegram_message_thread_id)
         .bind(enabled)
+        .bind(agent_id.map(|id| vec![id]).unwrap_or_default())
         .fetch_one(&self.pool)
         .await
         .map_err(|error| {
@@ -103,6 +105,7 @@ impl Store {
             r#"
             UPDATE outputs
             SET name = $3, kind = $4, agent_id = $5, team_id = $6, events = $7,
+                agent_ids = CASE WHEN $5::uuid IS NOT NULL THEN ARRAY[$5] ELSE agent_ids END,
                 secret_ref = COALESCE($8, secret_ref), template = $9,
                 telegram_chat_id = $10, telegram_message_thread_id = $11, enabled = $12,
                 enqueue_from = CASE WHEN $12 AND NOT enabled THEN now() ELSE enqueue_from END,
@@ -124,6 +127,26 @@ impl Store {
         .bind(telegram_chat_id)
         .bind(telegram_message_thread_id)
         .bind(enabled)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StoreError::NotFound("output".into()))
+    }
+
+    /// Replace the agent targets for an output. The legacy `agent_id` column is cleared:
+    /// deleting any one target agent must not cascade-delete a multi-target output.
+    pub async fn set_output_agent_ids(
+        &self,
+        org_id: Uuid,
+        id: Uuid,
+        agent_ids: &[Uuid],
+    ) -> StoreResult<Output> {
+        sqlx::query_as::<_, Output>(
+            "UPDATE outputs SET agent_ids = $3, agent_id = NULL, updated_at = now() \
+             WHERE org_id = $1 AND id = $2 RETURNING *",
+        )
+        .bind(org_id)
+        .bind(id)
+        .bind(agent_ids)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| StoreError::NotFound("output".into()))
@@ -183,7 +206,7 @@ impl Store {
             FROM outputs o
             JOIN executions e
               ON e.org_id = o.org_id
-             AND (o.agent_id IS NULL OR o.agent_id = e.agent_id)
+             AND (cardinality(o.agent_ids) = 0 OR e.agent_id = ANY(o.agent_ids))
              AND e.status = ANY(o.events)
              AND e.updated_at >= GREATEST(o.enqueue_from, o.enqueue_cursor - interval '5 minutes')
              AND COALESCE(e.finished_at, e.updated_at) >= o.enqueue_from
@@ -394,14 +417,15 @@ impl Store {
             LEFT JOIN agent_teams tm ON tm.id = o.team_id AND tm.org_id = o.org_id
             WHERE o.org_id = $1
               AND (
-                  (o.agent_id IS NULL AND o.team_id IS NULL)
-                  OR (
-                      o.agent_id IS NOT NULL
-                      AND ($2::bool OR a.owner_user_id = $3
-                           OR CASE WHEN $5::bool AND a.owner_team_id IS NOT NULL
-                                THEN a.owner_team_id = ANY($4)
-                                ELSE a.visibility = 'org'
-                                     OR (a.visibility = 'team' AND a.owner_team_id = ANY($4)) END)
+                  (cardinality(o.agent_ids) = 0 AND o.team_id IS NULL)
+                  OR EXISTS (
+                      SELECT 1 FROM unnest(o.agent_ids) AS target(agent_id)
+                      JOIN agents a ON a.id = target.agent_id AND a.org_id = o.org_id
+                      WHERE $2::bool OR a.owner_user_id = $3
+                         OR CASE WHEN $5::bool AND a.owner_team_id IS NOT NULL
+                              THEN a.owner_team_id = ANY($4)
+                              ELSE a.visibility = 'org'
+                                   OR (a.visibility = 'team' AND a.owner_team_id = ANY($4)) END
                   )
                   OR (
                       o.team_id IS NOT NULL

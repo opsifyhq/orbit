@@ -40,6 +40,7 @@ import {
   useWorkerProfiles,
 } from "@/lib/queries";
 import type { TeamAutonomy, TeamInput, TeamModel, TeamStepInput } from "@/lib/teams";
+import { autonomyDraft, teamAutonomyInput, type TeamApprovalChoice } from "@/lib/team-autonomy";
 import type { AgentTeam, TeamRepository, WorkSource } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -90,7 +91,7 @@ interface Draft {
   timeout: string;
   autonomyMode: "follow_primary" | "fixed";
   autonomyLevel: string;
-  autonomyApproval: "auto" | "always" | "writes";
+  autonomyApproval: TeamApprovalChoice;
 }
 
 function draftFrom(team?: AgentTeam): Draft {
@@ -116,9 +117,9 @@ function draftFrom(team?: AgentTeam): Draft {
     workerProfileId: definition?.workerProfileId ?? "",
     autoLaunch: definition?.autoLaunch ?? false,
     timeout: definition?.timeoutSeconds ? String(definition.timeoutSeconds) : "",
-    autonomyMode: definition?.autonomy?.mode === "fixed" ? "fixed" : "follow_primary",
-    autonomyLevel: String(definition?.autonomy?.level ?? 4),
-    autonomyApproval: definition?.autonomy?.approvalMode ?? "auto",
+    autonomyMode: autonomyDraft(definition?.autonomy).mode,
+    autonomyLevel: autonomyDraft(definition?.autonomy).level,
+    autonomyApproval: autonomyDraft(definition?.autonomy).approval,
   };
 }
 
@@ -152,10 +153,7 @@ function toInput(draft: Draft): TeamInput {
     connectionIds: draft.connectionIds,
     envMappingIds: draft.envMappingIds,
     timeoutSeconds: draft.timeout ? Number(draft.timeout) : undefined,
-    autonomy:
-      draft.autonomyMode === "fixed"
-        ? ({ mode: "fixed", level: Number(draft.autonomyLevel), approvalMode: draft.autonomyApproval } satisfies TeamAutonomy)
-        : null,
+    autonomy: teamAutonomyInput(draft.autonomyMode, draft.autonomyLevel, draft.autonomyApproval) satisfies TeamAutonomy | null,
     steps:
       draft.mode === "workflow"
         ? []
@@ -348,8 +346,8 @@ export function TeamForm({
       return;
     }
     // Access is stored separately; the parent commits it after the team itself is saved.
-    const commitAccess = async () => {
-      await accessRef.current?.save();
+    const commitAccess = async (id?: string) => {
+      await accessRef.current?.save(id);
     };
     await onSubmit(toInput(draft), commitAccess);
   }
@@ -1053,7 +1051,7 @@ export function TeamForm({
                   <Field
                     label="Autonomy level"
                     htmlFor="team-autonomy-level"
-                    hint="Raising a step agent above its own level requires manage access to that agent."
+                    hint="A policy less strict than a step agent's own (a higher level, or an approval mode that asks less) requires manage access to that agent."
                   >
                     <Select
                       id="team-autonomy-level"
@@ -1067,15 +1065,20 @@ export function TeamForm({
                       ))}
                     </Select>
                   </Field>
-                  <Field label="Approval mode" htmlFor="team-autonomy-approval">
+                  <Field
+                    label="Approval mode"
+                    htmlFor="team-autonomy-approval"
+                    hint="If an agent is made stricter later, its steps run with the agent's own policy until the team is saved again by someone who can manage it."
+                  >
                     <Select
                       id="team-autonomy-approval"
                       value={draft.autonomyApproval}
                       onChange={(event) => set("autonomyApproval", event.target.value as Draft["autonomyApproval"])}
                     >
-                      <option value="auto">Follow the level</option>
+                      <option value="agent">Each agent&apos;s own mode</option>
                       <option value="always">Always ask</option>
                       <option value="writes">Ask for writes</option>
+                      <option value="auto">Follow the level (level 4 writes without asking)</option>
                     </Select>
                   </Field>
                 </>
@@ -1091,44 +1094,25 @@ export function TeamForm({
           </FormSection>
 
           {/* Kept mounted while other sections are open, so access edits survive until Save. */}
-          {team ? (
-            <Card id="section-sharing" className="scroll-mt-20" hidden={active !== "sharing"}>
-              <CardHeader>
-                <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
-                <p className="text-[13px] text-muted-foreground">Who can see, run and change this team. Saved together with the team.</p>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <ResourceAccessFields
-                  ref={accessRef}
-                  resource="agent_teams"
-                  resourceId={team.id}
-                  onDirtyChange={setAccessDirty}
-                />
-                <div className="flex items-center justify-between gap-3 border-t pt-4">
-                  <Button type="button" variant="ghost" onClick={() => go("runtime")}>
-                    <ChevronLeft /> {SECTION_TITLES.runtime}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : active === "sharing" ? (
-            <Card id="section-sharing" className="scroll-mt-20">
-              <CardHeader>
-                <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
-                <p className="text-[13px] text-muted-foreground">Available once the team is created.</p>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <p className="text-sm text-muted-foreground">
-                  Create the team first. Until then it is visible to the whole organization.
-                </p>
-                <div className="flex items-center justify-between gap-3 border-t pt-4">
-                  <Button type="button" variant="ghost" onClick={() => go("runtime")}>
-                    <ChevronLeft /> {SECTION_TITLES.runtime}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
+          <Card id="section-sharing" className="scroll-mt-20" hidden={active !== "sharing"}>
+            <CardHeader>
+              <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
+              <p className="text-[13px] text-muted-foreground">Who can see, run and change this team. Saved together with the team.</p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <ResourceAccessFields
+                ref={accessRef}
+                resource="agent_teams"
+                resourceId={team?.id}
+                onDirtyChange={setAccessDirty}
+              />
+              <div className="flex items-center justify-between gap-3 border-t pt-4">
+                <Button type="button" variant="ghost" onClick={() => go("runtime")}>
+                  <ChevronLeft /> {SECTION_TITLES.runtime}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 

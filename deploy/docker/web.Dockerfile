@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ORBIT web app: Next.js standalone output behind a harness API proxy.
-FROM node:22.23-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS builder
-RUN corepack enable
+FROM node:26.13-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS builder
+RUN npm install -g pnpm@12.18.0
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -15,14 +15,12 @@ COPY packages ./packages
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @orbit/web build
 
-FROM node:22.23-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS harness
+FROM node:26.13-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS harness
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=0.0.0.0
-
-RUN corepack enable
 
 # Standalone bundle contains the server and the traced node_modules.
 COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./

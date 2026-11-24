@@ -351,7 +351,7 @@ impl AgentDefinition {
 
     pub fn from_yaml(input: &str) -> Result<Self, String> {
         let definition: AgentDefinition =
-            serde_yaml::from_str(input).map_err(|e| format!("invalid agent YAML: {e}"))?;
+            crate::yaml::from_str(input).map_err(|e| format!("invalid agent YAML: {e}"))?;
         Ok(definition)
     }
 

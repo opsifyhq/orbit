@@ -532,6 +532,25 @@ async fn agent_crud_validation_and_export() {
 }
 
 #[tokio::test]
+async fn oversized_tasks_are_rejected_before_the_harness() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{}/executions", app.agent_id),
+            json!({ "task": "x".repeat(150 * 1024) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"] == "task")));
+}
+
+#[tokio::test]
 async fn run_task_is_stored_as_the_single_run_instruction() {
     let Some(app) = test_app(true).await else {
         return;
@@ -4792,6 +4811,203 @@ async fn terminal_run_with_unclosed_queue_item_is_reconciled() {
     assert_eq!(stored.error.as_deref(), Some("boom"));
 }
 
+/// #384: queue items may only target the team's repositories, like `create_run`.
+#[tokio::test]
+async fn enqueue_refuses_repositories_outside_the_team() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "repository": "acme/app", "repositories": [{ "repository": "acme/lib", "path": "lib" }] }),
+    )
+    .await;
+    let enqueue = |items: Value| {
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue"),
+            json!({ "items": items }),
+        )
+    };
+    for items in [
+        json!([{ "externalKey": "x#1", "repository": "acme/private-other" }]),
+        json!([{ "externalKey": "x#2", "payload": { "repository": "acme/private-other" } }]),
+        json!([{ "externalKey": "x#3", "payload": { "repositories": [{ "repository": "acme/private-other", "path": "o" }] } }]),
+    ] {
+        let (status, body) = send(&app.router, enqueue(items)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    let (status, body) = send(
+        &app.router,
+        enqueue(json!([
+            { "externalKey": "x#4", "repository": "ACME/app" },
+            { "externalKey": "x#5", "payload": { "repositories": [{ "repository": "acme/lib", "path": "lib" }] } },
+            { "externalKey": "x#6" },
+        ])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let keys = app
+        .store
+        .list_team_queue_external_keys(team, 10)
+        .await
+        .unwrap();
+    assert_eq!(keys.len(), 3, "{keys:?}");
+}
+
+/// #384: an item stored with a foreign repository (before enqueue validated it, or by
+/// hand) is refused when started, and no run is created for it.
+#[tokio::test]
+async fn stored_queue_item_with_a_foreign_repository_is_refused_on_start() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "repository": "acme/app" }),
+    )
+    .await;
+    let item = app
+        .store
+        .try_enqueue_team_item(
+            app.org_id,
+            team,
+            "x#1",
+            Some("acme/private-other"),
+            &json!({}),
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{}/run", item.id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item.id)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert!(stored.error.unwrap_or_default().contains("repository"));
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM team_runs WHERE team_id = $1")
+        .bind(team)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+}
+
+/// #384: the outcome writer only touches the work source's repository, whatever
+/// repository the queue item carries.
+#[tokio::test]
+async fn outcome_writer_never_contacts_a_foreign_repository() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // The mock GitHub listens on loopback, which the outbound guard (#142) blocks unless
+    // explicitly allowed.
+    std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
+    let hits: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let recorded = hits.clone();
+    let mock = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let recorded = recorded.clone();
+        async move {
+            recorded
+                .lock()
+                .unwrap()
+                .push(format!("{} {}", request.method(), request.uri().path()));
+            axum::Json(json!({ "number": 1, "labels": [{ "name": "agent-in-progress" }] }))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            &format!("outcome-{}", Uuid::now_v7()),
+            &json!({ "baseUrl": format!("http://{addr}") }),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "workSource": {
+            "provider": "github", "enabled": true, "connectionId": connection.id,
+            "repository": "acme/app", "pollSeconds": 3600
+        } }),
+    )
+    .await;
+
+    for (key, repository) in [("x#1", "acme/private-other"), ("acme/app#1", "acme/app")] {
+        let item = app
+            .store
+            .try_enqueue_team_item(app.org_id, team, key, Some(repository), &json!({}), 1)
+            .await
+            .unwrap()
+            .unwrap();
+        app.store
+            .claim_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let run = app
+            .store
+            .create_team_run(app.org_id, team, &json!({}), None)
+            .await
+            .unwrap();
+        assert!(app
+            .store
+            .attach_team_run_to_queue_item(app.org_id, item.id, run.id)
+            .await
+            .unwrap());
+        app.store
+            .finish_team_run(run.id, "succeeded", Some(&json!({ "text": "done" })), None)
+            .await
+            .unwrap()
+            .unwrap();
+        orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+            .await
+            .unwrap();
+        let stored = app
+            .store
+            .get_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "succeeded", "{repository}");
+    }
+    let hits = hits.lock().unwrap().clone();
+    assert!(
+        hits.iter().all(|hit| !hit.contains("private-other")),
+        "foreign repository contacted: {hits:?}"
+    );
+    assert!(
+        hits.iter().any(|hit| hit == "GET /repos/acme/app/issues/1"),
+        "work source repository not updated: {hits:?}"
+    );
+}
+
 #[tokio::test]
 async fn enqueue_happens_before_claim_and_claim_failure_withdraws_the_item() {
     let Some(app) = test_app(true).await else {
@@ -5046,6 +5262,148 @@ mod output_delivery {
             "S3 PutObject reached the mock server: {delivery:?} {last_error:?}"
         );
         assert_eq!(delivery[0].0, "succeeded", "{delivery:?}");
+    }
+
+    /// The body `apps/web/components/outputs/output-form.tsx` sends for an S3 output:
+    /// `bucket` in the config and no `allowedBuckets` (#386).
+    fn s3_form_body(name: &str, endpoint: &str, bucket: Option<&str>) -> Value {
+        let mut config = json!({
+            "provider": "rustfs",
+            "endpoint": endpoint,
+            "region": "us-east-1",
+            "keyPrefix": "",
+            "pathStyle": true
+        });
+        if let Some(bucket) = bucket {
+            config["bucket"] = json!(bucket);
+        }
+        json!({
+            "name": name,
+            "kind": "s3",
+            "agentIds": [],
+            "teamId": null,
+            "events": ["succeeded", "failed"],
+            "s3Credential": json!({ "accessKeyId": "AK", "secretAccessKey": "SK" }).to_string(),
+            "config": config,
+            "template": null,
+            "enabled": true
+        })
+    }
+
+    async fn create_s3_output_like_the_form(app: &TestApp, hook: &Hook) -> Uuid {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/outputs",
+                s3_form_body(
+                    &format!("s3-form-{}", Uuid::now_v7()),
+                    &hook.url,
+                    Some("orbit"),
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn s3_output_created_like_the_web_form_delivers() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+
+        let (status, body) = send(
+            &app.router,
+            post(&format!("/api/v1/outputs/{output_id}/test"), json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert_eq!(hook.count(), 1, "the Test button writes one object");
+
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(rows(&app, output_id).await[0].0, "succeeded");
+        assert_eq!(hook.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn s3_output_config_that_cannot_deliver_is_refused() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let endpoint = "http://127.0.0.1:9";
+        for (label, body) in [
+            ("no bucket", s3_form_body("s3-none", endpoint, None)),
+            (
+                "invalid bucket",
+                s3_form_body("s3-bad", endpoint, Some("Not_A_Bucket")),
+            ),
+            ("contradicting allowlist", {
+                let mut body = s3_form_body("s3-other", endpoint, Some("orbit"));
+                body["config"]["allowedBuckets"] = json!(["other"]);
+                body
+            }),
+        ] {
+            let (status, response) = send(&app.router, post("/api/v1/outputs", body)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{label}: {response}"
+            );
+        }
+
+        // An update that keeps the stored credential is checked too.
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        let mut body = s3_form_body("s3-update", &hook.url, None);
+        body.as_object_mut().unwrap().remove("s3Credential");
+        let (status, response) = send(
+            &app.router,
+            patch_json(&format!("/api/v1/outputs/{output_id}"), body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+        let stored = app.store.get_output(app.org_id, output_id).await.unwrap();
+        assert_eq!(
+            stored.config["bucket"], "orbit",
+            "a refused update changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_access_denied_is_permanent_and_server_errors_retry() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+
+        let hook = start_s3_hook().await;
+        hook.status.store(403, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("failed".to_string(), 1, Some(403))]
+        );
+        make_due(&app, output_id).await;
+        deliver_pending(&app.state).await;
+        assert_eq!(hook.count(), 1, "403 is not retried");
+
+        let hook = start_s3_hook().await;
+        hook.status.store(503, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("pending".to_string(), 1, Some(503))]
+        );
     }
 
     async fn finished_execution(app: &TestApp) -> Uuid {
@@ -11217,6 +11575,303 @@ async fn fixed_team_autonomy_requires_manage_to_elevate_an_agent() {
     assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
 }
 
+/// An agent created through the API with the given autonomy, visible to the whole org.
+async fn agent_with_autonomy(app: &TestApp, name: &str, autonomy: Value) -> Uuid {
+    let mut body = definition();
+    body["metadata"]["name"] = json!(name);
+    body["spec"]["autonomy"] = autonomy;
+    let (status, agent) = send(&app.router, post("/api/v1/agents", body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{agent}");
+    let id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "agents", id, "org", None)
+        .await
+        .unwrap();
+    id
+}
+
+/// A user with a custom role that can create teams (settings:write) and read agents, but
+/// manages no agent.
+async fn team_author_without_manage(app: &TestApp) -> String {
+    let role = format!("TeamAuthor-{}", Uuid::now_v7());
+    app.store
+        .create_custom_role(
+            app.org_id,
+            &role,
+            &["agents:read".into(), "settings:write".into()],
+        )
+        .await
+        .unwrap();
+    let user = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("team-author-{}@test.local", Uuid::now_v7()),
+            "Team Author",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_user_role_name(app.org_id, user.id, &role)
+        .await
+        .unwrap();
+    token_for(&app.store, app.org_id, user.id, "team-author").await
+}
+
+async fn first_step_input(app: &TestApp, team_id: &str) -> Value {
+    let (status, detail) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "autonomy run" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{detail}");
+    let execution_id = detail["steps"][0]["executionId"].as_str().unwrap();
+    let (status, execution) = send(
+        &app.router,
+        get(&format!("/api/v1/executions/{execution_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{execution}");
+    execution
+}
+
+/// #385: a fixed team policy that asks less than an agent's own approval mode is an
+/// elevation too. It needs manage access, is audited, and the stored elevations are
+/// computed by the server.
+#[tokio::test]
+async fn fixed_team_autonomy_treats_a_looser_approval_mode_as_an_elevation() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = agent_with_autonomy(
+        &app,
+        &format!("Careful agent {}", Uuid::now_v7()),
+        json!({ "level": 4, "approvalMode": "always" }),
+    )
+    .await;
+    let token = team_author_without_manage(&app).await;
+    let team = |autonomy: Value| {
+        json!({
+            "name": format!("Approval team {}", Uuid::now_v7()), "mode": "pipeline",
+            "steps": [{ "agentId": agent }],
+            "autonomy": autonomy,
+        })
+    };
+
+    // L4 + auto removes every approval from an L4/always agent: refused without manage.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agent-teams",
+            &token,
+            team(json!({ "mode": "fixed", "level": 4, "approvalMode": "auto" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "autonomy.approvalMode")));
+
+    // As strict as the agent (or keeping its own mode) needs no manage access, and a
+    // client-supplied elevation list is ignored.
+    for autonomy in [
+        json!({ "mode": "fixed", "level": 4, "approvalMode": "always" }),
+        json!({ "mode": "fixed", "level": 4 }),
+        json!({
+            "mode": "fixed", "level": 4, "approvalMode": "always",
+            "elevations": [{ "agentId": agent, "baseline": { "level": 4, "approvalMode": "auto" } }]
+        }),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            auth_post("/api/v1/agent-teams", &token, team(autonomy.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{autonomy}: {body}");
+        assert!(
+            body["definition"]["autonomy"].get("elevations").is_none(),
+            "{body}"
+        );
+    }
+
+    // Someone who manages the agent may elevate; the elevation and its baseline are
+    // recorded and audited.
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            team(json!({ "mode": "fixed", "level": 4, "approvalMode": "auto" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let elevations = &created["definition"]["autonomy"]["elevations"];
+    assert_eq!(elevations[0]["agentId"], agent.to_string(), "{created}");
+    assert_eq!(elevations[0]["baseline"]["level"], 4);
+    assert_eq!(elevations[0]["baseline"]["approvalMode"], "always");
+    let team_id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let (logs, _) = app
+        .store
+        .list_audit_logs(app.org_id, 50, None, Some("team.autonomy_elevated"))
+        .await
+        .unwrap();
+    let entry = logs
+        .iter()
+        .find(|log| log.target_id == Some(team_id))
+        .expect("elevation is audited");
+    assert_eq!(entry.metadata["approvalMode"], "auto");
+    assert_eq!(entry.metadata["agents"][0]["fromApprovalMode"], "always");
+
+    // The worker gets the policy without the server-side elevation list.
+    let execution = first_step_input(&app, &team_id.to_string()).await;
+    assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
+    assert!(execution["input"]["teamAutonomy"]
+        .get("elevations")
+        .is_none());
+    assert!(execution["input"].get("teamAutonomyClamped").is_none());
+}
+
+/// #385: an agent whose policy cannot be checked fails the save instead of being skipped.
+#[tokio::test]
+async fn fixed_team_autonomy_fails_closed_when_a_step_agent_cannot_be_read() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": format!("Missing agent team {}", Uuid::now_v7()), "mode": "pipeline",
+                "steps": [{ "agentId": Uuid::now_v7() }],
+                "autonomy": { "mode": "fixed", "level": 4, "approvalMode": "auto" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "autonomy")));
+}
+
+/// #385: a fixed team never runs an agent less strictly than its current policy unless the
+/// elevation authorised at save time still holds.
+#[tokio::test]
+async fn fixed_team_autonomy_is_clamped_when_the_agent_becomes_stricter() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let name = format!("Lowered agent {}", Uuid::now_v7());
+    let agent = agent_with_autonomy(&app, &name, json!({ "level": 3 })).await;
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": format!("Clamp team {}", Uuid::now_v7()), "mode": "pipeline",
+                "steps": [{ "agentId": agent }],
+                "autonomy": { "mode": "fixed", "level": 4, "approvalMode": "auto" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let team_id = created["id"].as_str().unwrap().to_string();
+
+    // Authorised and unchanged: the team policy applies as saved.
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(execution["input"]["teamAutonomy"]["level"], 4);
+    assert!(execution["input"].get("teamAutonomyClamped").is_none());
+
+    // The agent owner lowers the agent to Observe after an incident.
+    let lowered = definition_at_level(&name, 1);
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/agents/{agent}"),
+            json!({ "definition": lowered }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(
+        execution["input"]["teamAutonomy"]["level"], 1,
+        "{execution}"
+    );
+    assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
+    let clamp = &execution["input"]["teamAutonomyClamped"][0];
+    assert_eq!(clamp["agentId"], agent.to_string());
+    assert_eq!(clamp["requested"]["level"], 4);
+    assert_eq!(clamp["agent"]["level"], 1);
+    let execution_id: Uuid = execution["id"].as_str().unwrap().parse().unwrap();
+    let events = app
+        .store
+        .list_execution_events(app.org_id, execution_id, 0, 50)
+        .await
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.level == "warn" && event.message.contains("team autonomy limited")),
+        "{events:?}"
+    );
+
+    // A team stored without any elevation record (saved before #385) is clamped too.
+    let team_uuid: Uuid = team_id.parse().unwrap();
+    let team = app
+        .store
+        .get_agent_team(app.org_id, team_uuid)
+        .await
+        .unwrap();
+    let mut definition = team.definition.clone();
+    definition["autonomy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("elevations");
+    app.store
+        .update_agent_team(
+            app.org_id,
+            team_uuid,
+            &team.name,
+            &team.description,
+            &definition,
+        )
+        .await
+        .unwrap();
+    let restored = definition_at_level(&name, 3);
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/agents/{agent}"),
+            json!({ "definition": restored }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(
+        execution["input"]["teamAutonomy"]["level"], 3,
+        "{execution}"
+    );
+}
+
+fn definition_at_level(name: &str, level: u8) -> Value {
+    let mut body = definition();
+    body["metadata"]["name"] = json!(name);
+    body["spec"]["autonomy"] = json!({ "level": level });
+    body
+}
+
 async fn private_github_connection(app: &TestApp, owner: Uuid, name: &str) -> Uuid {
     let github = app
         .store
@@ -11314,6 +11969,255 @@ async fn work_source_connections_require_use_by_the_team_owner() {
     let stored = app.store.get_agent_team(app.org_id, team).await.unwrap();
     let error = stored.last_poll_error.unwrap_or_default();
     assert!(error.contains("can no longer use"), "poll error: {error}");
+}
+
+fn auto_run_source() -> orbit_api::work_sources::WorkSourceDefinition {
+    serde_json::from_value(json!({
+        "provider": "github",
+        "enabled": true,
+        "repository": "acme/issues",
+        "autoRun": true,
+        "maxItems": 5
+    }))
+    .unwrap()
+}
+
+/// #383: work-source auto-run starts the run as the team owner, never as a made-up user.
+#[tokio::test]
+async fn auto_run_starts_queue_items_as_the_team_owner() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-owner-{}@test.local", Uuid::now_v7()),
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let team_id = make_team(&app, vec![app.agent_id], json!({})).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, owner.id)
+        .await
+        .unwrap();
+    let item = queue_item(&app, team_id, "acme/issues#7", 3).await;
+    let team = app.store.get_agent_team(app.org_id, team_id).await.unwrap();
+
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "running", "{:?}", stored.error);
+    let run_id = stored.team_run_id.expect("auto-run attached a team run");
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.requested_by, Some(owner.id));
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    assert!(
+        step.execution_id.is_some(),
+        "the first step has an execution"
+    );
+}
+
+/// #383: a refused preflight ends the claim with the reason instead of leaving the item
+/// running without a run, and a team without an owner does not auto-run at all.
+#[tokio::test]
+async fn auto_run_refusals_are_recorded_on_the_item_or_the_team() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let alice = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-alice-{}@test.local", Uuid::now_v7()),
+            "Alice",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let bob = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-bob-{}@test.local", Uuid::now_v7()),
+            "Bob",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    // The step agent is Bob's private agent; the team belongs to Alice.
+    let private_agent = bound_agent(&app, bob.id, None, None).await;
+    make_private(&app.store, app.org_id, "agents", private_agent, bob.id).await;
+    let team_id = make_team(&app, vec![private_agent], json!({})).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, alice.id)
+        .await
+        .unwrap();
+    let item = queue_item(&app, team_id, "acme/issues#8", 3).await;
+    let team = app.store.get_agent_team(app.org_id, team_id).await.unwrap();
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert!(stored.team_run_id.is_none());
+    let error = stored.error.unwrap_or_default();
+    assert!(!error.is_empty(), "the refusal is recorded");
+    assert!(!error.contains("foreign key"), "{error}");
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM team_runs WHERE team_id = $1")
+        .bind(team_id)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+
+    // No owner: nothing is claimed and the team shows why.
+    let ownerless = make_team(&app, vec![app.agent_id], json!({})).await;
+    let pending = queue_item(&app, ownerless, "acme/issues#9", 3).await;
+    let team = app
+        .store
+        .get_agent_team(app.org_id, ownerless)
+        .await
+        .unwrap();
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, pending)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "pending");
+    let team = app
+        .store
+        .get_agent_team(app.org_id, ownerless)
+        .await
+        .unwrap();
+    assert!(team
+        .last_poll_error
+        .unwrap_or_default()
+        .contains("needs a team owner"));
+}
+
+/// #383: a later step of an auto-launching team whose requester was deleted launches as
+/// the team owner instead of a nil user (which `worker_launches.created_by` refuses).
+#[tokio::test]
+async fn later_auto_launch_uses_the_team_owner_when_the_requester_is_gone() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mock = axum::Router::new().route(
+        "/launches",
+        axum::routing::post(|| async {
+            axum::Json(json!({ "status": "running", "runtimeId": "pod-1", "workerId": "w-1" }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let mut state = app.state.clone();
+    state.launcher_url = Some(format!("http://{addr}"));
+    state.launcher_token = Some("launcher-token".into());
+    let router = build_router(state.clone());
+
+    let (status, created) = send(
+        &router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("autolaunch-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "target": "kubernetes",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let profile: Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let (status, body) = send(
+        &router,
+        post(
+            &format!("/api/v1/worker-profiles/{profile}/enable"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autolaunch-owner-{}@test.local", Uuid::now_v7()),
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let team_id = make_team(
+        &app,
+        vec![app.agent_id, app.agent_id],
+        json!({ "autoLaunch": true, "workerProfileId": profile }),
+    )
+    .await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, owner.id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "go" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run_id: Uuid = body["run"]["id"].as_str().unwrap().parse().unwrap();
+
+    // The requester is gone (ON DELETE SET NULL) and the first launch has ended, so the
+    // second step needs a new launch created in the background.
+    let pool = raw_pool().await;
+    sqlx::query("UPDATE team_runs SET requested_by = NULL WHERE id = $1")
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_launches SET status = 'stopped' WHERE profile_id = $1")
+        .bind(profile)
+        .execute(&pool)
+        .await
+        .unwrap();
+    succeed_current_step(&app, run_id).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&state, run)
+        .await
+        .unwrap();
+
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "running", "{:?}", run.error);
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 2);
+    let creators: Vec<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT created_by FROM worker_launches WHERE profile_id = $1 ORDER BY created_at",
+    )
+    .bind(profile)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(creators.len(), 2, "the second step launched a worker");
+    assert_eq!(creators[1], Some(owner.id));
 }
 
 /// #322: replay only returns an execution of the agent the caller targets, and keys the
@@ -11625,6 +12529,33 @@ async fn outputs_require_manage_on_their_target() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{own}");
     let own_id = own["id"].as_str().unwrap().to_string();
+
+    // Several agents can share one output target list.
+    let second_agent = create_demo_agent(&app.store, app.org_id, fx.mallory.id).await;
+    make_private(
+        &app.store,
+        app.org_id,
+        "agents",
+        second_agent,
+        fx.mallory.id,
+    )
+    .await;
+    let (status, multi) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/outputs",
+            m,
+            json!({
+                "name": format!("multi-{}", Uuid::now_v7()),
+                "kind": "webhook",
+                "agentIds": [own_agent, second_agent],
+                "webhookUrl": hook
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{multi}");
+    assert_eq!(multi["agentIds"].as_array().unwrap().len(), 2);
 
     // Retargeting my output to someone else's agent, or org-wide, is refused.
     for target in [create(Some(team_agent), None), create(None, None)] {

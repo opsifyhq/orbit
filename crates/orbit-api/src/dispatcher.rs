@@ -13,7 +13,7 @@ use orbit_security::AuthContext;
 use orbit_store::team_queue::TeamQueueItem;
 use orbit_store::AgentTeam;
 
-use crate::handlers::teams::{parse_definition, TeamDefinition};
+use crate::handlers::teams::parse_definition;
 use crate::state::AppState;
 use crate::work_sources::{self, WorkSourceDefinition};
 
@@ -63,7 +63,7 @@ async fn dispatch_team(state: &AppState, team: AgentTeam) -> anyhow::Result<()> 
         return Ok(());
     };
 
-    let result = dispatch_team_locked(state, &team, &definition, &source).await;
+    let result = dispatch_team_locked(state, &team, &source).await;
     if let Err(error) = &result {
         // Record the failure so the next attempt waits for `pollSeconds` instead of
         // retrying the connector on every tick.
@@ -79,7 +79,6 @@ async fn dispatch_team(state: &AppState, team: AgentTeam) -> anyhow::Result<()> 
 async fn dispatch_team_locked(
     state: &AppState,
     team: &AgentTeam,
-    definition: &TeamDefinition,
     source: &WorkSourceDefinition,
 ) -> anyhow::Result<()> {
     let existing = state
@@ -126,6 +125,16 @@ async fn dispatch_team_locked(
             .or_else(|| issue.project.clone())
             .or_else(|| source.repository.clone())
             .or_else(|| source.project.clone());
+        // Claiming writes labels with the connection's credential: stay inside its
+        // allowlist, the rule the worker applies to checkouts (#384).
+        if let Some(target) = repository.as_deref() {
+            if !work_sources::connection_allows_target(&connector.config, target) {
+                last_error = Some(format!(
+                    "{target} is not in the work source connection's allowedRepositories/allowedProjects"
+                ));
+                continue;
+            }
+        }
         // Enqueue first, claim second: a database error before the claim leaves the issue
         // untouched (it still matches the source labels and is picked up on the next poll).
         let claimed = enqueue_then_claim(
@@ -168,15 +177,16 @@ async fn dispatch_team_locked(
     }
 
     if source.auto_run {
-        auto_run_pending(state, team, definition, source).await?;
+        auto_run_pending(state, team, source).await?;
     }
     Ok(())
 }
 
-async fn auto_run_pending(
+/// Start pending queue items of a team whose work source has `autoRun`, as the team
+/// owner. Public so tests can drive it without a live work source.
+pub async fn auto_run_pending(
     state: &AppState,
     team: &AgentTeam,
-    _definition: &TeamDefinition,
     source: &WorkSourceDefinition,
 ) -> anyhow::Result<()> {
     let max = source.max_items.clamp(1, 100) as usize;
@@ -184,7 +194,38 @@ async fn auto_run_pending(
         .store
         .list_pending_team_queue(team.org_id, team.id, (max * 2) as i64)
         .await?;
-    let auth = crate::bootstrap::system_context(team.org_id);
+    if pending.is_empty() {
+        return Ok(());
+    }
+    // Auto-run acts as the team owner, so the shared preflight evaluates a real user's
+    // access and the run records who it ran for (#383). A team without an owner (or with
+    // a disabled one) cannot auto-run: the items stay pending and the reason is shown as
+    // the team's poll error until an owner is set or the item is started by hand.
+    let auth = match crate::preflight::background_identity(
+        state,
+        team.org_id,
+        &[team.owner_user_id],
+    )
+    .await
+    {
+        Ok(Some(auth)) => auth,
+        Ok(None) => {
+            return refuse_auto_run(
+                state,
+                team,
+                "auto-run needs a team owner; set an owner on the team or start the queue items by hand",
+            )
+            .await;
+        }
+        Err(error) => {
+            return refuse_auto_run(
+                state,
+                team,
+                &format!("auto-run refused for the team owner: {}", error.message),
+            )
+            .await;
+        }
+    };
     let mut started = 0usize;
     for item in pending {
         if started >= max {
@@ -203,6 +244,15 @@ async fn auto_run_pending(
         }
         started += 1;
     }
+    Ok(())
+}
+
+async fn refuse_auto_run(state: &AppState, team: &AgentTeam, message: &str) -> anyhow::Result<()> {
+    tracing::warn!(team_id = %team.id, message, "work-source auto-run refused");
+    state
+        .store
+        .set_team_poll_status(team.org_id, team.id, Some(message))
+        .await?;
     Ok(())
 }
 
@@ -266,6 +316,7 @@ async fn start_queue_item(
 }
 
 struct WorkSourceConnection {
+    config: Value,
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
@@ -311,6 +362,7 @@ impl WorkSourceConnection {
             .await
             .map_err(|error| anyhow::anyhow!("work source baseUrl refused: {error}"))?;
         Ok(Self {
+            config: connection.config.clone(),
             base_url,
             token,
             client: orbit_security::guarded_client(std::time::Duration::from_secs(20)),

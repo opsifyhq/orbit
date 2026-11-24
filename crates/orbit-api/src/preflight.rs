@@ -351,6 +351,40 @@ pub async fn background_access(
     }
 }
 
+/// The identity a background start acts as when it needs a full [`AuthContext`] (queue
+/// auto-run, team-step auto-launch): the first of `owners` that is set, loaded from the
+/// store so the user's current role and status apply. `None` when no owner is set.
+///
+/// Background paths never act as a made-up user: the nil UUID is not a user, and every
+/// `requested_by` / `created_by` column is a foreign key to `users` (#383).
+pub async fn background_identity(
+    state: &AppState,
+    org_id: Uuid,
+    owners: &[Option<Uuid>],
+) -> Result<Option<orbit_security::AuthContext>, ApiError> {
+    let Some(user_id) = owners.iter().flatten().next().copied() else {
+        return Ok(None);
+    };
+    let user = state.store.get_user(org_id, user_id).await?;
+    if user.status != "active" {
+        return Err(ApiError::forbidden("the run's identity is disabled"));
+    }
+    let role = user
+        .role
+        .parse::<orbit_domain::UserRole>()
+        .unwrap_or(orbit_domain::UserRole::Viewer);
+    Ok(Some(orbit_security::AuthContext {
+        user_id,
+        org_id,
+        email: user.email,
+        display_name: user.display_name,
+        role,
+        method: orbit_security::AuthMethod::ApiToken,
+        scopes: Vec::new(),
+        token_id: None,
+    }))
+}
+
 /// Record a refused background run (trigger fire, runtime tick) in the audit log with a
 /// system actor so operators can see why it did not start.
 pub async fn audit_denied_run(

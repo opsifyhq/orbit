@@ -33,6 +33,9 @@ pub struct OutputRequest {
     pub kind: String,
     #[serde(default)]
     pub agent_id: Option<Uuid>,
+    /// Multiple agent targets. Takes precedence over the legacy `agentId`.
+    #[serde(default)]
+    pub agent_ids: Vec<Uuid>,
     #[serde(default)]
     pub team_id: Option<Uuid>,
     #[serde(default)]
@@ -72,6 +75,7 @@ pub struct OutputView {
     pub name: String,
     pub kind: String,
     pub agent_id: Option<Uuid>,
+    pub agent_ids: Vec<Uuid>,
     pub team_id: Option<Uuid>,
     pub events: Vec<String>,
     pub template: Option<String>,
@@ -163,6 +167,7 @@ impl From<Output> for OutputView {
             name: output.name,
             kind: output.kind,
             agent_id: output.agent_id,
+            agent_ids: output.agent_ids,
             team_id: output.team_id,
             events: output.events,
             template: output.template,
@@ -253,10 +258,15 @@ fn validated(
 ) -> Result<(String, Vec<String>, OutputKind, Option<TelegramTarget>), ApiError> {
     let mut issues = Vec::new();
     let name = body.name.trim().to_string();
-    if body.agent_id.is_some() && body.team_id.is_some() {
+    let target_agents = if body.agent_ids.is_empty() {
+        body.agent_id.into_iter().collect::<Vec<_>>()
+    } else {
+        body.agent_ids.clone()
+    };
+    if !target_agents.is_empty() && body.team_id.is_some() {
         issues.push(ValidationIssue::new(
             "target",
-            "choose an agent or a team, not both",
+            "choose agents or a team, not both",
         ));
     }
     if name.is_empty() {
@@ -320,11 +330,11 @@ async fn require_target_manage(
     state: &AppState,
     auth: &AuthContext,
     access: &crate::access::AccessScope,
-    agent_id: Option<Uuid>,
+    agent_ids: &[Uuid],
     team_id: Option<Uuid>,
 ) -> Result<(), ApiError> {
-    if let Some(agent_id) = agent_id {
-        let agent = state.store.get_agent(auth.org_id, agent_id).await?;
+    for agent_id in agent_ids {
+        let agent = state.store.get_agent(auth.org_id, *agent_id).await?;
         access.require_manage(
             "agent",
             agent.owner_user_id,
@@ -341,7 +351,7 @@ async fn require_target_manage(
             &team.visibility,
         )?;
     }
-    if agent_id.is_none() && team_id.is_none() && !access.is_privileged() {
+    if agent_ids.is_empty() && team_id.is_none() && !access.is_privileged() {
         return Err(ApiError::forbidden(
             "only an owner or admin can manage an organisation-wide output",
         ));
@@ -361,12 +371,12 @@ async fn load_managed_output(
         return Ok(output);
     }
     // A caller who cannot even see the target gets the same 404 as for a missing output.
-    if (output.agent_id.is_none() && output.team_id.is_none())
+    if (output.agent_ids.is_empty() && output.team_id.is_none())
         || !output_target_visible(state, auth, access, &output).await
     {
         return Err(ApiError::not_found("output"));
     }
-    require_target_manage(state, auth, access, output.agent_id, output.team_id).await?;
+    require_target_manage(state, auth, access, &output.agent_ids, output.team_id).await?;
     Ok(output)
 }
 
@@ -376,13 +386,12 @@ async fn output_target_visible(
     access: &crate::access::AccessScope,
     output: &Output,
 ) -> bool {
-    if let Some(agent_id) = output.agent_id {
-        return match state.store.get_agent(auth.org_id, agent_id).await {
-            Ok(agent) => {
-                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
+    for agent_id in &output.agent_ids {
+        if let Ok(agent) = state.store.get_agent(auth.org_id, *agent_id).await {
+            if access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility) {
+                return true;
             }
-            Err(_) => false,
-        };
+        }
     }
     if let Some(team_id) = output.team_id {
         return match state.store.get_agent_team(auth.org_id, team_id).await {
@@ -457,7 +466,8 @@ pub async fn deliveries(
     }
     // An agent or team output only reports on runs of a target the caller can see. An
     // organisation-wide one reports on every agent's runs, so only an admin sees which.
-    let with_run = access.is_privileged() || output.agent_id.is_some() || output.team_id.is_some();
+    let with_run =
+        access.is_privileged() || !output.agent_ids.is_empty() || output.team_id.is_some();
     let rows = state
         .store
         .list_output_deliveries(auth.org_id, output_id, query.limit.unwrap_or(50))
@@ -478,7 +488,12 @@ pub async fn create(
     auth.require(Permission::SettingsWrite)?;
     let (name, events, kind, telegram) = validated(&body)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
+    let target_agents = if body.agent_ids.is_empty() {
+        body.agent_id.into_iter().collect::<Vec<_>>()
+    } else {
+        body.agent_ids.clone()
+    };
+    require_target_manage(&state, &auth, &access, &target_agents, body.team_id).await?;
     let value = credential(&body, kind).ok_or_else(|| {
         ApiError::validation(vec![ValidationIssue::new(
             credential_field(kind),
@@ -487,7 +502,7 @@ pub async fn create(
     })?;
     guard_credential(kind, value).await?;
     if kind == OutputKind::S3 {
-        orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+        orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
@@ -518,6 +533,10 @@ pub async fn create(
             return Err(error.into());
         }
     };
+    let output = state
+        .store
+        .set_output_agent_ids(auth.org_id, output.id, &target_agents)
+        .await?;
     let config = if body.config.is_object() {
         body.config.clone()
     } else {
@@ -550,11 +569,23 @@ pub async fn update(
     let (name, events, kind, telegram) = validated(&body)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let existing = load_managed_output(&state, &auth, &access, output_id).await?;
-    require_target_manage(&state, &auth, &access, body.agent_id, body.team_id).await?;
+    let target_agents = if body.agent_ids.is_empty() {
+        body.agent_id.into_iter().collect::<Vec<_>>()
+    } else {
+        body.agent_ids.clone()
+    };
+    require_target_manage(&state, &auth, &access, &target_agents, body.team_id).await?;
+    if kind == OutputKind::S3 {
+        // Checked with or without a new credential: an S3 output that cannot write to its
+        // own bucket is refused instead of failing every delivery (#386).
+        orbit_s3::S3Config::parse_output(&body.config).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("config", message)])
+        })?;
+    }
     let secret_ref = if let Some(value) = credential(&body, kind) {
         guard_credential(kind, value).await?;
         if kind == OutputKind::S3 {
-            orbit_s3::S3Config::from_connection(&body.config, Some(value)).map_err(|message| {
+            orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
                 ApiError::validation(vec![ValidationIssue::new("config", message)])
             })?;
         }
@@ -599,6 +630,10 @@ pub async fn update(
             return Err(error.into());
         }
     };
+    let output = state
+        .store
+        .set_output_agent_ids(auth.org_id, output.id, &target_agents)
+        .await?;
     let config = if body.config.is_object() {
         body.config.clone()
     } else {
@@ -727,14 +762,12 @@ pub async fn send(
         }
     };
     if kind == OutputKind::S3 {
-        let (config, credentials) =
-            orbit_s3::S3Config::from_connection(&output.config, Some(&secret)).map_err(
-                |message| SendError {
-                    status: None,
-                    message,
-                    retryable: false,
-                },
-            )?;
+        let (config, credentials) = orbit_s3::S3Config::for_output(&output.config, Some(&secret))
+            .map_err(|message| SendError {
+            status: None,
+            message,
+            retryable: false,
+        })?;
         let client = orbit_s3::S3Client::new(config, credentials).map_err(|message| SendError {
             status: None,
             message,
@@ -748,10 +781,10 @@ pub async fn send(
         client
             .put_object(None, &key, text.as_bytes(), "text/plain; charset=utf-8")
             .await
-            .map_err(|message| SendError {
-                status: None,
-                message,
-                retryable: true,
+            .map_err(|error| SendError {
+                status: error.status,
+                message: error.message,
+                retryable: error.retryable,
             })?;
         return Ok(());
     }

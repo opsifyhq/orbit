@@ -90,6 +90,8 @@ sections:
   - id: operate
     title: Deploy and operate
     pages:
+      - path: development/dependency-updates.md
+        title: Dependency updates
       - path: development/deployment.md
         title: Deployment
       - path: development/licensing.md
@@ -178,3 +180,5 @@ sections:
         title: 0014 Prometheus metrics
       - path: decisions/0015-team-workflows.md
         title: 0015 Team workflows
+      - path: decisions/0016-chrono-dependencies.md
+        title: 0016 chrono dependencies

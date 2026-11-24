@@ -16,6 +16,7 @@ pub mod schedule;
 pub mod tool_policy;
 pub mod worker_resources;
 pub mod workflow;
+pub mod yaml;
 
 pub use agent::*;
 pub use auth_secret::{is_dns_label, AuthSecretPolicy, AUTH_SECRETS_ENV, DEFAULT_AUTH_SECRETS};

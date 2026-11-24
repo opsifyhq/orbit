@@ -5,8 +5,9 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 
 ## UI
 
-Agent and Agent Team detail pages show their linked outputs and an **Add output** link
-that opens Output Studio with that agent/team preselected. The Work wizard's **Then**
+Agent and Agent Team detail pages show their linked outputs, an **Add output** link that
+opens Output Studio with that agent/team preselected, and **Link existing** to attach an
+already configured output. The Work wizard's **Then**
 section ([Start work](start-work.md)) lists the enabled outputs that apply to the selected
 agent or team before the run is created.
 
@@ -17,8 +18,9 @@ and how its last delivery went. **New output** opens Output Studio:
 - **Destination**: Slack, Mattermost, Telegram, Webhook or S3, a name, and the
   destination credential (incoming webhook URL, Telegram bot token, or S3 access-key JSON;
   write-only — leave it empty when editing to keep the stored one).
-- **Trigger**: every agent, one agent, or one agent team, and which results send a message
-  (succeeded, failed, cancelled).
+- **Trigger**: every agent, several agents, or one agent team, and which results send a
+  message (succeeded, failed, cancelled). Agent and team targets are stored separately;
+  selecting several agents sends one message per selected agent run.
 - **Message**: an optional note added under the run summary, an example of the message, and
   whether the output is on.
 
@@ -38,6 +40,13 @@ An S3 output uploads the rendered run text (the same summary plus template note)
 Amazon S3 or RustFS. Configure the provider, bucket, optional key prefix, endpoint,
 region and path-style toggle. The object key is `<keyPrefix><deliveryId>.txt`, so a retry
 overwrites the same object instead of creating a duplicate.
+
+An output writes only to the bucket it names: that bucket is its allowlist, so there is no
+separate `allowedBuckets` to fill in. Saving an S3 output without a valid bucket (or with an
+`allowedBuckets` list that leaves the bucket out) is refused with a validation error. A
+delivery that S3 refuses for a permanent reason (403 access denied, 404 no such bucket, or
+an endpoint the outbound policy blocks) fails at once instead of being retried; 5xx, 429
+and network errors are retried like other outputs.
 
 The credential is write-only JSON:
 
@@ -192,7 +201,7 @@ Delivery is **at-least-once** and driven by a background outbox loop on every AP
 |---|---|
 | 2xx | `succeeded` |
 | 5xx, 408, 429, network error/timeout | retry with backoff (30 s x attempt); `dead` after 5 attempts |
-| other 4xx / 3xx, missing credential, Telegram auth/chat error | `failed` immediately, never retried |
+| other 4xx / 3xx, missing credential, Telegram auth/chat error, S3 configuration or blocked endpoint | `failed` immediately, never retried |
 | output disabled or deleted, run deleted | `skipped` (no request sent) |
 
 - List outputs: `GET /api/v1/outputs`; update/delete via `PATCH/DELETE /api/v1/outputs/{id}`.

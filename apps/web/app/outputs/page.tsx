@@ -75,12 +75,16 @@ export default function OutputsPage() {
   const appliesTo = useMemo(() => {
     const agentNames = new Map((agents.data?.items ?? []).map((agent) => [agent.id, agent.name]));
     const teamNames = new Map((teams.data ?? []).map((team) => [team.id, team.name]));
-    return (output: OutputView) =>
-      output.teamId
-        ? (teamNames.get(output.teamId) ?? "A team you cannot see")
+    return (output: OutputView) => {
+      if (output.teamId) return teamNames.get(output.teamId) ?? "A team you cannot see";
+      const ids = output.agentIds?.length
+        ? output.agentIds
         : output.agentId
-          ? (agentNames.get(output.agentId) ?? "An agent you cannot see")
-          : "Every agent";
+          ? [output.agentId]
+          : [];
+      if (!ids.length) return "Every agent";
+      return ids.map((id) => agentNames.get(id) ?? "An agent you cannot see").join(", ");
+    };
   }, [agents.data, teams.data]);
 
   const all = useMemo(() => outputs.data ?? [], [outputs.data]);

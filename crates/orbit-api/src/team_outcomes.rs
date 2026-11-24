@@ -15,6 +15,8 @@ use crate::work_sources::{self, WorkSourceDefinition};
 
 struct WorkSourceConnector {
     source: WorkSourceDefinition,
+    /// The connection's config, for its `allowedRepositories` / `allowedProjects` (#384).
+    connection_config: Value,
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
@@ -121,6 +123,10 @@ async fn close_queue_loop_inner(
         .await;
         match applied {
             Ok(()) => {}
+            // A foreign target never becomes valid: close the item without side effects.
+            Err(error) if error.is::<crate::work_sources::WorkSourceTargetRefused>() => {
+                tracing::warn!(%error, queue_item = %item.id, "skipping outcome side effects");
+            }
             Err(error) if expired => {
                 tracing::warn!(%error, queue_item = %item.id, "giving up on outcome side effects");
             }
@@ -214,6 +220,7 @@ async fn connector_for_work_source(
         .map_err(|error| anyhow::anyhow!("work source baseUrl refused: {error}"))?;
     Ok(Some(WorkSourceConnector {
         source: source.clone(),
+        connection_config: connection.config.clone(),
         base_url,
         token,
         client: orbit_security::guarded_client(std::time::Duration::from_secs(20)),
@@ -234,6 +241,7 @@ async fn apply_outcome(
                 .clone()
                 .or_else(|| connector.source.repository.clone())
                 .ok_or_else(|| anyhow::anyhow!("queue item has no repository"))?;
+            ensure_target_allowed(connector, &repository)?;
             let current = current_labels(connector, &repository, number, None).await?;
             // The done label is written last, so its presence means the outcome (comment
             // included) was fully applied by an earlier attempt.
@@ -269,6 +277,7 @@ async fn apply_outcome(
                 .clone()
                 .or_else(|| connector.source.project.clone())
                 .ok_or_else(|| anyhow::anyhow!("queue item has no GitLab project"))?;
+            ensure_target_allowed(connector, &project)?;
             let current = current_labels(connector, &project, number, Some(&project)).await?;
             // The done label is written last, so its presence means the outcome (comment
             // included) was fully applied by an earlier attempt.
@@ -302,6 +311,23 @@ async fn apply_outcome(
         other => anyhow::bail!("unsupported work source provider '{other}'"),
     }
     Ok(())
+}
+
+/// The outcome writer only touches the work source's own repository or project, within
+/// the connection allowlist; the item's stored repository is caller data (#384).
+fn ensure_target_allowed(connector: &WorkSourceConnector, target: &str) -> anyhow::Result<()> {
+    if crate::work_sources::work_source_allows_target(
+        &connector.source,
+        &connector.connection_config,
+        target,
+    ) {
+        Ok(())
+    } else {
+        Err(crate::work_sources::WorkSourceTargetRefused {
+            target: target.to_string(),
+        }
+        .into())
+    }
 }
 
 async fn current_labels(

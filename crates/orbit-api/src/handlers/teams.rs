@@ -304,6 +304,30 @@ fn validate_requested_repositories(
     definition: &TeamDefinition,
     payload: &serde_json::Value,
 ) -> Result<(), ApiError> {
+    check_requested_repositories(definition, payload, |_| false)
+}
+
+/// The repository rule for queue items (#384): the same targets as a run, plus the
+/// projects of a GitLab group work source. `stored` relaxes the group rule for items that
+/// are already in the queue (the dispatcher records projects of a group given by numeric
+/// id, which cannot be matched by path); callers enqueuing new items get the strict rule.
+pub(crate) fn validate_queue_repositories(
+    definition: &TeamDefinition,
+    payload: &serde_json::Value,
+    stored: bool,
+) -> Result<(), ApiError> {
+    check_requested_repositories(definition, payload, |value| {
+        definition.work_source.as_ref().is_some_and(|source| {
+            crate::work_sources::group_includes_project(source, value, stored)
+        })
+    })
+}
+
+fn check_requested_repositories(
+    definition: &TeamDefinition,
+    payload: &serde_json::Value,
+    also_allowed: impl Fn(&str) -> bool,
+) -> Result<(), ApiError> {
     let mut allowed: Vec<String> = Vec::new();
     allowed.extend(definition.repository.iter().cloned());
     allowed.extend(
@@ -314,11 +338,13 @@ fn validate_requested_repositories(
     );
     if let Some(source) = &definition.work_source {
         allowed.extend(source.repository.iter().cloned());
+        allowed.extend(source.project.iter().cloned());
     }
     let is_allowed = |value: &str| {
         allowed
             .iter()
             .any(|candidate| candidate.trim().eq_ignore_ascii_case(value.trim()))
+            || also_allowed(value)
     };
     if let Some(repository) = payload.get("repository").and_then(|value| value.as_str()) {
         if !is_allowed(repository) {
@@ -467,9 +493,19 @@ async fn validate_native_primary(
     }
 }
 
-/// Validate a fixed team autonomy and authorise any elevation above a step agent's own
-/// level. Lowering is always allowed; raising requires manage access to that agent, so a
-/// team cannot silently turn an L2 agent into an L4 executor.
+/// A step agent a fixed team policy runs less strictly than the agent's own policy.
+struct AutonomyElevation {
+    agent_id: Uuid,
+    name: String,
+    baseline: orbit_domain::AutonomyPolicy,
+}
+
+/// Validate a fixed team autonomy and authorise any elevation over a step agent's own
+/// policy (#385). An elevation is any team policy less strict than the agent's, by level
+/// **or** approval mode (see `AutonomyPolicy::is_at_least_as_strict_as`); it needs manage
+/// access to that agent. Returns the elevations and the policy to store, whose
+/// `elevations` list is recomputed here and never taken from the request. An agent whose
+/// policy cannot be read fails the save instead of being skipped.
 async fn validate_team_autonomy(
     state: &AppState,
     auth: &AuthContext,
@@ -477,52 +513,102 @@ async fn validate_team_autonomy(
     autonomy: Option<&TeamAutonomy>,
     steps: &[TeamStepInput],
     issues: &mut Vec<ValidationIssue>,
-) -> Vec<(Uuid, String, u8)> {
+) -> (Vec<AutonomyElevation>, Option<TeamAutonomy>) {
     let mut elevated = Vec::new();
     let Some(autonomy) = autonomy else {
-        return elevated;
+        return (elevated, None);
+    };
+    let mut stored = TeamAutonomy {
+        elevations: Vec::new(),
+        ..autonomy.clone()
     };
     if autonomy.mode != TeamAutonomyMode::Fixed {
-        return elevated;
+        return (elevated, Some(stored));
     }
-    let Some(level) = autonomy.level.filter(|level| (1..=4).contains(level)) else {
+    if !autonomy.level.is_some_and(|level| (1..=4).contains(&level)) {
         issues.push(ValidationIssue::new(
             "autonomy.level",
             "a fixed team autonomy needs a level from 1 to 4",
         ));
-        return elevated;
-    };
+        return (elevated, Some(stored));
+    }
+    let mut seen = std::collections::HashSet::new();
     for step in steps {
-        let Ok(agent) = state.store.get_agent(auth.org_id, step.agent_id).await else {
+        if !seen.insert(step.agent_id) {
             continue;
+        }
+        let spec = match state.store.get_agent(auth.org_id, step.agent_id).await {
+            Ok(agent) => match state.store.get_current_version(auth.org_id, &agent).await {
+                Ok(version) => serde_json::from_value::<orbit_domain::AgentSpec>(version.spec)
+                    .map(|spec| (agent, spec))
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            },
+            Err(error) => Err(error.to_string()),
         };
-        let Ok(version) = state.store.get_current_version(auth.org_id, &agent).await else {
-            continue;
-        };
-        let Ok(spec) = serde_json::from_value::<orbit_domain::AgentSpec>(version.spec) else {
-            continue;
-        };
-        if level > spec.autonomy.level {
-            elevated.push((agent.id, agent.name.clone(), spec.autonomy.level));
-            if !access.can_manage(agent.owner_user_id, agent.owner_team_id) {
+        let (agent, spec) = match spec {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::warn!(agent_id = %step.agent_id, %error, "could not read step agent autonomy");
                 issues.push(ValidationIssue::new(
-                    "autonomy.level",
+                    "autonomy",
                     format!(
-                        "raising agent '{}' from level {} to {} requires manage access to that agent",
-                        agent.name, spec.autonomy.level, level
+                        "could not check the autonomy of step agent '{}'; the team was not saved",
+                        step.agent_id
                     ),
                 ));
+                continue;
             }
+        };
+        let own = orbit_domain::AutonomyPolicy::of(&spec.autonomy);
+        if !autonomy.elevates(own) {
+            continue;
         }
+        if !access.can_manage(agent.owner_user_id, agent.owner_team_id) {
+            let team = autonomy.policy_for(own).unwrap_or(own);
+            issues.push(ValidationIssue::new(
+                if team.level > own.level {
+                    "autonomy.level"
+                } else {
+                    "autonomy.approvalMode"
+                },
+                format!(
+                    "running agent '{}' at level {} with approval mode {} is less strict than its own policy (level {}, approval mode {}) and requires manage access to that agent",
+                    agent.name,
+                    team.level,
+                    approval_mode_label(team.approval_mode),
+                    own.level,
+                    approval_mode_label(own.approval_mode),
+                ),
+            ));
+            continue;
+        }
+        stored.elevations.push(orbit_domain::TeamAutonomyElevation {
+            agent_id: agent.id,
+            baseline: own,
+        });
+        elevated.push(AutonomyElevation {
+            agent_id: agent.id,
+            name: agent.name.clone(),
+            baseline: own,
+        });
     }
-    elevated
+    (elevated, Some(stored))
+}
+
+fn approval_mode_label(mode: orbit_domain::ApprovalMode) -> &'static str {
+    match mode {
+        orbit_domain::ApprovalMode::Auto => "auto",
+        orbit_domain::ApprovalMode::Writes => "writes",
+        orbit_domain::ApprovalMode::Always => "always",
+    }
 }
 
 async fn audit_team_autonomy_elevations(
     state: &AppState,
     auth: &AuthContext,
     team_id: Uuid,
-    elevated: &[(Uuid, String, u8)],
+    elevated: &[AutonomyElevation],
     autonomy: Option<&TeamAutonomy>,
 ) {
     if elevated.is_empty() {
@@ -536,9 +622,15 @@ async fn audit_team_autonomy_elevations(
         Some(team_id),
         serde_json::json!({
             "level": autonomy.and_then(|autonomy| autonomy.level),
+            "approvalMode": autonomy.and_then(|autonomy| autonomy.approval_mode),
             "agents": elevated
                 .iter()
-                .map(|(id, name, from)| serde_json::json!({ "id": id, "name": name, "from": from }))
+                .map(|elevation| serde_json::json!({
+                    "id": elevation.agent_id,
+                    "name": elevation.name,
+                    "from": elevation.baseline.level,
+                    "fromApprovalMode": elevation.baseline.approval_mode,
+                }))
                 .collect::<Vec<_>>(),
         }),
     )
@@ -734,7 +826,7 @@ pub async fn create_team(
         }
     }
     validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
-    let elevations = validate_team_autonomy(
+    let (elevations, autonomy) = validate_team_autonomy(
         &state,
         &auth,
         &access,
@@ -761,7 +853,7 @@ pub async fn create_team(
         "connectionIds": body.connection_ids,
         "envMappingIds": body.env_mapping_ids,
         "timeoutSeconds": body.timeout_seconds,
-        "autonomy": body.autonomy,
+        "autonomy": autonomy,
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
@@ -782,8 +874,7 @@ pub async fn create_team(
         .store
         .assign_resource_owner(auth.org_id, "agent_teams", team.id, auth.user_id)
         .await?;
-    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, body.autonomy.as_ref())
-        .await;
+    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
     Ok((StatusCode::CREATED, Json(team)))
 }
 
@@ -928,7 +1019,7 @@ pub async fn update_team(
         }
     }
     validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
-    let elevations = validate_team_autonomy(
+    let (elevations, autonomy) = validate_team_autonomy(
         &state,
         &auth,
         &access,
@@ -955,7 +1046,7 @@ pub async fn update_team(
         "connectionIds": body.connection_ids,
         "envMappingIds": body.env_mapping_ids,
         "timeoutSeconds": body.timeout_seconds,
-        "autonomy": body.autonomy,
+        "autonomy": autonomy,
         "steps": body.steps.iter().map(|step| serde_json::json!({
             "agentId": step.agent_id,
             "model": step.model,
@@ -972,8 +1063,7 @@ pub async fn update_team(
             &definition,
         )
         .await?;
-    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, body.autonomy.as_ref())
-        .await;
+    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
     Ok(Json(team))
 }
 
@@ -1153,6 +1243,132 @@ pub(crate) struct StepStart<'a> {
 }
 
 /// Start step `step_index` of a pipeline or native run.
+/// A step agent whose current policy is stricter than the team's authorised elevation, so
+/// the step runs with the stricter policy (#385).
+struct AutonomyClamp {
+    agent_id: Uuid,
+    agent_name: String,
+    requested: orbit_domain::AutonomyPolicy,
+    agent: orbit_domain::AutonomyPolicy,
+    applied: orbit_domain::AutonomyPolicy,
+}
+
+impl AutonomyClamp {
+    fn message(&self) -> String {
+        format!(
+            "team autonomy limited for agent '{}': the team asks for level {} with approval mode {}, \
+             but the agent's own policy (level {}, approval mode {}) is stricter than when the team was \
+             authorised; running at level {} with approval mode {}. Re-save the team with manage \
+             access to the agent to authorise it again.",
+            self.agent_name,
+            self.requested.level,
+            approval_mode_label(self.requested.approval_mode),
+            self.agent.level,
+            approval_mode_label(self.agent.approval_mode),
+            self.applied.level,
+            approval_mode_label(self.applied.approval_mode),
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "agentId": self.agent_id,
+            "agentName": self.agent_name,
+            "requested": self.requested,
+            "agent": self.agent,
+            "applied": self.applied,
+        })
+    }
+}
+
+/// The fixed team policy a step execution carries, resolved against the **current** policy
+/// of every agent it governs: the step agent, and for a native team every subagent too,
+/// because subagents inherit the primary execution's policy. `None` when the team does not
+/// fix autonomy. An agent whose policy cannot be read fails the step.
+async fn effective_team_autonomy(
+    state: &AppState,
+    run: &TeamRun,
+    definition: &TeamDefinition,
+    agent_id: Uuid,
+    spec: &orbit_domain::AgentSpec,
+    native: bool,
+) -> Result<Option<(TeamAutonomy, Vec<AutonomyClamp>)>, ApiError> {
+    let Some(autonomy) = definition.autonomy.as_ref() else {
+        return Ok(None);
+    };
+    if autonomy.mode != TeamAutonomyMode::Fixed {
+        return Ok(None);
+    }
+    let mut governed = vec![(
+        agent_id,
+        None,
+        orbit_domain::AutonomyPolicy::of(&spec.autonomy),
+    )];
+    if native {
+        for step in &definition.steps {
+            if governed.iter().any(|(id, _, _)| *id == step.agent_id) {
+                continue;
+            }
+            let agent = state.store.get_agent(run.org_id, step.agent_id).await?;
+            let version = state.store.get_current_version(run.org_id, &agent).await?;
+            let sub: orbit_domain::AgentSpec =
+                serde_json::from_value(version.spec).map_err(|error| {
+                    ApiError::internal(format!("stored agent spec is invalid: {error}"))
+                })?;
+            governed.push((
+                agent.id,
+                Some(agent.name),
+                orbit_domain::AutonomyPolicy::of(&sub.autonomy),
+            ));
+        }
+    }
+    let mut clamps = Vec::new();
+    let mut combined: Option<orbit_domain::AutonomyPolicy> = None;
+    for (id, name, own) in governed {
+        let applied = match orbit_domain::resolve_team_autonomy(autonomy, id, own) {
+            orbit_domain::TeamAutonomyResolution::NotFixed => return Ok(None),
+            orbit_domain::TeamAutonomyResolution::Applies(team) => {
+                team.policy_for(own).unwrap_or(own)
+            }
+            orbit_domain::TeamAutonomyResolution::Clamped {
+                autonomy: clamped,
+                requested,
+                agent,
+            } => {
+                let applied = clamped.policy_for(agent).unwrap_or(agent);
+                clamps.push(AutonomyClamp {
+                    agent_id: id,
+                    agent_name: match name {
+                        Some(name) => name,
+                        None => state.store.get_agent(run.org_id, id).await?.name,
+                    },
+                    requested,
+                    agent,
+                    applied,
+                });
+                applied
+            }
+        };
+        combined = Some(match combined {
+            Some(policy) => policy.stricter_of(&applied),
+            None => applied,
+        });
+    }
+    if clamps.is_empty() {
+        return Ok(Some((autonomy.snapshot(), clamps)));
+    }
+    let policy = combined.expect("at least the step agent is governed");
+    Ok(Some((
+        TeamAutonomy {
+            mode: TeamAutonomyMode::Fixed,
+            level: Some(policy.level),
+            approval_mode: Some(policy.approval_mode),
+            elevations: Vec::new(),
+        },
+        clamps,
+    )))
+}
+
 pub(crate) async fn start_step(
     state: &AppState,
     run: &TeamRun,
@@ -1225,16 +1441,22 @@ pub(crate) async fn auto_launch_step(
     let auth = match auth {
         Some(auth) => auth,
         None => {
-            background = AuthContext {
-                user_id: run.requested_by.unwrap_or(Uuid::nil()),
-                org_id: run.org_id,
-                email: String::new(),
-                display_name: "Agent Team".into(),
-                role: orbit_domain::UserRole::Operator,
-                method: orbit_security::AuthMethod::ApiToken,
-                scopes: vec![],
-                token_id: None,
-            };
+            // Later steps start in the background: launch as the run's requester, or the
+            // team owner when the requester was deleted (`requested_by` is then NULL).
+            // Never a nil user id: `worker_launches.created_by` is a foreign key (#383).
+            let team = state.store.get_agent_team(run.org_id, run.team_id).await?;
+            background = crate::preflight::background_identity(
+                state,
+                run.org_id,
+                &[run.requested_by, team.owner_user_id],
+            )
+            .await?
+            .ok_or_else(|| {
+                ApiError::validation(vec![ValidationIssue::new(
+                    "autoLaunch",
+                    "auto-launch needs the run's requester or a team owner",
+                )])
+            })?;
             &background
         }
     };
@@ -1415,11 +1637,19 @@ pub(crate) async fn start_step_with(
         },
         "team": team_payload,
     });
-    if let Some(autonomy) = definition.autonomy.as_ref() {
-        if autonomy.mode == TeamAutonomyMode::Fixed {
-            input[orbit_domain::TEAM_AUTONOMY_KEY] =
-                serde_json::to_value(autonomy).unwrap_or(serde_json::Value::Null);
+    // #385: the fixed team policy is resolved against the step agents' current policies,
+    // so an agent made stricter after the team was saved is never run less strictly.
+    let mut autonomy_clamps = Vec::new();
+    if let Some((autonomy, clamps)) =
+        effective_team_autonomy(state, run, definition, agent.id, &spec, native).await?
+    {
+        input[orbit_domain::TEAM_AUTONOMY_KEY] =
+            serde_json::to_value(&autonomy).unwrap_or(serde_json::Value::Null);
+        if !clamps.is_empty() {
+            input["teamAutonomyClamped"] =
+                serde_json::Value::Array(clamps.iter().map(AutonomyClamp::to_json).collect());
         }
+        autonomy_clamps = clamps;
     }
     // #194: set only here, server-side, after the run was authorised with approvals:decide.
     // The worker applies this before the fixed team policy, so a fixed team policy wins.
@@ -1432,6 +1662,18 @@ pub(crate) async fn start_step_with(
         input[orbit_domain::APPROVAL_OVERRIDE_KEY] =
             serde_json::json!(orbit_domain::APPROVAL_OVERRIDE_AUTO);
     }
+    // A workflow step is identified by what it runs, not by the order it was created in:
+    // a retried start must find the same execution again.
+    let idempotency_key = match &workflow {
+        Some(step) => format!("team:{}:{}:{}", run.id, step.node.id, step.attempt),
+        None => format!("team:{}:{}", run.id, step_index),
+    };
+    let replayed = !autonomy_clamps.is_empty()
+        && state
+            .store
+            .get_execution_by_idempotency_key(run.org_id, &idempotency_key)
+            .await?
+            .is_some();
     let execution = state
         .create_execution_with_limit(orbit_store::executions::NewExecution {
             org_id: run.org_id,
@@ -1453,16 +1695,29 @@ pub(crate) async fn start_step_with(
                 .timeout_seconds
                 .unwrap_or_else(|| spec.resources.timeout_seconds.max(3600)),
             requested_by: run.requested_by,
-            // A workflow step is identified by what it runs, not by the order it was
-            // created in: a retried start must find the same execution again.
-            idempotency_key: Some(&match &workflow {
-                Some(step) => format!("team:{}:{}:{}", run.id, step.node.id, step.attempt),
-                None => format!("team:{}:{}", run.id, step_index),
-            }),
+            idempotency_key: Some(&idempotency_key),
             team_run_id: Some(run.id),
             team_step_index: Some(step_index as i32),
         })
         .await?;
+    if !replayed {
+        for clamp in &autonomy_clamps {
+            if let Err(error) = state
+                .store
+                .append_execution_event(
+                    run.org_id,
+                    execution.id,
+                    "log",
+                    orbit_domain::LogLevel::Warn,
+                    &clamp.message(),
+                    &clamp.to_json(),
+                )
+                .await
+            {
+                tracing::warn!(%error, execution_id = %execution.id, "could not record the team autonomy clamp");
+            }
+        }
+    }
     if let Some(step) = &workflow {
         return Ok(state
             .store

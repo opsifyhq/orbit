@@ -42,7 +42,7 @@ fn split_frontmatter(content: &str) -> (serde_yaml::Value, String) {
         if let Some(end) = rest.find("\n---") {
             let (yaml, body) = rest.split_at(end);
             let body = body.trim_start_matches("\n---").trim_start_matches('\n');
-            let value = serde_yaml::from_str(yaml).unwrap_or(serde_yaml::Value::Null);
+            let value = orbit_domain::yaml::value_from_str(yaml).unwrap_or(serde_yaml::Value::Null);
             return (value, body.trim().to_string());
         }
     }
