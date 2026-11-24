@@ -4811,6 +4811,203 @@ async fn terminal_run_with_unclosed_queue_item_is_reconciled() {
     assert_eq!(stored.error.as_deref(), Some("boom"));
 }
 
+/// #384: queue items may only target the team's repositories, like `create_run`.
+#[tokio::test]
+async fn enqueue_refuses_repositories_outside_the_team() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "repository": "acme/app", "repositories": [{ "repository": "acme/lib", "path": "lib" }] }),
+    )
+    .await;
+    let enqueue = |items: Value| {
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue"),
+            json!({ "items": items }),
+        )
+    };
+    for items in [
+        json!([{ "externalKey": "x#1", "repository": "acme/private-other" }]),
+        json!([{ "externalKey": "x#2", "payload": { "repository": "acme/private-other" } }]),
+        json!([{ "externalKey": "x#3", "payload": { "repositories": [{ "repository": "acme/private-other", "path": "o" }] } }]),
+    ] {
+        let (status, body) = send(&app.router, enqueue(items)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    let (status, body) = send(
+        &app.router,
+        enqueue(json!([
+            { "externalKey": "x#4", "repository": "ACME/app" },
+            { "externalKey": "x#5", "payload": { "repositories": [{ "repository": "acme/lib", "path": "lib" }] } },
+            { "externalKey": "x#6" },
+        ])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let keys = app
+        .store
+        .list_team_queue_external_keys(team, 10)
+        .await
+        .unwrap();
+    assert_eq!(keys.len(), 3, "{keys:?}");
+}
+
+/// #384: an item stored with a foreign repository (before enqueue validated it, or by
+/// hand) is refused when started, and no run is created for it.
+#[tokio::test]
+async fn stored_queue_item_with_a_foreign_repository_is_refused_on_start() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "repository": "acme/app" }),
+    )
+    .await;
+    let item = app
+        .store
+        .try_enqueue_team_item(
+            app.org_id,
+            team,
+            "x#1",
+            Some("acme/private-other"),
+            &json!({}),
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/queue/{}/run", item.id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item.id)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert!(stored.error.unwrap_or_default().contains("repository"));
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM team_runs WHERE team_id = $1")
+        .bind(team)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+}
+
+/// #384: the outcome writer only touches the work source's repository, whatever
+/// repository the queue item carries.
+#[tokio::test]
+async fn outcome_writer_never_contacts_a_foreign_repository() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // The mock GitHub listens on loopback, which the outbound guard (#142) blocks unless
+    // explicitly allowed.
+    std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
+    let hits: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let recorded = hits.clone();
+    let mock = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let recorded = recorded.clone();
+        async move {
+            recorded
+                .lock()
+                .unwrap()
+                .push(format!("{} {}", request.method(), request.uri().path()));
+            axum::Json(json!({ "number": 1, "labels": [{ "name": "agent-in-progress" }] }))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            &format!("outcome-{}", Uuid::now_v7()),
+            &json!({ "baseUrl": format!("http://{addr}") }),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "workSource": {
+            "provider": "github", "enabled": true, "connectionId": connection.id,
+            "repository": "acme/app", "pollSeconds": 3600
+        } }),
+    )
+    .await;
+
+    for (key, repository) in [("x#1", "acme/private-other"), ("acme/app#1", "acme/app")] {
+        let item = app
+            .store
+            .try_enqueue_team_item(app.org_id, team, key, Some(repository), &json!({}), 1)
+            .await
+            .unwrap()
+            .unwrap();
+        app.store
+            .claim_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let run = app
+            .store
+            .create_team_run(app.org_id, team, &json!({}), None)
+            .await
+            .unwrap();
+        assert!(app
+            .store
+            .attach_team_run_to_queue_item(app.org_id, item.id, run.id)
+            .await
+            .unwrap());
+        app.store
+            .finish_team_run(run.id, "succeeded", Some(&json!({ "text": "done" })), None)
+            .await
+            .unwrap()
+            .unwrap();
+        orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+            .await
+            .unwrap();
+        let stored = app
+            .store
+            .get_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "succeeded", "{repository}");
+    }
+    let hits = hits.lock().unwrap().clone();
+    assert!(
+        hits.iter().all(|hit| !hit.contains("private-other")),
+        "foreign repository contacted: {hits:?}"
+    );
+    assert!(
+        hits.iter().any(|hit| hit == "GET /repos/acme/app/issues/1"),
+        "work source repository not updated: {hits:?}"
+    );
+}
+
 #[tokio::test]
 async fn enqueue_happens_before_claim_and_claim_failure_withdraws_the_item() {
     let Some(app) = test_app(true).await else {

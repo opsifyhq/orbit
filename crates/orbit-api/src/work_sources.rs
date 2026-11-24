@@ -301,6 +301,109 @@ async fn http_json(
     Ok(payload)
 }
 
+/// Whether a GitLab group work source covers `project` (#384). A group given by path
+/// covers the projects under that path. A group given by numeric id cannot be matched
+/// without an API call, so only `lenient` callers (items already in the queue, which the
+/// dispatcher discovered in that group) accept its projects; the connection's
+/// `allowedProjects` still applies to every write.
+pub(crate) fn group_includes_project(
+    source: &WorkSourceDefinition,
+    project: &str,
+    lenient: bool,
+) -> bool {
+    if source.provider != "gitlab"
+        || source
+            .project
+            .as_deref()
+            .is_some_and(|project| !project.trim().is_empty())
+    {
+        return false;
+    }
+    let Some(group) = source
+        .group_id
+        .as_deref()
+        .map(|group| group.trim().trim_matches('/'))
+        .filter(|group| !group.is_empty())
+    else {
+        return false;
+    };
+    if group.chars().all(|c| c.is_ascii_digit()) {
+        return lenient;
+    }
+    let project = project.trim().trim_matches('/').to_ascii_lowercase();
+    project.starts_with(&format!("{}/", group.to_ascii_lowercase()))
+}
+
+/// Whether a work source may write back to `target` (a GitHub `owner/repo` or a GitLab
+/// project path or id): it must be the source's own repository or project (or, for a
+/// GitLab group source, a project of that group), and it must be in the connection's
+/// `allowedRepositories` / `allowedProjects` when that list is set, the rule the worker
+/// applies to checkouts (#384).
+pub(crate) fn work_source_allows_target(
+    source: &WorkSourceDefinition,
+    connection_config: &serde_json::Value,
+    target: &str,
+) -> bool {
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
+    }
+    let same = |candidate: &Option<String>| {
+        candidate
+            .as_deref()
+            .is_some_and(|candidate| candidate.trim().eq_ignore_ascii_case(target))
+    };
+    let in_source = match source.provider.as_str() {
+        "github" => same(&source.repository),
+        "gitlab" => same(&source.project) || group_includes_project(source, target, true),
+        _ => false,
+    };
+    in_source && connection_allows_target(connection_config, target)
+}
+
+/// The connection allowlist rule shared with the worker (`allowedRepositories`, or
+/// `allowedProjects` for GitLab): an empty or missing list allows every target.
+pub(crate) fn connection_allows_target(
+    connection_config: &serde_json::Value,
+    target: &str,
+) -> bool {
+    let list = connection_config
+        .get("allowedRepositories")
+        .and_then(serde_json::Value::as_array)
+        .filter(|list| !list.is_empty())
+        .or_else(|| {
+            connection_config
+                .get("allowedProjects")
+                .and_then(serde_json::Value::as_array)
+        });
+    match list {
+        Some(list) if !list.is_empty() => list
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|allowed| allowed.trim().eq_ignore_ascii_case(target.trim())),
+        _ => true,
+    }
+}
+
+/// A work-source write was refused because its target is outside the source or the
+/// connection allowlist (#384). Not retried: the target never becomes valid by waiting.
+#[derive(Debug)]
+pub(crate) struct WorkSourceTargetRefused {
+    pub target: String,
+}
+
+impl std::fmt::Display for WorkSourceTargetRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "'{}' is not the work source's repository or is not allowed by its connection",
+            self.target
+        )
+    }
+}
+
+impl std::error::Error for WorkSourceTargetRefused {}
+
 /// The team's owner can no longer use the connection its work source names (#322).
 #[derive(Debug)]
 pub(crate) struct WorkSourceAccessLost {
@@ -754,6 +857,56 @@ mod tests {
             branch: None,
         }];
         assert!(!validate_repositories(&repositories).is_empty());
+    }
+
+    fn source(provider: &str, value: serde_json::Value) -> WorkSourceDefinition {
+        let mut value = value;
+        value["provider"] = serde_json::json!(provider);
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn work_source_targets_stay_inside_the_source_and_the_connection_allowlist() {
+        let github = source("github", serde_json::json!({ "repository": "Acme/App" }));
+        let open = serde_json::json!({});
+        assert!(work_source_allows_target(&github, &open, "acme/app"));
+        assert!(!work_source_allows_target(&github, &open, "acme/other"));
+        assert!(!work_source_allows_target(&github, &open, ""));
+        let listed = serde_json::json!({ "allowedRepositories": ["acme/other"] });
+        assert!(!work_source_allows_target(&github, &listed, "acme/app"));
+        let listed = serde_json::json!({ "allowedRepositories": ["ACME/app"] });
+        assert!(work_source_allows_target(&github, &listed, "acme/app"));
+
+        let project = source("gitlab", serde_json::json!({ "project": "group/app" }));
+        assert!(work_source_allows_target(&project, &open, "group/app"));
+        assert!(!work_source_allows_target(&project, &open, "group/other"));
+        let gitlab_listed = serde_json::json!({ "allowedProjects": ["group/other"] });
+        assert!(!work_source_allows_target(
+            &project,
+            &gitlab_listed,
+            "group/app"
+        ));
+    }
+
+    #[test]
+    fn gitlab_group_sources_cover_their_own_projects() {
+        let by_path = source("gitlab", serde_json::json!({ "groupId": "Acme/Team" }));
+        assert!(group_includes_project(&by_path, "acme/team/app", false));
+        assert!(group_includes_project(&by_path, "acme/team/sub/app", false));
+        assert!(!group_includes_project(&by_path, "acme/teamx/app", false));
+        assert!(!group_includes_project(&by_path, "other/app", true));
+        // A numeric group cannot be matched by path: only already-stored items pass.
+        let by_id = source("gitlab", serde_json::json!({ "groupId": "42" }));
+        assert!(!group_includes_project(&by_id, "acme/app", false));
+        assert!(group_includes_project(&by_id, "acme/app", true));
+        // A project source never widens to a group, and GitHub has no groups.
+        let project = source(
+            "gitlab",
+            serde_json::json!({ "project": "acme/app", "groupId": "acme" }),
+        );
+        assert!(!group_includes_project(&project, "acme/other", true));
+        let github = source("github", serde_json::json!({ "groupId": "acme" }));
+        assert!(!group_includes_project(&github, "acme/app", true));
     }
 
     #[test]

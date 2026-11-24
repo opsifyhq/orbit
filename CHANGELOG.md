@@ -37,6 +37,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Agent Team queue items can no longer retarget the team's credentials (#384): enqueue and
+  start refuse repositories outside the team's configuration, and the work-source outcome
+  writer and dispatcher stay inside the source's repository and the connection's
+  `allowedRepositories` / `allowedProjects`.
 - S3 outputs created in the web UI can deliver (#386). An output's configured bucket is
   its allowlist, so it no longer needs `allowedBuckets`; a config that cannot write to its
   own bucket is refused when it is saved, and permanent S3 errors (403, 404, blocked
