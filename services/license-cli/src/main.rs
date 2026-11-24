@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context};
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]

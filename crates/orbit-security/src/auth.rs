@@ -564,9 +564,9 @@ pub fn hash_api_token(token: &str) -> String {
 /// Generate `(plaintext, hash)`. The plaintext is shown to the user exactly once.
 pub fn generate_api_token() -> (String, String) {
     use base64::Engine;
-    use rand::RngCore;
+    use rand_core::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand_core::OsRng.fill_bytes(&mut bytes);
     let token = format!(
         "orbit_sk_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -598,9 +598,9 @@ pub fn issue_api_token() -> IssuedApiToken {
 /// control-plane routes and accept them only on the worker surface.
 pub fn issue_worker_token() -> IssuedApiToken {
     use base64::Engine;
-    use rand::RngCore;
+    use rand_core::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand_core::OsRng.fill_bytes(&mut bytes);
     let token = format!(
         "orbit_wk_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

@@ -4,7 +4,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use rand::RngCore;
+use rand_core::RngCore;
 use serde::Serialize;
 
 use crate::SecurityError;
@@ -89,7 +89,7 @@ impl SecretCipher {
 
     pub fn encrypt(&self, reference: &str, value: &SecretValue) -> Result<String, SecurityError> {
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand_core::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from(nonce_bytes);
         let ciphertext = self
             .cipher
