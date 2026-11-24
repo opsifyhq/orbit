@@ -72,7 +72,7 @@ serde_yaml = { package = "serde_norway", version = "0.9" }
 async-nats = "0.52"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 jsonwebtoken = "9"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
