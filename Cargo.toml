@@ -77,7 +77,7 @@ base64 = "0.23"
 sha2 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 quick-xml = "0.42"
 url = "2"
 libc = "0.2"
