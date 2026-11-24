@@ -476,7 +476,7 @@ impl LicenseHandle {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
 
     fn token_for(signing: &SigningKey, kid: &str, claims: serde_json::Value) -> String {
         let header = serde_json::json!({ "alg": "EdDSA", "kid": kid });
