@@ -10,7 +10,7 @@ use orbit_domain::{
 };
 use orbit_events::EventBus;
 use orbit_harness::HarnessRegistry;
-use orbit_security::{AuthContext, AuthMethod, AuthMode};
+use orbit_security::AuthMode;
 use orbit_store::Store;
 
 use crate::config::ApiConfig;
@@ -352,19 +352,5 @@ fn demo_definition(
             memory: MemorySpec::default(),
             run_defaults: Default::default(),
         },
-    }
-}
-
-/// Convenience used by the worker binary when it needs an AuthContext-like org scope.
-pub fn system_context(org_id: Uuid) -> AuthContext {
-    AuthContext {
-        user_id: Uuid::nil(),
-        org_id,
-        email: "system@orbit.local".into(),
-        display_name: "ORBIT worker".into(),
-        role: orbit_domain::UserRole::Operator,
-        method: AuthMethod::ApiToken,
-        scopes: vec![],
-        token_id: None,
     }
 }

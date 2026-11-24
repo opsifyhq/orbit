@@ -1225,16 +1225,22 @@ pub(crate) async fn auto_launch_step(
     let auth = match auth {
         Some(auth) => auth,
         None => {
-            background = AuthContext {
-                user_id: run.requested_by.unwrap_or(Uuid::nil()),
-                org_id: run.org_id,
-                email: String::new(),
-                display_name: "Agent Team".into(),
-                role: orbit_domain::UserRole::Operator,
-                method: orbit_security::AuthMethod::ApiToken,
-                scopes: vec![],
-                token_id: None,
-            };
+            // Later steps start in the background: launch as the run's requester, or the
+            // team owner when the requester was deleted (`requested_by` is then NULL).
+            // Never a nil user id: `worker_launches.created_by` is a foreign key (#383).
+            let team = state.store.get_agent_team(run.org_id, run.team_id).await?;
+            background = crate::preflight::background_identity(
+                state,
+                run.org_id,
+                &[run.requested_by, team.owner_user_id],
+            )
+            .await?
+            .ok_or_else(|| {
+                ApiError::validation(vec![ValidationIssue::new(
+                    "autoLaunch",
+                    "auto-launch needs the run's requester or a team owner",
+                )])
+            })?;
             &background
         }
     };
