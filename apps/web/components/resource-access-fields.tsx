@@ -2,7 +2,7 @@
 
 import { forwardRef, useEffect, useId, useImperativeHandle, useState } from "react";
 import { Lock } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -25,12 +25,15 @@ const VISIBILITY_OPTIONS = [
 ] as const;
 
 export type ResourceAccessHandle = {
-  /** Flush pending access edits. Returns false when the access save failed. */
-  save: () => Promise<boolean>;
+  /** Flush pending access edits for an existing or just-created resource. */
+  save: (resourceId?: string) => Promise<boolean>;
 };
 
 /** The parent commits this only after its own save succeeded. */
-export type ResourceSubmit<T> = (value: T, commitAccess: () => Promise<void>) => Promise<void> | void;
+export type ResourceSubmit<T> = (
+  value: T,
+  commitAccess: (resourceId?: string) => Promise<void>,
+) => Promise<void> | void;
 
 type ResourceAccessProps = {
   resource: string;
@@ -55,17 +58,18 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
   const enabled = features.includes("teams") && features.includes("resource_permissions");
   const [visibility, setVisibility] = useState("org");
   const [teamId, setTeamId] = useState("");
+  const [draftDirty, setDraftDirty] = useState(false);
   const teams = useQuery({
     queryKey: ["access-teams"],
     queryFn: listAccessTeams,
-    enabled: enabled && Boolean(resourceId),
+    enabled,
   });
   // Strict team isolation (Settings → Access policy) makes the owning team decide who can
   // see a resource, whatever its visibility. Same query key as the settings page.
   const policy = useQuery({
     queryKey: ["access-settings"],
     queryFn: () => request<{ teamIsolation: boolean }>("/api/v1/settings/access"),
-    enabled: enabled && Boolean(resourceId),
+    enabled,
   });
   const sharing = useQuery({
     queryKey: ["sharing", resource, resourceId],
@@ -80,34 +84,31 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
     }
   }, [sharing.data]);
 
-  const save = useMutation({
-    mutationFn: () =>
-      request<void>(`/api/v1/sharing/${resource}/${resourceId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ visibility, ownerTeamId: teamId || null }),
-      }),
-  });
-
-  const changed =
-    sharing.data !== undefined &&
-    (sharing.data.visibility !== visibility || (sharing.data.ownerTeamId ?? "") !== teamId);
+  const changed = resourceId
+    ? sharing.data !== undefined &&
+      (sharing.data.visibility !== visibility || (sharing.data.ownerTeamId ?? "") !== teamId)
+    : draftDirty;
 
   useEffect(() => {
     onDirtyChange?.(changed);
   }, [changed, onDirtyChange]);
 
   /** One place for both the explicit button and the parent form's deferred commit. */
-  async function commit(): Promise<boolean> {
-    if (!enabled || !resourceId || !changed || license.isLoading) return true;
+  async function commit(id = resourceId): Promise<boolean> {
+    if (!enabled || !id || !changed || license.isLoading) return true;
     if (visibility === "team" && !teamId) {
       toast.error("Choose the team that owns this resource");
       return false;
     }
     try {
-      await save.mutateAsync();
+      await request<void>(`/api/v1/sharing/${resource}/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ visibility, ownerTeamId: teamId || null }),
+      });
       toast.success("Access updated");
+      setDraftDirty(false);
       onDirtyChange?.(false);
-      void queryClient.invalidateQueries({ queryKey: ["sharing", resource, resourceId] });
+      void queryClient.invalidateQueries({ queryKey: ["sharing", resource, id] });
       void queryClient.invalidateQueries({ queryKey: [resource] });
       return true;
     } catch (error) {
@@ -118,7 +119,7 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
 
   useImperativeHandle(
     ref,
-    () => ({ save: () => commit() }),
+    () => ({ save: (id?: string) => commit(id) }),
     [commit],
   );
 
@@ -137,14 +138,6 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
     );
   }
 
-  if (!resourceId) {
-    return (
-      <p className="text-[13px] text-muted-foreground">
-        Access can be set after the first save. Until then it is visible to the whole organization.
-      </p>
-    );
-  }
-
   const ownerTeam = (teams.data ?? []).find((team) => team.id === teamId);
   const isolated = Boolean(policy.data?.teamIsolation && ownerTeam);
 
@@ -158,7 +151,7 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
           Who can see and use this. Organization admins always can.
         </p>
       </div>
-      {sharing.isLoading ? (
+      {resourceId && sharing.isLoading ? (
         <Skeleton className="h-16" />
       ) : (
         <>
@@ -167,7 +160,10 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
               <ChoiceCard
                 key={option.value}
                 selected={visibility === option.value}
-                onSelect={() => setVisibility(option.value)}
+                onSelect={() => {
+                  setVisibility(option.value);
+                  setDraftDirty(true);
+                }}
                 title={option.title}
                 description={option.description}
               />
@@ -182,7 +178,14 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
                 : "Optional. Leads of the owning team can manage it."
             }
           >
-            <Select id={teamFieldId} value={teamId} onChange={(event) => setTeamId(event.target.value)}>
+            <Select
+              id={teamFieldId}
+              value={teamId}
+              onChange={(event) => {
+                setTeamId(event.target.value);
+                setDraftDirty(true);
+              }}
+            >
               <option value="">{visibility === "team" ? "Select a team" : "No owning team"}</option>
               {(teams.data ?? []).map((team) => (
                 <option key={team.id} value={team.id}>
@@ -204,7 +207,6 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
               size="sm"
               variant="outline"
               onClick={() => void commit()}
-              loading={save.isPending}
               disabled={!changed || (visibility === "team" && !teamId)}
             >
               Save access

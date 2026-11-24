@@ -953,7 +953,7 @@ async fn probe_connection(
                                     format!("{list_error}; bucket probe failed: {probe}")
                                 })
                         } else {
-                            Err(list_error)
+                            Err(list_error.message)
                         }
                     }
                 }

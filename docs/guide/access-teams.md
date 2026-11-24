@@ -35,8 +35,8 @@ Execution context, events, cancellation and approvals use the same rule.
 
 ## Sharing
 
-Open the resource's edit form (Studio) and use its **Access control** section: choose
-Organization, Team or Private, and the "Owning team" (or call
+Open the resource's create or edit form (Studio) and use its **Access control** section:
+choose Organization, Team or Private, and the "Owning team" (or call
 `GET/PATCH /api/v1/sharing/{resource}/{id}`). The section works only with both the `teams`
 and `resource_permissions` license features. Changing visibility requires manage access,
 the `settings:write` permission and the `resource_permissions` feature; changes are

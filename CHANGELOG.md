@@ -6,9 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
-## [Unreleased]
+## [0.28.5] - 2026-11-24
 
 ### Added
+
+- Agent, team, connection, provider, skill and environment create forms can set
+  visibility and owning team before the first save; the access patch is applied with the
+  new resource id.
+
+- The Executions list groups repeated scheduled runs per trigger/agent into a collapsed
+  header, while keeping team-run steps grouped as before.
 
 - Dependabot coverage for Cargo, npm, Docker and GitHub Actions, plus a scheduled
   dependency watcher and `versions.json` source of truth for Rust, Node, PostgreSQL,
@@ -34,12 +41,20 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   start refuse repositories outside the team's configuration, and the work-source outcome
   writer and dispatcher stay inside the source's repository and the connection's
   `allowedRepositories` / `allowedProjects`.
+- S3 outputs created in the web UI can deliver (#386). An output's configured bucket is
+  its allowlist, so it no longer needs `allowedBuckets`; a config that cannot write to its
+  own bucket is refused when it is saved, and permanent S3 errors (403, 404, blocked
+  endpoint, invalid key) fail the delivery instead of retrying it five times.
 - Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
   still running, and its page says the run was stopped instead of "The run failed".
 - A failed OpenCode run names the reason OpenCode reported (for example a provider that
   refused the request) instead of only "opencode exited with 1".
 - The Run dialog of a team no longer fills in the team's goal as the task. A blank task
   still runs the goal, which is now sent once instead of as both task and context.
+- Work-source auto-run starts team runs again (#383). It acts as the team owner instead of
+  a nil system user that the database refused; a refused preflight marks the queue item
+  failed with the reason, and a team without an owner shows why in its poll status. Later
+  auto-launched steps fall back to the team owner when the requester was deleted.
 
 ## [0.28.4] - 2026-11-23
 

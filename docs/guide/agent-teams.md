@@ -21,6 +21,8 @@ An Agent Team coordinates several agents for one outcome. Teams have three modes
   failed labels, `maxItems` (1-100), `maxAttempts` (1-10), `pollSeconds` (60 by default,
   at least 5) and `autoRun`. GitHub needs `repository` (owner/repo); GitLab needs a
   `project` or a `groupId`, and can use a `boardId`.
+  `autoRun` starts claimed items as the team's owner, so the team needs an owner who can
+  use its agents and connections.
 
 `native` mode requires the primary agent to use the OpenCode harness; use `pipeline` mode
 for Pi and other harnesses. The API and Team Studio both refuse a native team whose
