@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- A stored harness without an adapter in this build is reported as planned; a second,
+  outdated status table that called OpenCode "scaffolded" and Pi "planned" is removed. The
+  Work page no longer shows two options that could never be switched on (#452).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
