@@ -10,6 +10,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- Dependabot coverage for Cargo, npm, Docker and GitHub Actions, plus a scheduled
+  dependency watcher and `versions.json` source of truth for Rust, Node, PostgreSQL,
+  Helm and the harness/CLI pins.
+
 - Harness inputs over 96 KiB are rejected by the API before a run is created; Pi session
   storage now lives outside the per-execution workspace so continuous runs can resume.
   Pi also clears a provider error when a later assistant message succeeds.

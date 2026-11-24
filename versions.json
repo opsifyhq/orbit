@@ -1,0 +1,19 @@
+{
+  "rust": "1.100.0",
+  "node": "22.23",
+  "postgres": "17",
+  "helm": "4.3.1",
+  "opencode": {
+    "version": "2.3.0",
+    "sha256": "fc0f81522aceeabac47693d88389efa2bc517ce74c2c38fd6967819fcc6e4d3b"
+  },
+  "pi": "1.5.2",
+  "gh": {
+    "version": "2.105.0",
+    "sha256": "79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f"
+  },
+  "glab": {
+    "version": "1.131.0",
+    "sha256": "580dbca43835b47267e512476a442f6b2e8785a82b26ccacee22bd7010662b2d"
+  }
+}
