@@ -1000,6 +1000,61 @@ async fn token_for(store: &Store, org_id: Uuid, user_id: Uuid, name: &str) -> St
     issued.token
 }
 
+/// #438: NUL characters, unknown worker-token harnesses and triggers on archived agents
+/// are refused with 4xx instead of a 500 or a resource that can never work.
+#[tokio::test]
+async fn invalid_text_harnesses_and_archived_triggers_are_refused() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut nul = definition();
+    nul["metadata"]["name"] = json!("bad\u{0000}name");
+    let (status, body) = send(&app.router, post("/api/v1/agents", nul)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "body");
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/skills",
+            json!({ "name": "x", "slug": "x", "content": "a\u{0000}" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-tokens",
+            json!({ "name": "t", "harnesses": ["zzz"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("zzz"));
+
+    app.store
+        .set_agent_status(
+            app.org_id,
+            app.agent_id,
+            orbit_domain::AgentStatus::Archived,
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/triggers",
+            json!({ "agentId": app.agent_id, "kind": "manual", "config": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
 /// #438: a token lifetime outside 1..=3650 days is refused, not turned into a token that
 /// never expires.
 #[tokio::test]

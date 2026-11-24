@@ -13,6 +13,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - `POST /api/v1/api-tokens` refuses an `expiresInDays` below 1 or above 3650 with 422.
   Before, 0 or a negative value created a token that never expires, and larger values were
   silently cut to ten years (#438).
+- A request body with a NUL character (`\u0000`) gets a 422 instead of a 500 storage
+  error; a worker token for an unknown harness kind and a trigger on an archived agent are
+  refused (#438).
 
 ## [0.28.7] - 2026-11-24
 
