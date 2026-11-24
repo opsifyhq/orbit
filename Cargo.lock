@@ -1579,7 +1579,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "croner",
  "ed25519-dalek",
@@ -1651,7 +1651,7 @@ dependencies = [
 name = "orbit-domain"
 version = "0.28.5"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "croner",
@@ -1705,7 +1705,7 @@ dependencies = [
 name = "orbit-kubernetes"
 version = "0.28.5"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "orbit-domain",
  "orbit-security",
@@ -1736,7 +1736,7 @@ name = "orbit-license-cli"
 version = "0.28.5"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "ed25519-dalek",
  "rand_core 0.6.4",
  "serde",
@@ -1766,7 +1766,7 @@ version = "0.28.5"
 dependencies = [
  "aes-gcm",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
  "hex",
@@ -1789,7 +1789,7 @@ name = "orbit-store"
 version = "0.28.5"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "orbit-contracts",
  "orbit-domain",
@@ -1811,7 +1811,7 @@ version = "0.28.5"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dotenvy",
  "hex",
