@@ -47,6 +47,8 @@ impl KubernetesClientConfig {
             }
             "kubeconfig" => {
                 let raw = credential.ok_or("kubeconfig credential is required")?;
+                orbit_domain::yaml::validate(&raw)
+                    .map_err(|error| format!("invalid kubeconfig: {error}"))?;
                 let doc: Value = serde_yaml::from_str(&raw)
                     .map_err(|error| format!("invalid kubeconfig YAML: {error}"))?;
                 let context_name = config

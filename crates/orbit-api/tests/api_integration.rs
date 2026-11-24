@@ -532,6 +532,25 @@ async fn agent_crud_validation_and_export() {
 }
 
 #[tokio::test]
+async fn oversized_tasks_are_rejected_before_the_harness() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agents/{}/executions", app.agent_id),
+            json!({ "task": "x".repeat(150 * 1024) }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"] == "task")));
+}
+
+#[tokio::test]
 async fn run_task_is_stored_as_the_single_run_instruction() {
     let Some(app) = test_app(true).await else {
         return;

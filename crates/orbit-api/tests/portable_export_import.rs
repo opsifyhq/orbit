@@ -1092,6 +1092,21 @@ async fn update_keeps_existing_env_values_and_validation_errors_are_reported() {
 }
 
 #[tokio::test]
+async fn yaml_aliases_are_rejected_before_parsing() {
+    let Some(env) = env().await else { return };
+    let org = owner_org(&env, "alias").await;
+    let aliased = "apiVersion: orbit.io/v1\nkind: Skill\nmetadata: &meta\n  name: Alias\nspec:\n  slug: alias\n  content: hello\n";
+    let reply = call(&env, import_request(&org, "", aliased, "alias.yaml")).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.text
+    );
+    assert!(reply.text.contains("aliases"), "{}", reply.text);
+}
+
+#[tokio::test]
 async fn json_wrapper_and_json_envelope_are_accepted() {
     let Some(env) = env().await else { return };
     let org = owner_org(&env, "json").await;

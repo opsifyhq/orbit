@@ -88,16 +88,23 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Fails on any vulnerability advisory. Ignore list (comma-separated); each entry needs
-      # a reason and must be re-checked when the dependency is updated:
-      #   RUSTSEC-2024-0449  unsafe-libyaml is unmaintained (no patched version; transitive
-      #                      via serde_yaml). Informational, not an exploitable vulnerability.
+      # Fails on vulnerability advisories and puts informational warnings in the job
+      # summary so unmaintained dependencies do not go unnoticed.
       - name: cargo audit
         # Run cargo-audit directly. rustsec/audit-check@v2 tries to update a check run and
         # fails on some token/permission combinations even when no advisory is found.
         run: |
           cargo install cargo-audit --locked
-          cargo audit --ignore RUSTSEC-2024-0449
+          set +e
+          cargo audit | tee /tmp/orbit-cargo-audit.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "### cargo audit"
+            echo '```'
+            sed -n '1,240p' /tmp/orbit-cargo-audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: cargo test (unit + DB integration)
         env:
