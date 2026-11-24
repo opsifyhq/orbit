@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Changed
+
+- An unknown path shows an ORBIT "This page does not exist" page with links back, instead
+  of the framework's default 404. Create and edit pages have their own browser title
+  ("New agent", "Edit skill") (#456).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
