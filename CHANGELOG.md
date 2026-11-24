@@ -10,6 +10,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- The Executions list groups repeated scheduled runs per trigger/agent into a collapsed
+  header, while keeping team-run steps grouped as before.
+
 - Dependabot coverage for Cargo, npm, Docker and GitHub Actions, plus a scheduled
   dependency watcher and `versions.json` source of truth for Rust, Node, PostgreSQL,
   Helm and the harness/CLI pins.
