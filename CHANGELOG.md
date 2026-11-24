@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- `POST /api/v1/api-tokens` refuses an `expiresInDays` below 1 or above 3650 with 422.
+  Before, 0 or a negative value created a token that never expires, and larger values were
+  silently cut to ten years (#438).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

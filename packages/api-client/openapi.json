@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.4"
+    "version": "0.28.7"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -6054,7 +6054,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Lifetime in days, 1 to 3650. Leave it out for a token that does not expire."
           },
           "name": {
             "type": "string"

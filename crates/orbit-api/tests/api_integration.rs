@@ -1000,6 +1000,47 @@ async fn token_for(store: &Store, org_id: Uuid, user_id: Uuid, name: &str) -> St
     issued.token
 }
 
+/// #438: a token lifetime outside 1..=3650 days is refused, not turned into a token that
+/// never expires.
+#[tokio::test]
+async fn api_token_lifetime_must_be_positive_and_bounded() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for days in [-1, 0, 3651] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/api-tokens",
+                json!({ "name": "ci", "scopes": ["agents:read"], "expiresInDays": days }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{days}: {body}");
+        assert_eq!(body["error"]["details"][0]["path"], "expiresInDays");
+    }
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/api-tokens",
+            json!({ "name": "ci", "scopes": ["agents:read"], "expiresInDays": 30 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["expiresAt"].is_string(), "{body}");
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/api-tokens",
+            json!({ "name": "forever", "scopes": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["expiresAt"].is_null(), "{body}");
+}
+
 #[tokio::test]
 async fn private_agents_are_hidden_from_other_users() {
     let Some(app) = test_app(true).await else {
