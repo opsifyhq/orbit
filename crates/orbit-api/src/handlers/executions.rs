@@ -254,9 +254,15 @@ pub async fn execute_agent(
             orbit_domain::ValidationIssue::new("task", "task must not be empty"),
         ]));
     }
-    if task.chars().count() > 200_000 {
+    // The harness receives the task through argv. Leave headroom below its 100 KiB
+    // prompt limit for headings and injected memory/connector context, and reject the
+    // request here instead of accepting a run that cannot be delivered.
+    if task.len() > 96 * 1024 {
         return Err(ApiError::validation(vec![
-            orbit_domain::ValidationIssue::new("task", "task must be <= 200000 characters"),
+            orbit_domain::ValidationIssue::new(
+                "task",
+                "task must be <= 98304 bytes (96 KiB) so it fits the harness prompt limit",
+            ),
         ]));
     }
     let mut skills = body.skills.clone();

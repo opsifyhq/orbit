@@ -68,7 +68,7 @@ utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
-serde_yaml = "0.9"
+serde_yaml = { package = "serde_norway", version = "0.9" }
 async-nats = "0.52"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 jsonwebtoken = "9"

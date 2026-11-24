@@ -571,7 +571,7 @@ pub fn split_frontmatter(content: &str) -> Option<(serde_yaml::Value, String)> {
         None if tail.is_empty() => "",
         None => return None,
     };
-    let frontmatter = serde_yaml::from_str(yaml).ok()?;
+    let frontmatter = orbit_domain::yaml::value_from_str(yaml).ok()?;
     Some((frontmatter, body.to_string()))
 }
 
@@ -700,6 +700,8 @@ pub fn parse_upload(text: &str, filename: &str) -> Result<ParsedBundle, Vec<Vali
             other => values.push(other),
         }
     } else {
+        orbit_domain::yaml::validate(trimmed)
+            .map_err(|error| vec![issue("content", format!("invalid YAML: {error}"))])?;
         for (index, document) in serde_yaml::Deserializer::from_str(trimmed).enumerate() {
             let value: serde_yaml::Value =
                 serde::Deserialize::deserialize(document).map_err(|error| {

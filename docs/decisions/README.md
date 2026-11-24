@@ -18,3 +18,4 @@ new decision; do not edit an accepted one, supersede it.
 - [0013 — Bulk lifecycle: agents archive, skills delete only](0013-bulk-lifecycle.md)
 - [0014 — Prometheus metrics from the API only](0014-prometheus-metrics.md)
 - [0015 — Agent Team workflows](0015-team-workflows.md)
+- [0016 — Keep chrono and chrono-tz, with a migration plan](0016-chrono-dependencies.md)

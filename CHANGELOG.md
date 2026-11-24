@@ -10,6 +10,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- Harness inputs over 96 KiB are rejected by the API before a run is created; Pi session
+  storage now lives outside the per-execution workspace so continuous runs can resume.
+  Pi also clears a provider error when a later assistant message succeeds.
+
 - Agent Team **workflows** (#9): a third team mode next to pipeline and native. Steps are
   joined by lines that follow success, failure or an outcome the agent reports
   (`OUTCOME: pass`), so a team can branch, run steps in parallel, join them again and
@@ -45,6 +49,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
+- User YAML is parsed with the maintained `serde_norway` fork under the existing
+  `serde_yaml` dependency name. Imports reject anchors/aliases and documents over 1 MiB,
+  and cargo-audit warnings are copied to the CI job summary.
 - Kubernetes connections use an authentication dropdown, kubeconfig file upload, a
   comma-separated namespace field, and derive `allowedResources` from the selected
   capabilities (Advanced config can override it). The connection test falls back to a

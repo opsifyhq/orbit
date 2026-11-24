@@ -163,7 +163,13 @@ happened, so a person decides whether to run it again.
   agent specs saved before that check. Pi `skills` paths must stay inside the workspace
 - `extra_env`: environment variables resolved by the control plane (for example
   environment mappings used by skill scripts); never serialized and never logged
-- `session`: session reference to resume, if any
+- `session`: session reference to resume, if any. Pi stores sessions under
+  `<workspace-parent>/.pi-sessions/<agent-id>`, outside the per-execution workspace, so the
+  run cleanup does not delete a session a continuous runtime needs. A configured
+  `sessionDir` remains workspace-confined for agent-authored paths.
+- `task` size: the API rejects a task over 96 KiB before creating the execution. The
+  harness receives the prompt through argv, and its hard prompt limit is 100 KiB; the
+  remaining headroom covers headings, memory and connector context.
 - `workspace`: per-execution scratch directory contract (`WorkspaceSpec`)
 - `events`, `cancel`, `pause` (the `PauseClock` described above)
 
