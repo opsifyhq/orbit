@@ -97,7 +97,14 @@ export default function OutputPage() {
   const problem = outputProblem(data);
   const needsCredential = problem === "No webhook URL" || problem === "No bot token";
   const lastReason = data.lastDelivery ? deliveryReason(data.lastDelivery) : null;
-  const agent = data.agentId ? agents.data?.items.find((item) => item.id === data.agentId) : undefined;
+  const agentIds = data.agentIds?.length
+    ? data.agentIds
+    : data.agentId
+      ? [data.agentId]
+      : [];
+  const linkedAgents = agentIds
+    .map((id) => agents.data?.items.find((item) => item.id === id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
   const team = data.teamId ? teams.data?.find((item) => item.id === data.teamId) : undefined;
   const appliesTo = data.teamId ? (
     team ? (
@@ -107,14 +114,20 @@ export default function OutputPage() {
     ) : (
       "An agent team you cannot see"
     )
-  ) : data.agentId ? (
-    agent ? (
-      <Link href={`/agents/${agent.id}`} className="font-medium text-primary underline-offset-4 hover:underline">
-        {agent.name}
-      </Link>
-    ) : (
-      "An agent you cannot see"
-    )
+  ) : linkedAgents.length ? (
+    <span className="inline-flex flex-wrap gap-x-2 gap-y-0.5">
+      {linkedAgents.map((agent) => (
+        <Link
+          key={agent.id}
+          href={`/agents/${agent.id}`}
+          className="font-medium text-primary underline-offset-4 hover:underline"
+        >
+          {agent.name}
+        </Link>
+      ))}
+    </span>
+  ) : agentIds.length ? (
+    "Agents you cannot see"
   ) : (
     "Every agent"
   );

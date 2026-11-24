@@ -8358,6 +8358,14 @@
             ],
             "format": "uuid"
           },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Multiple agent targets. Takes precedence over the legacy `agentId`."
+          },
           "botToken": {
             "type": [
               "string",
@@ -8432,6 +8440,7 @@
           "id",
           "name",
           "kind",
+          "agentIds",
           "events",
           "enabled",
           "hasWebhook",
@@ -8446,6 +8455,13 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           "chatId": {
             "type": [

@@ -11626,6 +11626,33 @@ async fn outputs_require_manage_on_their_target() {
     assert_eq!(status, StatusCode::CREATED, "{own}");
     let own_id = own["id"].as_str().unwrap().to_string();
 
+    // Several agents can share one output target list.
+    let second_agent = create_demo_agent(&app.store, app.org_id, fx.mallory.id).await;
+    make_private(
+        &app.store,
+        app.org_id,
+        "agents",
+        second_agent,
+        fx.mallory.id,
+    )
+    .await;
+    let (status, multi) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/outputs",
+            m,
+            json!({
+                "name": format!("multi-{}", Uuid::now_v7()),
+                "kind": "webhook",
+                "agentIds": [own_agent, second_agent],
+                "webhookUrl": hook
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{multi}");
+    assert_eq!(multi["agentIds"].as_array().unwrap().len(), 2);
+
     // Retargeting my output to someone else's agent, or org-wide, is refused.
     for target in [create(Some(team_agent), None), create(None, None)] {
         let (status, _) = send(

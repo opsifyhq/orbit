@@ -312,7 +312,12 @@ export default function WorkPage() {
   const visibleOutputs = (outputs.data ?? []).filter((output) => {
     if (!output.enabled) return false;
     if (whoType === "team") return output.teamId === who;
-    return !output.teamId && (!output.agentId || output.agentId === who);
+    const agentIds = output.agentIds?.length
+      ? output.agentIds
+      : output.agentId
+        ? [output.agentId]
+        : [];
+    return !output.teamId && (!agentIds.length || agentIds.includes(who));
   });
   const harnessProfiles = (workerProfiles.data ?? []).filter((p) => p.harnessKind === harness);
   // A worker only takes runs placed on its own target (or placed anywhere).

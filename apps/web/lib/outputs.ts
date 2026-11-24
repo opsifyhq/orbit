@@ -9,6 +9,7 @@ export interface OutputView {
   name: string;
   kind: OutputKind;
   agentId?: string | null;
+  agentIds?: string[];
   teamId?: string | null;
   events: string[];
   template?: string | null;
@@ -44,6 +45,7 @@ export interface OutputInput {
   name: string;
   kind: OutputKind;
   agentId?: string | null;
+  agentIds?: string[];
   teamId?: string | null;
   events: string[];
   webhookUrl?: string;
@@ -67,6 +69,32 @@ export function listOutputs(): Promise<OutputView[]> {
 
 export function listOutputDeliveries(id: string, limit = 25): Promise<OutputDelivery[]> {
   return request<OutputDelivery[]>(`/api/v1/outputs/${id}/deliveries?limit=${limit}`);
+}
+
+/** Add an existing output to an agent, or assign its single team target. */
+export function retargetOutput(
+  output: OutputView,
+  scope: "agent" | "team",
+  id: string,
+): OutputInput {
+  const base = {
+    name: output.name,
+    kind: output.kind,
+    events: output.events,
+    template: output.template ?? null,
+    enabled: output.enabled,
+    chatId: output.chatId ?? null,
+    messageThreadId: output.messageThreadId ?? null,
+    config: output.config ?? {},
+  };
+  if (scope === "agent") {
+    return {
+      ...base,
+      agentIds: [...new Set([...(output.agentIds ?? (output.agentId ? [output.agentId] : [])), id])],
+      teamId: null,
+    };
+  }
+  return { ...base, agentIds: [], teamId: id };
 }
 
 export function createOutput(body: OutputInput): Promise<OutputView> {

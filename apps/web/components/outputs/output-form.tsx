@@ -63,7 +63,7 @@ type Draft = {
   s3SecretAccessKey: string;
   s3SessionToken: string;
   scope: Scope;
-  agentId: string;
+  agentIds: string[];
   teamId: string;
   events: string[];
   template: string;
@@ -71,7 +71,13 @@ type Draft = {
 };
 
 function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: string }): Draft {
-  const agentId = output?.agentId ?? initial?.agentId ?? "";
+  const agentIds = output?.agentIds?.length
+    ? output.agentIds
+    : output?.agentId
+      ? [output.agentId]
+      : initial?.agentId
+        ? [initial.agentId]
+        : [];
   const teamId = output?.teamId ?? initial?.teamId ?? "";
   return {
     name: output?.name ?? "",
@@ -89,8 +95,8 @@ function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: s
     s3AccessKeyId: "",
     s3SecretAccessKey: "",
     s3SessionToken: "",
-    scope: teamId ? "team" : agentId ? "agent" : "all",
-    agentId,
+    scope: teamId ? "team" : agentIds.length ? "agent" : "all",
+    agentIds,
     teamId,
     events: output?.events ?? [...OUTPUT_EVENTS],
     template: output?.template ?? "",
@@ -140,9 +146,12 @@ export function OutputForm({
   useUnsavedChanges(draft);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
 
-  const agentList = (agents.data?.items ?? []).filter((agent) => agent.status !== "archived" || agent.id === draft.agentId);
+  const agentList = (agents.data?.items ?? []).filter((agent) => agent.status !== "archived" || draft.agentIds.includes(agent.id));
   const teamList = teams.data ?? [];
-  const agentName = agentList.find((agent) => agent.id === draft.agentId)?.name;
+  const agentNames = draft.agentIds
+    .map((id) => agentList.find((agent) => agent.id === id)?.name)
+    .filter((name): name is string => Boolean(name));
+  const agentName = agentNames.length ? agentNames.join(", ") : undefined;
   const teamName = teamList.find((team) => team.id === draft.teamId)?.name;
   const storedCredential = Boolean(output?.hasWebhook) && output?.kind === draft.kind;
   const kindName = kindLabel(draft.kind);
@@ -188,7 +197,9 @@ export function OutputForm({
       issues.push({ section: "destination", message: "The webhook URL must start with https:// or http://." });
     }
   }
-  if (draft.scope === "agent" && !draft.agentId) issues.push({ section: "trigger", message: "Choose the agent." });
+  if (draft.scope === "agent" && !draft.agentIds.length) {
+    issues.push({ section: "trigger", message: "Choose at least one agent." });
+  }
   if (draft.scope === "team" && !draft.teamId) issues.push({ section: "trigger", message: "Choose the agent team." });
   if (!draft.events.length) issues.push({ section: "trigger", message: "Choose at least one event." });
   for (const issue of serverIssues) issues.push({ section: sectionOfPath(issue.path), message: issue.message });
@@ -238,7 +249,7 @@ export function OutputForm({
     await onSubmit({
       name: draft.name.trim(),
       kind: draft.kind,
-      agentId: draft.scope === "agent" ? draft.agentId : null,
+      agentIds: draft.scope === "agent" ? draft.agentIds : [],
       teamId: draft.scope === "team" ? draft.teamId : null,
       events: OUTPUT_EVENTS.filter((event) => draft.events.includes(event)),
       ...(isTelegram
@@ -280,7 +291,7 @@ export function OutputForm({
     draft.scope === "team"
       ? teamName ?? "Team not chosen"
       : draft.scope === "agent"
-        ? agentName ?? "Agent not chosen"
+        ? agentName ?? "Agents not chosen"
         : "Every agent";
   const destinationDetail = isTelegram
     ? chatId
@@ -603,8 +614,8 @@ export function OutputForm({
                     selected={draft.scope === "agent"}
                     onSelect={() => set("scope", "agent")}
                     icon={<Bot />}
-                    title="One agent"
-                    description="One message per run of that agent."
+                    title="Specific agents"
+                    description="One message per run of each selected agent."
                   />
                   <ChoiceCard
                     selected={draft.scope === "team"}
@@ -616,16 +627,30 @@ export function OutputForm({
                 </div>
               </fieldset>
               {draft.scope === "agent" ? (
-                <Field label="Agent" htmlFor="output-agent">
-                  <Select id="output-agent" value={draft.agentId} onChange={(event) => set("agentId", event.target.value)}>
-                    <option value="">{agents.isLoading ? "Loading agents…" : "Choose an agent"}</option>
-                    {agentList.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
+                <div className="space-y-2">
+                  <p className="text-[13px] font-medium">Agents</p>
+                  {agents.isLoading ? (
+                    <p className="text-[13px] text-muted-foreground">Loading agents…</p>
+                  ) : (
+                    <div className="grid max-h-60 gap-2 overflow-y-auto sm:grid-cols-2">
+                      {agentList.map((agent) => (
+                        <CheckboxField
+                          key={agent.id}
+                          title={agent.name}
+                          checked={draft.agentIds.includes(agent.id)}
+                          onChange={(event) =>
+                            set(
+                              "agentIds",
+                              event.target.checked
+                                ? [...draft.agentIds, agent.id]
+                                : draft.agentIds.filter((id) => id !== agent.id),
+                            )
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               ) : null}
               {draft.scope === "team" ? (
                 <Field label="Agent team" htmlFor="output-team">

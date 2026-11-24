@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LinkOutputDialog } from "./link-output-dialog";
 import { eventsLabel, kindLabel } from "@/lib/output-meta";
 import type { OutputView } from "@/lib/outputs";
 
@@ -21,7 +22,9 @@ export function LinkedOutputs({
   id: string;
 }) {
   const linked = outputs.filter((output) =>
-    scope === "agent" ? output.agentId === id : output.teamId === id,
+    scope === "agent"
+      ? (output.agentIds ?? (output.agentId ? [output.agentId] : [])).includes(id)
+      : output.teamId === id,
   );
   const addHref = `/outputs/new?${scope === "agent" ? "agent" : "team"}=${id}`;
   return (
@@ -32,6 +35,7 @@ export function LinkedOutputs({
           <Link href={addHref} className="text-primary underline-offset-4 hover:underline">
             Add output
           </Link>
+          <LinkOutputDialog outputs={outputs} scope={scope} id={id} />
           <Link href="/outputs" className="text-muted-foreground underline-offset-4 hover:underline">
             Manage
           </Link>
