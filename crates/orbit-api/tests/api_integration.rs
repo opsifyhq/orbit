@@ -5067,6 +5067,148 @@ mod output_delivery {
         assert_eq!(delivery[0].0, "succeeded", "{delivery:?}");
     }
 
+    /// The body `apps/web/components/outputs/output-form.tsx` sends for an S3 output:
+    /// `bucket` in the config and no `allowedBuckets` (#386).
+    fn s3_form_body(name: &str, endpoint: &str, bucket: Option<&str>) -> Value {
+        let mut config = json!({
+            "provider": "rustfs",
+            "endpoint": endpoint,
+            "region": "us-east-1",
+            "keyPrefix": "",
+            "pathStyle": true
+        });
+        if let Some(bucket) = bucket {
+            config["bucket"] = json!(bucket);
+        }
+        json!({
+            "name": name,
+            "kind": "s3",
+            "agentIds": [],
+            "teamId": null,
+            "events": ["succeeded", "failed"],
+            "s3Credential": json!({ "accessKeyId": "AK", "secretAccessKey": "SK" }).to_string(),
+            "config": config,
+            "template": null,
+            "enabled": true
+        })
+    }
+
+    async fn create_s3_output_like_the_form(app: &TestApp, hook: &Hook) -> Uuid {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/outputs",
+                s3_form_body(
+                    &format!("s3-form-{}", Uuid::now_v7()),
+                    &hook.url,
+                    Some("orbit"),
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn s3_output_created_like_the_web_form_delivers() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+
+        let (status, body) = send(
+            &app.router,
+            post(&format!("/api/v1/outputs/{output_id}/test"), json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert_eq!(hook.count(), 1, "the Test button writes one object");
+
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(rows(&app, output_id).await[0].0, "succeeded");
+        assert_eq!(hook.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn s3_output_config_that_cannot_deliver_is_refused() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let endpoint = "http://127.0.0.1:9";
+        for (label, body) in [
+            ("no bucket", s3_form_body("s3-none", endpoint, None)),
+            (
+                "invalid bucket",
+                s3_form_body("s3-bad", endpoint, Some("Not_A_Bucket")),
+            ),
+            ("contradicting allowlist", {
+                let mut body = s3_form_body("s3-other", endpoint, Some("orbit"));
+                body["config"]["allowedBuckets"] = json!(["other"]);
+                body
+            }),
+        ] {
+            let (status, response) = send(&app.router, post("/api/v1/outputs", body)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{label}: {response}"
+            );
+        }
+
+        // An update that keeps the stored credential is checked too.
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        let mut body = s3_form_body("s3-update", &hook.url, None);
+        body.as_object_mut().unwrap().remove("s3Credential");
+        let (status, response) = send(
+            &app.router,
+            patch_json(&format!("/api/v1/outputs/{output_id}"), body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+        let stored = app.store.get_output(app.org_id, output_id).await.unwrap();
+        assert_eq!(
+            stored.config["bucket"], "orbit",
+            "a refused update changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_access_denied_is_permanent_and_server_errors_retry() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+
+        let hook = start_s3_hook().await;
+        hook.status.store(403, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("failed".to_string(), 1, Some(403))]
+        );
+        make_due(&app, output_id).await;
+        deliver_pending(&app.state).await;
+        assert_eq!(hook.count(), 1, "403 is not retried");
+
+        let hook = start_s3_hook().await;
+        hook.status.store(503, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("pending".to_string(), 1, Some(503))]
+        );
+    }
+
     async fn finished_execution(app: &TestApp) -> Uuid {
         let path = format!("/api/v1/agents/{}/executions", app.agent_id);
         let request = Request::builder()

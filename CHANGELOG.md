@@ -37,6 +37,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- S3 outputs created in the web UI can deliver (#386). An output's configured bucket is
+  its allowlist, so it no longer needs `allowedBuckets`; a config that cannot write to its
+  own bucket is refused when it is saved, and permanent S3 errors (403, 404, blocked
+  endpoint, invalid key) fail the delivery instead of retrying it five times.
 - Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
   still running, and its page says the run was stopped instead of "The run failed".
 - A failed OpenCode run names the reason OpenCode reported (for example a provider that
