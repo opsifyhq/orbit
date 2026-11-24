@@ -15,7 +15,7 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 3
     groups:
-      npm-root: { patterns: ["*"] }
+      npm-root: { patterns: ["*"], update-types: ["minor", "patch"] }
     ignore:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
@@ -24,7 +24,7 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 3
     groups:
-      npm-web: { patterns: ["*"] }
+      npm-web: { patterns: ["*"], update-types: ["minor", "patch"] }
     ignore:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
@@ -32,7 +32,7 @@ updates:
     directory: "/packages/api-client"
     schedule: { interval: weekly }
     groups:
-      npm-api-client: { patterns: ["*"] }
+      npm-api-client: { patterns: ["*"], update-types: ["minor", "patch"] }
     ignore:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
@@ -40,7 +40,7 @@ updates:
     directory: "/packages/contracts"
     schedule: { interval: weekly }
     groups:
-      npm-contracts: { patterns: ["*"] }
+      npm-contracts: { patterns: ["*"], update-types: ["minor", "patch"] }
     ignore:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
