@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- OIDC JWT validation works with jsonwebtoken 12: enable its `rust_crypto` provider.
+  Without it, valid IdP tokens failed at runtime even though the build and non-signature
+  tests passed. A real RS256 token/JWKS regression test now covers this.
+
 ## [0.28.6] - 2026-11-24
 
 ### Fixed
