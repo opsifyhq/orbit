@@ -88,10 +88,6 @@ pub fn build_router(state: AppState) -> Router {
                 .post(handlers::executions::execute_agent),
         )
         .route(
-            "/api/v1/agent-instances",
-            get(handlers::agents::list_agent_instances),
-        )
-        .route(
             "/api/v1/executions",
             get(handlers::executions::list_executions),
         )

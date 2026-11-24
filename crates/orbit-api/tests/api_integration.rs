@@ -12756,29 +12756,6 @@ async fn user_list_hides_other_users_oidc_identity_from_non_privileged_callers()
 }
 
 #[tokio::test]
-async fn agent_instances_listing_is_scoped_like_agents() {
-    let Some(app) = test_app(true).await else {
-        return;
-    };
-    let fx = d2_fixture(&app).await;
-    let (status, body) = send(
-        &app.router,
-        auth_get("/api/v1/agent-instances", &fx.mallory_token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["total"], 0);
-    // The scoped query itself (the table is never written by the product today).
-    let access = orbit_store::access::ResourceAccess::new(fx.mallory.id, false, vec![]);
-    assert!(app
-        .store
-        .list_agent_instances(app.org_id, Some(&access))
-        .await
-        .unwrap()
-        .is_empty());
-}
-
-#[tokio::test]
 async fn settings_write_holder_cannot_grant_beyond_own_permissions_in_roles() {
     let Some(app) = licensed_test_app().await else {
         return;

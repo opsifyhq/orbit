@@ -6,7 +6,7 @@ use uuid::Uuid;
 use orbit_contracts::{HarnessDescriptor, ProviderKind};
 use orbit_domain::{AgentDefinition, AgentSpec, HarnessKind};
 use orbit_store::{
-    Agent, AgentInstance, AgentVersion, ConnectionWithConnector, ConnectorRecord, DashboardSummary,
+    Agent, AgentVersion, ConnectionWithConnector, ConnectorRecord, DashboardSummary,
     ExecutionEventRecord, ExecutionRecord, Organization, Provider, Trigger, User,
 };
 
@@ -266,21 +266,6 @@ pub struct UpdateAgentRequest {
     /// version by now, the update is refused with 409 instead of overwriting it.
     #[serde(default)]
     pub expected_version: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentInstanceView {
-    #[serde(flatten)]
-    pub instance: AgentInstance,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentInstancePage {
-    pub items: Vec<AgentInstanceView>,
-    pub next_cursor: Option<String>,
-    pub total: i64,
 }
 
 // ---------------------------------------------------------------- executions

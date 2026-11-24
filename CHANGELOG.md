@@ -13,6 +13,13 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - A stored harness without an adapter in this build is reported as planned; a second,
   outdated status table that called OpenCode "scaffolded" and Pi "planned" is removed. The
   Work page no longer shows two options that could never be switched on (#452).
+- A worker started without `ORBIT_WORKER_HARNESSES` claims only harnesses with an available
+  adapter (`mock,opencode,pi`), not planned ones it can only fail (#452).
+
+### Removed
+
+- `GET /api/v1/agent-instances`: it always returned an empty list, since nothing creates
+  agent instances (#452).
 
 ## [0.28.7] - 2026-11-24
 
