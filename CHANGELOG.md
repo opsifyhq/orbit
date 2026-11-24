@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Security
+
+- Worker credential and environment value types print `[redacted]` instead of the value
+  when formatted with `Debug`, so a future debug log cannot leak a secret (#451).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

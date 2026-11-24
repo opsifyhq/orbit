@@ -30,11 +30,22 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use crate::worker_auth::WorkerAuth;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerSecret {
     pub secret_ref: String,
     pub value: String,
+}
+
+/// `Debug` never prints the plaintext value (AGENTS.md rule 4, #451): a future
+/// `tracing::debug!(?context)` or error dump must not leak a credential.
+impl std::fmt::Debug for WorkerSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerSecret")
+            .field("secret_ref", &self.secret_ref)
+            .field("value", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1564,11 +1575,56 @@ pub struct EnvMapping {
     pub secret_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedEnv {
     pub env_var: String,
     pub value: String,
+}
+
+/// `Debug` never prints the plaintext value (AGENTS.md rule 4, #451): a future
+/// `tracing::debug!(?context)` or error dump must not leak a credential.
+impl std::fmt::Debug for ResolvedEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedEnv")
+            .field("env_var", &self.env_var)
+            .field("value", &"[redacted]")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_never_contains_secret_values() {
+        let secret = WorkerSecret {
+            secret_ref: "secret://provider/1".into(),
+            value: "sk-plaintext".into(),
+        };
+        let env = ResolvedEnv {
+            env_var: "GH_TOKEN".into(),
+            value: "ghp-plaintext".into(),
+        };
+        let model = WorkerModel {
+            selection: serde_json::from_value(serde_json::json!({
+                "management": "harness", "provider": "p", "model": "m"
+            }))
+            .unwrap(),
+            endpoint: None,
+            credential: Some(secret.clone()),
+        };
+        for text in [
+            format!("{secret:?}"),
+            format!("{env:?}"),
+            format!("{model:?}"),
+        ] {
+            assert!(!text.contains("plaintext"), "{text}");
+            assert!(text.contains("[redacted]"), "{text}");
+        }
+        assert!(format!("{env:?}").contains("GH_TOKEN"));
+    }
 }
 
 pub async fn resolve_env(
