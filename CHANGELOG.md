@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Changed
+
+- Database-backed tests fail in CI (`CI=true`) when `ORBIT_TEST_DATABASE_URL` is missing,
+  instead of skipping and leaving the job green (#445).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

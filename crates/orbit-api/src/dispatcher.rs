@@ -446,7 +446,7 @@ mod tests {
     /// A panic while the lock is held must not leave it behind on a pooled connection.
     #[tokio::test]
     async fn team_lock_is_released_when_the_holder_panics() {
-        let Ok(url) = std::env::var("ORBIT_TEST_DATABASE_URL") else {
+        let Some(url) = orbit_store::test_database_url() else {
             return;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()

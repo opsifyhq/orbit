@@ -11,7 +11,7 @@ use orbit_store::executions::{EventFilter, NewExecution};
 use orbit_store::{Store, WorkerProfile};
 
 async fn test_store() -> Option<Store> {
-    let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
+    let url = orbit_store::test_database_url()?;
     let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
     let store = Store::connect(&url, 5)
