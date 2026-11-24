@@ -90,6 +90,8 @@ sections:
   - id: operate
     title: Deploy and operate
     pages:
+      - path: development/dependency-updates.md
+        title: Dependency updates
       - path: development/deployment.md
         title: Deployment
       - path: development/licensing.md

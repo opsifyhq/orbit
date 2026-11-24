@@ -56,4 +56,5 @@ for values in deploy/helm/orbit/values*.yaml; do
     fi
   done < <(grep -nE '^[[:space:]]*tag:' "${values}" || true)
 done
+node scripts/check-external-versions.mjs
 exit "${status}"
