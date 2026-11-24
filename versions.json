@@ -2,7 +2,7 @@
   "rust": "1.100.0",
   "node": "26.13",
   "postgres": "17",
-  "helm": "4.3.1",
+  "helm": "5.1.0",
   "opencode": {
     "version": "2.3.0",
     "sha256": "fc0f81522aceeabac47693d88389efa2bc517ce74c2c38fd6967819fcc6e4d3b"
