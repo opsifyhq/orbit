@@ -46,6 +46,7 @@ import {
   type WorkflowPort,
 } from "@/lib/workflow";
 import { cn } from "@/lib/utils";
+import { prefersReducedMotion } from "@/lib/motion";
 
 export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
 
@@ -122,8 +123,10 @@ interface LineData extends Record<string, unknown> {
 const hiddenHandle = "!pointer-events-none !h-px !w-px !min-w-0 !min-h-0 !border-0 !opacity-0";
 const BACK_IN = "back-in";
 
+// `orbit-handle` widens the hit area to 32px without changing the 12px dot (globals.css),
+// the touch-target size the design system asks for (#448).
 const inputClass =
-  "!h-3 !w-3 !rounded-full !border-2 !border-border-strong !bg-card transition-[border-color,box-shadow] hover:!border-primary";
+  "orbit-handle !h-3 !w-3 !rounded-full !border-2 !border-border-strong !bg-card transition-[border-color,box-shadow] hover:!border-primary";
 
 function OutputHandle({ port, readOnly, top }: { port: PortData; readOnly: boolean; top?: number }) {
   return (
@@ -140,7 +143,7 @@ function OutputHandle({ port, readOnly, top }: { port: PortData; readOnly: boole
       }}
       className={cn(
         "!rounded-full !border-2 transition-[box-shadow,transform]",
-        readOnly ? "!h-2 !w-2" : "!h-3 !w-3 hover:!shadow-[0_0_0_4px_hsl(var(--primary)/0.25)]",
+        readOnly ? "!h-2 !w-2" : "orbit-handle !h-3 !w-3 hover:!shadow-[0_0_0_4px_hsl(var(--primary)/0.25)]",
       )}
     />
   );
@@ -279,7 +282,7 @@ const StartNode = memo(function StartNode({ data }: NodeProps<Node<{ readOnly: b
         isConnectable={!data.readOnly}
         title={data.readOnly ? undefined : "Drag to a step that starts the run"}
         style={{ borderColor: START_COLOR, background: START_COLOR }}
-        className={cn("!rounded-full !border-2", data.readOnly ? "!h-2 !w-2" : "!h-3 !w-3")}
+        className={cn("!rounded-full !border-2", data.readOnly ? "!h-2 !w-2" : "orbit-handle !h-3 !w-3")}
       />
     </div>
   );
@@ -802,7 +805,8 @@ export function WorkflowCanvas({
           zoom,
         },
         // No animation in a background tab: it would not be drawn and would stall.
-        { duration: first || document.hidden ? 0 : 200 },
+        // Nor with reduced motion asked for (#448).
+        { duration: first || document.hidden || prefersReducedMotion() ? 0 : 200 },
       );
       fittedRef.current = true;
       setFitted(true);
@@ -871,6 +875,25 @@ export function WorkflowCanvas({
       role="group"
       aria-label={label}
       ref={setBox}
+      // Keyboard on a focused step does what a click does (#448): Enter or Space opens it in
+      // the editor, Escape clears the selection, and an arrow-key nudge is saved like a drag.
+      onKeyDown={(event) => {
+        if (!onSelect) return;
+        const target = event.target as HTMLElement;
+        const id = target.closest(".react-flow__node")?.getAttribute("data-id");
+        if (!id || id === WORKFLOW_START || target.closest("input, textarea, select, button")) return;
+        if (event.key === "Enter" || event.key === " ") onSelect({ kind: "node", id });
+        else if (event.key === "Escape") onSelect(null);
+      }}
+      onKeyUp={(event) => {
+        if (!onMove || !flow || readOnly || !event.key.startsWith("Arrow")) return;
+        if (!(event.target as HTMLElement).closest(".react-flow__node")) return;
+        const moved = flow
+          .getNodes()
+          .filter((node) => node.selected && node.id !== WORKFLOW_START)
+          .map((node) => ({ id: node.id, position: node.position }));
+        if (moved.length) onMove(moved);
+      }}
     >
       <ReactFlow
         className={cn("transition-opacity duration-150", fitted ? "opacity-100" : "opacity-0")}

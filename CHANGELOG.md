@@ -19,6 +19,11 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 - The next workflow step and the run's result get a step's answer without its
   `OUTCOME:` line.
+- Workflow canvas accessibility: connection handles have a 32px hit area (the dot stays
+  12px); Enter or Space on a focused step opens it in the editor, Escape clears the
+  selection and an arrow-key nudge is saved like a drag; selecting announces one short
+  line instead of the whole form; replacing a workflow with an example asks in ORBIT's own
+  dialog; scrolling and the canvas viewport do not animate with reduced motion on (#448).
 
 ## [0.28.7] - 2026-11-24
 

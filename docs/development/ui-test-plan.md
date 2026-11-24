@@ -340,3 +340,13 @@ licence messages instead.
 
 For each failure: page, action, expected vs actual, request id (response header
 `x-request-id`), screenshot, and whether it reproduces after `down -v`.
+
+### Workflow canvas keyboard and touch (#448)
+
+- Tab to a step on the canvas, press Enter: the editor panel shows that step and a screen
+  reader announces "Step … selected". Escape clears it.
+- With a step selected, arrow keys move it 5px (Shift: 20px); after the key is released the
+  new position stays when you select another step, and Tidy up is enabled.
+- Connection dots react within 10px of the dot (touch or mouse), except where a line starts.
+- Examples over an existing workflow open the in-app "Replace the current workflow?" dialog.
+- With the OS "reduce motion" setting on, selecting a step and "show everything" do not animate.

@@ -321,6 +321,14 @@
   outline-offset: 3px;
   border-radius: calc(var(--radius) + 2px);
 }
+/* A 12px handle with a 32px hit area: the pseudo-element is part of the handle for
+   pointer and touch events, so the dot keeps its size (#448). */
+.orbit-workflow .react-flow__handle.orbit-handle::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border-radius: 9999px;
+}
 .orbit-workflow .react-flow__edge:hover .react-flow__edge-path {
   stroke-width: 2.5;
 }
