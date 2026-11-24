@@ -15,6 +15,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   (`OUTCOME: pass`), so a team can branch, run steps in parallel, join them again and
   loop with a limit per step. Team Studio has a canvas editor with a list view for
   phones and three examples; the run page draws the graph with the state of every step.
+  Step cards show their outputs (one per outcome, plus done, failed and always), lines
+  take the colour of the output they leave, the editor arranges the steps after every
+  change, and it has undo, a full-screen mode and inputs and outputs for every step.
+  The next step and the run's result get a step's answer without its `OUTCOME:` line.
   Workflow teams work with the queue, work sources, exports and imports. Existing teams
   are unchanged. The mock harness reports outcomes too (`[outcome:a,b]` in the task
   steers it), so a workflow can be tried without a model. See [the guide](docs/guide/agent-teams.md#workflows) and
