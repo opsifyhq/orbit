@@ -295,7 +295,9 @@ export function TeamForm({
   const issues: Issue[] = [];
   if (!draft.name.trim()) issues.push({ section: "goal", message: "Enter a name." });
   if (isWorkflow) {
-    for (const problem of workflowProblems) issues.push({ section: "agents", message: problem.message });
+    // Two steps can have the same problem ("Every step needs a name."): list it once.
+    for (const message of new Set(workflowProblems.map((problem) => problem.message)))
+      issues.push({ section: "agents", message });
   } else {
     if (!draft.steps.length) issues.push({ section: "agents", message: "Add at least one agent." });
     if (draft.steps.some((step) => !step.agentId))
