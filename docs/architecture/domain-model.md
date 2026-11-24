@@ -222,14 +222,16 @@ Append-only records of security-relevant actions (agent changes, secret changes,
 connection grants, approvals, executions).
 
 ### Agent Team / TeamRun / TeamStep / TeamQueueItem
-- **AgentTeam**: `definition` JSONB holds mode (`pipeline` | `native`), instructions,
+- **AgentTeam**: `definition` JSONB holds mode (`pipeline` | `native` | `workflow`), the
+  `workflow` graph for that mode, instructions,
   ordered steps (agent + optional model override), skills, optional work source,
   multi-repository list, optional worker profile and `autoLaunch`. Tracks
   `last_poll_at` / `last_poll_error`.
 - **TeamRun**: one orchestration run; terminal states `succeeded | failed | cancelled`.
   Carries `archived_at`.
 - **TeamStep**: one agent step of a run (unique `run_id, step_index`), linked to the
-  execution it created.
+  execution it created. Workflow runs also record `node_id` (the workflow step),
+  `attempt`, the reported `outcome` and `activated_by` (the lines that started it).
 - **TeamQueueItem**: durable work item, unique per `(team_id, external_key)` so an issue
   is never queued twice. Status `pending | running | succeeded | failed | cancelled`;
   tracks `attempts` / `max_attempts` for retry.

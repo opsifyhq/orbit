@@ -6,6 +6,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Added
+
+- Agent Team **workflows** (#9): a third team mode next to pipeline and native. Steps are
+  joined by lines that follow success, failure or an outcome the agent reports
+  (`OUTCOME: pass`), so a team can branch, run steps in parallel, join them again and
+  loop with a limit per step. Team Studio has a canvas editor with a list view for
+  phones and three examples; the run page draws the graph with the state of every step.
+  Workflow teams work with the queue, work sources, exports and imports. Existing teams
+  are unchanged. The mock harness reports outcomes too (`[outcome:a,b]` in the task
+  steers it), so a workflow can be tried without a model. See [the guide](docs/guide/agent-teams.md#workflows) and
+  [decision 0015](docs/decisions/0015-team-workflows.md).
+
+### Fixed
+
+- Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
+  still running, and its page says the run was stopped instead of "The run failed".
+- A failed OpenCode run names the reason OpenCode reported (for example a provider that
+  refused the request) instead of only "opencode exited with 1".
+- The Run dialog of a team no longer fills in the team's goal as the task. A blank task
+  still runs the goal, which is now sent once instead of as both task and context.
+
 ## [0.28.4] - 2026-11-23
 
 ### Added

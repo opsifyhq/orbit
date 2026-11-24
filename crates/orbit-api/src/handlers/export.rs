@@ -377,7 +377,28 @@ pub(crate) async fn build_document(
                 }
                 repositories.push(value);
             }
-            let spec = redacted(json!({
+            // Workflow steps name their agent, like `steps` does, instead of carrying ids.
+            let workflow = match &definition.workflow {
+                Some(workflow) => {
+                    let mut value = serde_json::to_value(workflow).map_err(internal)?;
+                    for (node, source) in value["nodes"]
+                        .as_array_mut()
+                        .into_iter()
+                        .flatten()
+                        .zip(&workflow.nodes)
+                    {
+                        if let Some(object) = node.as_object_mut() {
+                            object.remove("agentId");
+                            if let Some(reference) = names.agent(source.agent_id).await {
+                                object.insert("agent".into(), json!(reference.portable()));
+                            }
+                        }
+                    }
+                    Some(value)
+                }
+                None => None,
+            };
+            let mut spec = redacted(json!({
                 "mode": definition.mode,
                 "instructions": definition.instructions,
                 "repository": definition.repository,
@@ -395,6 +416,9 @@ pub(crate) async fn build_document(
                 "autonomy": definition.autonomy,
                 "steps": steps,
             }));
+            if let Some(workflow) = workflow {
+                spec["workflow"] = workflow;
+            }
             let mut doc = PortableDocument::new(PortableKind::AgentTeam, team.name, spec);
             doc.metadata.description = team.description;
             doc

@@ -6187,8 +6187,7 @@
       "CreateTeamRequest": {
         "type": "object",
         "required": [
-          "name",
-          "steps"
+          "name"
         ],
         "properties": {
           "autoLaunch": {
@@ -6242,7 +6241,7 @@
           },
           "mode": {
             "type": "string",
-            "description": "`pipeline` runs each agent once in order. `native` runs the primary agent only\nand materializes the remaining agents as harness-native subagents."
+            "description": "`pipeline` runs each agent once in order. `native` runs the primary agent only\nand materializes the remaining agents as harness-native subagents. `workflow` runs\nthe graph in `workflow`: steps joined by conditional lines, with parallel\nbranches, joins and bounded loops."
           },
           "model": {
             "oneOf": [
@@ -6283,7 +6282,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TeamStepInput"
-            }
+            },
+            "description": "The agents in order. Not needed for a workflow."
           },
           "timeoutSeconds": {
             "type": [
@@ -6312,6 +6312,17 @@
             ],
             "format": "uuid",
             "description": "Worker profile used for automatic launch."
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowDefinition",
+                "description": "The workflow graph. Required when `mode` is `workflow`; `steps` is then derived\nfrom it and may be left out."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -9522,9 +9533,15 @@
           "status",
           "input",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "attempt",
+          "activatedBy"
         ],
         "properties": {
+          "activatedBy": {
+            "type": "object",
+            "description": "Workflow runs: the lines that started this step, as\n`[{ \"edge\": lineId, \"step\": sourceStepIndex | null }]`."
+          },
           "agentId": {
             "type": "string",
             "format": "uuid"
@@ -9532,6 +9549,11 @@
           "agentVersionId": {
             "type": "string",
             "format": "uuid"
+          },
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Workflow runs: 1 for the first time the workflow step ran, 2 for the second…"
           },
           "createdAt": {
             "type": "string",
@@ -9565,9 +9587,23 @@
           "name": {
             "type": "string"
           },
+          "nodeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Workflow runs: the id of the workflow step this ran. `null` for pipeline and\nnative runs."
+          },
           "orgId": {
             "type": "string",
             "format": "uuid"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Workflow runs: the outcome label the agent reported, if the step has outcomes."
           },
           "output": {},
           "runId": {
@@ -10650,6 +10686,172 @@
             "type": "string"
           }
         }
+      },
+      "WorkflowDefinition": {
+        "type": "object",
+        "required": [
+          "nodes"
+        ],
+        "properties": {
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEdge"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowNode"
+            }
+          }
+        }
+      },
+      "WorkflowEdge": {
+        "type": "object",
+        "description": "A line from one step (or from `start`) to another.",
+        "required": [
+          "id",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "A step id, or `start`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The outcome label, when `when` is `outcome`."
+          },
+          "to": {
+            "type": "string"
+          },
+          "when": {
+            "$ref": "#/components/schemas/WorkflowWhen",
+            "description": "Ignored on lines that leave `start`."
+          }
+        }
+      },
+      "WorkflowModel": {
+        "type": "object",
+        "description": "A model override for one step. Same shape as the team-level override.",
+        "properties": {
+          "management": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WorkflowNode": {
+        "type": "object",
+        "description": "One step of a workflow: an agent and what it should do here.",
+        "required": [
+          "id",
+          "name",
+          "agentId"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable id inside the workflow (lower-case letters, digits, `-` and `_`)."
+          },
+          "instructions": {
+            "type": "string",
+            "description": "What this step should do, added to the team goal for this step only."
+          },
+          "maxRuns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How often this step may run in one run. Only matters inside a loop.",
+            "minimum": 0
+          },
+          "model": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Outcome labels the agent chooses from when it finishes, such as `pass` and `fail`.\nEmpty when the step has no outcome lines."
+          },
+          "position": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowPosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "WorkflowPosition": {
+        "type": "object",
+        "description": "Where a step sits on the canvas. Presentation only; the engine ignores it.",
+        "required": [
+          "x",
+          "y"
+        ],
+        "properties": {
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "WorkflowWhen": {
+        "type": "string",
+        "description": "When a line hands work on.",
+        "enum": [
+          "always",
+          "success",
+          "failure",
+          "outcome"
+        ]
       }
     }
   },

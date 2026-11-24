@@ -41,8 +41,12 @@ import {
 } from "@/lib/queries";
 import type { TeamAutonomy, TeamInput, TeamModel, TeamStepInput } from "@/lib/teams";
 import type { AgentTeam, TeamRepository, WorkSource } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+import { cleanWorkflow, workflowFromSteps, workflowIssues, type Workflow } from "@/lib/workflow";
 
 import { MODE_HINT, MODE_LABEL, StepNumber, modelLabel, type TeamMode } from "./team-parts";
+import { WorkflowEditor } from "./workflow/workflow-editor";
 
 type SectionId = "goal" | "agents" | "workspace" | "skills" | "access" | "runtime" | "sharing";
 
@@ -70,6 +74,8 @@ interface Draft {
   instructions: string;
   mode: TeamMode;
   steps: TeamStepInput[];
+  /** The graph for mode "workflow". Kept while another mode is chosen, so switching back loses nothing. */
+  workflow: Workflow | null;
   model: TeamModel | null;
   harness: string;
   repository: string;
@@ -97,6 +103,7 @@ function draftFrom(team?: AgentTeam): Draft {
     steps: definition?.steps?.length
       ? definition.steps.map((step) => ({ agentId: step.agentId, model: step.model ?? null }))
       : [{ agentId: "" }, { agentId: "" }],
+    workflow: definition?.workflow ?? null,
     model: definition?.model ?? null,
     harness: definition?.harness ?? "",
     repository: definition?.repository ?? "",
@@ -125,7 +132,10 @@ function cleanModel(model: TeamModel | null | undefined): TeamModel | null {
 }
 
 function toInput(draft: Draft): TeamInput {
+  const workflow = draft.workflow ? cleanWorkflow(draft.workflow) : null;
   return {
+    // A workflow names its agents on its steps; the API derives the agent list from it.
+    workflow: draft.mode === "workflow" ? workflow : workflow && !workflowIssues(workflow).length ? workflow : null,
     name: draft.name.trim(),
     description: draft.description,
     mode: draft.mode,
@@ -146,7 +156,10 @@ function toInput(draft: Draft): TeamInput {
       draft.autonomyMode === "fixed"
         ? ({ mode: "fixed", level: Number(draft.autonomyLevel), approvalMode: draft.autonomyApproval } satisfies TeamAutonomy)
         : null,
-    steps: draft.steps.map((step) => ({ agentId: step.agentId, model: cleanModel(step.model) })),
+    steps:
+      draft.mode === "workflow"
+        ? []
+        : draft.steps.map((step) => ({ agentId: step.agentId, model: cleanModel(step.model) })),
   };
 }
 
@@ -261,21 +274,44 @@ export function TeamForm({
   const agentOptions = (agents.data?.items ?? []).filter((agent) => agent.status !== "archived");
   const agentById = new Map((agents.data?.items ?? []).map((agent) => [agent.id, agent]));
   const primary = agentById.get(draft.steps[0]?.agentId ?? "");
+  const isWorkflow = draft.mode === "workflow";
+  const workflow = draft.workflow ?? { nodes: [], edges: [] };
+  const workflowProblems = isWorkflow ? workflowIssues(workflow) : [];
+
+  /** Choosing Workflow for the first time turns the agents chosen so far into a line of steps. */
+  function chooseMode(mode: TeamMode) {
+    setDraft((current) => {
+      if (mode !== "workflow" || current.workflow?.nodes.length) return { ...current, mode };
+      const chosenSteps = current.steps.filter((step) => step.agentId);
+      return {
+        ...current,
+        mode,
+        workflow: workflowFromSteps(
+          chosenSteps.map((step) => ({ agentId: step.agentId, name: agentById.get(step.agentId)?.name })),
+        ),
+      };
+    });
+  }
 
   // ------------------------------------------------------------------ validation
   const issues: Issue[] = [];
   if (!draft.name.trim()) issues.push({ section: "goal", message: "Enter a name." });
-  if (!draft.steps.length) issues.push({ section: "agents", message: "Add at least one agent." });
-  if (draft.steps.some((step) => !step.agentId))
-    issues.push({ section: "agents", message: "Choose an agent for every position." });
-  const chosen = draft.steps.map((step) => step.agentId).filter(Boolean);
-  if (new Set(chosen).size !== chosen.length)
-    issues.push({ section: "agents", message: "Each agent can appear only once." });
+  if (isWorkflow) {
+    for (const problem of workflowProblems) issues.push({ section: "agents", message: problem.message });
+  } else {
+    if (!draft.steps.length) issues.push({ section: "agents", message: "Add at least one agent." });
+    if (draft.steps.some((step) => !step.agentId))
+      issues.push({ section: "agents", message: "Choose an agent for every position." });
+    const chosen = draft.steps.map((step) => step.agentId).filter(Boolean);
+    if (new Set(chosen).size !== chosen.length)
+      issues.push({ section: "agents", message: "Each agent can appear only once." });
+  }
   if (draft.mode === "native" && primary && primary.harness !== "opencode")
     issues.push({ section: "agents", message: "Native subagents need an OpenCode primary agent. Pick one, or use a pipeline." });
   if (draft.workSource?.enabled && !draft.workSource.connectionId)
     issues.push({ section: "workspace", message: "Choose the connection the work source polls." });
   const [showIssues, setShowIssues] = useState(false);
+  const [revealProblem, setRevealProblem] = useState(0);
   const issueCount = (id: SectionId) => (showIssues ? issues.filter((issue) => issue.section === id).length : 0);
 
   // ------------------------------------------------------------------ sections
@@ -307,6 +343,7 @@ export function TeamForm({
     if (issues.length) {
       setShowIssues(true);
       go(issues[0].section);
+      if (issues[0].section === "agents") setRevealProblem((count) => count + 1);
       toast.error(issues.length === 1 ? issues[0].message : "Fix the highlighted sections");
       return;
     }
@@ -324,12 +361,17 @@ export function TeamForm({
   const profile = (workerProfiles.data ?? []).find((item) => item.id === draft.workerProfileId);
   const summary: Record<SectionId, { value: string; missing?: boolean }> = {
     goal: { value: draft.name.trim() || "Name not set", missing: !draft.name.trim() },
-    agents: {
-      value: filledSteps.length
-        ? `${MODE_LABEL[draft.mode]} · ${plural(filledSteps.length, "agent")}`
-        : "No agents chosen",
-      missing: !filledSteps.length,
-    },
+    agents: isWorkflow
+      ? {
+          value: workflow.nodes.length ? `Workflow · ${plural(workflow.nodes.length, "step")}` : "No steps yet",
+          missing: !workflow.nodes.length,
+        }
+      : {
+          value: filledSteps.length
+            ? `${MODE_LABEL[draft.mode]} · ${plural(filledSteps.length, "agent")}`
+            : "No agents chosen",
+          missing: !filledSteps.length,
+        },
     workspace: {
       value: source?.enabled
         ? `Picks up ${source.provider === "gitlab" ? "GitLab" : "GitHub"} issues`
@@ -410,7 +452,8 @@ export function TeamForm({
           </div>
         </aside>
 
-        <div className="min-w-0 max-w-3xl space-y-5">
+        {/* The workflow canvas needs the room a form column does not. */}
+        <div className={cn("min-w-0 space-y-5", isWorkflow && active === "agents" ? "max-w-6xl" : "max-w-3xl")}>
           <FormSection id="goal" active={active} go={go} description="What the team is called and what it works toward.">
             {sectionIssues("goal")}
             <div className="grid gap-4 sm:grid-cols-2">
@@ -445,22 +488,36 @@ export function TeamForm({
             id="agents"
             active={active}
             go={go}
-            description="Who is on the team and how they work together. The first agent leads; each agent's own instructions define its role."
+            description={
+              isWorkflow
+                ? "Who is on the team and how they work together. Each step runs one agent; the lines decide what happens next."
+                : "Who is on the team and how they work together. The first agent leads; each agent's own instructions define its role."
+            }
           >
             {sectionIssues("agents")}
-            <div role="radiogroup" aria-label="How the team runs" className="grid gap-2 sm:grid-cols-2">
-              {(["native", "pipeline"] as const).map((mode) => (
+            <div role="radiogroup" aria-label="How the team runs" className="grid gap-2 sm:grid-cols-3">
+              {(["native", "pipeline", "workflow"] as const).map((mode) => (
                 <ChoiceCard
                   key={mode}
                   selected={draft.mode === mode}
-                  onSelect={() => set("mode", mode)}
+                  onSelect={() => chooseMode(mode)}
                   title={MODE_LABEL[mode]}
                   description={MODE_HINT[mode]}
                 />
               ))}
             </div>
 
-            <div className="space-y-2">
+            {isWorkflow ? (
+              <WorkflowEditor
+                value={workflow}
+                onChange={(next) => set("workflow", next)}
+                agents={agentOptions}
+                issues={workflowProblems}
+                revealProblem={revealProblem}
+              />
+            ) : null}
+
+            <div className="space-y-2" hidden={isWorkflow}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium">{draft.mode === "native" ? "Primary agent and subagents" : "Agents in order"}</p>
                 <Button
@@ -558,8 +615,9 @@ export function TeamForm({
               defaultOpen={Boolean(modelLabel(draft.model) || draft.steps.some((step) => modelLabel(step.model)))}
             >
               <p className="text-[13px] text-muted-foreground">
-                Optional. A team model replaces every agent&apos;s model for this team; a per-agent model wins over
-                both. Use provider and model names as they appear under Model providers.
+                Optional. A team model replaces every agent&apos;s model for this team; a{" "}
+                {isWorkflow ? "model set on a step" : "per-agent model"} wins over both. Use provider and model names
+                as they appear under Model providers.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="Team provider" htmlFor="team-model-provider" optional>
@@ -581,7 +639,7 @@ export function TeamForm({
                   />
                 </Field>
               </div>
-              {draft.steps.some((step) => step.agentId) ? (
+              {!isWorkflow && draft.steps.some((step) => step.agentId) ? (
                 <ul className="space-y-2">
                   {draft.steps.map((step, index) =>
                     step.agentId ? (

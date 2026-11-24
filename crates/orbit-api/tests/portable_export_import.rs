@@ -1268,3 +1268,75 @@ async fn export_does_not_name_resources_the_caller_cannot_view() {
         .collect();
     assert!(references.contains(&agent), "{report}");
 }
+
+/// #9: a workflow team exports its graph with agent names and imports it again with the
+/// target organization's agent ids.
+#[tokio::test]
+async fn a_workflow_team_round_trips_with_its_graph() {
+    let Some(env) = env().await else { return };
+    let source = owner_org(&env, "wf-source").await;
+    let seeded = seed(&env, &source, "wf").await;
+    let agent_id = &seeded
+        .ids
+        .iter()
+        .find(|(kind, _)| *kind == "agents")
+        .unwrap()
+        .1;
+    let team = create(
+        &env,
+        &source,
+        "/api/v1/agent-teams",
+        json!({
+            "name": "Gate wf",
+            "mode": "workflow",
+            "instructions": "Ship it.",
+            "workflow": {
+                "nodes": [
+                    { "id": "test", "name": "Test", "agentId": agent_id, "outcomes": ["pass", "fail"], "maxRuns": 2 },
+                    { "id": "fix", "name": "Fix", "agentId": agent_id, "instructions": "Fix it." },
+                ],
+                "edges": [
+                    { "id": "l1", "from": "start", "to": "test", "when": "always" },
+                    { "id": "l2", "from": "test", "to": "fix", "when": "outcome", "outcome": "fail" },
+                    { "id": "l3", "from": "fix", "to": "test", "when": "success" },
+                ],
+            },
+        }),
+    )
+    .await;
+    let yaml = export_yaml(&env, &source, "agent_teams", team["id"].as_str().unwrap()).await;
+    let doc = &parse_docs(&yaml)[0];
+    assert_eq!(doc["spec"]["mode"], "workflow");
+    let node = &doc["spec"]["workflow"]["nodes"][0];
+    assert!(node.get("agentId").is_none(), "ids do not travel: {yaml}");
+    assert!(node["agent"].is_string(), "{yaml}");
+
+    // Import the agent and what it needs, then the team, into a fresh organization.
+    let target = owner_org(&env, "wf-target").await;
+    let mut bundle = export_bundle(&env, &source, &seeded).await;
+    bundle.push(yaml);
+    let reply = call(
+        &env,
+        import_request(&target, "", &bundle.join("---\n"), "b.yaml"),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.text);
+    let teams = call(&env, get(&target, "/api/v1/agent-teams")).await.json();
+    let imported = teams
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|team| team["name"] == "Gate wf")
+        .expect("workflow team imported");
+    let agents = call(&env, get(&target, "/api/v1/agents")).await.json();
+    let target_agent = agents["items"][0]["id"].clone();
+    let workflow = &imported["definition"]["workflow"];
+    assert_eq!(workflow["nodes"][0]["agentId"], target_agent);
+    assert_eq!(workflow["nodes"][0]["outcomes"], json!(["pass", "fail"]));
+    assert_eq!(workflow["nodes"][0]["maxRuns"], 2);
+    assert_eq!(workflow["edges"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        imported["definition"]["steps"],
+        json!([{ "agentId": target_agent, "model": null }])
+    );
+}

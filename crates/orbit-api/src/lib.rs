@@ -26,6 +26,7 @@ pub mod routes;
 pub mod state;
 pub mod supervisor;
 pub mod team_outcomes;
+pub mod team_workflow;
 pub mod telemetry;
 pub mod work_sources;
 pub mod worker_auth;

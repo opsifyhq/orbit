@@ -15,6 +15,7 @@ pub mod pagination;
 pub mod schedule;
 pub mod tool_policy;
 pub mod worker_resources;
+pub mod workflow;
 
 pub use agent::*;
 pub use auth_secret::{is_dns_label, AuthSecretPolicy, AUTH_SECRETS_ENV, DEFAULT_AUTH_SECRETS};
@@ -28,6 +29,7 @@ pub use pagination::*;
 pub use schedule::{next_occurrence, parse_timezone, validate_schedule, ScheduleError};
 pub use tool_policy::*;
 pub use worker_resources::*;
+pub use workflow::*;
 
 /// Definition API version accepted by this build.
 pub const AGENT_API_VERSION: &str = "orbit.io/v1";

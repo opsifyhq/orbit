@@ -195,10 +195,7 @@ pub(crate) async fn start_queue_item(
         }
     };
     match start_claimed_run(state, auth, &item, &run, &definition).await {
-        Ok(step) => Ok(crate::handlers::teams::TeamRunDetail {
-            run,
-            steps: vec![step],
-        }),
+        Ok(steps) => Ok(crate::handlers::teams::TeamRunDetail { run, steps }),
         Err(error) => {
             release_failed_claim(state, auth, &item, Some(&run), &error.message).await;
             Err(error)
@@ -212,7 +209,7 @@ async fn start_claimed_run(
     item: &TeamQueueItem,
     run: &orbit_store::TeamRun,
     definition: &crate::handlers::teams::TeamDefinition,
-) -> Result<orbit_store::TeamStep, ApiError> {
+) -> Result<Vec<orbit_store::TeamStep>, ApiError> {
     if !state
         .store
         .attach_team_run_to_queue_item(auth.org_id, item.id, run.id)
@@ -222,21 +219,11 @@ async fn start_claimed_run(
             "queue item was cancelled or claimed elsewhere while starting",
         ));
     }
-    let step = crate::handlers::teams::start_step(state, run, definition, 0, None).await?;
-    if definition.auto_launch {
-        if let (Some(profile_id), Some(execution_id)) =
-            (definition.worker_profile_id, step.execution_id)
-        {
-            crate::handlers::worker_launches::launch_profile_internal(
-                state,
-                auth,
-                profile_id,
-                Some(execution_id),
-            )
-            .await?;
-        }
+    let first = crate::handlers::teams::start_first_steps(state, run, definition).await?;
+    for step in &first.started {
+        crate::handlers::teams::auto_launch_step(state, run, definition, step, Some(auth)).await?;
     }
-    Ok(step)
+    Ok(first.steps)
 }
 
 /// Undo a failed start: cancel the run and its not-yet-running execution so nothing
@@ -249,6 +236,19 @@ async fn release_failed_claim(
     message: &str,
 ) {
     if let Some(run) = run {
+        // A workflow run may have started several steps; stop them all.
+        match state
+            .store
+            .request_team_run_cancel(run.org_id, run.id)
+            .await
+        {
+            Ok(cancelled) => {
+                crate::handlers::teams::announce_cancel(state, run.org_id, &cancelled).await
+            }
+            Err(error) => {
+                tracing::warn!(%error, run_id = %run.id, "failed to cancel executions of aborted team run")
+            }
+        }
         let key = format!("team:{}:0", run.id);
         if let Ok(Some(execution)) = state
             .store

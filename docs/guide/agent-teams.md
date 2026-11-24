@@ -1,11 +1,12 @@
 # Agent Teams
 
-An Agent Team coordinates several agents for one outcome. Teams have two modes:
+An Agent Team coordinates several agents for one outcome. Teams have three modes:
 
 | Mode | How it runs |
 |---|---|
 | `pipeline` (default) | Every agent is a separate ORBIT execution, chained in order |
 | `native` | The primary agent runs once and the remaining agents become harness-native subagents |
+| `workflow` | Steps joined by lines: branch on a result, run steps side by side, loop until the work is right. See [Workflows](#workflows) |
 
 ## Definition
 
@@ -24,6 +25,73 @@ An Agent Team coordinates several agents for one outcome. Teams have two modes:
 `native` mode requires the primary agent to use the OpenCode harness; use `pipeline` mode
 for Pi and other harnesses. The API and Team Studio both refuse a native team whose
 primary agent is not OpenCode.
+
+## Workflows
+
+A workflow is a team whose agents are arranged as a graph instead of a line. Choose
+**Workflow** in Team Studio's Agents section.
+
+- A **step** runs one agent as a normal execution. It has a name, an agent, optional
+  instructions for this step only, and optional **outcomes**. The same agent can be used
+  in several steps.
+- A **line** connects two steps and says when the work is handed on: when the step
+  **succeeds**, when it **fails**, **always**, or when it reports a certain **outcome**.
+- A line from **Start** marks a step that begins the run. Several steps can.
+
+| You want | Draw it like this |
+|---|---|
+| One step after another | A line "when it succeeds" from each step to the next |
+| A branch | Give the step outcomes (`pass`, `fail`) and draw one line per outcome |
+| Parallel work | Two lines from one step that both match; both targets start together |
+| A join | Draw lines from each branch to the same step; it waits until no earlier step is still working, then receives all their results |
+| A loop | Draw a line back to an earlier step, for example `fix` → `test` |
+| A fallback | A line "when it fails" to a step that cleans up or reports |
+
+**Outcomes.** An agent that runs a failing test suite still finishes its run
+successfully, so "succeeded" cannot mean "the tests passed". A step with outcomes is
+told to end its answer with a line `OUTCOME: <label>`, and ORBIT reads that line to
+choose the next step. If the agent does not report one of the listed outcomes, the step
+counts as failed.
+
+**Limits.** A step on a loop runs at most 3 times in one run unless you set another
+limit (1 to 10) on the step. When a step would run more often, the run fails and says
+which step reached its limit; the run page marks that step on the graph. A run creates
+at most 100 steps, and a workflow has at most 30 steps.
+
+**When a run ends.** It succeeds when nothing is running and nothing is waiting; its
+result is the output of the step or steps that finished last. It fails when a step fails
+and no line "when it fails" or "always" leaves that step; steps that are still working
+are then stopped. A step whose worker was lost (stopped by the runtime, or no longer
+reporting) always fails the run, even with a line "when it fails": the lost worker may
+have changed things, so nothing runs after it automatically.
+
+**What a step receives.** The run's task, the team goal, its own instructions, and the
+output of the step that handed over. After a join it receives the outputs of all of
+them, by step name.
+
+Parallel steps are separate executions on separate workers, so they do not share files.
+Let them push to branches, and let the joining step combine the branches.
+
+In the editor, the **Canvas** shows the graph: drag a step to move it, drag from the dot
+on its right side to another step to connect them, select a step or a line to edit it,
+and press Backspace to remove it. **Add step** continues from the selected step (or from
+the end of the line) and follows the next outcome that has no line yet. Saving a
+workflow with a problem opens the step that has it. **List** shows the same steps as a form, which is the
+default on a phone. **Examples** inserts a ready-made workflow (review loop, parallel
+work, test before deploy) to adapt. The run page draws the graph with the state of every
+step and the lines the run followed; select a step there to find its row in the list.
+When a run is cancelled, or fails while other branches are still working, those steps
+are shown as stopped.
+
+**Trying a workflow without a model.** Agents on the mock harness follow the outcome
+instruction too: a step with outcomes reports the first one listed. To steer it, put
+`[outcome:changes,approved]` in the run's task: the first label is reported the first
+time a step runs, the second the next time, and so on. A task that contains `fail`
+makes every mock step fail, and `slow` makes each take about 25 seconds.
+
+In the API a workflow team is created with `mode: "workflow"` and a `workflow` object
+with `nodes` and `edges`; `steps` can be left out. A run uses the graph it started with,
+so editing the team does not change a run that is in flight.
 
 ## Queue and dispatcher
 
@@ -99,7 +167,7 @@ team autonomy is applied after this override and therefore wins. The legacy nume
 
 ## Reruns
 
-Rerunning a single step of a team run is refused with 409 ("this execution is a team step
+Rerunning a single step of a team run (pipeline or workflow) is refused with 409 ("this execution is a team step
 and cannot be rerun on its own"). The execution page shows "Open team run" instead of
 "Run again". Start a new team run to repeat the work.
 

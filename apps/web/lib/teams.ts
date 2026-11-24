@@ -2,6 +2,7 @@
 
 import type { components } from "@orbit/api-client";
 import { request } from "./http";
+import type { Workflow } from "./workflow";
 import type {
   AgentTeam,
   TeamRun,
@@ -38,7 +39,9 @@ export function getAgentTeam(teamId: string): Promise<AgentTeam> {
 export type TeamInput = {
   name: string;
   description: string;
-  mode: "pipeline" | "native";
+  mode: "pipeline" | "native" | "workflow";
+  /** The graph, for mode "workflow". `steps` is then derived by the API. */
+  workflow?: Workflow | null;
   instructions: string;
   repository?: string;
   branch?: string;

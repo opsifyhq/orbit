@@ -211,6 +211,9 @@ approvals UI is still being finished.
 | Save a team | Card shows mode, agents (primary/subagent), skills, optional work source |
 | Run | Primary executes, then each subagent in order; steps visible in the run dialog |
 | Queue | Enqueue `owner/repo#123`, run pending, retry/requeue/cancel per item |
+| Team Studio → Agents → **Workflow** | The agents chosen so far become a line of steps on the canvas. **Examples** inserts a workflow; dragging from a step's right dot to another step adds a line; selecting a step or line opens its fields below the canvas (beside it on very wide screens); **List** shows the same steps as a form and is the default on a phone |
+| Workflow problems | Saving with a step that no line leads to, a step without an agent, or an outcome line without that outcome names the problem in the Agents section |
+| Run a workflow team | The run page draws the graph: finished steps are coloured, the working step spins, steps and lines not reached are dashed; a step that ran twice shows `2×`; the step list shows **Run 2** and the reported outcome. A run that fails on a loop limit marks the step as **limit reached**. The Run dialog starts with a blank task; blank runs the team's goal. A workflow too large for the card pans, shows a small map and opens whole with the **Open larger** button; at 360px the picture is an overview and **Steps as text** is open |
 | `/agent-teams` list | Same layout as Agents: search, **All / Picks up issues / On demand** filter, status column, row checkboxes with **Change access**, count under the list |
 | **Runs** (header) | `/agent-teams/runs`: search plus Active/Archived/All filter; old `/agent-teams#runs` links land here |
 

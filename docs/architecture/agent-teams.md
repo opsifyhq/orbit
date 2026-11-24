@@ -31,6 +31,11 @@ Agent Team ──ordered agents───────────────┘
     `.opencode/agents/*.md` subagents and the primary delegates to them. This supports
     OpenCode's internal feedback loop and shared workspace. Subagent dispatches are not
     separate ORBIT executions.
+  - `workflow`: a graph of steps and conditional lines; one ORBIT execution per step
+    run, with parallel branches, joins and bounded loops. The rules are in
+    `crates/orbit-domain/src/workflow.rs`, the run-time part in
+    `crates/orbit-api/src/team_workflow.rs`; see
+    [decision 0015](../decisions/0015-team-workflows.md).
 - **Per-agent models**: each step already uses its own agent's model. A team-level
   `model` override applies to all steps, and a step-level `model` override wins over it:
   `{ "provider": "...", "model": "...", "management": "platform|harness" }`.
@@ -47,7 +52,8 @@ The team `definition` (`TeamDefinition` in `crates/orbit-api/src/handlers/teams.
 
 | Field | Meaning |
 |---|---|
-| `mode` | `pipeline` (default) or `native` |
+| `mode` | `pipeline` (default), `native` or `workflow` |
+| `workflow` | for `workflow` mode: `nodes` (id, name, agentId, instructions, outcomes, maxRuns, model, position) and `edges` (id, from, to, when, outcome); `steps` is then derived |
 | `instructions` | team goal, configured system context for every step |
 | `steps` | ordered agents, each with an optional `model` override |
 | `skills` | skill slugs materialized for every step |
@@ -219,6 +225,7 @@ bounded:
 ## Current limitations
 
 - Connections are attached per **agent**; `connectionIds` on the team adds shared ones.
-- Parallel subagents are not supported; pipeline steps are sequential.
+- Pipeline steps are sequential and native subagents are not parallel ORBIT executions;
+  use `workflow` mode for parallel steps. Parallel workflow steps do not share a workspace.
 - Inbound webhook verification is still pending.
 - GitHub/GitLab writes require a token and may require approvals depending on autonomy.

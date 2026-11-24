@@ -189,6 +189,29 @@ the tab bar on phones.
 **Motion.** Only in response to an action (dialog, sheet, menu) or to show live work
 (the orbiting satellite). No page-load fades. `prefers-reduced-motion` disables all of it.
 
+### Graph canvas
+
+The workflow canvas (`components/teams/workflow/workflow-canvas.tsx`) is the one place
+that uses React Flow. Rules for it, and for any later canvas:
+
+- The canvas is never the only way to do something. Every edit it offers is also a form
+  field (the step and line panel, and the List view, which is the default on phones),
+  and a read-only canvas comes with the same content as text ("Steps as text").
+- Colours come from the tokens: `success`, `destructive` and `primary` for a line's
+  condition, `muted-foreground` for neutral lines. A condition is always also written on
+  the line; colour is never the only signal.
+- The mouse wheel scrolls the page, not the canvas. Zoom with the controls or a pinch.
+- State that is not reached yet is dashed and dimmed; the working step spins.
+- Layout: the way forward is one level line from Start, left to right. A step that only
+  leads back (a fix that returns to its review) hangs below that line, and its line
+  returns the short way, up into the step it goes back to. Lines never arc around the
+  whole picture.
+- A view is never smaller than readable. It takes the full width of the page, is as tall
+  as the workflow needs, and is not drawn below 70%: a larger workflow pans, with a small
+  map, and opens whole in a dialog (the button next to the zoom buttons). On a phone the
+  picture is an overview and the text list is open.
+- A view's buttons sit in a strip of their own along the top, so they never cover a step.
+
 ## Navigation
 
 Defined once in `components/shell/nav.ts`. Groups follow the operator's questions:

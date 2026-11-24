@@ -225,6 +225,22 @@ spec:
     - agent: Docs agent
 ```
 
+A [workflow](agent-teams.md#workflows) team uses `mode: workflow` and a `workflow` block
+whose steps name their agent; `steps` can be left out:
+
+```yaml
+spec:
+  mode: workflow
+  workflow:
+    nodes:
+      - { id: test, name: Test, agent: Tester, outcomes: [pass, fail], maxRuns: 3 }
+      - { id: fix, name: Fix, agent: Docs agent }
+    edges:
+      - { id: line-1, from: start, to: test, when: always }
+      - { id: line-2, from: test, to: fix, when: outcome, outcome: fail }
+      - { id: line-3, from: fix, to: test, when: success }
+```
+
 ### Trigger
 
 Identified by agent, kind and config (a trigger has no name of its own):

@@ -985,13 +985,7 @@ impl OpenCodeHarnessAdapter {
             Ending::Exited(exit) if !exit.success() => with_run(
                 ExecutionOutcome::failed(HarnessError::new(
                     HarnessErrorKind::ExecutionFailed,
-                    format!(
-                        "opencode exited with {}: {}",
-                        exit.code()
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "signal".into()),
-                        truncate(finished.stderr.trim(), 4_000)
-                    ),
+                    exit_failure_message(exit.code(), &finished.stderr, error.as_deref()),
                 )),
                 ExecutionStatus::Failed,
             ),
@@ -1094,8 +1088,38 @@ impl HarnessAdapter for OpenCodeHarnessAdapter {
     }
 }
 
+/// Why a run that exited non-zero failed. OpenCode reports provider errors (no credit,
+/// unknown model) as an event and leaves stderr empty, so the event is the reason.
+fn exit_failure_message(code: Option<i32>, stderr: &str, reported: Option<&str>) -> String {
+    let code = code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".into());
+    let stderr = stderr.trim();
+    match reported.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(reason) => format!("{reason} (opencode exited with {code})"),
+        None if stderr.is_empty() => format!("opencode exited with {code}"),
+        None => format!("opencode exited with {code}: {}", truncate(stderr, 4_000)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_exit_names_the_reported_reason() {
+        assert_eq!(
+            exit_failure_message(Some(1), "", Some("Your credit balance is too low")),
+            "Your credit balance is too low (opencode exited with 1)"
+        );
+        assert_eq!(
+            exit_failure_message(Some(2), " boom\n", None),
+            "opencode exited with 2: boom"
+        );
+        assert_eq!(
+            exit_failure_message(None, "", None),
+            "opencode exited with signal"
+        );
+    }
+
     use super::*;
     use orbit_contracts::SessionRequest;
     use tokio_util::sync::CancellationToken;
