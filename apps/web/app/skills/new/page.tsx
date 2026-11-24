@@ -17,12 +17,12 @@ export default function NewSkillPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(input: SkillInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: SkillInput, commitAccess: (id?: string) => Promise<void>) {
     setSubmitting(true);
     setServerIssues([]);
     try {
       const skill = await createSkill(input);
-      await commitAccess();
+      await commitAccess(skill.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.skills });
       toast.success("Skill created");
       router.push(`/skills/${skill.id}`);

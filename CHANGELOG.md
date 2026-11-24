@@ -10,6 +10,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Added
 
+- Agent, team, connection, provider, skill and environment create forms can set
+  visibility and owning team before the first save; the access patch is applied with the
+  new resource id.
+
 - The Executions list groups repeated scheduled runs per trigger/agent into a collapsed
   header, while keeping team-run steps grouped as before.
 
