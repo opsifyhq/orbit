@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- `make compose-up`, `compose-down`, `compose-logs` and `compose-reset` pass
+  `--env-file .env` and stop with a hint when it is missing.
+- The weekly dependency-watch issue body no longer runs the commands it mentions.
+- Docs: the execution lease is a fixed 90 seconds (`ORBIT_EXECUTION_LEASE_SECONDS` was
+  never read), the API has no OpenTelemetry export, and the tool broker has been the
+  `orbit-worker mcp-broker` subcommand since #315; the empty `services/mcp-broker`
+  directory is removed (#453).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
