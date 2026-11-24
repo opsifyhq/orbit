@@ -6,6 +6,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [0.28.6] - 2026-11-24
+
+### Fixed
+
+- Work-source auto-run starts as the team owner, queue items cannot retarget team
+  credentials outside the configured repositories, and team autonomy elevation is
+  checked at save and at every step start (#383, #384, #385).
+- S3 outputs write to their own configured bucket and permanent S3 errors fail once
+  instead of retrying five times (#386).
+
+### Changed
+
+- Dependency updates: Node 26 images, aes-gcm 0.11, async-nats 0.53, base64 0.23,
+  jsonwebtoken 12, tower-http 0.7 and the GitHub Actions group. Dependabot now groups
+  npm updates within minor/patch; breaking majors are kept for dedicated migrations.
+
 ## [0.28.5] - 2026-11-24
 
 ### Added
