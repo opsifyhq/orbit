@@ -281,6 +281,29 @@ fn prepare_mode(body: &mut CreateTeamRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Where a step's agent was given, for a validation message (#438): `steps[i].agentId`,
+/// or for a workflow every node that uses the agent (`workflow.nodes[j].agentId`), since
+/// a workflow's steps are derived from its nodes.
+fn step_agent_paths(body: &CreateTeamRequest, index: usize, agent_id: Uuid) -> Vec<String> {
+    if let Some(workflow) = body
+        .workflow
+        .as_ref()
+        .filter(|_| body.mode == WORKFLOW_MODE)
+    {
+        let paths: Vec<String> = workflow
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.agent_id == agent_id)
+            .map(|(position, _)| format!("workflow.nodes[{position}].agentId"))
+            .collect();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    vec![format!("steps[{index}].agentId")]
+}
+
 pub(crate) fn parse_definition(team: &AgentTeam) -> Result<TeamDefinition, ApiError> {
     serde_json::from_value(team.definition.clone())
         .map_err(|error| ApiError::internal(format!("team definition is invalid: {error}")))
@@ -695,11 +718,20 @@ pub async fn create_team(
 ) -> Result<(StatusCode, Json<AgentTeam>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
     prepare_mode(&mut body)?;
-    if body.name.trim().is_empty() || body.steps.is_empty() {
-        return Err(ApiError::validation(vec![
-            ValidationIssue::new("name", "name is required"),
-            ValidationIssue::new("steps", "at least one step is required"),
-        ]));
+    // Only the fields that are actually wrong (#438): a team with a name but no steps used
+    // to be told "name: name is required" as well.
+    let mut required = Vec::new();
+    if body.name.trim().is_empty() {
+        required.push(ValidationIssue::new("name", "name is required"));
+    }
+    if body.steps.is_empty() {
+        required.push(ValidationIssue::new(
+            "steps",
+            "at least one step is required",
+        ));
+    }
+    if !required.is_empty() {
+        return Err(ApiError::validation(required));
     }
     if body
         .timeout_seconds
@@ -732,12 +764,14 @@ pub async fn create_team(
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
-    for step in &body.steps {
+    for (index, step) in body.steps.iter().enumerate() {
         if !agent_ids.insert(step.agent_id) {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                "the same agent cannot appear twice in one team",
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    "the same agent cannot appear twice in one team",
+                ));
+            }
         }
         // An agent the caller cannot view is reported exactly like a missing one.
         let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
@@ -747,10 +781,12 @@ pub async fn create_team(
             Err(_) => false,
         };
         if !viewable {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                format!("unknown agent '{}'", step.agent_id),
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    format!("unknown agent '{}'", step.agent_id),
+                ));
+            }
         }
     }
     if let Some(source) = &body.work_source {
@@ -888,11 +924,20 @@ pub async fn update_team(
     auth.require(Permission::SettingsWrite)?;
     require_team_manage(&state, &auth, team_id).await?;
     prepare_mode(&mut body)?;
-    if body.name.trim().is_empty() || body.steps.is_empty() {
-        return Err(ApiError::validation(vec![
-            ValidationIssue::new("name", "name is required"),
-            ValidationIssue::new("steps", "at least one step is required"),
-        ]));
+    // Only the fields that are actually wrong (#438): a team with a name but no steps used
+    // to be told "name: name is required" as well.
+    let mut required = Vec::new();
+    if body.name.trim().is_empty() {
+        required.push(ValidationIssue::new("name", "name is required"));
+    }
+    if body.steps.is_empty() {
+        required.push(ValidationIssue::new(
+            "steps",
+            "at least one step is required",
+        ));
+    }
+    if !required.is_empty() {
+        return Err(ApiError::validation(required));
     }
     if body
         .timeout_seconds
@@ -925,12 +970,14 @@ pub async fn update_team(
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
-    for step in &body.steps {
+    for (index, step) in body.steps.iter().enumerate() {
         if !agent_ids.insert(step.agent_id) {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                "the same agent cannot appear twice in one team",
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    "the same agent cannot appear twice in one team",
+                ));
+            }
         }
         // An agent the caller cannot view is reported exactly like a missing one.
         let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
@@ -940,10 +987,12 @@ pub async fn update_team(
             Err(_) => false,
         };
         if !viewable {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                format!("unknown agent '{}'", step.agent_id),
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    format!("unknown agent '{}'", step.agent_id),
+                ));
+            }
         }
     }
     if let Some(source) = &body.work_source {

@@ -16,6 +16,9 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - A request body with a NUL character (`\u0000`) gets a 422 instead of a 500 storage
   error; a worker token for an unknown harness kind and a trigger on an archived agent are
   refused (#438).
+- Agent-team validation names only the fields that are wrong (a team with a name but no
+  steps no longer gets "name is required"), and points at the step that is wrong:
+  `steps[1].agentId`, or `workflow.nodes[2].agentId` for a workflow (#438).
 
 ## [0.28.7] - 2026-11-24
 

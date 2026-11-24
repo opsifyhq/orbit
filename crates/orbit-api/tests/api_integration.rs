@@ -1000,6 +1000,43 @@ async fn token_for(store: &Store, org_id: Uuid, user_id: Uuid, name: &str) -> St
     issued.token
 }
 
+/// #438: team validation names only the fields that are wrong, with the step's index.
+#[tokio::test]
+async fn team_validation_points_at_the_right_field() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "No steps", "mode": "pipeline" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let paths: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|detail| detail["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["steps"]);
+
+    let unknown = Uuid::now_v7();
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "Bad agent", "mode": "pipeline",
+                    "steps": [{ "agentId": app.agent_id }, { "agentId": unknown }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "steps[1].agentId");
+}
+
 /// #438: NUL characters, unknown worker-token harnesses and triggers on archived agents
 /// are refused with 4xx instead of a 500 or a resource that can never work.
 #[tokio::test]
