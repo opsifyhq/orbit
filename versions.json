@@ -1,6 +1,6 @@
 {
   "rust": "1.100.0",
-  "node": "22.23",
+  "node": "26.13",
   "postgres": "17",
   "helm": "4.3.1",
   "opencode": {
