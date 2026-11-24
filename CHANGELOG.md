@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Security
+
+- The unauthenticated `GET /api/v1/meta` returns only the licence tier, whether it is
+  valid and the available features. Customer, licence id, limits and dates stay in the
+  authenticated `GET /api/v1/license` (#449).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

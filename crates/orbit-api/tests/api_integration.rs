@@ -13738,6 +13738,9 @@ async fn reserved_license_flags_are_not_advertised() {
         meta["license"]["availableFeatures"],
         json!(["custom_roles", "teams"])
     );
+    // #449: /meta is public; customer, licence id, limits and dates are not in it.
+    let keys: Vec<&String> = meta["license"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["availableFeatures", "tier", "valid"], "{meta}");
 }
 
 #[tokio::test]
