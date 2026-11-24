@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- A caller-supplied `X-Request-Id` is only reused when it is 1 to 128 letters, digits,
+  `.`, `_` or `-`; other values (quotes, `<`, spaces) are replaced by a generated id
+  instead of being echoed in the response header and error body (#443).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

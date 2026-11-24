@@ -27,9 +27,7 @@ pub async fn instrument(
         .get(HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
-        .filter(|value| {
-            !value.is_empty() && value.len() <= 128 && value.chars().all(|c| c.is_ascii_graphic())
-        });
+        .filter(|value| is_acceptable_request_id(value));
     let request_id = incoming.unwrap_or_else(|| Uuid::now_v7().to_string());
 
     let method = request.method().clone();
@@ -74,6 +72,33 @@ pub async fn instrument(
         response.headers_mut().insert(HEADER, value);
     }
     response
+}
+
+/// A caller-supplied request id is echoed in the response header and in error bodies, so
+/// only plain ids are kept: 1 to 128 characters of letters, digits, `.`, `_` and `-`.
+/// Anything else (quotes, angle brackets, spaces) is replaced by a generated id (#443).
+fn is_acceptable_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_acceptable_request_id;
+
+    #[test]
+    fn only_plain_request_ids_are_kept() {
+        for ok in ["0199-abc", "trace.id_42", "a"] {
+            assert!(is_acceptable_request_id(ok), "{ok}");
+        }
+        let long = "x".repeat(129);
+        for bad in ["", "inj\"ect", "<script>", "a b", "a/b", long.as_str()] {
+            assert!(!is_acceptable_request_id(bad), "{bad}");
+        }
+    }
 }
 
 /// Keeps `orbit_http_in_flight_requests` right when a request is dropped before it is
