@@ -13719,7 +13719,7 @@ async fn reserved_license_flags_are_not_advertised() {
     assert_eq!(body["license"]["features"].as_array().unwrap().len(), 6);
     assert_eq!(
         body["license"]["availableFeatures"],
-        json!(["custom_roles", "teams"])
+        json!(["custom_roles", "teams", "resource_permissions"])
     );
     assert!(body["warnings"]
         .as_array()
@@ -13736,7 +13736,7 @@ async fn reserved_license_flags_are_not_advertised() {
     assert_eq!(status, StatusCode::OK, "{meta}");
     assert_eq!(
         meta["license"]["availableFeatures"],
-        json!(["custom_roles", "teams"])
+        json!(["custom_roles", "teams", "resource_permissions"])
     );
     // #449: /meta is public; customer, licence id, limits and dates are not in it.
     let keys: Vec<&String> = meta["license"].as_object().unwrap().keys().collect();

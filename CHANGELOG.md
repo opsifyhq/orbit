@@ -13,6 +13,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 - The unauthenticated `GET /api/v1/meta` returns only the licence tier, whether it is
   valid and the available features. Customer, licence id, limits and dates stay in the
   authenticated `GET /api/v1/license` (#449).
+- A licence's `orgSlug` claim (as written in ADR 0010) is read; it is recorded, not
+  enforced. `resource_permissions`, which the sharing endpoints require, is listed as an
+  available feature instead of triggering the "not available in this release" warning
+  (#449).
 
 ## [0.28.7] - 2026-11-24
 
