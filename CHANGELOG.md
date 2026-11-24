@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Security
+
+- X context hydration follows tool policy: a deny or require-approval rule for
+  `posts.search` skips it, and each search is recorded as a tool call. Without a `query`
+  in the run payload or the connection config, hydration is skipped instead of sending
+  the task text to X (#430).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

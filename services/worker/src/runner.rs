@@ -491,21 +491,21 @@ async fn run_execution_inner(
         &state.client,
         execution_id,
         &spec,
-        &input.task,
+        &context.tool_policies,
         &input.payload,
     )
     .await
     {
         Ok(hydrated) => {
             input.payload = hydrated.payload;
-            for note in hydrated.notes {
+            for event in hydrated.events {
                 append_event(
                     &state,
                     &execution,
-                    ExecutionEventKind::Log,
-                    LogLevel::Info,
-                    &note,
-                    serde_json::json!({ "connector": "x" }),
+                    event.kind,
+                    event.level,
+                    &event.message,
+                    event.data,
                 )
                 .await;
             }
