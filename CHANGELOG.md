@@ -45,6 +45,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   with a fixed policy above an agent's own policy that were saved before this release run
   with the agent's policy until someone who can manage the agent saves them again. The
   team form now defaults a fixed policy to level 3 with each agent's own approval mode.
+- Agent Team queue items can no longer retarget the team's credentials (#384): enqueue and
+  start refuse repositories outside the team's configuration, and the work-source outcome
+  writer and dispatcher stay inside the source's repository and the connection's
+  `allowedRepositories` / `allowedProjects`.
 - S3 outputs created in the web UI can deliver (#386). An output's configured bucket is
   its allowlist, so it no longer needs `allowedBuckets`; a config that cannot write to its
   own bucket is refused when it is saved, and permanent S3 errors (403, 404, blocked
