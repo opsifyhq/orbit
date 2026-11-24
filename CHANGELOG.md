@@ -30,6 +30,15 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Agent Team autonomy (#385): a fixed team policy that asks less than an agent's own
+  approval mode (for example level 4 `auto` over level 4 `always`) now counts as an
+  elevation, needs manage access to that agent and is audited. Each step is checked
+  against the agent's current policy when it starts: if the agent became stricter after
+  the team was saved, the step runs with the stricter policy and logs a warning. Teams
+  with a fixed policy above an agent's own policy that were saved before this release run
+  with the agent's policy until someone who can manage the agent saves them again. The
+  team form now defaults a fixed policy to level 3 with each agent's own approval mode.
+
 - Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
   still running, and its page says the run was stopped instead of "The run failed".
 - A failed OpenCode run names the reason OpenCode reported (for example a provider that

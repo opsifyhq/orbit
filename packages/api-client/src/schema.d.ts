@@ -2051,6 +2051,15 @@ export interface components {
             targetId?: string | null;
             targetType?: string | null;
         };
+        /**
+         * @description The part of an autonomy spec that decides what may run without a human: the level and
+         *     the approval mode. Ordered by strictness through [`AutonomyPolicy::is_at_least_as_strict_as`].
+         */
+        AutonomyPolicy: {
+            approvalMode?: components["schemas"]["ApprovalMode"];
+            /** Format: int32 */
+            level: number;
+        };
         AutonomySpec: {
             approvalMode?: components["schemas"]["ApprovalMode"];
             /** Format: int32 */
@@ -3170,9 +3179,22 @@ export interface components {
          */
         TeamAutonomy: {
             approvalMode?: components["schemas"]["ApprovalMode"] | null;
+            /**
+             * @description Server-recorded elevations (#385): for each step agent the team runs less strictly
+             *     than its own policy, the agent policy that was in force when someone with manage
+             *     access to that agent authorised it. Client-supplied values are discarded on save.
+             */
+            elevations?: components["schemas"]["TeamAutonomyElevation"][];
             /** Format: int32 */
             level?: number | null;
             mode?: components["schemas"]["TeamAutonomyMode"];
+        };
+        /** @description One authorised elevation of a fixed team policy over a step agent's own policy. */
+        TeamAutonomyElevation: {
+            /** Format: uuid */
+            agentId: string;
+            /** @description The agent's own policy when the elevation was authorised. */
+            baseline: components["schemas"]["AutonomyPolicy"];
         };
         /**
          * @description How an Agent Team chooses the autonomy level for its executions.

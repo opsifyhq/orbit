@@ -11236,6 +11236,303 @@ async fn fixed_team_autonomy_requires_manage_to_elevate_an_agent() {
     assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
 }
 
+/// An agent created through the API with the given autonomy, visible to the whole org.
+async fn agent_with_autonomy(app: &TestApp, name: &str, autonomy: Value) -> Uuid {
+    let mut body = definition();
+    body["metadata"]["name"] = json!(name);
+    body["spec"]["autonomy"] = autonomy;
+    let (status, agent) = send(&app.router, post("/api/v1/agents", body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{agent}");
+    let id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    app.store
+        .set_resource_visibility(app.org_id, "agents", id, "org", None)
+        .await
+        .unwrap();
+    id
+}
+
+/// A user with a custom role that can create teams (settings:write) and read agents, but
+/// manages no agent.
+async fn team_author_without_manage(app: &TestApp) -> String {
+    let role = format!("TeamAuthor-{}", Uuid::now_v7());
+    app.store
+        .create_custom_role(
+            app.org_id,
+            &role,
+            &["agents:read".into(), "settings:write".into()],
+        )
+        .await
+        .unwrap();
+    let user = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("team-author-{}@test.local", Uuid::now_v7()),
+            "Team Author",
+            UserRole::Viewer,
+        )
+        .await
+        .unwrap();
+    app.store
+        .set_user_role_name(app.org_id, user.id, &role)
+        .await
+        .unwrap();
+    token_for(&app.store, app.org_id, user.id, "team-author").await
+}
+
+async fn first_step_input(app: &TestApp, team_id: &str) -> Value {
+    let (status, detail) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "autonomy run" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{detail}");
+    let execution_id = detail["steps"][0]["executionId"].as_str().unwrap();
+    let (status, execution) = send(
+        &app.router,
+        get(&format!("/api/v1/executions/{execution_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{execution}");
+    execution
+}
+
+/// #385: a fixed team policy that asks less than an agent's own approval mode is an
+/// elevation too. It needs manage access, is audited, and the stored elevations are
+/// computed by the server.
+#[tokio::test]
+async fn fixed_team_autonomy_treats_a_looser_approval_mode_as_an_elevation() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let agent = agent_with_autonomy(
+        &app,
+        &format!("Careful agent {}", Uuid::now_v7()),
+        json!({ "level": 4, "approvalMode": "always" }),
+    )
+    .await;
+    let token = team_author_without_manage(&app).await;
+    let team = |autonomy: Value| {
+        json!({
+            "name": format!("Approval team {}", Uuid::now_v7()), "mode": "pipeline",
+            "steps": [{ "agentId": agent }],
+            "autonomy": autonomy,
+        })
+    };
+
+    // L4 + auto removes every approval from an L4/always agent: refused without manage.
+    let (status, body) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agent-teams",
+            &token,
+            team(json!({ "mode": "fixed", "level": 4, "approvalMode": "auto" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details
+            .iter()
+            .any(|detail| detail["path"] == "autonomy.approvalMode")));
+
+    // As strict as the agent (or keeping its own mode) needs no manage access, and a
+    // client-supplied elevation list is ignored.
+    for autonomy in [
+        json!({ "mode": "fixed", "level": 4, "approvalMode": "always" }),
+        json!({ "mode": "fixed", "level": 4 }),
+        json!({
+            "mode": "fixed", "level": 4, "approvalMode": "always",
+            "elevations": [{ "agentId": agent, "baseline": { "level": 4, "approvalMode": "auto" } }]
+        }),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            auth_post("/api/v1/agent-teams", &token, team(autonomy.clone())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{autonomy}: {body}");
+        assert!(
+            body["definition"]["autonomy"].get("elevations").is_none(),
+            "{body}"
+        );
+    }
+
+    // Someone who manages the agent may elevate; the elevation and its baseline are
+    // recorded and audited.
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            team(json!({ "mode": "fixed", "level": 4, "approvalMode": "auto" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let elevations = &created["definition"]["autonomy"]["elevations"];
+    assert_eq!(elevations[0]["agentId"], agent.to_string(), "{created}");
+    assert_eq!(elevations[0]["baseline"]["level"], 4);
+    assert_eq!(elevations[0]["baseline"]["approvalMode"], "always");
+    let team_id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let (logs, _) = app
+        .store
+        .list_audit_logs(app.org_id, 50, None, Some("team.autonomy_elevated"))
+        .await
+        .unwrap();
+    let entry = logs
+        .iter()
+        .find(|log| log.target_id == Some(team_id))
+        .expect("elevation is audited");
+    assert_eq!(entry.metadata["approvalMode"], "auto");
+    assert_eq!(entry.metadata["agents"][0]["fromApprovalMode"], "always");
+
+    // The worker gets the policy without the server-side elevation list.
+    let execution = first_step_input(&app, &team_id.to_string()).await;
+    assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
+    assert!(execution["input"]["teamAutonomy"]
+        .get("elevations")
+        .is_none());
+    assert!(execution["input"].get("teamAutonomyClamped").is_none());
+}
+
+/// #385: an agent whose policy cannot be checked fails the save instead of being skipped.
+#[tokio::test]
+async fn fixed_team_autonomy_fails_closed_when_a_step_agent_cannot_be_read() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": format!("Missing agent team {}", Uuid::now_v7()), "mode": "pipeline",
+                "steps": [{ "agentId": Uuid::now_v7() }],
+                "autonomy": { "mode": "fixed", "level": 4, "approvalMode": "auto" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "autonomy")));
+}
+
+/// #385: a fixed team never runs an agent less strictly than its current policy unless the
+/// elevation authorised at save time still holds.
+#[tokio::test]
+async fn fixed_team_autonomy_is_clamped_when_the_agent_becomes_stricter() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let name = format!("Lowered agent {}", Uuid::now_v7());
+    let agent = agent_with_autonomy(&app, &name, json!({ "level": 3 })).await;
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": format!("Clamp team {}", Uuid::now_v7()), "mode": "pipeline",
+                "steps": [{ "agentId": agent }],
+                "autonomy": { "mode": "fixed", "level": 4, "approvalMode": "auto" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let team_id = created["id"].as_str().unwrap().to_string();
+
+    // Authorised and unchanged: the team policy applies as saved.
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(execution["input"]["teamAutonomy"]["level"], 4);
+    assert!(execution["input"].get("teamAutonomyClamped").is_none());
+
+    // The agent owner lowers the agent to Observe after an incident.
+    let lowered = definition_at_level(&name, 1);
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/agents/{agent}"),
+            json!({ "definition": lowered }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(
+        execution["input"]["teamAutonomy"]["level"], 1,
+        "{execution}"
+    );
+    assert_eq!(execution["input"]["teamAutonomy"]["approvalMode"], "auto");
+    let clamp = &execution["input"]["teamAutonomyClamped"][0];
+    assert_eq!(clamp["agentId"], agent.to_string());
+    assert_eq!(clamp["requested"]["level"], 4);
+    assert_eq!(clamp["agent"]["level"], 1);
+    let execution_id: Uuid = execution["id"].as_str().unwrap().parse().unwrap();
+    let events = app
+        .store
+        .list_execution_events(app.org_id, execution_id, 0, 50)
+        .await
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.level == "warn" && event.message.contains("team autonomy limited")),
+        "{events:?}"
+    );
+
+    // A team stored without any elevation record (saved before #385) is clamped too.
+    let team_uuid: Uuid = team_id.parse().unwrap();
+    let team = app
+        .store
+        .get_agent_team(app.org_id, team_uuid)
+        .await
+        .unwrap();
+    let mut definition = team.definition.clone();
+    definition["autonomy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("elevations");
+    app.store
+        .update_agent_team(
+            app.org_id,
+            team_uuid,
+            &team.name,
+            &team.description,
+            &definition,
+        )
+        .await
+        .unwrap();
+    let restored = definition_at_level(&name, 3);
+    let (status, body) = send(
+        &app.router,
+        patch_json(
+            &format!("/api/v1/agents/{agent}"),
+            json!({ "definition": restored }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let execution = first_step_input(&app, &team_id).await;
+    assert_eq!(
+        execution["input"]["teamAutonomy"]["level"], 3,
+        "{execution}"
+    );
+}
+
+fn definition_at_level(name: &str, level: u8) -> Value {
+    let mut body = definition();
+    body["metadata"]["name"] = json!(name);
+    body["spec"]["autonomy"] = json!({ "level": level });
+    body
+}
+
 async fn private_github_connection(app: &TestApp, owner: Uuid, name: &str) -> Uuid {
     let github = app
         .store
