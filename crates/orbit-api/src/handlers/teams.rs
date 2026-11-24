@@ -304,6 +304,30 @@ fn validate_requested_repositories(
     definition: &TeamDefinition,
     payload: &serde_json::Value,
 ) -> Result<(), ApiError> {
+    check_requested_repositories(definition, payload, |_| false)
+}
+
+/// The repository rule for queue items (#384): the same targets as a run, plus the
+/// projects of a GitLab group work source. `stored` relaxes the group rule for items that
+/// are already in the queue (the dispatcher records projects of a group given by numeric
+/// id, which cannot be matched by path); callers enqueuing new items get the strict rule.
+pub(crate) fn validate_queue_repositories(
+    definition: &TeamDefinition,
+    payload: &serde_json::Value,
+    stored: bool,
+) -> Result<(), ApiError> {
+    check_requested_repositories(definition, payload, |value| {
+        definition.work_source.as_ref().is_some_and(|source| {
+            crate::work_sources::group_includes_project(source, value, stored)
+        })
+    })
+}
+
+fn check_requested_repositories(
+    definition: &TeamDefinition,
+    payload: &serde_json::Value,
+    also_allowed: impl Fn(&str) -> bool,
+) -> Result<(), ApiError> {
     let mut allowed: Vec<String> = Vec::new();
     allowed.extend(definition.repository.iter().cloned());
     allowed.extend(
@@ -314,11 +338,13 @@ fn validate_requested_repositories(
     );
     if let Some(source) = &definition.work_source {
         allowed.extend(source.repository.iter().cloned());
+        allowed.extend(source.project.iter().cloned());
     }
     let is_allowed = |value: &str| {
         allowed
             .iter()
             .any(|candidate| candidate.trim().eq_ignore_ascii_case(value.trim()))
+            || also_allowed(value)
     };
     if let Some(repository) = payload.get("repository").and_then(|value| value.as_str()) {
         if !is_allowed(repository) {

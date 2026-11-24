@@ -126,6 +126,16 @@ async fn dispatch_team_locked(
             .or_else(|| issue.project.clone())
             .or_else(|| source.repository.clone())
             .or_else(|| source.project.clone());
+        // Claiming writes labels with the connection's credential: stay inside its
+        // allowlist, the rule the worker applies to checkouts (#384).
+        if let Some(target) = repository.as_deref() {
+            if !work_sources::connection_allows_target(&connector.config, target) {
+                last_error = Some(format!(
+                    "{target} is not in the work source connection's allowedRepositories/allowedProjects"
+                ));
+                continue;
+            }
+        }
         // Enqueue first, claim second: a database error before the claim leaves the issue
         // untouched (it still matches the source labels and is picked up on the next poll).
         let claimed = enqueue_then_claim(
@@ -266,6 +276,7 @@ async fn start_queue_item(
 }
 
 struct WorkSourceConnection {
+    config: Value,
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
@@ -311,6 +322,7 @@ impl WorkSourceConnection {
             .await
             .map_err(|error| anyhow::anyhow!("work source baseUrl refused: {error}"))?;
         Ok(Self {
+            config: connection.config.clone(),
             base_url,
             token,
             client: orbit_security::guarded_client(std::time::Duration::from_secs(20)),

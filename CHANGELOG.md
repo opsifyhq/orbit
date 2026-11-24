@@ -30,6 +30,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Fixed
 
+- Agent Team queue items can no longer retarget the team's credentials (#384): enqueue and
+  start refuse repositories outside the team's configuration, and the work-source outcome
+  writer and dispatcher stay inside the source's repository and the connection's
+  `allowedRepositories` / `allowedProjects`.
 - Cancelling a team run now closes its steps: a cancelled run no longer shows a step as
   still running, and its page says the run was stopped instead of "The run failed".
 - A failed OpenCode run names the reason OpenCode reported (for example a provider that

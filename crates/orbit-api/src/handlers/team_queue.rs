@@ -39,7 +39,8 @@ pub async fn enqueue(
     crate::extract::ApiJson(body): crate::extract::ApiJson<EnqueueRequest>,
 ) -> Result<(StatusCode, Json<Vec<TeamQueueItem>>), ApiError> {
     auth.require(Permission::ExecutionsCreate)?;
-    crate::handlers::teams::require_team_use(&state, &auth, team_id).await?;
+    let team = crate::handlers::teams::require_team_use(&state, &auth, team_id).await?;
+    let definition = crate::handlers::teams::parse_definition(&team)?;
     if body.items.is_empty() {
         return Err(ApiError::validation(vec![ValidationIssue::new(
             "items",
@@ -55,6 +56,13 @@ pub async fn enqueue(
                 "externalKey is required",
             )]));
         }
+        // The run uses the team's connection credentials, so an item may only target the
+        // team's configured repositories, the same rule as `create_run` (#384).
+        crate::handlers::teams::validate_queue_repositories(
+            &definition,
+            &effective_payload(&item.payload, item.repository.as_deref()),
+            false,
+        )?;
         items.push(
             state
                 .store
@@ -161,6 +169,14 @@ pub(crate) async fn start_queue_item(
     if !definition.repositories.is_empty() && payload.get("repositories").is_none() {
         payload["repositories"] = serde_json::json!(definition.repositories);
     }
+    // Items stored before enqueue validated their repository (#384), or written by hand,
+    // are checked again before the team's credentials are used for them.
+    if let Err(error) =
+        crate::handlers::teams::validate_queue_repositories(&definition, &payload, true)
+    {
+        release_failed_claim(state, auth, &item, None, &error.message).await;
+        return Err(error);
+    }
     let input = serde_json::json!({
         "task": task,
         "instructions": definition.instructions,
@@ -201,6 +217,19 @@ pub(crate) async fn start_queue_item(
             Err(error)
         }
     }
+}
+
+/// The payload a queue item runs with: its `repository` overrides `payload.repository`.
+fn effective_payload(payload: &serde_json::Value, repository: Option<&str>) -> serde_json::Value {
+    let mut effective = if payload.is_object() {
+        payload.clone()
+    } else {
+        serde_json::json!({})
+    };
+    if let Some(repository) = repository.map(str::trim).filter(|value| !value.is_empty()) {
+        effective["repository"] = serde_json::json!(repository);
+    }
+    effective
 }
 
 async fn start_claimed_run(
