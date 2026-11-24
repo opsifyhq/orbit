@@ -5067,6 +5067,148 @@ mod output_delivery {
         assert_eq!(delivery[0].0, "succeeded", "{delivery:?}");
     }
 
+    /// The body `apps/web/components/outputs/output-form.tsx` sends for an S3 output:
+    /// `bucket` in the config and no `allowedBuckets` (#386).
+    fn s3_form_body(name: &str, endpoint: &str, bucket: Option<&str>) -> Value {
+        let mut config = json!({
+            "provider": "rustfs",
+            "endpoint": endpoint,
+            "region": "us-east-1",
+            "keyPrefix": "",
+            "pathStyle": true
+        });
+        if let Some(bucket) = bucket {
+            config["bucket"] = json!(bucket);
+        }
+        json!({
+            "name": name,
+            "kind": "s3",
+            "agentIds": [],
+            "teamId": null,
+            "events": ["succeeded", "failed"],
+            "s3Credential": json!({ "accessKeyId": "AK", "secretAccessKey": "SK" }).to_string(),
+            "config": config,
+            "template": null,
+            "enabled": true
+        })
+    }
+
+    async fn create_s3_output_like_the_form(app: &TestApp, hook: &Hook) -> Uuid {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/outputs",
+                s3_form_body(
+                    &format!("s3-form-{}", Uuid::now_v7()),
+                    &hook.url,
+                    Some("orbit"),
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn s3_output_created_like_the_web_form_delivers() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+
+        let (status, body) = send(
+            &app.router,
+            post(&format!("/api/v1/outputs/{output_id}/test"), json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert_eq!(hook.count(), 1, "the Test button writes one object");
+
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(rows(&app, output_id).await[0].0, "succeeded");
+        assert_eq!(hook.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn s3_output_config_that_cannot_deliver_is_refused() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let endpoint = "http://127.0.0.1:9";
+        for (label, body) in [
+            ("no bucket", s3_form_body("s3-none", endpoint, None)),
+            (
+                "invalid bucket",
+                s3_form_body("s3-bad", endpoint, Some("Not_A_Bucket")),
+            ),
+            ("contradicting allowlist", {
+                let mut body = s3_form_body("s3-other", endpoint, Some("orbit"));
+                body["config"]["allowedBuckets"] = json!(["other"]);
+                body
+            }),
+        ] {
+            let (status, response) = send(&app.router, post("/api/v1/outputs", body)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{label}: {response}"
+            );
+        }
+
+        // An update that keeps the stored credential is checked too.
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        let mut body = s3_form_body("s3-update", &hook.url, None);
+        body.as_object_mut().unwrap().remove("s3Credential");
+        let (status, response) = send(
+            &app.router,
+            patch_json(&format!("/api/v1/outputs/{output_id}"), body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+        let stored = app.store.get_output(app.org_id, output_id).await.unwrap();
+        assert_eq!(
+            stored.config["bucket"], "orbit",
+            "a refused update changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_access_denied_is_permanent_and_server_errors_retry() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+
+        let hook = start_s3_hook().await;
+        hook.status.store(403, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("failed".to_string(), 1, Some(403))]
+        );
+        make_due(&app, output_id).await;
+        deliver_pending(&app.state).await;
+        assert_eq!(hook.count(), 1, "403 is not retried");
+
+        let hook = start_s3_hook().await;
+        hook.status.store(503, Ordering::SeqCst);
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        finished_execution(&app).await;
+        deliver_until(&app, output_id, 1).await;
+        assert_eq!(
+            rows(&app, output_id).await,
+            vec![("pending".to_string(), 1, Some(503))]
+        );
+    }
+
     async fn finished_execution(app: &TestApp) -> Uuid {
         let path = format!("/api/v1/agents/{}/executions", app.agent_id);
         let request = Request::builder()
@@ -11630,6 +11772,255 @@ async fn work_source_connections_require_use_by_the_team_owner() {
     let stored = app.store.get_agent_team(app.org_id, team).await.unwrap();
     let error = stored.last_poll_error.unwrap_or_default();
     assert!(error.contains("can no longer use"), "poll error: {error}");
+}
+
+fn auto_run_source() -> orbit_api::work_sources::WorkSourceDefinition {
+    serde_json::from_value(json!({
+        "provider": "github",
+        "enabled": true,
+        "repository": "acme/issues",
+        "autoRun": true,
+        "maxItems": 5
+    }))
+    .unwrap()
+}
+
+/// #383: work-source auto-run starts the run as the team owner, never as a made-up user.
+#[tokio::test]
+async fn auto_run_starts_queue_items_as_the_team_owner() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-owner-{}@test.local", Uuid::now_v7()),
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let team_id = make_team(&app, vec![app.agent_id], json!({})).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, owner.id)
+        .await
+        .unwrap();
+    let item = queue_item(&app, team_id, "acme/issues#7", 3).await;
+    let team = app.store.get_agent_team(app.org_id, team_id).await.unwrap();
+
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "running", "{:?}", stored.error);
+    let run_id = stored.team_run_id.expect("auto-run attached a team run");
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.requested_by, Some(owner.id));
+    let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+    assert!(
+        step.execution_id.is_some(),
+        "the first step has an execution"
+    );
+}
+
+/// #383: a refused preflight ends the claim with the reason instead of leaving the item
+/// running without a run, and a team without an owner does not auto-run at all.
+#[tokio::test]
+async fn auto_run_refusals_are_recorded_on_the_item_or_the_team() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let alice = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-alice-{}@test.local", Uuid::now_v7()),
+            "Alice",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    let bob = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autorun-bob-{}@test.local", Uuid::now_v7()),
+            "Bob",
+            UserRole::Operator,
+        )
+        .await
+        .unwrap();
+    // The step agent is Bob's private agent; the team belongs to Alice.
+    let private_agent = bound_agent(&app, bob.id, None, None).await;
+    make_private(&app.store, app.org_id, "agents", private_agent, bob.id).await;
+    let team_id = make_team(&app, vec![private_agent], json!({})).await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, alice.id)
+        .await
+        .unwrap();
+    let item = queue_item(&app, team_id, "acme/issues#8", 3).await;
+    let team = app.store.get_agent_team(app.org_id, team_id).await.unwrap();
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert!(stored.team_run_id.is_none());
+    let error = stored.error.unwrap_or_default();
+    assert!(!error.is_empty(), "the refusal is recorded");
+    assert!(!error.contains("foreign key"), "{error}");
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM team_runs WHERE team_id = $1")
+        .bind(team_id)
+        .fetch_one(&raw_pool().await)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+
+    // No owner: nothing is claimed and the team shows why.
+    let ownerless = make_team(&app, vec![app.agent_id], json!({})).await;
+    let pending = queue_item(&app, ownerless, "acme/issues#9", 3).await;
+    let team = app
+        .store
+        .get_agent_team(app.org_id, ownerless)
+        .await
+        .unwrap();
+    orbit_api::dispatcher::auto_run_pending(&app.state, &team, &auto_run_source())
+        .await
+        .unwrap();
+    let stored = app
+        .store
+        .get_team_queue_item(app.org_id, pending)
+        .await
+        .unwrap();
+    assert_eq!(stored.status, "pending");
+    let team = app
+        .store
+        .get_agent_team(app.org_id, ownerless)
+        .await
+        .unwrap();
+    assert!(team
+        .last_poll_error
+        .unwrap_or_default()
+        .contains("needs a team owner"));
+}
+
+/// #383: a later step of an auto-launching team whose requester was deleted launches as
+/// the team owner instead of a nil user (which `worker_launches.created_by` refuses).
+#[tokio::test]
+async fn later_auto_launch_uses_the_team_owner_when_the_requester_is_gone() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mock = axum::Router::new().route(
+        "/launches",
+        axum::routing::post(|| async {
+            axum::Json(json!({ "status": "running", "runtimeId": "pod-1", "workerId": "w-1" }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let mut state = app.state.clone();
+    state.launcher_url = Some(format!("http://{addr}"));
+    state.launcher_token = Some("launcher-token".into());
+    let router = build_router(state.clone());
+
+    let (status, created) = send(
+        &router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("autolaunch-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "target": "kubernetes",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let profile: Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let (status, body) = send(
+        &router,
+        post(
+            &format!("/api/v1/worker-profiles/{profile}/enable"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            &format!("autolaunch-owner-{}@test.local", Uuid::now_v7()),
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let team_id = make_team(
+        &app,
+        vec![app.agent_id, app.agent_id],
+        json!({ "autoLaunch": true, "workerProfileId": profile }),
+    )
+    .await;
+    app.store
+        .assign_resource_owner(app.org_id, "agent_teams", team_id, owner.id)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "go" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run_id: Uuid = body["run"]["id"].as_str().unwrap().parse().unwrap();
+
+    // The requester is gone (ON DELETE SET NULL) and the first launch has ended, so the
+    // second step needs a new launch created in the background.
+    let pool = raw_pool().await;
+    sqlx::query("UPDATE team_runs SET requested_by = NULL WHERE id = $1")
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_launches SET status = 'stopped' WHERE profile_id = $1")
+        .bind(profile)
+        .execute(&pool)
+        .await
+        .unwrap();
+    succeed_current_step(&app, run_id).await;
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    orbit_api::handlers::teams::advance(&state, run)
+        .await
+        .unwrap();
+
+    let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+    assert_eq!(run.status, "running", "{:?}", run.error);
+    assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 2);
+    let creators: Vec<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT created_by FROM worker_launches WHERE profile_id = $1 ORDER BY created_at",
+    )
+    .bind(profile)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(creators.len(), 2, "the second step launched a worker");
+    assert_eq!(creators[1], Some(owner.id));
 }
 
 /// #322: replay only returns an execution of the agent the caller targets, and keys the

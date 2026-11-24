@@ -170,18 +170,26 @@ pub(crate) async fn start_queue_item(
         "queueItemId": item.id,
         "externalKey": item.external_key,
     });
-    // Shared execution preflight (#140) before any run row is created.
-    let access = crate::access::AccessScope::load(state, auth).await?;
-    let step_agent_ids: Vec<Uuid> = definition.steps.iter().map(|step| step.agent_id).collect();
-    crate::preflight::authorize_team_run(
-        state,
-        auth.org_id,
-        &access,
-        team,
-        &step_agent_ids,
-        &crate::handlers::teams::team_connection_ids(&definition),
-    )
-    .await?;
+    // Shared execution preflight (#140) before any run row is created. A refusal ends the
+    // claim with the reason instead of leaving the item `running` without a run (#383).
+    let authorized = async {
+        let access = crate::access::AccessScope::load(state, auth).await?;
+        let step_agent_ids: Vec<Uuid> = definition.steps.iter().map(|step| step.agent_id).collect();
+        crate::preflight::authorize_team_run(
+            state,
+            auth.org_id,
+            &access,
+            team,
+            &step_agent_ids,
+            &crate::handlers::teams::team_connection_ids(&definition),
+        )
+        .await
+    }
+    .await;
+    if let Err(error) = authorized {
+        release_failed_claim(state, auth, &item, None, &error.message).await;
+        return Err(error);
+    }
     let run = match state
         .store
         .create_team_run(auth.org_id, team.id, &input, Some(auth.user_id))

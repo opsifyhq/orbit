@@ -346,8 +346,8 @@ export function TeamForm({
       return;
     }
     // Access is stored separately; the parent commits it after the team itself is saved.
-    const commitAccess = async () => {
-      await accessRef.current?.save();
+    const commitAccess = async (id?: string) => {
+      await accessRef.current?.save(id);
     };
     await onSubmit(toInput(draft), commitAccess);
   }
@@ -1094,44 +1094,25 @@ export function TeamForm({
           </FormSection>
 
           {/* Kept mounted while other sections are open, so access edits survive until Save. */}
-          {team ? (
-            <Card id="section-sharing" className="scroll-mt-20" hidden={active !== "sharing"}>
-              <CardHeader>
-                <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
-                <p className="text-[13px] text-muted-foreground">Who can see, run and change this team. Saved together with the team.</p>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <ResourceAccessFields
-                  ref={accessRef}
-                  resource="agent_teams"
-                  resourceId={team.id}
-                  onDirtyChange={setAccessDirty}
-                />
-                <div className="flex items-center justify-between gap-3 border-t pt-4">
-                  <Button type="button" variant="ghost" onClick={() => go("runtime")}>
-                    <ChevronLeft /> {SECTION_TITLES.runtime}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : active === "sharing" ? (
-            <Card id="section-sharing" className="scroll-mt-20">
-              <CardHeader>
-                <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
-                <p className="text-[13px] text-muted-foreground">Available once the team is created.</p>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <p className="text-sm text-muted-foreground">
-                  Create the team first. Until then it is visible to the whole organization.
-                </p>
-                <div className="flex items-center justify-between gap-3 border-t pt-4">
-                  <Button type="button" variant="ghost" onClick={() => go("runtime")}>
-                    <ChevronLeft /> {SECTION_TITLES.runtime}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : null}
+          <Card id="section-sharing" className="scroll-mt-20" hidden={active !== "sharing"}>
+            <CardHeader>
+              <h2 className="text-[15px] font-semibold leading-6">{SECTION_TITLES.sharing}</h2>
+              <p className="text-[13px] text-muted-foreground">Who can see, run and change this team. Saved together with the team.</p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <ResourceAccessFields
+                ref={accessRef}
+                resource="agent_teams"
+                resourceId={team?.id}
+                onDirtyChange={setAccessDirty}
+              />
+              <div className="flex items-center justify-between gap-3 border-t pt-4">
+                <Button type="button" variant="ghost" onClick={() => go("runtime")}>
+                  <ChevronLeft /> {SECTION_TITLES.runtime}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
