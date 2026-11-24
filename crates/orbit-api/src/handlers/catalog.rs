@@ -984,7 +984,10 @@ async fn probe_supported_connection(
             if base.is_empty() {
                 return (false, None, "connection config is missing baseUrl".into());
             }
-            let request = client.get(format!("{base}/user"));
+            // GitHub requires a User-Agent header; the guarded client does not add one.
+            let request = client
+                .get(format!("{base}/user"))
+                .header("User-Agent", "ORBIT");
             let request = match credential {
                 Some(token) if slug == "gitlab" => request.header("PRIVATE-TOKEN", token),
                 Some(token) => request.bearer_auth(token),
