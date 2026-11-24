@@ -1846,10 +1846,20 @@ pub async fn create_run(
         .store
         .create_team_run(auth.org_id, team.id, &input, Some(auth.user_id))
         .await?;
-    let first = match start_first_steps(&state, &run, &definition).await {
+    let started = async {
+        let first = start_first_steps(&state, &run, &definition).await?;
+        for step in &first.started {
+            auto_launch_step(&state, &run, &definition, step, Some(&auth)).await?;
+        }
+        Ok::<_, ApiError>(first)
+    }
+    .await;
+    let first = match started {
         Ok(first) => first,
         Err(error) => {
-            // A workflow may have started some of its parallel first steps already.
+            // The run exists and a workflow may have started some of its parallel first
+            // steps: end it before reporting the error, so a client that retries does not
+            // leave a second run behind (#431). Ending the run closes its steps.
             if let Ok(cancelled) = state
                 .store
                 .request_team_run_cancel(run.org_id, run.id)
@@ -1864,9 +1874,6 @@ pub async fn create_run(
             return Err(error);
         }
     };
-    for step in &first.started {
-        auto_launch_step(&state, &run, &definition, step, Some(&auth)).await?;
-    }
     Ok((
         StatusCode::CREATED,
         Json(TeamRunDetail {
@@ -2252,10 +2259,40 @@ async fn continue_after_success(
             return Err(anyhow::anyhow!(error.message));
         }
     };
-    auto_launch_step(state, run, definition, &created, None)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+    if let Err(error) = auto_launch_step(state, run, definition, &created, None).await {
+        fail_run_after_launch_error(state, run, &created, &error).await;
+    }
     Ok(())
+}
+
+/// A step was created but its worker could not be launched. Nothing would ever claim the
+/// queued execution and the next tick sees a step that is already running, so the run is
+/// failed now with the launch error instead of waiting for ever (#431).
+pub(crate) async fn fail_run_after_launch_error(
+    state: &AppState,
+    run: &TeamRun,
+    step: &TeamStep,
+    error: &ApiError,
+) {
+    tracing::warn!(run_id = %run.id, step = %step.name, error = %error.message, "team step worker launch failed");
+    match state
+        .store
+        .request_team_run_cancel(run.org_id, run.id)
+        .await
+    {
+        Ok(cancelled) => announce_cancel(state, run.org_id, &cancelled).await,
+        Err(cancel_error) => {
+            tracing::warn!(error = %cancel_error, run_id = %run.id, "failed to cancel executions after a launch error")
+        }
+    }
+    let message = format!(
+        "could not launch a worker for step '{}': {}",
+        step.name, error.message
+    );
+    // `finalize_run` also closes the queue item of a queued run, offering a retry.
+    if let Err(finish_error) = finalize_run(state, run, "failed", None, Some(&message)).await {
+        tracing::warn!(error = %finish_error, run_id = %run.id, "failed to fail a team run after a launch error");
+    }
 }
 
 /// Retry queue outcomes that were never applied (terminal run, item still `running`) and

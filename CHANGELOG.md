@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Fixed
+
+- A team run no longer ends with steps still "running": every path that ends a run
+  (queue cancel, a failed start, a failed run) closes its running steps. A run whose
+  worker launch fails is ended before the error is returned, and a launch that fails for
+  a later step fails the run instead of leaving a queued execution nothing will claim
+  (#431).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
