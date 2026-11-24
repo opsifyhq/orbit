@@ -164,6 +164,14 @@ The API dispatcher (`dispatcher.rs`) runs every 15s:
 4. Inserts a `team_queue_item` (unique per `team_id, external_key`).
 5. If `autoRun`, starts pending items via the same queue-item runner the UI uses.
 
+Auto-run acts as the **team owner**: the shared preflight checks the owner's access to the
+team, its agents and connections, and the run records the owner as its requester. A team
+without an owner (or with a disabled owner) does not auto-run; its items stay `pending` and
+`lastPollError` says why, until an owner is set or the items are started by hand. When the
+preflight refuses a claimed item, the item becomes `failed` with the reason (retryable once
+the access is fixed). Later steps of an `autoLaunch` team launch as the run's requester, or
+as the team owner when the requester no longer exists.
+
 Claim failures skip the item without enqueueing. `lastPollAt` / `lastPollError` are
 visible in the UI.
 

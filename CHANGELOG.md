@@ -47,6 +47,10 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
   refused the request) instead of only "opencode exited with 1".
 - The Run dialog of a team no longer fills in the team's goal as the task. A blank task
   still runs the goal, which is now sent once instead of as both task and context.
+- Work-source auto-run starts team runs again (#383). It acts as the team owner instead of
+  a nil system user that the database refused; a refused preflight marks the queue item
+  failed with the reason, and a team without an owner shows why in its poll status. Later
+  auto-launched steps fall back to the team owner when the requester was deleted.
 
 ## [0.28.4] - 2026-11-23
 
