@@ -1181,6 +1181,23 @@ pub async fn cancel_run(
     Ok(Json(TeamRunDetail { run, steps }))
 }
 
+/// A subagent's system prompt: its instructions followed by its constraints. Never stored
+/// in the run: execution and step input are readable by anyone who can view the team or
+/// the primary agent, and a subagent may be private (#429). The worker context adds it
+/// when a worker claims the step.
+pub(crate) fn subagent_instructions(spec: &orbit_domain::AgentSpec) -> String {
+    let mut instructions = spec.instructions.system.clone();
+    if !spec.instructions.constraints.is_empty() {
+        instructions.push_str("\n\nConstraints:\n");
+        for constraint in &spec.instructions.constraints {
+            instructions.push_str(&format!("- {constraint}\n"));
+        }
+    }
+    instructions
+}
+
+/// The native subagents of a team, as references: id, name, description and model, but
+/// no instructions (see [`subagent_instructions`]).
 async fn native_subagents(
     state: &AppState,
     org_id: Uuid,
@@ -1198,13 +1215,6 @@ async fn native_subagents(
         if let Some(override_model) = &model_override {
             override_model.apply(&mut spec.model);
         }
-        let mut instructions = spec.instructions.system.clone();
-        if !spec.instructions.constraints.is_empty() {
-            instructions.push_str("\n\nConstraints:\n");
-            for constraint in &spec.instructions.constraints {
-                instructions.push_str(&format!("- {constraint}\n"));
-            }
-        }
         let model = match (&spec.model.provider, &spec.model.model) {
             (Some(provider), Some(model)) if !model.contains('/') => {
                 Some(format!("{provider}/{model}"))
@@ -1217,7 +1227,6 @@ async fn native_subagents(
             "name": agent.name,
             "slug": agent.slug,
             "description": agent.description,
-            "instructions": instructions,
             "model": model,
             "modelOverride": model_override,
         }));

@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+### Security
+
+- Native-team runs no longer store subagent system prompts in the execution and team-step
+  input, where anyone who can view the team or the primary agent could read a private
+  agent's prompt. The worker receives the prompt when it claims the step; migration 0064
+  removes the stored copies (#429).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed
