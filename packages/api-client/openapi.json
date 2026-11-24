@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.3"
+    "version": "0.28.4"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -8347,6 +8347,14 @@
             ],
             "format": "uuid"
           },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Multiple agent targets. Takes precedence over the legacy `agentId`."
+          },
           "botToken": {
             "type": [
               "string",
@@ -8421,6 +8429,7 @@
           "id",
           "name",
           "kind",
+          "agentIds",
           "events",
           "enabled",
           "hasWebhook",
@@ -8435,6 +8444,13 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "agentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           "chatId": {
             "type": [
