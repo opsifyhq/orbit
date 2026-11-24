@@ -1,7 +1,7 @@
 use std::fmt;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
@@ -82,20 +82,19 @@ impl SecretCipher {
                 raw.len()
             )));
         }
-        let key = Key::<Aes256Gcm>::from_slice(&raw);
-        Ok(Self {
-            cipher: Aes256Gcm::new(key),
-        })
+        let cipher = Aes256Gcm::new_from_slice(&raw)
+            .map_err(|_| SecurityError::Secret("master key is invalid".into()))?;
+        Ok(Self { cipher })
     }
 
     pub fn encrypt(&self, reference: &str, value: &SecretValue) -> Result<String, SecurityError> {
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
         let ciphertext = self
             .cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: value.expose().as_bytes(),
                     aad: reference.as_bytes(),
@@ -119,10 +118,12 @@ impl SecretCipher {
             return Err(SecurityError::Secret("ciphertext is too short".into()));
         }
         let (nonce_bytes, ciphertext) = combined.split_at(12);
+        let nonce = Nonce::try_from(nonce_bytes)
+            .map_err(|_| SecurityError::Secret("invalid nonce".into()))?;
         let plaintext = self
             .cipher
             .decrypt(
-                Nonce::from_slice(nonce_bytes),
+                &nonce,
                 Payload {
                     msg: ciphertext,
                     aad: reference.as_bytes(),
