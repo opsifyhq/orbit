@@ -700,6 +700,9 @@ pub struct Output {
     pub name: String,
     pub kind: String,
     pub agent_id: Option<Uuid>,
+    /// All agent targets. Empty with an empty team_id means organisation-wide.
+    #[sqlx(default)]
+    pub agent_ids: Vec<Uuid>,
     pub team_id: Option<Uuid>,
     pub events: Vec<String>,
     pub secret_ref: String,

@@ -2941,6 +2941,8 @@ export interface components {
         OutputRequest: {
             /** Format: uuid */
             agentId?: string | null;
+            /** @description Multiple agent targets. Takes precedence over the legacy `agentId`. */
+            agentIds?: string[];
             /** @description Telegram bot token. Write-only; never returned, logged or published in events. */
             botToken?: string | null;
             /** @description Numeric Telegram user/group/channel id (for example `-100…`). */
@@ -2964,6 +2966,7 @@ export interface components {
         OutputView: {
             /** Format: uuid */
             agentId?: string | null;
+            agentIds: string[];
             chatId?: string | null;
             /** @description Non-secret configuration for S3 (empty for other kinds). */
             config: unknown;

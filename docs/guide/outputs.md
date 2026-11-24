@@ -5,8 +5,9 @@ Outputs deliver an execution result after it reaches a terminal state. Manage th
 
 ## UI
 
-Agent and Agent Team detail pages show their linked outputs and an **Add output** link
-that opens Output Studio with that agent/team preselected. The Work wizard's **Then**
+Agent and Agent Team detail pages show their linked outputs, an **Add output** link that
+opens Output Studio with that agent/team preselected, and **Link existing** to attach an
+already configured output. The Work wizard's **Then**
 section ([Start work](start-work.md)) lists the enabled outputs that apply to the selected
 agent or team before the run is created.
 
@@ -17,8 +18,9 @@ and how its last delivery went. **New output** opens Output Studio:
 - **Destination**: Slack, Mattermost, Telegram, Webhook or S3, a name, and the
   destination credential (incoming webhook URL, Telegram bot token, or S3 access-key JSON;
   write-only — leave it empty when editing to keep the stored one).
-- **Trigger**: every agent, one agent, or one agent team, and which results send a message
-  (succeeded, failed, cancelled).
+- **Trigger**: every agent, several agents, or one agent team, and which results send a
+  message (succeeded, failed, cancelled). Agent and team targets are stored separately;
+  selecting several agents sends one message per selected agent run.
 - **Message**: an optional note added under the run summary, an example of the message, and
   whether the output is on.
 
