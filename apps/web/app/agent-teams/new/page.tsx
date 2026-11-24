@@ -16,11 +16,11 @@ export default function NewAgentTeamPage() {
   const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(input: TeamInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: TeamInput, commitAccess: (id?: string) => Promise<void>) {
     setSubmitting(true);
     try {
       const team = await createAgentTeam(input);
-      await commitAccess();
+      await commitAccess(team.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams });
       toast.success("Agent team created");
       router.push(`/agent-teams/${team.id}`);

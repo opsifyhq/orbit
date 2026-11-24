@@ -2,10 +2,10 @@
 
 export const dynamic = "force-dynamic";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Activity, Play, Workflow } from "lucide-react";
+import { Activity, CalendarClock, ChevronDown, ChevronRight, Play, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -16,6 +16,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionListHeader, ExecutionRow } from "@/components/executions/execution-row";
+import { ExecutionStatusBadge } from "@/components/ui/status-badge";
 import { usePagedExecutions } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 
@@ -97,18 +98,52 @@ function Executions() {
   });
   const executions = paged.first;
 
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+  const [expandedSchedules, setExpandedSchedules] = useState<Set<string>>(() => new Set());
+
   const groups = useMemo(() => {
-    const items = paged.items;
-    const grouped = new Map<string, typeof items>();
-    for (const execution of items) {
+    const grouped = new Map<
+      string,
+      { kind: "team" | "schedule" | "standalone"; items: typeof paged.items }
+    >();
+    for (const execution of paged.items) {
       const teamRunId = (execution as typeof execution & { teamRunId?: string | null }).teamRunId;
-      const key = teamRunId ?? "standalone";
-      const current = grouped.get(key) ?? [];
-      current.push(execution);
-      grouped.set(key, current);
+      const scheduled = execution.triggerSource === "schedule";
+      const key = teamRunId
+        ? `team:${teamRunId}`
+        : scheduled
+          ? `schedule:${execution.triggerId ?? execution.agentId}`
+          : `execution:${execution.id}`;
+      const kind = teamRunId ? "team" : scheduled ? "schedule" : "standalone";
+      const current = grouped.get(key);
+      if (current) current.items.push(execution);
+      else grouped.set(key, { kind, items: [execution] });
     }
     return Array.from(grouped.entries());
   }, [paged.items]);
+
+  function isGroupOpen(key: string, kind: "team" | "schedule" | "standalone") {
+    if (kind === "schedule") return expandedSchedules.has(key);
+    return !collapsedGroups.has(key);
+  }
+
+  function toggleGroup(key: string, kind: "team" | "schedule" | "standalone") {
+    if (kind === "schedule") {
+      setExpandedSchedules((current) => {
+        const next = new Set(current);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      return;
+    }
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   const filtered = status !== "all" || archived !== "active";
   const shown = paged.items.length;
@@ -159,30 +194,62 @@ function Executions() {
         <>
           <Card className="overflow-hidden">
             <ExecutionListHeader />
-            {groups.map(([key, items]) =>
-              key === "standalone" ? (
-                items.map((execution) => <ExecutionRow key={execution.id} execution={execution} />)
-              ) : (
+            {groups.map(([key, group]) => {
+              if (group.kind === "standalone" || (group.kind === "schedule" && group.items.length === 1)) {
+                return group.items.map((execution) => (
+                  <ExecutionRow key={execution.id} execution={execution} />
+                ));
+              }
+              const open = isGroupOpen(key, group.kind);
+              const latest = group.items[0];
+              return (
                 <div key={key} className="border-b last:border-b-0">
-                  <div className="flex items-center gap-2 border-b bg-subtle px-4 py-2 text-[13px] sm:px-5">
-                    <Workflow className="h-4 w-4 text-muted-foreground" />
-                    <Link
-                      href={`/agent-teams/runs/${key}`}
-                      className="font-medium text-primary underline-offset-4 hover:underline"
-                    >
-                      Agent team run
-                    </Link>
-                    <span className="font-mono text-xs text-muted-foreground">{key.slice(0, 8)}</span>
-                    <span className="ml-auto text-muted-foreground">
-                      {items.length} step{items.length === 1 ? "" : "s"}
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(key, group.kind)}
+                    aria-expanded={open}
+                    className="flex w-full items-center gap-2 border-b bg-subtle px-4 py-2 text-left text-[13px] hover:bg-muted/50 sm:px-5"
+                  >
+                    {open ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    {group.kind === "team" ? (
+                      <>
+                        <Workflow className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <Link
+                          href={`/agent-teams/runs/${key.slice("team:".length)}`}
+                          className="font-medium text-primary underline-offset-4 hover:underline"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          Agent team run
+                        </Link>
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {key.slice("team:".length, "team:".length + 8)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span className="font-medium">Scheduled runs</span>
+                        <span className="truncate text-muted-foreground">{latest.agentName}</span>
+                        <ExecutionStatusBadge status={latest.status} hideLabel className="h-4 w-4" />
+                      </>
+                    )}
+                    <span className="ml-auto shrink-0 text-muted-foreground">
+                      {group.items.length} {group.kind === "team" ? "step" : "run"}
+                      {group.items.length === 1 ? "" : "s"}
                     </span>
-                  </div>
-                  {items.map((execution) => (
-                    <ExecutionRow key={execution.id} execution={execution} />
-                  ))}
+                  </button>
+                  {open
+                    ? group.items.map((execution) => (
+                        <ExecutionRow key={execution.id} execution={execution} />
+                      ))
+                    : null}
                 </div>
-              ),
-            )}
+              );
+            })}
           </Card>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <p className="tabular text-[13px] text-muted-foreground" role="status">
