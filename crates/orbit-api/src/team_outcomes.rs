@@ -9,8 +9,8 @@ use serde_json::Value;
 use orbit_store::team_queue::TeamQueueItem;
 use orbit_store::TeamRun;
 
-use crate::handlers::teams::{parse_definition, TeamDefinition};
 use crate::state::AppState;
+use crate::team_runs::{parse_definition, TeamDefinition};
 use crate::work_sources::{self, WorkSourceDefinition};
 
 struct WorkSourceConnector {

@@ -43,7 +43,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         loop {
             ticker.tick().await;
             let tick = Tick::start(&output_state, "outputs");
-            crate::handlers::outputs::deliver_pending(&output_state).await;
+            crate::output_delivery::deliver_pending(&output_state).await;
             tick.done(true);
         }
     }));
@@ -90,7 +90,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         loop {
             ticker.tick().await;
             let tick = Tick::start(&launch_state, "launches");
-            let ok = crate::handlers::worker_launches::refresh_active_launches(&launch_state).await;
+            let ok = crate::launches::refresh_active_launches(&launch_state).await;
             tick.done(ok);
         }
     }));
@@ -111,7 +111,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
                     Ok(runs) => {
                         after = runs.last().map(|run| run.id);
                         for run in runs {
-                            match crate::handlers::teams::advance(&team_state, run).await {
+                            match crate::team_runs::advance(&team_state, run).await {
                                 Ok(_) => team_state.metrics.team_run_advanced(),
                                 Err(error) => {
                                     ok = false;
@@ -127,7 +127,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
                     }
                 }
             }
-            if let Err(error) = crate::handlers::teams::reconcile_team_outcomes(&team_state).await {
+            if let Err(error) = crate::team_runs::reconcile_team_outcomes(&team_state).await {
                 ok = false;
                 tracing::warn!(%error, "team outcome reconciliation failed");
             }
@@ -881,9 +881,7 @@ pub(crate) async fn report_ended_execution(
     let worker_terminated =
         code.is_some_and(|code| orbit_contracts::WorkerTerminationReason::parse(code).is_some());
     if worker_terminated || matches!(code, Some("harness_unresponsive")) {
-        if let Err(error) =
-            crate::handlers::teams::fail_team_run_for_execution(state, execution).await
-        {
+        if let Err(error) = crate::team_runs::fail_team_run_for_execution(state, execution).await {
             tracing::warn!(%error, execution_id = %execution.id, "failed to fail team run for ended execution");
         }
     }
@@ -945,19 +943,14 @@ async fn reconcile_worker_tags(state: &AppState) -> anyhow::Result<()> {
                 }
             }
             let old_image = launch.image.clone();
-            match crate::handlers::worker_launches::stop_launch_internal(state, &auth, launch).await
-            {
+            match crate::launches::stop_launch_internal(state, &auth, launch).await {
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(profile = %profile.name, %error, "could not stop old worker");
                     continue;
                 }
             }
-            match crate::handlers::worker_launches::launch_profile_internal(
-                state, &auth, profile.id, None,
-            )
-            .await
-            {
+            match crate::launches::launch_profile_internal(state, &auth, profile.id, None).await {
                 Ok(new_launch) => {
                     tracing::info!(
                         profile = %profile.name,

@@ -13,8 +13,8 @@ use orbit_security::AuthContext;
 use orbit_store::team_queue::TeamQueueItem;
 use orbit_store::AgentTeam;
 
-use crate::handlers::teams::parse_definition;
 use crate::state::AppState;
+use crate::team_runs::parse_definition;
 use crate::work_sources::{self, WorkSourceDefinition};
 
 pub async fn dispatch_tick(state: &AppState) -> anyhow::Result<()> {
@@ -311,8 +311,8 @@ async fn start_queue_item(
     auth: &AuthContext,
     team: &AgentTeam,
     item: &TeamQueueItem,
-) -> Result<crate::handlers::teams::TeamRunDetail, crate::error::ApiError> {
-    crate::handlers::team_queue::start_queue_item(state, auth, team, item).await
+) -> Result<crate::team_runs::TeamRunDetail, crate::error::ApiError> {
+    crate::team_runs::start_queue_item(state, auth, team, item).await
 }
 
 struct WorkSourceConnection {

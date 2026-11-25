@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::Json;
-use orbit_api::handlers::outputs::{
+use orbit_api::output_delivery::{
     send_telegram, send_telegram_with_progress, TelegramEndpoint, TelegramProgress,
 };
 use orbit_contracts::{TelegramTarget, TELEGRAM_TEXT_LIMIT};

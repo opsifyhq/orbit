@@ -36,6 +36,11 @@ Agent Team ──ordered agents───────────────┘
     `crates/orbit-domain/src/workflow.rs`, the run-time part in
     `crates/orbit-api/src/team_workflow.rs`; see
     [decision 0015](../decisions/0015-team-workflows.md).
+- **Where the code lives**: the run definition, step starts and the run state machine
+  are in `crates/orbit-api/src/team_runs.rs`. The HTTP handlers
+  (`handlers/teams.rs`, `handlers/team_queue.rs`) and the background loops
+  (`background.rs`, `dispatcher.rs`, `team_outcomes.rs`) both call into it; the loops
+  never import a handler.
 - **Per-agent models**: each step already uses its own agent's model. A team-level
   `model` override applies to all steps, and a step-level `model` override wins over it:
   `{ "provider": "...", "model": "...", "management": "platform|harness" }`.
@@ -48,7 +53,7 @@ Agent Team ──ordered agents───────────────┘
 
 ## Team definition fields
 
-The team `definition` (`TeamDefinition` in `crates/orbit-api/src/handlers/teams.rs`):
+The team `definition` (`TeamDefinition` in `crates/orbit-api/src/team_runs.rs`):
 
 | Field | Meaning |
 |---|---|

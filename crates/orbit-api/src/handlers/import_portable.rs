@@ -46,10 +46,11 @@ use crate::dto::{
 use crate::error::ApiError;
 use crate::extract::ApiJson;
 use crate::handlers::skills::{CreateSkillRequest, UpdateSkillRequest};
-use crate::handlers::teams::{CreateTeamRequest, TeamModelOverride, TeamStepInput};
+use crate::handlers::teams::{CreateTeamRequest, TeamStepInput};
 use crate::handlers::tool_policies::ToolPolicyRequest;
 use crate::handlers::worker_profiles::CreateWorkerProfileRequest;
 use crate::state::AppState;
+use crate::team_runs::TeamModelOverride;
 use crate::work_sources::{RepositorySpec, WorkSourceDefinition};
 
 #[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]

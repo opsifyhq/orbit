@@ -159,8 +159,8 @@ user-supplied config is covered:
 |---|---|---|
 | `probe_endpoint` (`crates/orbit-api/src/handlers/catalog.rs`) | provider `baseUrl` and its models endpoint | Yes, on each probe |
 | `probe_connection` / `probe_supported_connection` (`crates/orbit-api/src/handlers/catalog.rs`) | connection `baseUrl` or `url` | Yes, on each test; URL fields are also checked when saved |
-| Webhook delivery (`crates/orbit-api/src/handlers/outputs.rs`) | write-only webhook URL | Yes, on save and on each delivery |
-| `send_telegram` (`crates/orbit-api/src/handlers/outputs.rs`) | `api.telegram.org`, or `ORBIT_TELEGRAM_API_BASE_URL` set by an operator | Yes, on each send; the token is confined to the URL path |
+| Webhook delivery (`crates/orbit-api/src/handlers/outputs.rs` on save, `crates/orbit-api/src/output_delivery.rs` on delivery) | write-only webhook URL | Yes, on save and on each delivery |
+| `send_telegram` (`crates/orbit-api/src/output_delivery.rs`) | `api.telegram.org`, or `ORBIT_TELEGRAM_API_BASE_URL` set by an operator | Yes, on each send; the token is confined to the URL path |
 | Work-source dispatcher (`crates/orbit-api/src/dispatcher.rs`, `crates/orbit-api/src/work_sources.rs`) | connection `baseUrl` | Yes, before each dispatch |
 | Team outcome delivery (`crates/orbit-api/src/team_outcomes.rs`) | connection `baseUrl` | Yes, on each delivery |
 | Kubernetes client (`crates/orbit-kubernetes/src/lib.rs`) | API server / kubeconfig `server` | Yes, before each request; only Kubernetes `Status` messages are forwarded, never other response bodies |
@@ -174,7 +174,7 @@ config, and are deliberately outside the outbound policy:
 - OIDC discovery (`crates/orbit-api/src/handlers/auth_oidc.rs`) and JWKS fetches
   (`crates/orbit-security/src/auth.rs`) use `client_with_custom_ca` with the issuer/JWKS
   URL from `ORBIT_OIDC_ISSUER` / `ORBIT_OIDC_JWKS_URL`; both are cached and rate-bounded.
-- Launcher calls (`crates/orbit-api/src/handlers/worker_launches.rs`) use
+- Launcher calls (`crates/orbit-api/src/launches.rs`) use
   `ORBIT_LAUNCHER_URL`; worker → API calls (`services/worker/src/client.rs`) use
   `ORBIT_API_URL`.
 - The MCP bridge (`services/worker/src/mcp_broker.rs`)
