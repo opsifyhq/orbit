@@ -76,6 +76,12 @@ networkPolicy:
 With a token, the ServiceMonitor must live in the release namespace, because Prometheus
 reads the token Secret from the ServiceMonitor's namespace.
 
+Worker pods may reach the API port (they call the worker protocol there), so agent code
+could read an unauthenticated `/metrics` served on it, including `orbit_license_usage`.
+With `networkPolicy.enabled=true` the chart therefore refuses to render unless
+`monitoring.port` or `monitoring.token` is set; worker egress never includes the
+dedicated port. Set `monitoring.allowWorkersOnApiPort=true` to accept the exposure.
+
 ### Without Kubernetes
 
 ```yaml
@@ -170,7 +176,7 @@ scrape_configs:
 | Metric | Type | Meaning |
 |---|---|---|
 | `orbit_metrics_collect_errors_total` | counter | Scrapes for which the database gauges could not be read. |
-| `orbit_metrics_dropped_series_total` | counter | Samples dropped because a family reached its series cap (200). Should stay 0. |
+| `orbit_metrics_dropped_series_total` | counter | Samples dropped because a family reached its series cap (8192 for the two HTTP families, sized for every route template × method × status class; 200 for the others). Should stay 0. |
 
 ## Cardinality and privacy
 

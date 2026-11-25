@@ -8,8 +8,16 @@ use chrono::{Duration, Utc};
 
 use crate::{Store, StoreResult};
 
-/// Statuses in which an execution still occupies a queue slot or a worker.
+/// Statuses in which an execution still occupies a queue slot or a worker. The
+/// in-flight count ([`IN_FLIGHT_COUNT_SQL`]) and migration 0066 repeat them as literals;
+/// `in_flight_query_matches_the_statuses` keeps the three in step.
 pub const IN_FLIGHT_STATUSES: [&str; 4] = ["queued", "dispatched", "running", "awaiting_approval"];
+/// The in-flight count. The statuses are literals, not a bound array, so the planner can
+/// use the partial `executions_in_flight_status_idx` (migration 0066), whose predicate
+/// lists the same statuses; its cost no longer grows with finished executions.
+pub const IN_FLIGHT_COUNT_SQL: &str = "SELECT status, COUNT(*) FROM executions \
+     WHERE status IN ('queued', 'dispatched', 'running', 'awaiting_approval') \
+     GROUP BY status";
 /// Statuses in which a launched worker is still (coming) up.
 pub const LIVE_LAUNCH_STATUSES: [&str; 3] = ["pending", "starting", "running"];
 
@@ -32,12 +40,9 @@ impl Store {
         &self,
         heartbeat_stale_seconds: i64,
     ) -> StoreResult<MetricsSnapshot> {
-        let executions: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT status, COUNT(*) FROM executions WHERE status = ANY($1) GROUP BY status",
-        )
-        .bind(IN_FLIGHT_STATUSES.map(String::from).to_vec())
-        .fetch_all(&self.pool)
-        .await?;
+        let executions: Vec<(String, i64)> = sqlx::query_as(IN_FLIGHT_COUNT_SQL)
+            .fetch_all(&self.pool)
+            .await?;
         let launches: Vec<(String, i64)> = sqlx::query_as(
             r#"
             SELECT status, COUNT(*) FROM worker_launches
@@ -98,7 +103,26 @@ fn with_zeroes(known: &[&str], counted: Vec<(String, i64)>) -> Vec<(String, i64)
 
 #[cfg(test)]
 mod tests {
-    use super::with_zeroes;
+    use super::{with_zeroes, IN_FLIGHT_COUNT_SQL, IN_FLIGHT_STATUSES};
+
+    #[test]
+    fn in_flight_query_matches_the_statuses() {
+        let listed = IN_FLIGHT_STATUSES
+            .iter()
+            .map(|status| format!("'{status}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let predicate = format!("status IN ({listed})");
+        assert!(
+            IN_FLIGHT_COUNT_SQL.contains(&predicate),
+            "{IN_FLIGHT_COUNT_SQL}"
+        );
+        let migration = include_str!("../migrations/0066_executions_in_flight_idx.sql");
+        assert!(
+            migration.contains(&predicate),
+            "the index predicate must match"
+        );
+    }
 
     #[test]
     fn missing_statuses_are_reported_as_zero() {

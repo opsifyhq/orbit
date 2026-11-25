@@ -285,6 +285,7 @@ catalogue and examples: `docs/development/observability.md`.
 | `monitoring.serviceMonitor.interval` / `.scrapeTimeout` | `30s` / `10s` | |
 | `monitoring.serviceMonitor.scheme` / `.tlsConfig` | `http` / `{}` | |
 | `monitoring.serviceMonitor.relabelings` / `.metricRelabelings` | `[]` / `[]` | |
+| `monitoring.allowWorkersOnApiPort` | `false` | with `networkPolicy.enabled`, the chart refuses `/metrics` on `api.port` without a token, because worker pods can reach that port. Set `monitoring.port` or a token, or `true` to accept the exposure |
 | `monitoring.allowFrom` | `[]` | with `networkPolicy.enabled` and `monitoring.port`: peers allowed to reach the metrics port (empty = any) |
 
 ## Troubleshooting

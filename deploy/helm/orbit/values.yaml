@@ -230,6 +230,10 @@ monitoring:
   # /healthz, and the API port then stops serving /metrics. Use it to keep scrapes out
   # of the anonymous rate limit and to isolate the port with a NetworkPolicy.
   port: 0
+  # With networkPolicy.enabled, worker pods (agent code) can reach the API port, so the
+  # chart refuses an unauthenticated /metrics there: set `port` or `token`, or set this
+  # to true to accept that agents can read the installation-wide gauges.
+  allowWorkersOnApiPort: false
   # Require scrapers to send a bearer token. The Secret must be in the release
   # namespace; the ServiceMonitor below references the same Secret.
   token:

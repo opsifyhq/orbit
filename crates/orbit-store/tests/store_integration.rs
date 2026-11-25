@@ -4425,6 +4425,43 @@ async fn installation_wide_execution_count_uses_created_at_index() {
     tx.rollback().await.unwrap();
 }
 
+#[tokio::test]
+async fn in_flight_metrics_count_uses_the_partial_index() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let pool = store.pool();
+    // Disable sequential scans for this plan only (a tiny test table favours them) to
+    // prove the partial index serves the exact query /metrics runs (#398).
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // A constant query text, so wrapping it is safe.
+    let lines: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN {}",
+        orbit_store::metrics::IN_FLIGHT_COUNT_SQL
+    )))
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let plan = lines.join("\n");
+    // Any index whose predicate is the in-flight statuses keeps the cost independent of
+    // finished executions; on a tiny table the planner sometimes picks the older
+    // executions_agent_active_idx (same predicate, migration 0051) over the new one.
+    assert!(
+        plan.contains("executions_in_flight_status_idx")
+            || plan.contains("executions_agent_active_idx"),
+        "expected a partial in-flight index, got: {plan}"
+    );
+    assert!(
+        !plan.contains("executions_status_idx") && !plan.contains("Seq Scan"),
+        "the full (org_id, status) index or the table must not be scanned: {plan}"
+    );
+    tx.rollback().await.unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Per-execution liveness and worker boot identity (#342)
 // ---------------------------------------------------------------------------

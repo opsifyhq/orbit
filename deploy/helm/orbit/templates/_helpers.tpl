@@ -158,6 +158,9 @@ Production guardrails. Included from templates/validate.yaml so it runs on every
 {{- if and .Values.monitoring.serviceMonitor.enabled .Values.monitoring.token.existingSecret .Values.monitoring.serviceMonitor.namespace (ne (toString .Values.monitoring.serviceMonitor.namespace) .Release.Namespace) -}}
 {{- fail "monitoring.serviceMonitor.namespace must be the release namespace when monitoring.token.existingSecret is set: the ServiceMonitor reads the token Secret from its own namespace." -}}
 {{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.monitoring.port) (not .Values.monitoring.token.existingSecret) (not .Values.monitoring.allowWorkersOnApiPort) -}}
+{{- fail "networkPolicy.enabled=true lets worker pods reach orbit-api's port, and /metrics is served there without a token, so agent code could read installation-wide figures such as orbit_license_usage. Set monitoring.port (for example 9090; workers cannot reach it and monitoring.allowFrom limits who can), or monitoring.token.existingSecret, or set monitoring.allowWorkersOnApiPort=true to accept the exposure." -}}
+{{- end -}}
 {{- if and .Values.ingress.enabled (eq (toString .Values.auth.mode) "dev") .Values.auth.dev.allowAnonymous (not .Values.auth.acknowledgeInsecureDev) -}}
 {{- fail "ingress.enabled=true with auth.mode=dev and auth.dev.allowAnonymous=true exposes an anonymous Owner UI. Use auth.mode=oidc (see values-prod.example.yaml), set auth.dev.allowAnonymous=false, disable the ingress, or set auth.acknowledgeInsecureDev=true for a throwaway local/test cluster." -}}
 {{- end -}}

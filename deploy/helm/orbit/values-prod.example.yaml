@@ -185,6 +185,16 @@ launcher:
 networkPolicy:
   enabled: true
 
+# Serve /metrics on its own port. Worker pods may reach only the API port, so agent code
+# cannot read the metrics; the chart refuses networkPolicy without this (or a token).
+# Limit who may scrape with monitoring.allowFrom, for example:
+#   allowFrom:
+#     - namespaceSelector:
+#         matchLabels:
+#           kubernetes.io/metadata.name: monitoring
+monitoring:
+  port: 9090
+
 platform:
   environment: production
   seedDemo: false
