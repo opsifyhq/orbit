@@ -118,6 +118,9 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound("agent team".into()))
     }
 
+    /// Replace a team's name, description and definition. With `expected_updated_at`, the
+    /// write only happens when the team was not changed since the caller read it; a stale
+    /// write is a conflict (#432).
     pub async fn update_agent_team(
         &self,
         org_id: Uuid,
@@ -125,12 +128,14 @@ impl Store {
         name: &str,
         description: &str,
         definition: &Value,
+        expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> StoreResult<AgentTeam> {
-        sqlx::query_as::<_, AgentTeam>(
+        let updated = sqlx::query_as::<_, AgentTeam>(
             r#"
             UPDATE agent_teams
             SET name = $3, description = $4, definition = $5, updated_at = now()
             WHERE org_id = $1 AND id = $2
+              AND ($6::timestamptz IS NULL OR updated_at = $6)
             RETURNING *
             "#,
         )
@@ -139,9 +144,21 @@ impl Store {
         .bind(name)
         .bind(description)
         .bind(definition)
+        .bind(expected_updated_at)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| StoreError::NotFound("agent team".into()))
+        .await?;
+        match updated {
+            Some(team) => Ok(team),
+            None if expected_updated_at.is_some()
+                && self.get_agent_team(org_id, team_id).await.is_ok() =>
+            {
+                Err(StoreError::Conflict(
+                    "the agent team was changed after you loaded it; reload it and save again"
+                        .into(),
+                ))
+            }
+            None => Err(StoreError::NotFound("agent team".into())),
+        }
     }
 
     pub async fn delete_agent_team(&self, org_id: Uuid, team_id: Uuid) -> StoreResult<()> {

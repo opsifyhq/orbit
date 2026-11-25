@@ -24,19 +24,33 @@ pub struct TeamQueueItem {
     pub max_attempts: i32,
 }
 
+/// A manual queue item to insert (see [`Store::enqueue_team_items`]).
+pub struct NewQueueItem<'a> {
+    pub external_key: &'a str,
+    pub repository: Option<&'a str>,
+    pub payload: &'a Value,
+}
+
 impl Store {
     /// Most recent `limit` items for a team, returned oldest-first.
+    /// The newest `limit` items, oldest first. With `before`, the newest items created
+    /// before that item, so older items stay reachable page by page (#432).
     pub async fn list_team_queue(
         &self,
         org_id: Uuid,
         team_id: Uuid,
         limit: i64,
+        before: Option<Uuid>,
     ) -> StoreResult<Vec<TeamQueueItem>> {
         Ok(sqlx::query_as::<_, TeamQueueItem>(
             r#"
             SELECT * FROM (
                 SELECT * FROM team_queue_items
                 WHERE org_id = $1 AND team_id = $2
+                  AND ($4::uuid IS NULL OR (created_at, id) < (
+                      SELECT created_at, id FROM team_queue_items
+                      WHERE id = $4 AND team_id = $2
+                  ))
                 ORDER BY created_at DESC, id DESC
                 LIMIT $3
             ) recent
@@ -46,8 +60,55 @@ impl Store {
         .bind(org_id)
         .bind(team_id)
         .bind(limit.clamp(1, 1000))
+        .bind(before)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    /// Insert manual queue items in one transaction: all or nothing. An item whose key is
+    /// already queued is returned unchanged (payload and timestamps kept) with
+    /// `created = false` (#432).
+    pub async fn enqueue_team_items(
+        &self,
+        org_id: Uuid,
+        team_id: Uuid,
+        items: &[NewQueueItem<'_>],
+    ) -> StoreResult<Vec<(TeamQueueItem, bool)>> {
+        let mut tx = self.pool.begin().await?;
+        let mut stored = Vec::with_capacity(items.len());
+        for item in items {
+            let inserted = sqlx::query_as::<_, TeamQueueItem>(
+                r#"
+                INSERT INTO team_queue_items (id, org_id, team_id, external_key, repository, payload)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (team_id, external_key) DO NOTHING
+                RETURNING *
+                "#,
+            )
+            .bind(orbit_domain::new_id())
+            .bind(org_id)
+            .bind(team_id)
+            .bind(item.external_key)
+            .bind(item.repository)
+            .bind(item.payload)
+            .fetch_optional(&mut *tx)
+            .await?;
+            match inserted {
+                Some(row) => stored.push((row, true)),
+                None => {
+                    let existing = sqlx::query_as::<_, TeamQueueItem>(
+                        "SELECT * FROM team_queue_items WHERE team_id = $1 AND external_key = $2",
+                    )
+                    .bind(team_id)
+                    .bind(item.external_key)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    stored.push((existing, false));
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(stored)
     }
 
     /// Oldest pending items first; what the auto-run loop needs.
@@ -70,33 +131,6 @@ impl Store {
         .bind(limit.clamp(1, 1000))
         .fetch_all(&self.pool)
         .await?)
-    }
-
-    pub async fn enqueue_team_item(
-        &self,
-        org_id: Uuid,
-        team_id: Uuid,
-        external_key: &str,
-        repository: Option<&str>,
-        payload: &Value,
-    ) -> StoreResult<TeamQueueItem> {
-        sqlx::query_as::<_, TeamQueueItem>(
-            r#"
-            INSERT INTO team_queue_items (id, org_id, team_id, external_key, repository, payload)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (team_id, external_key) DO UPDATE SET updated_at = now()
-            RETURNING *
-            "#,
-        )
-        .bind(orbit_domain::new_id())
-        .bind(org_id)
-        .bind(team_id)
-        .bind(external_key)
-        .bind(repository)
-        .bind(payload)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
     }
 
     /// Insert a work-source item only when the dedupe key is not already present.

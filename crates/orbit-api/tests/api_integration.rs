@@ -4608,6 +4608,187 @@ async fn queue_item(app: &TestApp, team: Uuid, key: &str, max_attempts: i32) -> 
         .id
 }
 
+/// #432: PATCH keeps what it does not name, `null` clears, and a stale
+/// `expectedUpdatedAt` is refused instead of overwriting another change.
+#[tokio::test]
+async fn team_patch_merges_and_refuses_stale_writes() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, team) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({
+                "name": "Merge", "mode": "pipeline", "instructions": "goal",
+                "steps": [{ "agentId": app.agent_id }],
+                "timeoutSeconds": 120, "repository": "acme/api",
+                "autonomy": { "mode": "fixed", "level": 1 }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let id = team["id"].as_str().unwrap();
+    let path = format!("/api/v1/agent-teams/{id}");
+
+    let (status, renamed) = send(
+        &app.router,
+        auth_patch(&path, "orbit-dev-token", json!({ "name": "Renamed" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Renamed");
+    let definition = &renamed["definition"];
+    assert_eq!(definition["timeoutSeconds"], 120);
+    assert_eq!(definition["repository"], "acme/api");
+    assert_eq!(definition["autonomy"]["level"], 1);
+    assert_eq!(definition["instructions"], "goal");
+
+    let (status, cleared) = send(
+        &app.router,
+        auth_patch(&path, "orbit-dev-token", json!({ "repository": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert!(cleared["definition"]["repository"].is_null());
+    assert_eq!(cleared["definition"]["timeoutSeconds"], 120);
+
+    // A write based on an older read is refused; one based on the current read passes.
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &path,
+            "orbit-dev-token",
+            json!({ "name": "Stale", "expectedUpdatedAt": renamed["updatedAt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = send(
+        &app.router,
+        auth_patch(
+            &path,
+            "orbit-dev-token",
+            json!({ "name": "Fresh", "expectedUpdatedAt": cleared["updatedAt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "Fresh");
+
+    // Team changes and runs are audited.
+    start_run(&app, id.parse().unwrap()).await;
+    let (status, _) = send(&app.router, auth_delete(&path, "orbit-dev-token")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let team_id: Uuid = id.parse().unwrap();
+    for action in ["team.created", "team.updated", "team.deleted"] {
+        let (rows, _) = app
+            .store
+            .list_audit_logs(app.org_id, 10, None, Some(action))
+            .await
+            .unwrap();
+        assert!(
+            rows.iter().any(|row| row.target_id == Some(team_id)),
+            "{action} not audited"
+        );
+    }
+    let (rows, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("team_run.started"))
+        .await
+        .unwrap();
+    assert!(rows
+        .iter()
+        .any(|row| row.metadata["teamId"] == json!(team_id)));
+}
+
+/// #432: an enqueue batch is stored all or nothing, a repeated key is returned
+/// unchanged with `created: false`, and older items can be paged to.
+#[tokio::test]
+async fn team_queue_batches_are_atomic_and_pageable() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(&app, vec![app.agent_id], json!({})).await;
+    let path = format!("/api/v1/agent-teams/{team}/queue");
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            &path,
+            json!({ "items": [{ "externalKey": "a" }, { "externalKey": "   " }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, listed) = send(&app.router, get(&path)).await;
+    assert_eq!(
+        listed.as_array().unwrap().len(),
+        0,
+        "nothing stored: {listed}"
+    );
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            &path,
+            json!({ "items": [{ "externalKey": "a", "payload": { "task": "first" } }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body[0]["created"], true);
+    let (status, body) = send(
+        &app.router,
+        post(
+            &path,
+            json!({ "items": [{ "externalKey": "a", "payload": { "task": "second" } }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body[0]["created"], false);
+    assert_eq!(body[0]["payload"]["task"], "first");
+    let (rows, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("team_queue.enqueued"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "a repeated key is not a new enqueue");
+
+    let items: Vec<Value> = (0..5)
+        .map(|i| json!({ "externalKey": format!("k{i}") }))
+        .collect();
+    let (status, _) = send(&app.router, post(&path, json!({ "items": items }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, page) = send(&app.router, get(&format!("{path}?limit=2"))).await;
+    let page = page.as_array().unwrap().clone();
+    assert_eq!(
+        page.iter()
+            .map(|i| i["externalKey"].clone())
+            .collect::<Vec<_>>(),
+        [json!("k3"), json!("k4")]
+    );
+    let oldest = page[0]["id"].as_str().unwrap();
+    let (_, older) = send(
+        &app.router,
+        get(&format!("{path}?limit=10&before={oldest}")),
+    )
+    .await;
+    assert_eq!(
+        older
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["externalKey"].clone())
+            .collect::<Vec<_>>(),
+        [json!("a"), json!("k0"), json!("k1"), json!("k2")]
+    );
+    let (status, _) = send(&app.router, get(&format!("{path}?limit=0"))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 #[tokio::test]
 async fn concurrent_queue_start_creates_exactly_one_run() {
     let Some(app) = test_app(true).await else {
@@ -12138,6 +12319,7 @@ async fn fixed_team_autonomy_is_clamped_when_the_agent_becomes_stricter() {
             &team.name,
             &team.description,
             &definition,
+            None,
         )
         .await
         .unwrap();

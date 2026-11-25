@@ -112,6 +112,7 @@
         "tags": [
           "agent-teams"
         ],
+        "summary": "Partial update: fields left out keep their stored value, an explicit `null` clears an\noptional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a\nwrite over someone else's change with 409.",
         "operationId": "update_team",
         "parameters": [
           {
@@ -143,6 +144,9 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "the team changed after `expectedUpdatedAt`"
           }
         }
       }
@@ -155,6 +159,32 @@
         "operationId": "list",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page, 1 to 500 (default 500).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return the items created before this item: pass the first (oldest) id of the\nprevious page to page back.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
             "name": "team_id",
             "in": "path",
             "required": true,
@@ -166,6 +196,7 @@
         ],
         "responses": {
           "200": {
+            "description": "the newest items, oldest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -206,13 +237,27 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "200": {
+            "description": "every item was already queued",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/TeamQueueItem"
+                    "$ref": "#/components/schemas/EnqueuedItem"
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "at least one item was created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnqueuedItem"
                   }
                 }
               }
@@ -6124,6 +6169,14 @@
               "format": "uuid"
             }
           },
+          "expectedUpdatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "PATCH only: the team's `updatedAt` as the client read it. When the team changed\nsince, the update is refused with 409 instead of overwriting the other change."
+          },
           "harness": {
             "type": [
               "string",
@@ -6690,9 +6743,29 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/QueueItemInput"
-            }
+            },
+            "description": "1 to 500 items. The batch is stored all or nothing."
           }
         }
+      },
+      "EnqueuedItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TeamQueueItem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "created"
+            ],
+            "properties": {
+              "created": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "description": "A queue item as enqueued: `created` is false when an item with that `externalKey`\nwas already queued, which is then returned unchanged."
       },
       "EnvMapping": {
         "type": "object",
