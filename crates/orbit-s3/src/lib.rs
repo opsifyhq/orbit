@@ -12,6 +12,10 @@ use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 
 const MAX_ERROR_BODY: usize = 4_000;
+/// S3 keys are at most 1024 bytes of UTF-8.
+const MAX_KEY_BYTES: usize = 1_024;
+/// A ListObjectsV2 / ListBuckets answer is read up to this size.
+const MAX_LIST_BODY: usize = 4 * 1024 * 1024;
 const DEFAULT_MAX_OBJECT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Why an S3 operation failed, and whether trying again can help.
@@ -103,11 +107,26 @@ fn outbound_refusal(error: &reqwest::Error) -> Option<&orbit_security::OutboundE
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct S3Credentials {
     pub access_key_id: String,
     pub secret_access_key: String,
     pub session_token: Option<String>,
+}
+
+/// Prints the access key id only: the secret key and session token never reach a log
+/// (#388, AGENTS.md rule 4).
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[redacted]")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl S3Credentials {
@@ -272,14 +291,10 @@ impl S3Config {
 
     fn object_key(&self, key: &str) -> Result<String, String> {
         let key = key.trim_start_matches('/');
-        if key.is_empty()
-            || key.contains('\0')
-            || key
-                .split('/')
-                .any(|segment| segment == ".." || segment.is_empty())
-        {
+        if key.is_empty() || key.split('/').any(str::is_empty) {
             return Err("object key is empty or contains an invalid path segment".into());
         }
+        check_key_text(key, "object key")?;
         if !key.starts_with(&self.key_prefix) {
             return Err(format!(
                 "object key must start with the configured keyPrefix '{}'",
@@ -288,6 +303,54 @@ impl S3Config {
         }
         Ok(key.to_string())
     }
+}
+
+/// Rules every key and list prefix share: no `.` or `..` segment (a URL library would
+/// remove it and send the request to another path, the bucket itself for `.`), no
+/// backslash or control character, at most 1024 bytes (#388).
+fn check_key_text(value: &str, what: &str) -> Result<(), String> {
+    if value.len() > MAX_KEY_BYTES {
+        return Err(format!("{what} is longer than {MAX_KEY_BYTES} bytes"));
+    }
+    if value.contains('\\') || value.chars().any(char::is_control) {
+        return Err(format!("{what} contains a backslash or control character"));
+    }
+    if value
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(format!("{what} contains a '.' or '..' segment"));
+    }
+    Ok(())
+}
+
+impl S3Config {
+    /// The prefix an `objects.list` call may use: the agent's, which must stay inside
+    /// `keyPrefix`, or `keyPrefix` itself.
+    fn list_prefix(&self, prefix: Option<&str>) -> Result<String, String> {
+        let prefix = match prefix.map(|value| value.trim_start_matches('/')) {
+            None | Some("") => return Ok(self.key_prefix.clone()),
+            Some(value) => value,
+        };
+        check_key_text(prefix, "list prefix")?;
+        if !prefix.starts_with(&self.key_prefix) {
+            return Err(format!(
+                "list prefix must start with the configured keyPrefix '{}'",
+                self.key_prefix
+            ));
+        }
+        Ok(prefix.to_string())
+    }
+}
+
+/// One page of `objects.list`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectPage {
+    pub objects: Vec<ObjectInfo>,
+    /// More objects match; pass `next_continuation_token` to read them.
+    pub truncated: bool,
+    pub next_continuation_token: Option<String>,
 }
 
 fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -464,6 +527,8 @@ impl S3Client {
                 items
                     .into_iter()
                     .filter_map(|item| item.get("Name").cloned())
+                    // Only the buckets this connection allows (#388).
+                    .filter(|name| self.config.allowed_buckets.contains(name))
                     .collect()
             })
     }
@@ -472,16 +537,21 @@ impl S3Client {
         &self,
         bucket: Option<&str>,
         prefix: Option<&str>,
-    ) -> Result<Vec<ObjectInfo>, S3Error> {
+        continuation_token: Option<&str>,
+    ) -> Result<ObjectPage, S3Error> {
         let bucket = self.config.bucket(bucket).map_err(S3Error::permanent)?;
-        let prefix = prefix
-            .unwrap_or(&self.config.key_prefix)
-            .trim_start_matches('/');
-        let query = vec![
+        let prefix = self
+            .config
+            .list_prefix(prefix)
+            .map_err(S3Error::permanent)?;
+        let mut query = vec![
             ("list-type".to_string(), "2".to_string()),
-            ("prefix".to_string(), prefix.to_string()),
+            ("prefix".to_string(), prefix),
             ("max-keys".to_string(), "100".to_string()),
         ];
+        if let Some(token) = continuation_token.filter(|token| !token.is_empty()) {
+            query.push(("continuation-token".to_string(), token.to_string()));
+        }
         let response = self
             .send(
                 reqwest::Method::GET,
@@ -494,10 +564,15 @@ impl S3Client {
             )
             .await?;
         let body = ensure_success(response, "ListObjectsV2").await?;
+        let text = String::from_utf8_lossy(&body);
+        let truncated = extract_tag(&text, "IsTruncated").is_some_and(|value| value == "true");
+        let next_continuation_token = extract_tag(&text, "NextContinuationToken");
         parse_list(&body, "Contents")
             .map_err(S3Error::permanent)
-            .map(|items| {
-                items
+            .map(|items| ObjectPage {
+                truncated,
+                next_continuation_token,
+                objects: items
                     .into_iter()
                     .map(|item| ObjectInfo {
                         key: item.get("Key").cloned().unwrap_or_default(),
@@ -508,7 +583,7 @@ impl S3Client {
                         last_modified: item.get("LastModified").cloned(),
                         etag: item.get("ETag").cloned(),
                     })
-                    .collect()
+                    .collect(),
             })
     }
 
@@ -612,8 +687,12 @@ async fn check_success(
         return Ok(response);
     }
     let status = response.status();
-    let body = response.bytes().await.unwrap_or_default();
-    let text = String::from_utf8_lossy(&body[..body.len().min(MAX_ERROR_BODY)]).into_owned();
+    // Read at most MAX_ERROR_BODY bytes: a hostile endpoint cannot stream a large body.
+    let body = read_limited(response, MAX_ERROR_BODY)
+        .await
+        .map(|(body, _)| body)
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&body).into_owned();
     let code = extract_tag(&text, "Code").unwrap_or_else(|| status.to_string());
     let message = extract_tag(&text, "Message").unwrap_or_else(|| "S3 request failed".into());
     Err(S3Error::http(
@@ -624,7 +703,13 @@ async fn check_success(
 
 async fn ensure_success(response: reqwest::Response, operation: &str) -> Result<Vec<u8>, S3Error> {
     let response = check_success(response, operation).await?;
-    Ok(response.bytes().await.unwrap_or_default().to_vec())
+    let (body, truncated) = read_limited(response, MAX_LIST_BODY).await?;
+    if truncated {
+        return Err(S3Error::permanent(format!(
+            "{operation} answer is larger than {MAX_LIST_BODY} bytes"
+        )));
+    }
+    Ok(body)
 }
 
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
@@ -710,6 +795,11 @@ fn build_url(
         path.push('/');
     }
     url.set_path(&path);
+    // The URL library removes dot segments; the request must go exactly where it was
+    // validated to go, so refuse anything it rewrote (#388).
+    if url.path() != path {
+        return Err("object key changes the request path".into());
+    }
     if !query.is_empty() {
         url.query_pairs_mut()
             .clear()
@@ -824,6 +914,63 @@ mod tests {
         assert!(client.config.object_key("other/a.txt").is_err());
         assert!(client.config.object_key("orbit/../a.txt").is_err());
         assert!(client.config.object_key("/orbit//a.txt").is_err());
+    }
+
+    #[test]
+    fn dot_segments_and_odd_keys_are_refused() {
+        let (config, _) = connection();
+        for key in [
+            "orbit/.",
+            "orbit/./a",
+            "orbit/a/..",
+            "orbit/a\\b",
+            "orbit/a\u{7}b",
+        ] {
+            assert!(config.object_key(key).is_err(), "{key:?} should be refused");
+        }
+        let long = format!("orbit/{}", "a".repeat(MAX_KEY_BYTES));
+        assert!(config.object_key(&long).is_err());
+        let (mut open, _) = connection();
+        open.key_prefix = String::new();
+        for key in [".", "./a", "a/."] {
+            assert!(open.object_key(key).is_err(), "{key:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn request_paths_are_exactly_bucket_and_key() {
+        let (config, _) = connection();
+        let url = build_url(&config, Some("orbit"), Some("orbit/a.b/c~d.txt"), &[]).unwrap();
+        assert_eq!(url.path(), "/orbit/orbit/a.b/c~d.txt");
+        // A key the URL library would normalise is refused instead of sent elsewhere.
+        assert!(build_url(&config, Some("orbit"), Some("."), &[]).is_err());
+        assert!(build_url(&config, Some("orbit"), Some("x/../y"), &[]).is_err());
+    }
+
+    #[test]
+    fn list_prefixes_stay_inside_the_key_prefix() {
+        let (config, _) = connection();
+        assert_eq!(config.list_prefix(None).unwrap(), "orbit/");
+        assert_eq!(config.list_prefix(Some("")).unwrap(), "orbit/");
+        assert_eq!(
+            config.list_prefix(Some("/orbit/runs")).unwrap(),
+            "orbit/runs"
+        );
+        assert!(config.list_prefix(Some("other/")).is_err());
+        assert!(config.list_prefix(Some("orbit/../x")).is_err());
+    }
+
+    #[test]
+    fn credentials_debug_hides_secrets() {
+        let credentials = S3Credentials {
+            access_key_id: "AKID".into(),
+            secret_access_key: "very-secret".into(),
+            session_token: Some("session-secret".into()),
+        };
+        let printed = format!("{credentials:?}");
+        assert!(printed.contains("AKID"));
+        assert!(!printed.contains("very-secret"));
+        assert!(!printed.contains("session-secret"));
     }
 
     #[test]
@@ -981,6 +1128,14 @@ mod tests {
 
     /// One HTTP answer from a throwaway server.
     async fn answer_once(status_line: &'static str) -> std::net::SocketAddr {
+        answer_with(
+            status_line,
+            "<Error><Code>AccessDenied</Code><Message>denied</Message></Error>".into(),
+        )
+        .await
+    }
+
+    async fn answer_with(status_line: &'static str, body: String) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -989,7 +1144,6 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut chunk = [0u8; 8192];
             let _ = stream.read(&mut chunk).await;
-            let body = "<Error><Code>AccessDenied</Code><Message>denied</Message></Error>";
             let response = format!(
                 "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -997,6 +1151,64 @@ mod tests {
             let _ = stream.write_all(response.as_bytes()).await;
         });
         address
+    }
+
+    fn tool_client(address: std::net::SocketAddr) -> S3Client {
+        let (config, credentials) = S3Config::from_connection(
+            &serde_json::json!({
+                "provider": "rustfs",
+                "endpoint": format!("http://{address}"),
+                "allowedBuckets": ["orbit"],
+                "defaultBucket": "orbit",
+                "keyPrefix": "orbit/"
+            }),
+            Some(SECRET),
+        )
+        .unwrap();
+        S3Client::new(config, credentials).unwrap()
+    }
+
+    #[tokio::test]
+    async fn bucket_listing_shows_only_allowed_buckets() {
+        let body = "<ListAllMyBucketsResult><Buckets>\
+            <Bucket><Name>orbit</Name></Bucket><Bucket><Name>payroll</Name></Bucket>\
+            </Buckets></ListAllMyBucketsResult>";
+        let address = answer_with("HTTP/1.1 200 OK", body.into()).await;
+        assert_eq!(
+            tool_client(address).list_buckets().await.unwrap(),
+            ["orbit"]
+        );
+    }
+
+    #[tokio::test]
+    async fn object_listing_reports_truncation() {
+        let body = "<ListBucketResult><IsTruncated>true</IsTruncated>\
+            <NextContinuationToken>next-1</NextContinuationToken>\
+            <Contents><Key>orbit/a.txt</Key><Size>3</Size></Contents></ListBucketResult>";
+        let address = answer_with("HTTP/1.1 200 OK", body.into()).await;
+        let page = tool_client(address)
+            .list_objects(None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(page.objects.len(), 1);
+        assert!(page.truncated);
+        assert_eq!(page.next_continuation_token.as_deref(), Some("next-1"));
+    }
+
+    #[tokio::test]
+    async fn large_error_bodies_are_not_read_in_full() {
+        let body = format!(
+            "<Error><Code>SlowDown</Code><Message>{}</Message></Error>",
+            "x".repeat(200_000)
+        );
+        let address = answer_with("HTTP/1.1 503 Service Unavailable", body).await;
+        let error = tool_client(address).list_buckets().await.unwrap_err();
+        // The cap cuts the body before </Message>, so the message falls back.
+        assert!(
+            error.message.len() < MAX_ERROR_BODY,
+            "{}",
+            error.message.len()
+        );
     }
 
     async fn put(endpoint: String) -> Result<(), S3Error> {

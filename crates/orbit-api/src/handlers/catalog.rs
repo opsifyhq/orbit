@@ -930,7 +930,10 @@ async fn probe_connection(
                     orbit_s3::S3Config::from_connection(config, credential)?;
                 let client = orbit_s3::S3Client::new(config, credentials)?;
                 match client.list_buckets().await {
-                    Ok(buckets) => Ok(format!("S3 reachable; {} bucket(s) visible", buckets.len())),
+                    Ok(buckets) => Ok(format!(
+                        "S3 reachable; {} allowed bucket(s) visible",
+                        buckets.len()
+                    )),
                     Err(list_error) => {
                         // Many least-privilege credentials can list objects in one bucket
                         // but not enumerate every bucket.
@@ -941,12 +944,12 @@ async fn probe_connection(
                             .or_else(|| client.config().allowed_buckets.first().cloned());
                         if let Some(bucket) = bucket {
                             client
-                                .list_objects(Some(&bucket), None)
+                                .list_objects(Some(&bucket), None, None)
                                 .await
-                                .map(|objects| {
+                                .map(|page| {
                                     format!(
                                         "S3 reachable; {} object(s) visible in {bucket}",
-                                        objects.len()
+                                        page.objects.len()
                                     )
                                 })
                                 .map_err(|probe| {

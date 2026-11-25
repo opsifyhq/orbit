@@ -416,7 +416,8 @@ fn s3_tool_specs(
                     "type": "object",
                     "properties": {
                         "bucket": { "type": "string" },
-                        "prefix": { "type": "string" }
+                        "prefix": { "type": "string", "description": "Must start with the connection's key prefix; defaults to it" },
+                        "continuationToken": { "type": "string", "description": "nextContinuationToken from a truncated page" }
                     }
                 }),
                 "objects.get" | "objects.delete" => json!({
@@ -449,8 +450,8 @@ fn s3_tool_specs(
                 _ => json!({ "type": "object" }),
             };
             let description = match capability.as_str() {
-                "buckets.list" => "List accessible S3 buckets.",
-                "objects.list" => "List S3 objects under a prefix.",
+                "buckets.list" => "List the S3 buckets this connection allows.",
+                "objects.list" => "List S3 objects under the connection's key prefix (100 per page).",
                 "objects.get" => "Read an S3 object (size capped).",
                 "objects.put" => "Write an S3 object (size capped).",
                 "objects.delete" => "Delete an S3 object.",
