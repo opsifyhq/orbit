@@ -24,7 +24,11 @@ connector slug is `x`; it never routes X calls to the GitHub client.
 3. In Connection Studio choose **X**, enter a name, paste the user access token into the
    **Credential** field, and tick only the capabilities the agent needs.
 4. Optionally set `baseUrl` in the connection config (default `https://api.x.com/2`) and
-   `query` for `posts.search` hydration.
+   `query` for `posts.search` hydration. Hydration runs only with a query, from the
+   connection config or `{"query": "..."}` in the run payload; the task text is never sent
+   to X. Tool policy rules for `posts.search` apply to hydration: a deny or
+   require-approval rule skips it, and each search shows up as a tool call in the
+   execution's events.
 
 Credentials are write-only. The token is encrypted at rest, leased to the worker for the
 call, and never written to prompts, execution events, audit logs or workspace files. The

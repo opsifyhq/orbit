@@ -15,6 +15,19 @@ use uuid::Uuid;
 
 use orbit_security::SecretCipher;
 
+/// The database for integration tests (`ORBIT_TEST_DATABASE_URL`). Without it the
+/// database-backed tests skip themselves, which is right on a laptop but would hide a
+/// broken CI setup behind a green run, so in CI (`CI=true`) a missing URL panics (#445).
+pub fn test_database_url() -> Option<String> {
+    match std::env::var("ORBIT_TEST_DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ if std::env::var("CI").is_ok_and(|value| value == "true") => panic!(
+            "ORBIT_TEST_DATABASE_URL is not set in CI: the database-backed tests would be skipped"
+        ),
+        _ => None,
+    }
+}
+
 pub mod access;
 pub mod access_teams;
 pub mod agent_memory;

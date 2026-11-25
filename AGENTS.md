@@ -42,7 +42,7 @@ docs/                  Handbook (guide/), architecture, ADRs, development, secur
 # backend
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace     # database-backed tests skip without ORBIT_TEST_DATABASE_URL (they fail in CI)
 ORBIT_TEST_DATABASE_URL=postgres://orbit:orbit@localhost:5432/orbit cargo test --workspace
 
 # database (SQLx CLI)

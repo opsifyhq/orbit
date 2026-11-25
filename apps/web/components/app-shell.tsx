@@ -85,7 +85,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // to interpret the me result, and retrying meta recovers both.
   const unavailable = metaUnavailable ?? sessionUnavailable;
 
-  const title = publicPath ? "Sign in · ORBIT" : `${pageLabel(pathname)} · ORBIT`;
+  const label = pageLabel(pathname);
+  // Pages outside the navigation (an unknown path, for one) are just "ORBIT".
+  const title = publicPath ? "Sign in · ORBIT" : label === "ORBIT" ? "ORBIT" : `${label} · ORBIT`;
   const hasToken = Boolean(getAccessToken());
 
   // Don't render the signed-in chrome while OIDC auth is still being resolved. Without

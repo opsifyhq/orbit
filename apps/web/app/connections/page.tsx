@@ -200,7 +200,7 @@ export default function ConnectionsPage() {
                           ? connection.scopes.map(capabilityLabel).join(", ")
                           : "No capabilities allowed yet"}
                       </p>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <span className="sm:hidden">{connection.connectorName}</span>
                         <span>{summary || "Nothing allowed"}</span>
                         <span>{connection.hasCredential ? "Credential stored" : "No credential"}</span>

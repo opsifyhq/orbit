@@ -20,9 +20,10 @@ use orbit_store::{TeamRun, TeamStep};
 
 use crate::error::ApiError;
 use crate::handlers::teams::{
-    announce_cancel, auto_launch_step, execution_error_message, finalize_run, is_temporary_limit,
-    start_step_with, FirstSteps, StepStart, TeamDefinition, TeamModelOverride, WorkflowStepStart,
-    ADVANCE_LEASE_SECS, LIMITED_STEP_RETRY_WINDOW_SECS, START_STEP_RETRY_WINDOW_SECS,
+    announce_cancel, auto_launch_step, execution_error_message, fail_run_after_launch_error,
+    finalize_run, is_temporary_limit, start_step_with, FirstSteps, StepStart, TeamDefinition,
+    TeamModelOverride, WorkflowStepStart, ADVANCE_LEASE_SECS, LIMITED_STEP_RETRY_WINDOW_SECS,
+    START_STEP_RETRY_WINDOW_SECS,
 };
 use crate::state::AppState;
 
@@ -378,9 +379,10 @@ pub(crate) async fn advance(
         {
             Ok(created) => {
                 next_index += 1;
-                auto_launch_step(state, run, definition, &created, None)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.message))?;
+                if let Err(error) = auto_launch_step(state, run, definition, &created, None).await {
+                    fail_run_after_launch_error(state, run, &created, &error).await;
+                    return Ok(());
+                }
                 continue;
             }
             Err(error) => error,

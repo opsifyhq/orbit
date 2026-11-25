@@ -61,16 +61,6 @@ impl HarnessKind {
             Self::Generic => "Generic harness",
         }
     }
-
-    /// Whether the adapter is functional in this build. The UI surfaces this so users
-    /// are never misled into believing an unimplemented integration works.
-    pub fn implementation_status(&self) -> ImplementationStatus {
-        match self {
-            Self::Mock => ImplementationStatus::Available,
-            Self::OpenCode => ImplementationStatus::Scaffolded,
-            Self::ClaudeCode | Self::Pi | Self::Generic => ImplementationStatus::Planned,
-        }
-    }
 }
 
 impl fmt::Display for HarnessKind {
