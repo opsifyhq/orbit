@@ -52,6 +52,36 @@ pub struct NewExecution<'a> {
     pub team_step_index: Option<i32>,
 }
 
+/// `total` for [`Store::list_executions`]. `$1` org, `$2` comma-separated statuses,
+/// `$3` agent, `$4` archived filter, `$5..$8` the access binds. For the default list
+/// (`$4 = false`) the partial index `executions_unarchived_idx` (migration 0067) answers
+/// it with an index-only scan, so the cost follows the retention window rather than
+/// all history. `archived = true` or unset still counts every matching row (#209).
+pub const LIST_EXECUTIONS_TOTAL_SQL: &str = r#"
+    SELECT COUNT(*) FROM executions e
+    JOIN agents a ON a.id = e.agent_id
+    WHERE e.org_id = $1
+      AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
+      AND ($3::uuid IS NULL OR e.agent_id = $3)
+      AND ($4::boolean IS NULL OR ($4 = FALSE AND e.archived_at IS NULL) OR ($4 = TRUE AND e.archived_at IS NOT NULL))
+      AND ($5::bool OR a.owner_user_id = $6
+           OR CASE WHEN $8::bool AND a.owner_team_id IS NOT NULL
+                THEN a.owner_team_id = ANY($7)
+                ELSE a.visibility = 'org'
+                     OR (a.visibility = 'team' AND a.owner_team_id = ANY($7)) END)
+"#;
+
+/// The retention job's archive step (`$1` cutoff), across all organizations. The partial
+/// index `executions_archive_due_idx` (migration 0067) finds the due rows (#209).
+pub const ARCHIVE_EXECUTIONS_SQL: &str = r#"
+    UPDATE executions
+    SET archived_at = now(), updated_at = now()
+    WHERE archived_at IS NULL
+      AND finished_at IS NOT NULL
+      AND finished_at < $1
+      AND status IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'rejected')
+"#;
+
 impl Store {
     /// Insert a queued execution. When `idempotency_key` is supplied, a duplicate request
     /// returns the previously created execution instead of creating another one.
@@ -199,31 +229,17 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
 
-        let total: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM executions e
-            JOIN agents a ON a.id = e.agent_id
-            WHERE e.org_id = $1
-              AND ($2::text IS NULL OR e.status = ANY(string_to_array($2, ',')))
-              AND ($3::uuid IS NULL OR e.agent_id = $3)
-              AND ($4::boolean IS NULL OR ($4 = FALSE AND e.archived_at IS NULL) OR ($4 = TRUE AND e.archived_at IS NOT NULL))
-              AND ($5::bool OR a.owner_user_id = $6
-                   OR CASE WHEN $8::bool AND a.owner_team_id IS NOT NULL
-                        THEN a.owner_team_id = ANY($7)
-                        ELSE a.visibility = 'org'
-                             OR (a.visibility = 'team' AND a.owner_team_id = ANY($7)) END)
-            "#,
-        )
-        .bind(org_id)
-        .bind(status)
-        .bind(agent_id)
-        .bind(archived)
-        .bind(privileged)
-        .bind(user_id)
-        .bind(&team_ids)
-        .bind(isolation)
-        .fetch_one(&self.pool)
-        .await?;
+        let total: i64 = sqlx::query_scalar(LIST_EXECUTIONS_TOTAL_SQL)
+            .bind(org_id)
+            .bind(status)
+            .bind(agent_id)
+            .bind(archived)
+            .bind(privileged)
+            .bind(user_id)
+            .bind(&team_ids)
+            .bind(isolation)
+            .fetch_one(&self.pool)
+            .await?;
 
         let (rows, next) = page_of(rows, limit, |e| (e.created_at, e.id));
         Ok((rows, next, total))
@@ -234,19 +250,10 @@ impl Store {
         &self,
         cutoff: chrono::DateTime<Utc>,
     ) -> StoreResult<u64> {
-        let result = sqlx::query(
-            r#"
-            UPDATE executions
-            SET archived_at = now(), updated_at = now()
-            WHERE archived_at IS NULL
-              AND finished_at IS NOT NULL
-              AND finished_at < $1
-              AND status IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'rejected')
-            "#,
-        )
-        .bind(cutoff)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query(ARCHIVE_EXECUTIONS_SQL)
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected())
     }
 

@@ -4425,6 +4425,62 @@ async fn installation_wide_execution_count_uses_created_at_index() {
     tx.rollback().await.unwrap();
 }
 
+/// The default list total and the retention job's archive step read only unarchived rows
+/// through the partial indexes of migration 0067, so their cost follows the retention
+/// window instead of all history (#209). On a small, shared test table several indexes
+/// cost the same and the planner's choice changes from run to run, so the plans are shown
+/// by the seeded EXPLAIN in `scripts/perf/` instead. This test pins what makes those plans
+/// possible: the index definitions and query predicates the planner must match.
+#[tokio::test]
+async fn unarchived_indexes_match_the_list_total_and_archive_queries() {
+    let Some(store) = test_store().await else {
+        eprintln!("skipping: ORBIT_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = store.pool();
+    for (name, expected) in [
+        (
+            "executions_unarchived_idx",
+            "(org_id, created_at DESC, id DESC) INCLUDE (agent_id, status) WHERE (archived_at IS NULL)",
+        ),
+        (
+            "executions_archive_due_idx",
+            "(finished_at) WHERE ((archived_at IS NULL) AND (finished_at IS NOT NULL))",
+        ),
+    ] {
+        let indexdef: Option<String> = sqlx::query_scalar(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() \
+             AND tablename = 'executions' AND indexname = $1",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        let indexdef = indexdef.unwrap_or_else(|| panic!("migration 0067 must create {name}"));
+        assert!(
+            indexdef.ends_with(expected),
+            "{name} must be {expected}, got: {indexdef}"
+        );
+    }
+    // The list total's default filter must reduce to the index predicate.
+    assert!(
+        orbit_store::executions::LIST_EXECUTIONS_TOTAL_SQL
+            .contains("($4 = FALSE AND e.archived_at IS NULL)"),
+        "the default list filter must stay provable against WHERE archived_at IS NULL"
+    );
+
+    for predicate in [
+        "archived_at IS NULL",
+        "finished_at IS NOT NULL",
+        "finished_at < $1",
+    ] {
+        assert!(
+            orbit_store::executions::ARCHIVE_EXECUTIONS_SQL.contains(predicate),
+            "the archive step must keep `{predicate}` to match executions_archive_due_idx"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-execution liveness and worker boot identity (#342)
 // ---------------------------------------------------------------------------
