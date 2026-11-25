@@ -44,9 +44,21 @@ The script updates `Cargo.toml` `[workspace.package]`, the four `package.json` f
 in `README.md`; `check-versions.sh` compares all of them. `Chart.yaml` `appVersion` is the
 default image tag, so it must equal the version CI publishes.
 
-Update the changelog: move everything under `## [Unreleased]` into a new
-`## [X.Y.Z] - YYYY-MM-DD` section. The release notes are generated from git history, but
-the changelog is the human-facing record.
+Update the changelog from the fragments that pull requests added to `changelog.d/`:
+
+```bash
+node scripts/changelog.mjs preview          # what the release section will say
+node scripts/changelog.mjs collect X.Y.Z    # writes ## [X.Y.Z] - today, deletes the fragments
+```
+
+`collect` merges anything still written directly under `## [Unreleased]` with the
+fragments, orders the sections as Keep a Changelog does (Added, Changed, Deprecated,
+Removed, Fixed, Security; other headings such as Upgrade after them), leaves an empty
+`## [Unreleased]` and removes the fragment files. Review the result and edit it if two
+entries describe the same change. It refuses to run when the version already has a
+section or there is nothing to release; `--date YYYY-MM-DD` overrides today's date. The
+release notes are generated from git history, but the changelog is the human-facing
+record.
 
 ## 2. Verify locally
 
