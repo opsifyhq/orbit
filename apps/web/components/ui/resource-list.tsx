@@ -18,12 +18,17 @@ import { cn } from "@/lib/utils";
  * Every row uses this grid so the header lines up with its cells, including the
  * checkbox column.
  */
+// Columns follow the list's own width (container queries on `ListCard`), not the
+// viewport: with the sidebar open a tablet-wide window leaves the list little room, and
+// fixed detail columns used to squeeze names to a few letters (#456). Below 40rem a row
+// is one block; from 40rem the updated column appears; from 60rem the details column.
+// Class names are written out in full so Tailwind finds them.
 export const LIST_GRID =
-  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 md:grid-cols-[1.5rem_minmax(0,1fr)_9rem_13rem_6.5rem] md:gap-x-4";
+  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[1.5rem_minmax(0,1fr)_8.5rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[1.5rem_minmax(0,1fr)_9rem_13rem_6.5rem]";
 
 /** The same columns without the checkbox, for lists with no bulk actions (Team runs, Outputs). */
 export const LIST_GRID_PLAIN =
-  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_9rem_13rem_6.5rem] md:gap-x-4";
+  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[minmax(0,1fr)_8.5rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[minmax(0,1fr)_9rem_13rem_6.5rem]";
 
 /** Classes for the whole-row link on a row's name. */
 export const ROW_LINK =
@@ -119,15 +124,18 @@ export function ListCard({
 }) {
   const [name, status, details, updated] = columns;
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden [container-type:inline-size]">
       <div
         aria-hidden
-        className={cn(selectable ? LIST_GRID : LIST_GRID_PLAIN, "hidden border-b bg-subtle py-2 text-xs font-medium text-muted-foreground md:grid")}
+        className={cn(
+          selectable ? LIST_GRID : LIST_GRID_PLAIN,
+          "hidden border-b bg-subtle py-2 text-xs font-medium text-muted-foreground [@container(min-width:40rem)]:grid",
+        )}
       >
         {selectable ? <span /> : null}
         <span>{name}</span>
         <span>{status}</span>
-        <span>{details}</span>
+        <span className="hidden [@container(min-width:60rem)]:block">{details}</span>
         <span className="text-right">{updated}</span>
       </div>
       <ul>{children}</ul>
@@ -161,9 +169,9 @@ export function ListRow({
       <div className={cn(checkbox ? LIST_GRID : LIST_GRID_PLAIN, "py-3.5 transition-colors group-hover:bg-muted/50")}>
         {checkbox ? <div className="relative z-10 flex">{checkbox}</div> : null}
         <div className="min-w-0">{name}</div>
-        <div className="justify-self-end md:justify-self-start">{status}</div>
-        <div className="hidden min-w-0 text-[13px] md:block">{details}</div>
-        <p className="tabular hidden text-right text-[13px] text-muted-foreground md:block">{updated}</p>
+        <div className="justify-self-end [@container(min-width:40rem)]:justify-self-start">{status}</div>
+        <div className="hidden min-w-0 text-[13px] [@container(min-width:60rem)]:block">{details}</div>
+        <p className="tabular hidden text-right text-[13px] text-muted-foreground [@container(min-width:40rem)]:block">{updated}</p>
       </div>
       {footer ? <div className="relative flex flex-wrap gap-2 px-4 pb-3.5 sm:px-5">{footer}</div> : null}
     </li>
