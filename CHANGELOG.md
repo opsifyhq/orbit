@@ -8,6 +8,19 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-25
+
+### Changed
+
+- `croner` 11 for schedule parsing and previews in the web app.
+- `hmac` 0.13 and `sha2` 0.11, with the S3 SigV4 signer updated to the new
+  `KeyInit` import. The versions move together because both use `digest` 0.11.
+- Tailwind CSS 4 for the web app, using `@tailwindcss/postcss` and the existing design
+  tokens through `@config`. Borders keep ORBIT's token as their default colour.
+- `@types/node` 26 for the web workspace.
+- `@xyflow/react` 13; the workflow canvas uses `forceColorMode` for its explicit
+  light/dark theme instead of the removed `colorMode` prop.
+
 ## [0.29.0] - 2026-11-25
 
 ### Added

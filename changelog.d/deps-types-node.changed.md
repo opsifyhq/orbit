@@ -1,1 +1,0 @@
-- `@types/node` 26 for the web workspace.
