@@ -8,18 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
 ### Fixed
 
-- A stored harness without an adapter in this build is reported as planned; a second,
-  outdated status table that called OpenCode "scaffolded" and Pi "planned" is removed. The
-  Work page no longer shows two options that could never be switched on (#452).
-- A worker started without `ORBIT_WORKER_HARNESSES` claims only harnesses with an available
-  adapter (`mock,opencode,pi`), not planned ones it can only fail (#452).
-
-### Removed
-
-- `GET /api/v1/agent-instances`: it always returned an empty list, since nothing creates
-  agent instances (#452).
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
