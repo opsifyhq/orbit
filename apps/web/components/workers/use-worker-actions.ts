@@ -4,14 +4,20 @@ import { toast } from "sonner";
 
 import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";
-import { launchWorkerProfile, stopWorkerLaunch, workerLaunchLogs } from "@/lib/launcher";
+import {
+  archiveWorkerLaunch,
+  deleteWorkerLaunch,
+  launchWorkerProfile,
+  stopWorkerLaunch,
+  workerLaunchLogs,
+} from "@/lib/launcher";
 import { queryKeys, unwrap } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
 import { errorMessage } from "@orbit/api-client";
 
 import { isActive } from "./shared";
 
-/** Launch, relaunch, stop, enable/disable, delete and logs for worker profiles and launches. */
+/** Launch, relaunch, stop, archive, enable/disable, delete and logs for worker profiles and launches. */
 export function useWorkerActions(launchList: WorkerLaunch[]) {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
@@ -56,6 +62,24 @@ export function useWorkerActions(launchList: WorkerLaunch[]) {
     mutationFn: stopWorkerLaunch,
     onSuccess: () => {
       toast.success("Launch stopped");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workerLaunches });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const archive = useMutation({
+    mutationFn: archiveWorkerLaunch,
+    onSuccess: () => {
+      toast.success("Launch archived");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workerLaunches });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const removeLaunch = useMutation({
+    mutationFn: deleteWorkerLaunch,
+    onSuccess: () => {
+      toast.success("Launch deleted");
       void queryClient.invalidateQueries({ queryKey: queryKeys.workerLaunches });
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -133,8 +157,22 @@ export function useWorkerActions(launchList: WorkerLaunch[]) {
     if (confirmed) remove.mutate(profile.id);
   }
 
+  async function confirmDeleteLaunch(item: WorkerLaunch) {
+    const confirmed = await confirm({
+      title: `Delete launch ${item.name}?`,
+      description:
+        "The launch record is removed from ORBIT. The worker has already ended; its profile and executions are kept. This cannot be undone.",
+      confirmLabel: "Delete launch",
+      destructive: true,
+    });
+    if (confirmed) removeLaunch.mutate(item.id);
+  }
+
   return {
     launch,
+    archive,
+    removeLaunch,
+    confirmDeleteLaunch,
     relaunch,
     stop,
     toggle,

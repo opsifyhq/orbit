@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { Callout } from "@/components/ui/callout";
 import { PageHeader } from "@/components/ui/page-header";
-import { useMeta, useWorkerLaunches, useWorkerProfiles, useWorkers } from "@/lib/queries";
+import { useMe, useMeta, useWorkerLaunches, useWorkerProfiles, useWorkers } from "@/lib/queries";
+import type { LaunchView } from "@/lib/run-controls";
 import type { WorkerProfile } from "@/lib/types";
 
 import { BootstrapDialog } from "./bootstrap-dialog";
@@ -25,8 +26,10 @@ import { freshFailedLaunches, workersSummary } from "./workers-summary";
 /** The Workers page: live workers, profiles and launches, plus the profile editor. */
 export function WorkersView() {
   const profiles = useWorkerProfiles();
-  const [showInactive, setShowInactive] = useState(false);
+  const [launchView, setLaunchView] = useState<LaunchView>("active");
+  const showInactive = launchView !== "active";
   const launches = useWorkerLaunches(showInactive);
+  const me = useMe();
   const liveWorkers = useWorkers();
   const meta = useMeta();
   const platformVersion = meta.data?.version;
@@ -138,7 +141,7 @@ export function WorkersView() {
           title={`${failedLaunches.length} ${failedLaunches.length === 1 ? "launch has" : "launches have"} failed`}
           action={
             showInactive ? undefined : (
-              <Button size="sm" variant="outline" onClick={() => setShowInactive(true)}>
+              <Button size="sm" variant="outline" onClick={() => setLaunchView("history")}>
                 Show history
               </Button>
             )
@@ -168,8 +171,15 @@ export function WorkersView() {
 
       <LaunchesSection
         launches={launches}
-        showInactive={showInactive}
-        onShowInactiveChange={setShowInactive}
+        view={launchView}
+        onViewChange={setLaunchView}
+        permissions={me.data?.permissions}
+        isEnding={(item) =>
+          (actions.archive.isPending && actions.archive.variables === item.id) ||
+          (actions.removeLaunch.isPending && actions.removeLaunch.variables === item.id)
+        }
+        onArchive={(item) => actions.archive.mutate(item.id)}
+        onDelete={(item) => void actions.confirmDeleteLaunch(item)}
         isRelaunching={(item) => actions.launch.isPending && actions.launch.variables === item.profileId}
         isStopping={(item) => actions.stop.isPending && actions.stop.variables === item.id}
         onLogs={(item) => void actions.openLogs(item.id, item.name)}

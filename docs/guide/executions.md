@@ -120,6 +120,11 @@ step with its agent, status, duration and an **Open execution** link; the first 
 marked "Primary". Steps that have not started show "Up next". If a team run failed, the
 page shows "The run failed" with the error.
 
+While a team run is running, its page has **Stop run** (needs `executions:cancel` and use
+of the team). After you confirm, the run ends as cancelled, its running step executions
+are cancelled, and steps that have not started do not run. The page then shows "The run
+was stopped".
+
 ## API
 
 - `GET /api/v1/executions`: query `status` (one or comma-separated, for example

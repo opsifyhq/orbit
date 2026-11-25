@@ -1,4 +1,4 @@
-import { Rocket, ScrollText, Square } from "lucide-react";
+import { Archive, Rocket, ScrollText, Square, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Status } from "@/components/ui/status";
 import type { useWorkerLaunches } from "@/lib/queries";
+import { launchEndActions, launchesForView, type LaunchView } from "@/lib/run-controls";
 import type { WorkerLaunch } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
@@ -18,20 +19,29 @@ import { isActive, launchErrorText, launchStatusMeta, targetLabel } from "./shar
 
 function LaunchRow({
   item,
+  permissions,
   relaunching,
   stopping,
+  ending,
   onLogs,
   onStop,
   onRelaunch,
+  onArchive,
+  onDelete,
 }: {
   item: WorkerLaunch;
+  permissions: readonly string[] | undefined;
   relaunching: boolean;
   stopping: boolean;
+  ending: boolean;
   onLogs: () => void;
   onStop: () => void;
   onRelaunch: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
 }) {
   const active = isActive(item);
+  const end = launchEndActions(item, permissions);
   const relaunchRequired = item.relaunchRequired;
   return (
     <li className="border-b px-4 py-3 last:border-b-0 sm:px-5">
@@ -41,6 +51,7 @@ function LaunchRow({
             <Status meta={launchStatusMeta(item.status)} />
             <p className="min-w-0 truncate text-sm font-semibold">{item.name}</p>
             {relaunchRequired ? <Badge variant="warning">Relaunch required</Badge> : null}
+            {item.archivedAt ? <Badge variant="secondary">Archived</Badge> : null}
           </div>
           <p className="text-[13px] text-muted-foreground">
             {targetLabel(item.target)} ·{" "}
@@ -62,7 +73,7 @@ function LaunchRow({
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 md:shrink-0">
+        <div className="flex flex-wrap items-center gap-2 md:shrink-0">
           {active ? (
             <Button size="sm" variant="outline" className="max-md:flex-1" loading={stopping} onClick={onStop}>
               <Square /> Stop
@@ -75,6 +86,22 @@ function LaunchRow({
           <Button size="sm" variant="ghost" className="max-md:flex-1" onClick={onLogs}>
             <ScrollText /> Logs
           </Button>
+          {end.archive ? (
+            <Button size="sm" variant="ghost" className="max-md:flex-1" disabled={ending} onClick={onArchive}>
+              <Archive /> Archive
+            </Button>
+          ) : null}
+          {end.remove ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-destructive hover:text-destructive max-md:flex-1"
+              disabled={ending}
+              onClick={onDelete}
+            >
+              <Trash2 /> Delete
+            </Button>
+          ) : null}
         </div>
       </div>
     </li>
@@ -84,24 +111,33 @@ function LaunchRow({
 /** Worker instances started from a profile by the launcher. */
 export function LaunchesSection({
   launches,
-  showInactive,
-  onShowInactiveChange,
+  view,
+  onViewChange,
+  permissions,
   isRelaunching,
   isStopping,
+  isEnding,
   onLogs,
   onStop,
   onRelaunch,
+  onArchive,
+  onDelete,
 }: {
   launches: ReturnType<typeof useWorkerLaunches>;
-  showInactive: boolean;
-  onShowInactiveChange: (value: boolean) => void;
+  view: LaunchView;
+  onViewChange: (value: LaunchView) => void;
+  permissions: readonly string[] | undefined;
   isRelaunching: (item: WorkerLaunch) => boolean;
   isStopping: (item: WorkerLaunch) => boolean;
+  isEnding: (item: WorkerLaunch) => boolean;
   onLogs: (item: WorkerLaunch) => void;
   onStop: (item: WorkerLaunch) => void;
   onRelaunch: (item: WorkerLaunch) => void;
+  onArchive: (item: WorkerLaunch) => void;
+  onDelete: (item: WorkerLaunch) => void;
 }) {
-  const launchList = launches.data ?? [];
+  const launchList = launchesForView(launches.data ?? [], view);
+  const showInactive = view !== "active";
   return (
     <Section
       title="Launches"
@@ -110,11 +146,12 @@ export function LaunchesSection({
       actions={
         <Segmented
           label="Launches to show"
-          value={showInactive ? "history" : "active"}
-          onChange={(value) => onShowInactiveChange(value === "history")}
+          value={view}
+          onChange={(value) => onViewChange(value as LaunchView)}
           options={[
             { value: "active", label: "Active" },
             { value: "history", label: "History" },
+            { value: "archived", label: "Archived" },
           ]}
         />
       }
@@ -132,15 +169,17 @@ export function LaunchesSection({
       ) : !launchList.length ? (
         <EmptyState
           icon={<Rocket />}
-          title={showInactive ? "No launches yet" : "No active launches"}
+          title={view === "archived" ? "No archived launches" : showInactive ? "No launches yet" : "No active launches"}
           description={
-            showInactive
+            view === "archived"
+              ? "Archive an ended launch in History to move it here."
+              : showInactive
               ? "Launch an enabled profile to start a worker."
               : "Launch an enabled profile to start a worker, or switch to History to see past launches."
           }
           action={
             showInactive ? undefined : (
-              <Button variant="outline" onClick={() => onShowInactiveChange(true)}>
+              <Button variant="outline" onClick={() => onViewChange("history")}>
                 Show history
               </Button>
             )
@@ -153,11 +192,15 @@ export function LaunchesSection({
               <LaunchRow
                 key={item.id}
                 item={item}
+                permissions={permissions}
                 relaunching={isRelaunching(item)}
                 stopping={isStopping(item)}
+                ending={isEnding(item)}
                 onLogs={() => onLogs(item)}
                 onStop={() => onStop(item)}
                 onRelaunch={() => onRelaunch(item)}
+                onArchive={() => onArchive(item)}
+                onDelete={() => onDelete(item)}
               />
             ))}
           </ul>

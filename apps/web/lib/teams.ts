@@ -124,6 +124,11 @@ export function getTeamRun(runId: string): Promise<TeamRunDetail> {
   return request<TeamRunDetail>(`/api/v1/team-runs/${runId}`);
 }
 
+/** Stop a running team run and the step executions still live in it. */
+export function cancelTeamRun(runId: string): Promise<TeamRunDetail> {
+  return request<TeamRunDetail>(`/api/v1/team-runs/${runId}/cancel`, { method: "POST", body: "{}" });
+}
+
 export type TeamQueueItem = components["schemas"]["TeamQueueItem"];
 
 export function listTeamQueue(teamId: string): Promise<TeamQueueItem[]> {

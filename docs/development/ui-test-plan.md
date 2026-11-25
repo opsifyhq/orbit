@@ -216,6 +216,7 @@ approvals UI is still being finished.
 | Run a workflow team | The run page draws the graph: finished steps are coloured, the working step spins, steps and lines not reached are dashed; a step that ran twice shows `2×`; the step list shows **Run 2** and the reported outcome. A run that fails on a loop limit marks the step as **limit reached**. The Run dialog starts with a blank task; blank runs the team's goal. A workflow too large for the card pans, shows a small map and opens whole with the **Open larger** button; at 360px the picture is an overview and **Steps as text** is open |
 | `/agent-teams` list | Same layout as Agents: search, **All / Picks up issues / On demand** filter, status column, row checkboxes with **Change access**, count under the list |
 | **Runs** (header) | `/agent-teams/runs`: search plus Active/Archived/All filter; old `/agent-teams#runs` links land here |
+| Stop a running team run | Start a run whose first step is slow (mock harness, task containing `slow`); its page shows **Stop run**. Confirming ends the run as cancelled and its steps show cancelled without a reload; a finished run, or a user without `executions:cancel`, has no button; the button fits at 360px |
 
 ## Flow 12 — Skills (5 min)
 
@@ -247,7 +248,8 @@ approvals UI is still being finished.
 | A variable whose connection was removed | Status **Needs attention**, a callout naming the variable, and the editor says to choose another connection |
 | Enable + Launch | Launch appears in Launches; Pod/Job created when a launcher is configured |
 | Without a launcher | Clear error: no worker launcher configured |
-| Launches filter | Active / History |
+| Launches filter | Active / History / Archived |
+| An ended launch in History | **Archive** moves it to Archived (badge "Archived"); **Delete** asks first, then removes it; a running launch offers neither; without `settings:write` neither is shown |
 | Live workers | Workers that report a heartbeat are listed first, with Live or Stale state |
 
 ## Flow 14 — OIDC, theme, and execution detail (4 min)
