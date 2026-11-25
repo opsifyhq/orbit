@@ -11617,6 +11617,40 @@ async fn settings_write_has_a_ceiling_for_toggles_and_access_teams() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
+    // #387: whom ORBIT trusts for sign-in is an Owner decision. A delegated
+    // settings:write holder cannot swap the issuer or the team mappings.
+    for settings in [
+        json!({ "issuer": "https://idp-387.example.com", "jwksUrl": "https://idp-387.example.com/jwks" }),
+        json!({ "teamGroups": { format!("g-{}", Uuid::now_v7()): "ops:lead" }, "autoCreateTeams": true }),
+        // A unique value, so the edit is a change whatever other tests stored.
+        json!({ "audience": format!("aud-{}", Uuid::now_v7()) }),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            put_json("/api/v1/settings/oidc", m, &json!({ "settings": settings })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{settings}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("trust settings"),
+            "{body}"
+        );
+    }
+    // A role-mapping-only edit within the caller's own permissions still works (#324 ceiling).
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/oidc",
+            m,
+            &json!({ "settings": { "groupRoles": { format!("g-{}", Uuid::now_v7()): "viewer" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
     // Mallory is not a lead of Team A: she cannot rename or delete it.
     let team_path = format!("/api/v1/teams/{}", fx.team_a);
     let (status, body) = send(

@@ -178,6 +178,15 @@ absent fields (role claim, `groupRoles`, `teamGroups`, `autoCreateTeams`,
 before it is stored (422 and no change on error). To clear a mapping, send it explicitly,
 for example `"groupRoles": {}`.
 
+Changing whom ORBIT trusts for sign-in needs every permission (an Owner), not only
+`settings:write`: `issuer`, `jwksUrl`, `audience`, `clientId`, `redirectUri`,
+`emailClaim`, `roleClaim`, `autoProvision`, `syncRoles`, `requireVerifiedEmail`,
+`requireMappedGroup`, `teamGroups` and `autoCreateTeams`. A new issuer locks out every user
+who signed in before and lets the new identity provider link accounts that never signed in
+by email. A delegated `settings:write` holder gets `403` naming the fields; they can still
+edit `scopes`, `defaultRole` and `groupRoles` within the role ceiling described in
+[rbac.md](rbac.md).
+
 ## Web flow
 
 ```text
