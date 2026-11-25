@@ -21,7 +21,11 @@ ORBIT_OIDC_TEAM_GROUPS='{"platform":"platform:member"}'
 ```
 
 - Values are `access-team-slug:role`, role `lead|member|viewer`.
-- Sync runs on authenticated OIDC requests and is additive; it never removes a membership.
+- Sync runs on authenticated OIDC requests and is additive: it never removes a membership
+  and never lowers a role. It writes only when the user is missing from a mapped team or
+  has a lower role than the mapping grants, so unchanged claims cost no writes.
+- When several of a user's groups map to one team, the highest role wins (`lead` over
+  `member` over `viewer`), whatever the order of the mapping.
 - Missing groups claim does nothing.
 - Missing team slug is logged and skipped by default.
 - With `autoCreateTeams: true` (or `ORBIT_OIDC_AUTO_CREATE_TEAMS=true`), a missing

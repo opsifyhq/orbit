@@ -8,15 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
 ### Fixed
 
-- `make compose-up`, `compose-down`, `compose-logs` and `compose-reset` pass
-  `--env-file .env` and stop with a hint when it is missing.
-- The weekly dependency-watch issue body no longer runs the commands it mentions.
-- Docs: the execution lease is a fixed 90 seconds (`ORBIT_EXECUTION_LEASE_SECONDS` was
-  never read), the API has no OpenTelemetry export, and the tool broker has been the
-  `orbit-worker mcp-broker` subcommand since #315; the empty `services/mcp-broker`
-  directory is removed (#453).
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 

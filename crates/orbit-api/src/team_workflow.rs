@@ -13,8 +13,8 @@
 use serde_json::Value;
 
 use orbit_domain::{
-    final_steps, outcome_directive, parse_outcome, plan, WorkflowActivation, WorkflowDefinition,
-    WorkflowNode, WorkflowStepState, WorkflowStepStatus, WorkflowVerdict,
+    final_steps, outcome_directive, parse_outcome, plan, without_outcome_line, WorkflowActivation,
+    WorkflowDefinition, WorkflowNode, WorkflowStepState, WorkflowStepStatus, WorkflowVerdict,
 };
 use orbit_store::{TeamRun, TeamStep};
 
@@ -74,18 +74,35 @@ fn answer_text(output: Option<&Value>) -> &str {
 fn combined_output(steps: &[&TeamStep]) -> Option<Value> {
     match steps {
         [] => None,
-        [only] => only.output.clone(),
+        [only] => handed_on(only),
         many => Some(Value::Object(
             many.iter()
-                .map(|step| {
-                    (
-                        step.name.clone(),
-                        step.output.clone().unwrap_or(Value::Null),
-                    )
-                })
+                .map(|step| (step.name.clone(), handed_on(step).unwrap_or(Value::Null)))
                 .collect(),
         )),
     }
+}
+
+/// A step's output as the next step receives it: without the `OUTCOME:` line a step with
+/// outcomes ends its answer with. The stored output keeps the line.
+fn handed_on(step: &TeamStep) -> Option<Value> {
+    let mut output = step.output.clone()?;
+    if step.outcome.is_none() {
+        return Some(output);
+    }
+    match &mut output {
+        Value::String(text) => *text = without_outcome_line(text),
+        Value::Object(fields) => {
+            for key in ["text", "summary"] {
+                if let Some(Value::String(text)) = fields.get_mut(key) {
+                    *text = without_outcome_line(text);
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(output)
 }
 
 async fn is_terminal(state: &AppState, execution_id: uuid::Uuid) -> anyhow::Result<bool> {
