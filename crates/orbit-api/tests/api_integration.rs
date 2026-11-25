@@ -9141,6 +9141,35 @@ async fn kubernetes_api_server_is_guarded_and_testing_needs_write() {
         .as_array()
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "apiServer")));
 
+    // #391: namespaces are spliced into request paths, so a path-like value is refused.
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "kubernetes",
+                "name": "Dot namespace",
+                "config": {
+                    "authMode": "service_account",
+                    "apiServer": "https://93.184.216.34",
+                    "defaultNamespace": "a/../b",
+                    "namespaces": ["payments", ".."]
+                },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let paths: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|detail| detail["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"defaultNamespace"), "{body}");
+    assert!(paths.contains(&"namespaces"), "{body}");
+
     // A loopback API server stored before this check is refused when the test connects,
     // and the response does not echo what the address returned.
     let kubernetes = app

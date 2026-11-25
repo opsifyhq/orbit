@@ -532,10 +532,11 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
 const CONNECTION_URL_FIELDS: [&str; 4] = ["baseUrl", "cloneBaseUrl", "url", "apiServer"];
 
 /// Validate URL-typed connection config fields against the outbound policy
-/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`); errors are 422s on
-/// the offending field name. A kubeconfig credential's own `server` is checked when the
-/// Kubernetes client connects.
-pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Result<(), ApiError> {
+/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`) and the Kubernetes
+/// namespace fields (`defaultNamespace`, `namespaces`), which are spliced into request
+/// paths (#391); errors are 422s on the offending field name. A kubeconfig credential's
+/// own `server` is checked when the Kubernetes client connects.
+pub(crate) async fn validate_connection_config(config: &serde_json::Value) -> Result<(), ApiError> {
     let policy = orbit_security::OutboundPolicy::from_env();
     let mut issues = Vec::new();
     for field in CONNECTION_URL_FIELDS {
@@ -549,6 +550,9 @@ pub(crate) async fn validate_connection_urls(config: &serde_json::Value) -> Resu
         if let Err(error) = orbit_security::check_outbound_url(value, &policy).await {
             issues.push(orbit_domain::ValidationIssue::new(field, error.to_string()));
         }
+    }
+    for (field, message) in orbit_kubernetes::config_issues(config) {
+        issues.push(orbit_domain::ValidationIssue::new(field, message));
     }
     if issues.is_empty() {
         Ok(())
@@ -605,7 +609,7 @@ pub async fn create_connection(
         .get_connector_by_slug(auth.org_id, &body.connector_slug)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("connector '{}'", body.connector_slug)))?;
-    validate_connection_urls(&body.config).await?;
+    validate_connection_config(&body.config).await?;
 
     let secret_ref = if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
@@ -693,7 +697,7 @@ pub async fn update_connection(
         &existing.visibility,
     )?;
     if let Some(config) = &body.config {
-        validate_connection_urls(config).await?;
+        validate_connection_config(config).await?;
         // A stored credential must never follow an edited endpoint (#321), the same rule
         // providers follow: changing a URL field requires the credential for it.
         if existing.credential_ref.is_some() && body.credential.is_none() {
