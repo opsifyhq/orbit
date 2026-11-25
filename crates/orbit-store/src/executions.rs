@@ -431,6 +431,26 @@ impl Store {
         Ok(flag.unwrap_or(false))
     }
 
+    /// The worker cancel poll in one query: the cancel flag of an execution in `org_id`
+    /// that is bound to `token_id`. `Ok(None)` when no such row exists (another org,
+    /// another token, or a legacy row claimed before token binding, which callers check
+    /// the slow way).
+    pub async fn cancel_requested_for_worker_token(
+        &self,
+        org_id: Uuid,
+        execution_id: Uuid,
+        token_id: Uuid,
+    ) -> StoreResult<Option<bool>> {
+        Ok(sqlx::query_scalar(
+            "SELECT cancel_requested FROM executions WHERE id = $1 AND org_id = $2 AND worker_token_id = $3",
+        )
+        .bind(execution_id)
+        .bind(org_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn append_execution_event(
         &self,
         org_id: Uuid,

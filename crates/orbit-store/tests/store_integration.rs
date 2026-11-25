@@ -3616,6 +3616,84 @@ async fn launch_claim_binds_the_worker_token_atomically() {
 }
 
 #[tokio::test]
+async fn worker_cancel_poll_reads_only_the_bound_token_row() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (other_org, _) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Cancel Poll Agent"))
+        .await
+        .unwrap();
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    let profile = launch_profile_fixture(&store, org, "CancelPoll").await;
+    let mut tokens = Vec::new();
+    for name in ["a", "b"] {
+        tokens.push(
+            store
+                .create_worker_token(
+                    org,
+                    Some(profile.id),
+                    name,
+                    "pfx",
+                    &format!("hash-cancel-{name}-{}", uuid::Uuid::now_v7()),
+                    &["mock".into()],
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let (bound, other) = (&tokens[0], &tokens[1]);
+    // Unclaimed: no token is bound yet, so the fast path finds nothing.
+    assert_eq!(
+        store
+            .cancel_requested_for_worker_token(org, execution.id, bound.id)
+            .await
+            .unwrap(),
+        None
+    );
+    store
+        .claim_execution_for_launch(execution.id, "worker-x", bound.id)
+        .await
+        .unwrap()
+        .expect("claimable");
+    assert_eq!(
+        store
+            .cancel_requested_for_worker_token(org, execution.id, bound.id)
+            .await
+            .unwrap(),
+        Some(false)
+    );
+    store
+        .request_execution_cancel(org, execution.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .cancel_requested_for_worker_token(org, execution.id, bound.id)
+            .await
+            .unwrap(),
+        Some(true)
+    );
+    // Another token or another org never reads the row.
+    assert_eq!(
+        store
+            .cancel_requested_for_worker_token(org, execution.id, other.id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .cancel_requested_for_worker_token(other_org, execution.id, bound.id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn deleting_an_access_team_is_blocked_while_it_owns_team_visible_resources() {
     let Some(store) = test_store().await else {
         return;

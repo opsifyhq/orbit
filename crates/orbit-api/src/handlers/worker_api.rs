@@ -1024,6 +1024,16 @@ pub async fn cancel_requested(
     auth: WorkerAuth,
     Path(execution_id): Path<Uuid>,
 ) -> Result<Json<CancelResponse>, ApiError> {
+    // Workers poll this every second per running execution, so the usual case (an
+    // execution bound to this token at claim) is one query. Only rows from before token
+    // binding take the full `ensure_execution` path.
+    if let Some(cancel_requested) = state
+        .store
+        .cancel_requested_for_worker_token(auth.org_id, execution_id, auth.token_id)
+        .await?
+    {
+        return Ok(Json(CancelResponse { cancel_requested }));
+    }
     ensure_execution(&state, &auth, execution_id).await?;
     Ok(Json(CancelResponse {
         cancel_requested: state.store.is_cancel_requested(execution_id).await?,
