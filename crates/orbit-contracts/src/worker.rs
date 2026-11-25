@@ -17,6 +17,9 @@ pub enum WorkerTerminationReason {
     WorkerExited,
     /// The node/pod disappeared or the cause could not be determined.
     WorkerLost,
+    /// The container never started (image pull or container config error with no earlier
+    /// termination). Nothing ran, so the work may be retried.
+    WorkerDidNotStart,
 }
 
 impl WorkerTerminationReason {
@@ -25,6 +28,7 @@ impl WorkerTerminationReason {
         "worker_evicted",
         "worker_exited",
         "worker_lost",
+        "worker_did_not_start",
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -33,6 +37,7 @@ impl WorkerTerminationReason {
             Self::WorkerEvicted => "worker_evicted",
             Self::WorkerExited => "worker_exited",
             Self::WorkerLost => "worker_lost",
+            Self::WorkerDidNotStart => "worker_did_not_start",
         }
     }
 
@@ -42,6 +47,7 @@ impl WorkerTerminationReason {
             "worker_evicted" => Some(Self::WorkerEvicted),
             "worker_exited" => Some(Self::WorkerExited),
             "worker_lost" => Some(Self::WorkerLost),
+            "worker_did_not_start" => Some(Self::WorkerDidNotStart),
             _ => None,
         }
     }
@@ -53,7 +59,14 @@ impl WorkerTerminationReason {
             Self::WorkerEvicted => "worker.evicted",
             Self::WorkerExited => "worker.exited",
             Self::WorkerLost => "execution.worker_lost",
+            Self::WorkerDidNotStart => "worker.did_not_start",
         }
+    }
+
+    /// Whether work on a worker that ended this way may have had side effects, so the team
+    /// run must end without an automatic retry. A container that never started ran nothing.
+    pub fn ends_without_retry(self) -> bool {
+        !matches!(self, Self::WorkerDidNotStart)
     }
 }
 
@@ -105,6 +118,9 @@ impl WorkerTermination {
             WorkerTerminationReason::WorkerLost => {
                 format!("{identity} was lost; the run outcome is unknown")
             }
+            WorkerTerminationReason::WorkerDidNotStart => {
+                format!("{identity} never started its container, so nothing ran")
+            }
         };
         if let Some(detail) = self.detail.as_deref().filter(|value| !value.is_empty()) {
             message.push_str(&format!(" ({detail})"));
@@ -124,6 +140,18 @@ mod tests {
             assert_eq!(reason.as_str(), *code);
         }
         assert!(WorkerTerminationReason::parse("oom").is_none());
+    }
+
+    #[test]
+    fn only_a_worker_that_never_started_allows_a_retry() {
+        for code in WorkerTerminationReason::ALL {
+            let reason = WorkerTerminationReason::parse(code).unwrap();
+            assert_eq!(
+                reason.ends_without_retry(),
+                reason != WorkerTerminationReason::WorkerDidNotStart,
+                "{code}"
+            );
+        }
     }
 
     #[test]

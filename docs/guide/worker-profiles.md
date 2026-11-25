@@ -114,7 +114,9 @@ stopping profiles needs `settings:write`.
 - Stop deletes the workload; logs are read by the `orbit.launch-id` label
 - A worker stopped by the runtime is surfaced as a failed launch with a structured reason:
   `worker_oom` (OOMKilled, with the memory limit), `worker_evicted` (node pressure or drain),
-  `worker_exited` (non-zero exit) or `worker_lost` (node/pod gone). Exit code 137 alone is
+  `worker_exited` (non-zero exit), `worker_lost` (node/pod gone) or `worker_did_not_start`
+  (image pull or container config error before the container ever ran; its waiting runs
+  keep their retry). Exit code 137 alone is
   SIGKILL, not OOM. Every in-flight execution on that worker fails with the same reason,
   pod name, restart count, exit code and termination time; team runs are not retried
   automatically. The API polls live launches every 15 seconds, so this happens even when

@@ -175,10 +175,7 @@ fn launch_termination(
     if let Some(termination) = status.termination.clone() {
         return Some(termination);
     }
-    let oom = status
-        .error
-        .as_deref()
-        .is_some_and(|error| error.to_lowercase().contains("oom"));
+    let oom = status.error.as_deref().is_some_and(mentions_oom);
     if !oom {
         return None;
     }
@@ -194,9 +191,19 @@ fn launch_termination(
     ))
 }
 
+/// True when a launcher error names an OOM kill as a word ("OOM", "OOMKilled"), not as part
+/// of another word such as "room" or "zoom".
+fn mentions_oom(error: &str) -> bool {
+    error
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("oom") || word.eq_ignore_ascii_case("oomkilled"))
+}
+
 /// A worker terminated by the runtime (OOM, eviction, exit or node loss) cannot report its
 /// own execution failure. Fail every in-flight execution on that worker with the structured
-/// reason, terminate the team step/run/queue without auto-retry, and audit the cause.
+/// reason, terminate the team step/run/queue without auto-retry, and audit the cause. A
+/// container that never started (`worker_did_not_start`) only fails runs still `dispatched`
+/// to it, marked retryable, so the team poller keeps its normal queue retry.
 async fn fail_worker_executions(
     state: &AppState,
     launch: &WorkerLaunch,
@@ -216,6 +223,16 @@ async fn fail_worker_executions(
             return;
         }
     };
+    // A container that never started ran nothing: only runs still waiting for it end, and
+    // they keep their retry. A run already running on this worker id is left to the
+    // liveness reaper, since some other container must have started it.
+    let never_started = !termination.reason.ends_without_retry();
+    let executions: Vec<_> = executions
+        .into_iter()
+        .filter(|execution| {
+            !never_started || execution.status == orbit_domain::ExecutionStatus::Dispatched.as_str()
+        })
+        .collect();
     let message = launch
         .error
         .clone()
@@ -230,8 +247,9 @@ async fn fail_worker_executions(
         object.insert("workerId".into(), serde_json::json!(worker_id));
         object.insert("profileId".into(), serde_json::json!(launch.profile_id));
         object.insert("launchId".into(), serde_json::json!(launch.id));
-        // Side effects may already have happened; an operator must decide to rerun.
-        object.insert("retryable".into(), serde_json::json!(false));
+        // Side effects may already have happened; an operator must decide to rerun. A
+        // container that never started ran nothing, so its runs may be retried.
+        object.insert("retryable".into(), serde_json::json!(never_started));
     }
     for execution in executions {
         let finished = state
@@ -748,5 +766,19 @@ mod worker_id_tests {
         let b = uuid::Uuid::now_v7();
         assert_ne!(launch_worker_id(a), launch_worker_id(b));
         assert!(launch_worker_id(a).len() <= 63);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mentions_oom;
+
+    #[test]
+    fn oom_fallback_matches_whole_words_only() {
+        assert!(mentions_oom("worker container was OOMKilled"));
+        assert!(mentions_oom("killed: oom (memory limit 512Mi)"));
+        assert!(!mentions_oom("no room left on device"));
+        assert!(!mentions_oom("zoom service unavailable"));
+        assert!(!mentions_oom("ImagePullBackOff"));
     }
 }

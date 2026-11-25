@@ -876,10 +876,12 @@ pub(crate) async fn report_ended_execution(
     // A worker that vanished (or stopped reporting a still-live harness) may have caused
     // side effects, so its team run must not be auto-retried. The same holds for a worker
     // terminated by the runtime (OOM, eviction, exit or node loss). Other endings keep the
-    // normal team poller behaviour, including queue retries for runs that never started.
+    // normal team poller behaviour, including queue retries for runs that never started
+    // (`worker_did_not_start`, from the reaper or from a container that never started).
     let code = data.get("code").and_then(serde_json::Value::as_str);
-    let worker_terminated =
-        code.is_some_and(|code| orbit_contracts::WorkerTerminationReason::parse(code).is_some());
+    let worker_terminated = code
+        .and_then(orbit_contracts::WorkerTerminationReason::parse)
+        .is_some_and(orbit_contracts::WorkerTerminationReason::ends_without_retry);
     if worker_terminated || matches!(code, Some("harness_unresponsive")) {
         if let Err(error) =
             crate::handlers::teams::fail_team_run_for_execution(state, execution).await

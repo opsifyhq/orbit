@@ -172,7 +172,9 @@ Status is mapped by pure functions in `services/launcher/src/mapping.rs` from
 | Exit code 137 without `OOMKilled` | `failed` | SIGKILL, explicitly not OOM | `worker_exited` |
 | Any other non-zero exit | `failed` | exit code + reason | `worker_exited` |
 | Deployment pod running after an earlier OOM restart | `running` | hint: OOMKilled earlier, restart count | none (still live) |
-| CrashLoopBackOff, ImagePullBackOff, ErrImagePull, InvalidImageName, CreateContainerConfigError, CreateContainerError, RunContainerError | `failed` | reason, restart count, last termination | from `lastState.terminated`, else `worker_exited` |
+| CrashLoopBackOff, or any waiting error below after the container already ran | `failed` | reason, restart count, last termination | from `lastState.terminated`, else `worker_exited` |
+| ImagePullBackOff, ErrImagePull, InvalidImageName, CreateContainerConfigError, CreateContainerError, RunContainerError with no `lastState` (the container never ran) | `failed` | reason, restart count, waiting message | `worker_did_not_start` |
+| Deployment with a terminal pod (for example evicted, phase `Failed`) and a live replacement pod | from the replacement (`running` / `starting`) | none | none |
 | ContainerCreating / pending / not ready | `starting` | none | none |
 | Job `Complete` | `stopped` | none | none |
 | Job `Failed` condition (e.g. DeadlineExceeded, BackoffLimitExceeded) | `failed` | condition reason + message, container cause | container cause, else `Evicted` → `worker_evicted`, `DeadlineExceeded`/`BackoffLimitExceeded` → `worker_exited`, otherwise `worker_lost` |
@@ -186,8 +188,11 @@ A `failed` mapping also carries a structured `termination` object
 container name), `restartCount`, `terminatedAt`, `exitCode` and a short `detail` such as
 `OOMKilled`. It never contains env, command lines or logs. The API turns it into the
 execution error (`data.code` = the reason), an `error` execution event, an audit entry, and
-a terminal team step/run/queue item with no automatic rerun. Older launchers that only send
-a human-readable `error` containing "OOM" are still understood as `worker_oom`.
+a terminal team step/run/queue item with no automatic rerun. The exception is
+`worker_did_not_start`: nothing ran, so only runs still `dispatched` to that worker end, marked
+retryable, and the team poller keeps its normal queue retry. Older launchers that only send
+a human-readable `error` naming "OOM" or "OOMKilled" as a word are still understood as
+`worker_oom` (text such as "room" does not match).
 
 The API only refreshes launches that are `pending`, `starting` or `running`, so a terminal
 status it has already stored (for example `failed`) is never overwritten by a later

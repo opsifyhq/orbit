@@ -7,7 +7,11 @@
 //! - A container is "OOM" only when the kubelet says `reason == "OOMKilled"`. Exit code 137
 //!   alone is SIGKILL (cancel, eviction, `kubectl delete`) and is reported as such.
 //! - Waiting reasons that Kubernetes retries forever (CrashLoopBackOff, ImagePullBackOff, ...)
-//!   are reported as `failed` with a message instead of staying `starting`.
+//!   are reported as `failed` with a message instead of staying `starting`. When the
+//!   container never ran (no `lastState`), the cause is `worker_did_not_start`, which keeps
+//!   the run's retry; only a container that ran and then stopped ends work without retry.
+//! - In a Deployment, a terminal pod (evicted or otherwise `Failed`) does not decide the
+//!   status while a replacement pod is still live.
 
 use orbit_contracts::{WorkerTermination, WorkerTerminationReason};
 use serde_json::Value;
@@ -125,6 +129,11 @@ fn is_evicted(pod: &Value, terminated: Option<&Value>) -> bool {
         || terminated.is_some_and(|value| str_at(value, "/reason") == Some("Evicted"))
 }
 
+/// A pod that will never run again: phase `Failed` or `Succeeded`.
+fn is_terminal_pod(pod: &Value) -> bool {
+    matches!(str_at(pod, "/status/phase"), Some("Failed" | "Succeeded"))
+}
+
 fn is_node_loss(pod: &Value) -> bool {
     str_at(pod, "/status/phase") == Some("Unknown")
         || matches!(
@@ -233,10 +242,17 @@ fn map_pod(pod: &Value, restart_always: bool) -> Mapped {
                 } else if let Some(detail) = str_at(waiting, "/message") {
                     message = format!("{message}: {detail}");
                 }
+                // With no earlier termination the container never ran (image pull or
+                // config error); CrashLoopBackOff always means it ran and stopped.
+                let never_ran_reason = if reason == "CrashLoopBackOff" {
+                    WorkerTerminationReason::WorkerExited
+                } else {
+                    WorkerTerminationReason::WorkerDidNotStart
+                };
                 let termination = match last {
                     Some(last) => container_termination(pod, status, last),
                     None => termination(
-                        WorkerTerminationReason::WorkerExited,
+                        never_ran_reason,
                         pod_name(pod),
                         Some(restarts(status)),
                         None,
@@ -388,10 +404,18 @@ pub fn map_kubernetes(items: &[Value]) -> Mapped {
     }
     if has_deployment {
         // Ignore pods that are being replaced.
-        let mut best = Mapped::new("starting", None);
-        for pod in pods
+        let current: Vec<&Value> = pods
             .iter()
+            .copied()
             .filter(|p| p.pointer("/metadata/deletionTimestamp").is_none())
+            .collect();
+        // A terminal pod (an evicted pod stays listed as `Failed`) does not decide the
+        // status while the ReplicaSet's replacement is live.
+        let replacement_live = current.iter().any(|pod| !is_terminal_pod(pod));
+        let mut best = Mapped::new("starting", None);
+        for pod in current
+            .into_iter()
+            .filter(|pod| !replacement_live || !is_terminal_pod(pod))
         {
             let mapped = map_pod(pod, true);
             match mapped.status {
@@ -643,6 +667,112 @@ mod tests {
         let mapped = map_kubernetes(&items);
         assert_eq!(mapped.status, "failed");
         assert!(mapped.error.unwrap().contains("ImagePullBackOff"));
+    }
+
+    #[test]
+    fn waiting_errors_without_last_state_did_not_start() {
+        for reason in [
+            "ImagePullBackOff",
+            "ErrImagePull",
+            "InvalidImageName",
+            "CreateContainerConfigError",
+            "CreateContainerError",
+            "RunContainerError",
+        ] {
+            let items = [
+                deployment(),
+                pod(json!({ "restartCount": 0, "state": { "waiting": { "reason": reason } } })),
+            ];
+            let mapped = map_kubernetes(&items);
+            assert_eq!(mapped.status, "failed", "{reason}");
+            let termination = mapped.termination.unwrap();
+            assert_eq!(
+                termination.reason,
+                WorkerTerminationReason::WorkerDidNotStart,
+                "{reason}"
+            );
+            assert!(!termination.reason.ends_without_retry(), "{reason}");
+            assert_eq!(termination.detail.as_deref(), Some(reason));
+        }
+    }
+
+    #[test]
+    fn crash_loop_and_waiting_after_a_run_end_without_retry() {
+        let crash = [
+            deployment(),
+            pod(
+                json!({ "restartCount": 3, "state": { "waiting": { "reason": "CrashLoopBackOff" } } }),
+            ),
+        ];
+        let termination = map_kubernetes(&crash).termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerExited);
+        assert!(termination.reason.ends_without_retry());
+
+        // An image pull error after the container already ran keeps the earlier cause.
+        let after_run = [
+            deployment(),
+            pod(json!({
+                "restartCount": 1,
+                "state": { "waiting": { "reason": "ImagePullBackOff" } },
+                "lastState": { "terminated": { "reason": "Error", "exitCode": 1 } }
+            })),
+        ];
+        let termination = map_kubernetes(&after_run).termination.unwrap();
+        assert_eq!(termination.reason, WorkerTerminationReason::WorkerExited);
+    }
+
+    fn evicted_deployment_pod() -> Value {
+        let mut pod = pod(json!({
+            "state": { "terminated": { "reason": "Evicted", "exitCode": 137 } }
+        }));
+        pod["metadata"]["name"] = json!("orbit-worker-1234-old");
+        pod["status"]["phase"] = json!("Failed");
+        pod["status"]["reason"] = json!("Evicted");
+        pod
+    }
+
+    #[test]
+    fn evicted_deployment_pod_with_a_running_replacement_is_running() {
+        let replacement = pod(json!({ "state": { "running": {} } }));
+        for items in [
+            [deployment(), evicted_deployment_pod(), replacement.clone()],
+            [deployment(), replacement.clone(), evicted_deployment_pod()],
+        ] {
+            let mapped = map_kubernetes(&items);
+            assert_eq!(mapped.status, "running");
+            assert!(mapped.termination.is_none());
+        }
+        // A replacement that is still being created keeps the launch starting.
+        let creating = pod(json!({ "state": { "waiting": { "reason": "ContainerCreating" } } }));
+        let mut pending = creating;
+        pending["status"]["phase"] = json!("Pending");
+        assert_eq!(
+            map_kubernetes(&[deployment(), evicted_deployment_pod(), pending]).status,
+            "starting"
+        );
+    }
+
+    #[test]
+    fn evicted_deployment_pod_alone_is_failed_evicted() {
+        let mapped = map_kubernetes(&[deployment(), evicted_deployment_pod()]);
+        assert_eq!(mapped.status, "failed");
+        assert_eq!(
+            mapped.termination.unwrap().reason,
+            WorkerTerminationReason::WorkerEvicted
+        );
+    }
+
+    #[test]
+    fn a_live_replacement_that_fails_still_fails_the_launch() {
+        let crash = pod(
+            json!({ "restartCount": 2, "state": { "waiting": { "reason": "CrashLoopBackOff" } } }),
+        );
+        let mapped = map_kubernetes(&[deployment(), evicted_deployment_pod(), crash]);
+        assert_eq!(mapped.status, "failed");
+        assert_eq!(
+            mapped.termination.unwrap().reason,
+            WorkerTerminationReason::WorkerExited
+        );
     }
 
     #[test]
