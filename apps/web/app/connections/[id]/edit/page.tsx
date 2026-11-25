@@ -6,6 +6,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { ConnectionForm } from "@/components/connections/connection-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -46,14 +48,20 @@ export default function EditConnectionPage() {
     );
   }
 
-  async function handleSubmit(input: ConnectionInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: ConnectionInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       await updateConnection(connectionId, input);
-      await commitAccess();
+      const accessSaved = await commitAccess();
       await queryClient.invalidateQueries({ queryKey: queryKeys.connections });
-      toast.success("Connection saved");
-      router.push(`/connections/${connectionId}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: "Connection saved",
+        href: `/connections/${connectionId}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {

@@ -396,9 +396,7 @@ export function AgentForm({
       return;
     }
     setIssues([]);
-    const commitAccess = async (id?: string) => {
-      await accessRef.current?.save(id);
-    };
+    const commitAccess = async (id?: string) => (await accessRef.current?.save(id)) ?? true;
     await onSubmit(agentDefinitionSchema.parse(candidate) as unknown as AgentDefinition, commitAccess);
   }
 

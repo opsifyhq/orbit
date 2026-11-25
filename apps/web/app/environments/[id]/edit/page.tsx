@@ -6,6 +6,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { EnvironmentForm, type EnvironmentInput } from "@/components/environments/environment-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -47,17 +49,23 @@ export default function EditEnvironmentPage() {
   }
   const data = mapping.data;
 
-  async function handleSubmit(input: EnvironmentInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: EnvironmentInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       await updateEnvMapping(id, input);
-      await commitAccess();
+      const accessSaved = await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["env-mappings"] }),
         queryClient.invalidateQueries({ queryKey: ["worker-profile-env-mappings"] }),
       ]);
-      toast.success("Environment saved");
-      router.push(`/environments/${id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: "Environment saved",
+        href: `/environments/${id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));

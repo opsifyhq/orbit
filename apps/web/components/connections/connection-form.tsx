@@ -34,7 +34,7 @@ import {
   URL_KEYS,
   applyUrl,
   defaultConfig,
-  kubernetesResources,
+  allowedKubernetesResources,
   urlError,
   urlFromConfig,
   type Capability,
@@ -207,6 +207,9 @@ export function ConnectionForm({
   }, [configText]);
 
   const isKubernetes = connectorSlug === "kubernetes";
+  const effectiveResources = isKubernetes
+    ? allowedKubernetesResources(parsedConfig?.allowedResources, scopes, connection?.scopes ?? [])
+    : [];
   const kubernetesAuthMode = isKubernetes ? String(parsedConfig?.authMode ?? "service_account") : "";
   const [namespaceText, setNamespaceText] = useState(() =>
     Array.isArray(parsedConfig?.namespaces) ? (parsedConfig.namespaces as string[]).join(", ") : "",
@@ -312,17 +315,13 @@ export function ConnectionForm({
       toast.error(issues.length === 1 ? issues[0].message : "Fix the highlighted sections");
       return;
     }
-    const commitAccess = async (id?: string) => {
-      await accessRef.current?.save(id);
-    };
+    const commitAccess = async (id?: string) => (await accessRef.current?.save(id)) ?? true;
     const config = usesUrl ? applyUrl(connectorSlug, parsedConfig ?? {}, url) : { ...(parsedConfig ?? {}) };
     if (isKubernetes) {
       config.namespaces = splitNamespaces(namespaceText);
-      // Normally derived from the selected capabilities. A non-empty advanced value is
-      // kept as an explicit override.
-      if (!Array.isArray(config.allowedResources) || config.allowedResources.length === 0) {
-        config.allowedResources = kubernetesResources(scopes);
-      }
+      // Derived from the selected capabilities on every save, unless Advanced config holds
+      // a deliberate override (a list the loaded capabilities would not derive).
+      config.allowedResources = effectiveResources;
     }
     await onSubmit(
       {
@@ -619,6 +618,14 @@ export function ConnectionForm({
                   ORBIT normally limits the connection to the Kubernetes resources implied by the
                   capabilities you allow below. Set <code>allowedResources</code> in Advanced config
                   only when you need a deliberate override.
+                  <span className="mt-2 block">
+                    Effective on save:{" "}
+                    {effectiveResources.length ? (
+                      <code className="break-words">{effectiveResources.join(", ")}</code>
+                    ) : (
+                      "none (every tool is refused)"
+                    )}
+                  </span>
                 </Callout>
               </div>
             ) : null}

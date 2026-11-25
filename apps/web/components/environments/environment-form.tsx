@@ -154,9 +154,7 @@ export function EnvironmentForm({
       toast.error(local.length === 1 ? local[0].message : "Fix the highlighted sections");
       return;
     }
-    const commitAccess = async (id?: string) => {
-      await accessRef.current?.save(id);
-    };
+    const commitAccess = async (id?: string) => (await accessRef.current?.save(id)) ?? true;
     await onSubmit(
       { name: name.trim(), description: description.trim(), mappings: toEntries(rows) },
       commitAccess,

@@ -29,11 +29,13 @@ export type ResourceAccessHandle = {
   save: (resourceId?: string) => Promise<boolean>;
 };
 
-/** The parent commits this only after its own save succeeded. */
-export type ResourceSubmit<T> = (
-  value: T,
-  commitAccess: (resourceId?: string) => Promise<void>,
-) => Promise<void> | void;
+/**
+ * The parent commits this only after its own save succeeded. It resolves to false when the
+ * access change was refused (the access fields already showed why); the page must then
+ * keep the user on the form or send them to the edit page, never report a full success.
+ */
+export type CommitAccess = (resourceId?: string) => Promise<boolean>;
+export type ResourceSubmit<T> = (value: T, commitAccess: CommitAccess) => Promise<void> | void;
 
 type ResourceAccessProps = {
   resource: string;

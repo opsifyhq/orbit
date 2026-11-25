@@ -1,5 +1,7 @@
 "use client";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { LoadFailure } from "@/components/load-failure";
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -48,18 +50,24 @@ function EditSkillEditor({ skillId }: { skillId: string }) {
     );
   }
 
-  async function handleSubmit(input: SkillInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: SkillInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     setServerIssues([]);
     try {
       const updated = await updateSkill(skillId, input);
-      await commitAccess();
+      const accessSaved = await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.skills }),
         queryClient.invalidateQueries({ queryKey: queryKeys.skill(skillId) }),
       ]);
-      toast.success(`Saved as version ${updated.version}`);
-      router.push(`/skills/${skillId}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: `Saved as version ${updated.version}`,
+        href: `/skills/${skillId}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));

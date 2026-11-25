@@ -1,5 +1,7 @@
 "use client";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { validationDetails } from "@/lib/http";
 import { LoadFailure } from "@/components/load-failure";
 import Link from "next/link";
@@ -81,7 +83,7 @@ function EditAgentEditor({ agentId }: { agentId: string }) {
     spec: parsedSpec.data,
   };
 
-  async function handleSubmit(definition: AgentDefinition, commitAccess: () => Promise<void>) {
+  async function handleSubmit(definition: AgentDefinition, commitAccess: CommitAccess) {
     setSubmitting(true);
     setServerIssues([]);
     try {
@@ -95,16 +97,20 @@ function EditAgentEditor({ agentId }: { agentId: string }) {
         }),
       );
       // Access changes are committed only now that the agent itself was saved.
-      await commitAccess();
+      const accessSaved = await commitAccess();
       // This save is now the baseline; the refresh below must not look like someone else's.
       startedFrom.current = updated.currentVersion;
       await queryClient.invalidateQueries({ queryKey: queryKeys.agent(agentId) });
       // Name, description and labels are saved in place; only a changed spec is a new version.
       const version = (updated as { currentVersion?: number }).currentVersion;
-      toast.success(
-        version && version > agent.data!.currentVersion ? `Version ${version} created` : "Agent saved",
-      );
-      router.push(`/agents/${agentId}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: version && version > agent.data!.currentVersion ? `Version ${version} created` : "Agent saved",
+        href: `/agents/${agentId}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       const details = validationDetails(error);
       setServerIssues(details);

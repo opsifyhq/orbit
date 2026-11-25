@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { ProviderForm } from "@/components/providers/provider-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { validationDetails } from "@/lib/http";
@@ -19,14 +21,20 @@ export default function NewProviderPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(draft: ProviderDraft, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(draft: ProviderDraft, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       const created = await createProvider(draft);
-      await commitAccess(created.id);
+      const accessSaved = await commitAccess(created.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.providers });
-      toast.success("Provider added");
-      router.push(`/models/${created.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Provider added",
+        href: `/models/${created.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));

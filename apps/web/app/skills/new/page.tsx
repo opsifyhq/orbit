@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { SkillForm, type SkillInput } from "@/components/skills/skill-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { queryKeys } from "@/lib/queries";
@@ -17,15 +19,21 @@ export default function NewSkillPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(input: SkillInput, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(input: SkillInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     setServerIssues([]);
     try {
       const skill = await createSkill(input);
-      await commitAccess(skill.id);
+      const accessSaved = await commitAccess(skill.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.skills });
-      toast.success("Skill created");
-      router.push(`/skills/${skill.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Skill created",
+        href: `/skills/${skill.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));

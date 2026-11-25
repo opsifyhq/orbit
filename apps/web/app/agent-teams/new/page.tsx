@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { TeamForm } from "@/components/teams/team-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { queryKeys } from "@/lib/queries";
@@ -16,14 +18,20 @@ export default function NewAgentTeamPage() {
   const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(input: TeamInput, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(input: TeamInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       const team = await createAgentTeam(input);
-      await commitAccess(team.id);
+      const accessSaved = await commitAccess(team.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams });
-      toast.success("Agent team created");
-      router.push(`/agent-teams/${team.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Agent team created",
+        href: `/agent-teams/${team.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
