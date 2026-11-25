@@ -4498,6 +4498,7 @@ export interface operations {
     list_approvals: {
         parameters: {
             query?: {
+                /** @description `pending`, `approved`, `rejected`, `expired`, or `decided` (every status but `pending`). */
                 status?: string;
                 /** @description Only approvals requested by this execution. */
                 executionId?: string;
@@ -4573,8 +4574,12 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                /** @description Cursor: only rows older than this id (the previous page's `nextCursor`). */
                 before_id?: number;
+                /** @description Exact action, for example `agent.deleted`. */
                 action?: string;
+                /** @description Action family: the part before the first dot, for example `agent` or `team_run`. */
+                area?: string;
             };
             header?: never;
             path?: never;

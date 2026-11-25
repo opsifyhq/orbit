@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Section } from "@/components/ui/section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { queryKeys, unwrap, useApprovals } from "@/lib/queries";
+import { APPROVALS_PAGE_LIMIT, queryKeys, unwrap, useApprovals } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import { formatDateTime, relativeTime, titleCase } from "@/lib/utils";
 import { capabilityLabel } from "@/lib/presentation";
@@ -25,18 +25,20 @@ import { ApprovalDetails } from "@/components/approvals/approval-details";
 type ApprovalDecision = "approved" | "rejected";
 
 export default function ApprovalsPage() {
-  const pending = useApprovals("pending");
+  const pending = useApprovals("pending", { limit: APPROVALS_PAGE_LIMIT });
+  // Decisions are requested on their own, so a long pending queue cannot crowd them out.
   // History only changes when someone decides; it does not need the pending list's pace.
-  const decided = useApprovals(undefined, { refetchInterval: 30_000 });
+  const decided = useApprovals("decided", { refetchInterval: 30_000, limit: 30 });
   const queryClient = useQueryClient();
   // One entry per approval being decided: each card owns its own in-flight state, so
   // deciding a second card cannot re-enable the first while its request is still out.
   const [deciding, setDeciding] = useState<Record<string, ApprovalDecision>>({});
 
   const history = useMemo(
-    () => (decided.data ?? []).filter((item) => item.status !== "pending").slice(0, 30),
+    () => (decided.data ?? []).filter((item) => item.status !== "pending"),
     [decided.data],
   );
+  const pendingCapped = (pending.data?.length ?? 0) >= APPROVALS_PAGE_LIMIT;
 
   const decide = useMutation({
     mutationFn: async ({
@@ -70,8 +72,8 @@ export default function ApprovalsPage() {
         delete next[variables.approval.id];
         return next;
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals("pending") });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(undefined) });
+      // Every approvals list: pending, decided and per-execution.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvalLists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.execution(variables.approval.executionId),
@@ -94,6 +96,16 @@ export default function ApprovalsPage() {
             {errorMessage(pending.error)}
           </Callout>
         ) : pending.data?.length ? (
+          <>
+          {pendingCapped ? (
+            <Callout
+              tone="info"
+              title={`Showing the newest ${APPROVALS_PAGE_LIMIT} requests`}
+              className="mb-3"
+            >
+              More approvals are waiting. Older ones appear here as these are decided.
+            </Callout>
+          ) : null}
           <ul className="space-y-3">
             {pending.data.map((approval) => (
               <li key={approval.id}>
@@ -107,6 +119,7 @@ export default function ApprovalsPage() {
               </li>
             ))}
           </ul>
+          </>
         ) : (
           <EmptyState
             icon={<ShieldCheck />}

@@ -15,6 +15,7 @@ use crate::state::AppState;
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ApprovalListQuery {
+    /// `pending`, `approved`, `rejected`, `expired`, or `decided` (every status but `pending`).
     pub status: Option<String>,
     /// Only approvals requested by this execution.
     pub execution_id: Option<Uuid>,
@@ -37,7 +38,10 @@ pub async fn list_approvals(
     auth.require(Permission::ApprovalsDecide)?;
     let status = query.status.as_deref().filter(|s| !s.is_empty());
     if let Some(status) = status {
-        if !matches!(status, "pending" | "approved" | "rejected" | "expired") {
+        if !matches!(
+            status,
+            "pending" | "approved" | "rejected" | "expired" | "decided"
+        ) {
             return Err(ApiError::bad_request("unknown approval status"));
         }
     }

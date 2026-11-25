@@ -296,13 +296,27 @@ pub async fn list_audit_logs(
     Query(query): Query<AuditListQuery>,
 ) -> Result<Json<AuditLogPage>, ApiError> {
     auth.require(Permission::AuditRead)?;
+    let area = query.area.as_deref().filter(|area| !area.is_empty());
+    if let Some(area) = area {
+        if area.len() > 64
+            || !area
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(ApiError::bad_request(
+                "area must be an action family such as `agent` or `team_run`",
+            ));
+        }
+    }
+    let action = query.action.as_deref().filter(|action| !action.is_empty());
     let (items, next) = state
         .store
-        .list_audit_logs(
+        .list_audit_log_page(
             auth.org_id,
             limit(query.limit),
             query.before_id,
-            query.action.as_deref(),
+            action,
+            area,
         )
         .await?;
     Ok(Json(AuditLogPage {

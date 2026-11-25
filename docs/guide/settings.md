@@ -81,7 +81,10 @@ The "require a different approver" approvals policy is not in the web app yet; s
 
 **Recent activity** lists who changed what in this organization, newest first: changes to
 agents, connections, roles, tokens and more. It needs `audit:read`, which Owner and Admin
-have. Entries are kept indefinitely unless `ORBIT_AUDIT_RETENTION_DAYS` is set to a
+have. Each row names the changed item (the name recorded with the change, or the start of
+its id); **Details** shows the action, the full target id, the request id and the recorded
+metadata. **Show** limits the list to one kind of activity, and **Load older activity**
+pages back 25 entries at a time. Entries are kept indefinitely unless `ORBIT_AUDIT_RETENTION_DAYS` is set to a
 number of days (Helm `platform.auditRetentionDays`); then older entries are deleted.
 
 ## API
@@ -91,4 +94,7 @@ number of days (Helm `platform.auditRetentionDays`); then older entries are dele
 - `GET/PUT /api/v1/settings/oidc`, `/settings/access`, `/settings/harness`,
   `/settings/approvals`
 - `PATCH /api/v1/users/{id}`, `GET/POST /api/v1/roles`, `PATCH/DELETE /api/v1/roles/{id}`
-- `GET /api/v1/license`, `GET /api/v1/meta`, `GET /api/v1/audit-logs`
+- `GET /api/v1/license`, `GET /api/v1/meta`
+- `GET /api/v1/audit-logs`: query `limit` (25 by default, at most 100), `before_id` (the
+  previous page's `nextCursor`), `action` (exact, such as `agent.deleted`) and `area` (the
+  action family before the first dot, such as `agent` or `team_run`)

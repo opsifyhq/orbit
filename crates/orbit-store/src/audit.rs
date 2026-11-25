@@ -70,12 +70,28 @@ impl Store {
         before_id: Option<i64>,
         action: Option<&str>,
     ) -> StoreResult<(Vec<AuditLogRecord>, Option<i64>)> {
+        self.list_audit_log_page(org_id, limit, before_id, action, None)
+            .await
+    }
+
+    /// One page of audit rows, newest first. `action` matches exactly; `area` matches
+    /// every action of one family (`agent` matches `agent.created`, not `agent_x.y`).
+    /// The next cursor is the id of the last row when more rows follow.
+    pub async fn list_audit_log_page(
+        &self,
+        org_id: Uuid,
+        limit: i64,
+        before_id: Option<i64>,
+        action: Option<&str>,
+        area: Option<&str>,
+    ) -> StoreResult<(Vec<AuditLogRecord>, Option<i64>)> {
         let mut rows = sqlx::query_as::<_, AuditLogRecord>(
             r#"
             SELECT * FROM audit_logs
             WHERE org_id = $1
               AND ($2::text IS NULL OR action = $2)
               AND ($3::bigint IS NULL OR id < $3)
+              AND ($5::text IS NULL OR split_part(action, '.', 1) = $5)
             ORDER BY id DESC
             LIMIT $4
             "#,
@@ -84,6 +100,7 @@ impl Store {
         .bind(action)
         .bind(before_id)
         .bind(limit + 1)
+        .bind(area)
         .fetch_all(&self.pool)
         .await?;
         let has_more = rows.len() as i64 > limit;
