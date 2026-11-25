@@ -4590,6 +4590,14 @@ async fn cancelling_a_queue_item_stops_its_execution() {
             .status,
         "cancelled"
     );
+    // #431: the run's steps end with it.
+    let steps = app.store.list_team_steps(run).await.unwrap();
+    assert!(!steps.is_empty());
+    assert!(
+        steps.iter().all(|step| step.status == "cancelled"),
+        "{:?}",
+        steps.iter().map(|step| &step.status).collect::<Vec<_>>()
+    );
 
     // While that execution is still stopping, the item cannot be requeued.
     let (status, body) = send(
@@ -4715,6 +4723,40 @@ async fn deleting_a_team_stops_its_executions() {
         cancel_requested,
         "a detached execution must still be stopped"
     );
+}
+
+/// #431: a direct run whose worker launch fails is ended before the error is returned,
+/// with its steps closed, so a retry does not leave a second run behind.
+#[tokio::test]
+async fn failed_launch_of_a_direct_run_ends_the_run() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "autoLaunch": true, "workerProfileId": Uuid::now_v7() }),
+    )
+    .await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/runs"),
+            json!({ "task": "launch fails" }),
+        ),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    let runs =
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, status FROM team_runs WHERE team_id = $1")
+            .bind(team)
+            .fetch_all(&raw_pool().await)
+            .await
+            .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].1, "failed");
+    let steps = app.store.list_team_steps(runs[0].0).await.unwrap();
+    assert!(steps.iter().all(|step| step.status != "running"));
 }
 
 #[tokio::test]

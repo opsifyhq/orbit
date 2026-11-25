@@ -3483,11 +3483,46 @@ async fn terminal_team_run_cannot_be_overwritten_and_lease_release_needs_the_tok
         .await
         .unwrap());
 
+    // A run that ends closes its running steps (#431); a non-terminal update does not.
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Guard Step Agent"))
+        .await
+        .unwrap();
+    store
+        .create_team_step(
+            run.id,
+            org,
+            0,
+            "first",
+            agent.id,
+            version.id,
+            &[],
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .update_team_run(run.id, "running", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_team_steps(run.id).await.unwrap()[0].status,
+        "running"
+    );
+
     // Terminal runs are never overwritten.
     store
         .update_team_run(run.id, "failed", None, Some("boom"))
         .await
         .unwrap();
+    let steps = store.list_team_steps(run.id).await.unwrap();
+    assert_eq!(steps[0].status, "cancelled");
+    assert_eq!(
+        steps[0].error.as_deref(),
+        Some("stopped because the run ended")
+    );
+    assert!(steps[0].finished_at.is_some());
     let err = store
         .update_team_run(run.id, "running", None, None)
         .await
