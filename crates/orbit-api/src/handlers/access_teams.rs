@@ -77,6 +77,7 @@ fn validated(body: &TeamRequest) -> Result<(String, String), ApiError> {
     if name.is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
+    issues.extend(orbit_domain::name_length_issue("name", &name));
     if !is_valid_slug(&slug) {
         issues.push(ValidationIssue::new(
             "slug",

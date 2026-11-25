@@ -1092,6 +1092,98 @@ async fn invalid_text_harnesses_and_archived_triggers_are_refused() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }
 
+/// #438: every resource family uses the same 120-character name limit (it used to be
+/// 120 for agents, skills and tool policies and unlimited for the rest), and an encoded
+/// NUL in a path or query string is a 422, not a 500 storage error. (Access teams need an
+/// enterprise licence here; they use the same check.)
+#[tokio::test]
+async fn names_share_one_limit_and_nul_in_uris_is_refused() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let long = "n".repeat(orbit_domain::MAX_NAME_CHARS + 1);
+    let cases = [
+        (
+            "/api/v1/providers",
+            json!({ "name": long, "kind": "harness_managed", "config": { "harness": "opencode" } }),
+        ),
+        (
+            "/api/v1/connections",
+            json!({ "connectorSlug": "github", "name": long }),
+        ),
+        (
+            "/api/v1/outputs",
+            json!({ "name": long, "kind": "webhook", "config": {} }),
+        ),
+        (
+            "/api/v1/env-mappings",
+            json!({ "name": long, "mappings": [] }),
+        ),
+        (
+            "/api/v1/agent-teams",
+            json!({ "name": long, "mode": "pipeline" }),
+        ),
+        (
+            "/api/v1/api-tokens",
+            json!({ "name": long, "scopes": ["agents:read"] }),
+        ),
+        ("/api/v1/worker-profiles", profile_body(&long, json!({}))),
+        (
+            "/api/v1/worker-tokens",
+            json!({ "name": long, "harnesses": ["mock"] }),
+        ),
+    ];
+    for (path, body) in cases {
+        let (status, body) = send(&app.router, post(path, body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {body}");
+        let details = body["error"]["details"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            details.iter().any(|issue| issue["path"] == "name"
+                && issue["message"] == "name must be at most 120 characters"),
+            "{path}: {body}"
+        );
+    }
+
+    // A name of exactly the limit is accepted.
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/providers",
+            json!({
+                "name": "p".repeat(orbit_domain::MAX_NAME_CHARS),
+                "kind": "harness_managed",
+                "config": { "harness": "opencode" },
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    // Renames are checked too, and an empty rename is refused instead of stored as "".
+    let provider = format!("/api/v1/providers/{}", created["id"].as_str().unwrap());
+    for name in [long.as_str(), "  "] {
+        let (status, body) =
+            send(&app.router, patch_json(&provider, json!({ "name": name }))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name:?}: {body}");
+        assert_eq!(body["error"]["details"][0]["path"], "name", "{body}");
+    }
+
+    for (uri, field) in [
+        ("/api/v1/agents?q=%00", "query"),
+        ("/api/v1/executions?status=%00", "query"),
+        ("/api/v1/skills/a%00b", "path"),
+    ] {
+        let (status, body) = send(&app.router, get(uri)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}: {body}");
+        assert_eq!(body["error"]["details"][0]["path"], field, "{uri}: {body}");
+    }
+    // An encoded "%" followed by "00" is ordinary text.
+    let (status, body) = send(&app.router, get("/api/v1/agents?q=%2500")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// #438: a token lifetime outside 1..=3650 days is refused, not turned into a token that
 /// never expires.
 #[tokio::test]

@@ -442,6 +442,9 @@ pub async fn create_token(
             None
         }
     };
+    if let Some(issue) = orbit_domain::name_length_issue("name", &body.name) {
+        return Err(ApiError::validation(vec![issue]));
+    }
     let mut harnesses = body.harnesses;
     if let Some(profile) = &profile {
         harnesses = vec![profile.harness_kind.clone()];
@@ -635,6 +638,7 @@ pub async fn create_profile(
     if body.name.trim().is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
+    issues.extend(orbit_domain::name_length_issue("name", &body.name));
     for slug in &body.skill_slugs {
         match state.store.get_skill_by_slug(auth.org_id, slug).await? {
             Some(skill)
@@ -788,6 +792,7 @@ pub async fn update_profile(
     if body.name.trim().is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
+    issues.extend(orbit_domain::name_length_issue("name", &body.name));
     for slug in &body.skill_slugs {
         match state.store.get_skill_by_slug(auth.org_id, slug).await? {
             Some(skill)

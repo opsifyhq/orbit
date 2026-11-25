@@ -76,6 +76,11 @@ keeping headers such as `Allow`. Successful responses, SSE streams, `HEAD` respo
 Swagger UI (`/docs`) are never rewritten. Settings updates (`PUT /api/v1/settings/*`) are
 validated with field-level `details` and recorded in the audit log.
 
+Text input shares two rules. A resource name is at most 120 characters (`name must be at
+most 120 characters`); custom role names stay at 80. Text cannot contain NUL, which PostgreSQL
+cannot store: a `\u0000` in a JSON body (`details` path `body`) or a `%00` in the path or
+query string (path `path` or `query`) is a 422.
+
 ## Resources
 
 | Method & path | Purpose |

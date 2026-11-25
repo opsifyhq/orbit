@@ -273,6 +273,7 @@ fn validated(
     if name.is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
+    issues.extend(orbit_domain::name_length_issue("name", &name));
     let Some(kind) = OutputKind::parse(&body.kind) else {
         issues.push(ValidationIssue::new(
             "kind",

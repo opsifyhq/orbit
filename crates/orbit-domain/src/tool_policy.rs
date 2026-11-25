@@ -237,8 +237,8 @@ pub fn validate_tool_policy(rule: &ToolPolicyRule) -> Vec<String> {
     if rule.name.trim().is_empty() {
         issues.push("name is required".into());
     }
-    if rule.name.chars().count() > 120 {
-        issues.push("name must be <= 120 characters".into());
+    if let Some(issue) = crate::name_length_issue("name", &rule.name) {
+        issues.push(issue.message);
     }
     for (field, value) in [
         ("matcher.tool", rule.matcher.tool.as_deref()),

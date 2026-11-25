@@ -250,6 +250,18 @@ async fn translate(
     found: &mut Findings,
 ) -> Option<Translated> {
     let name = doc.metadata.name.trim().to_string();
+    // Agents, skills and tool policies check the limit in their own validators.
+    if matches!(
+        kind,
+        PortableKind::Provider
+            | PortableKind::Connection
+            | PortableKind::WorkerProfile
+            | PortableKind::AgentTeam
+    ) {
+        if let Some(issue) = orbit_domain::name_length_issue("metadata.name", &name) {
+            found.issues.push(issue);
+        }
+    }
     match kind {
         PortableKind::Agent => {
             let mut spec = doc.spec.clone();

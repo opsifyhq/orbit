@@ -474,6 +474,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(worker)
         .merge(protected)
         .fallback(crate::error::not_found_fallback)
+        .layer(middleware::from_fn(crate::extract::reject_nul_in_uri))
         // Inside `instrument` so the request id is available to the envelope.
         .layer(middleware::from_fn(crate::error::envelope_rejections))
         .layer(middleware::from_fn_with_state(

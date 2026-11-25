@@ -112,6 +112,9 @@ pub async fn create_provider(
             orbit_domain::ValidationIssue::new("name", "provider name is required"),
         ]));
     }
+    if let Some(issue) = orbit_domain::name_length_issue("name", &body.name) {
+        return Err(ApiError::validation(vec![issue]));
+    }
     let mut config = body.config.clone();
     sanitize_provider_config(&mut config);
     let report = validate_provider_config(kind, &config);
@@ -199,6 +202,17 @@ pub async fn update_provider(
     let kind = ProviderKind::parse(&existing.kind)
         .ok_or_else(|| ApiError::internal("provider has an unknown kind"))?;
 
+    if let Some(name) = body.name.as_deref() {
+        // An empty name used to be stored as "" (#438).
+        if name.trim().is_empty() {
+            return Err(ApiError::validation(vec![
+                orbit_domain::ValidationIssue::new("name", "provider name is required"),
+            ]));
+        }
+        if let Some(issue) = orbit_domain::name_length_issue("name", name) {
+            return Err(ApiError::validation(vec![issue]));
+        }
+    }
     let config = match body.config {
         Some(mut config) => {
             sanitize_provider_config(&mut config);
@@ -600,6 +614,9 @@ pub async fn create_connection(
             orbit_domain::ValidationIssue::new("name", "connection name is required"),
         ]));
     }
+    if let Some(issue) = orbit_domain::name_length_issue("name", &body.name) {
+        return Err(ApiError::validation(vec![issue]));
+    }
     let connector = state
         .store
         .get_connector_by_slug(auth.org_id, &body.connector_slug)
@@ -712,6 +729,9 @@ pub async fn update_connection(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if let Some(issue) = name.and_then(|name| orbit_domain::name_length_issue("name", name)) {
+        return Err(ApiError::validation(vec![issue]));
+    }
     let mut secret_ref: Option<String> = None;
     if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
