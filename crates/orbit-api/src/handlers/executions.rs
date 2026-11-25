@@ -359,18 +359,6 @@ pub async fn execute_agent(
         }
     }
 
-    let active = state
-        .store
-        .count_active_executions_for_agent(auth.org_id, agent_id)
-        .await?;
-    if active >= spec.resources.max_concurrent_executions as i64 {
-        return Err(ApiError::rate_limited(format!(
-            "agent already has {active} active execution(s); maxConcurrentExecutions is {}",
-            spec.resources.max_concurrent_executions
-        )));
-    }
-    preflight.check_quota().await?;
-
     let input = serde_json::json!({
         "task": task,
         "name": body.name,
@@ -384,8 +372,11 @@ pub async fn execute_agent(
         "agentVersion": version.version,
     });
 
-    let execution = state
-        .create_execution_with_limit(orbit_store::executions::NewExecution {
+    // maxConcurrentExecutions and the hourly quota are checked under the agent's lock
+    // together with the insert, so parallel requests cannot all pass the count (#433).
+    let execution = crate::preflight::create_execution_within_agent_limits(
+        &state,
+        orbit_store::executions::NewExecution {
             org_id: auth.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -402,8 +393,11 @@ pub async fn execute_agent(
             idempotency_key: idempotency_key.as_deref(),
             team_run_id: None,
             team_step_index: None,
-        })
-        .await?;
+        },
+        &spec,
+        crate::preflight::AgentLimits::ConcurrencyAndQuota,
+    )
+    .await?;
 
     // Publish only for newly created executions; a replayed idempotent request returns
     // the existing row and must not enqueue a second run.
@@ -658,15 +652,6 @@ pub async fn rerun_execution(
     }
     .run()
     .await?;
-    let active = state
-        .store
-        .count_active_executions_for_agent(auth.org_id, original.agent_id)
-        .await?;
-    if active >= spec.resources.max_concurrent_executions as i64 {
-        return Err(ApiError::conflict(
-            "agent concurrency limit reached; retry after a running execution finishes",
-        ));
-    }
     let mut input = original.input.clone();
     // #194: an approval override only survives a rerun by someone who may decide approvals.
     if !auth.can(Permission::ApprovalsDecide) {
@@ -678,8 +663,9 @@ pub async fn rerun_execution(
         object.insert("rerunOf".into(), serde_json::json!(original.id));
     }
     let idempotency_key = format!("rerun:{}:{}", original.id, Uuid::now_v7());
-    let execution = state
-        .create_execution_with_limit(orbit_store::executions::NewExecution {
+    let execution = crate::preflight::create_execution_within_agent_limits(
+        &state,
+        orbit_store::executions::NewExecution {
             org_id: auth.org_id,
             agent_id: original.agent_id,
             agent_version_id: original.agent_version_id,
@@ -696,8 +682,11 @@ pub async fn rerun_execution(
             idempotency_key: Some(&idempotency_key),
             team_run_id: None,
             team_step_index: None,
-        })
-        .await?;
+        },
+        &spec,
+        crate::preflight::AgentLimits::ConcurrencyAndQuota,
+    )
+    .await?;
     let event = OrbitEvent::new(
         subjects::EXECUTION_REQUESTED,
         "orbit-api",

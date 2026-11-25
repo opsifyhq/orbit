@@ -1831,6 +1831,94 @@ async fn community_license_blocks_team_and_sharing_writes() {
     assert_eq!(body["error"]["code"], "license_required");
 }
 
+/// #433: the concurrency limit and the hourly quota are counted and inserted under one
+/// per-agent lock, so a burst of parallel requests cannot all pass the count.
+#[tokio::test]
+async fn parallel_requests_respect_agent_concurrency_and_quota() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .list_users(app.org_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|user| user.role == "owner")
+        .unwrap();
+
+    async fn burst(app: &TestApp, agent: Uuid, n: usize) -> Vec<StatusCode> {
+        let requests = (0..n).map(|index| {
+            let router = app.router.clone();
+            async move {
+                send(
+                    &router,
+                    auth_post(
+                        &format!("/api/v1/agents/{agent}/executions"),
+                        "test-token",
+                        json!({ "task": format!("slow parallel {index}") }),
+                    ),
+                )
+                .await
+                .0
+            }
+        });
+        futures::future::join_all(requests).await
+    }
+
+    // maxConcurrentExecutions: 1 (the default definition).
+    let single = bound_agent(&app, owner.id, None, None).await;
+    let statuses = burst(&app, single, 20).await;
+    let accepted = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::ACCEPTED)
+        .count();
+    assert_eq!(accepted, 1, "{statuses:?}");
+    assert!(
+        statuses
+            .iter()
+            .all(|status| *status == StatusCode::ACCEPTED
+                || *status == StatusCode::TOO_MANY_REQUESTS),
+        "{statuses:?}"
+    );
+    assert_eq!(
+        app.store
+            .count_active_executions_for_agent(app.org_id, single)
+            .await
+            .unwrap(),
+        1
+    );
+
+    // Hourly quota of 3 with room for 20 concurrent runs: exactly 3 are created.
+    let mut value = definition();
+    value["spec"]["resources"]["maxConcurrentExecutions"] = json!(20);
+    value["spec"]["autonomy"]["maxExecutionsPerHour"] = json!(3);
+    let definition: orbit_domain::AgentDefinition = serde_json::from_value(value).unwrap();
+    let (quota, _) = app
+        .store
+        .create_agent(app.org_id, Some(owner.id), &definition)
+        .await
+        .unwrap();
+    app.store
+        .set_agent_status(app.org_id, quota.id, orbit_domain::AgentStatus::Active)
+        .await
+        .unwrap();
+    let statuses = burst(&app, quota.id, 20).await;
+    let accepted = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::ACCEPTED)
+        .count();
+    assert_eq!(accepted, 3, "{statuses:?}");
+    let since = chrono::Utc::now() - chrono::Duration::hours(1);
+    assert_eq!(
+        app.store
+            .count_executions_since(app.org_id, quota.id, since)
+            .await
+            .unwrap(),
+        3
+    );
+}
+
 #[tokio::test]
 async fn same_agent_queues_on_different_harnesses() {
     let Some(app) = test_app(true).await else {

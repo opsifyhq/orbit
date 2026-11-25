@@ -172,6 +172,11 @@ failures. A trigger also stores an optional `harness_kind` and the shareable-res
 ownership columns. A due schedule is skipped when the agent is not `active` or its
 `maxConcurrentExecutions` is reached.
 
+`resources.maxConcurrentExecutions` (manual runs, reruns and schedules) and
+`autonomy.maxExecutionsPerHour` (every start, team steps and 24/7 runtime ticks included)
+are counted under a per-agent lock that is held until the execution row is inserted, so
+parallel requests cannot all pass the count. A request over a limit gets `429`.
+
 Schedule semantics: the cron expression is evaluated in the trigger's `timezone`, so
 `0 9 * * *` in `Europe/Amsterdam` fires at 09:00 local time across DST changes. The
 scheduler claims a due trigger and stores its next `next_run_at` in the same transaction

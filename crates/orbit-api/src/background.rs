@@ -577,8 +577,10 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
         return Ok(());
     }
     let idempotency_key = format!("trigger:{}:{}", trigger.id, fired_at.timestamp_millis());
-    let execution = match state
-        .create_execution_with_limit(orbit_store::executions::NewExecution {
+    // The checks above fail fast; this one holds the agent's lock across the insert (#433).
+    let execution = match crate::preflight::create_execution_within_agent_limits(
+        state,
+        orbit_store::executions::NewExecution {
             org_id: trigger.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -595,12 +597,21 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
             idempotency_key: Some(idempotency_key.as_str()),
             team_run_id: None,
             team_step_index: None,
-        })
-        .await
+        },
+        &spec,
+        crate::preflight::AgentLimits::ConcurrencyAndQuota,
+    )
+    .await
     {
         Ok(execution) => execution,
         Err(error) if error.code == "license_limit" => {
             audit_license_skip(state, trigger.org_id, "trigger", trigger.id, &error.message).await;
+            return Ok(());
+        }
+        // A parallel start reached the agent's concurrency limit or quota first: skip the
+        // tick like the checks above do, without counting it as a failure.
+        Err(error) if error.code == "rate_limited" => {
+            tracing::info!(trigger_id = %trigger.id, error = %error.message, "scheduled trigger skipped: agent limit reached");
             return Ok(());
         }
         Err(error) => return Err(error.into()),
@@ -1276,8 +1287,9 @@ async fn advance_runtime(
     // Deterministic per tick: the previous execution id only changes once the runtime row
     // is updated below, so a retry after a partial failure reuses the same execution.
     let idempotency_key = runtime_tick_key(runtime.id, runtime.last_execution_id);
-    let execution = match state
-        .create_execution_with_limit(orbit_store::executions::NewExecution {
+    let execution = match crate::preflight::create_execution_within_agent_limits(
+        state,
+        orbit_store::executions::NewExecution {
             org_id: runtime.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -1300,8 +1312,11 @@ async fn advance_runtime(
             idempotency_key: Some(&idempotency_key),
             team_run_id: None,
             team_step_index: None,
-        })
-        .await
+        },
+        &spec,
+        crate::preflight::AgentLimits::QuotaOnly,
+    )
+    .await
     {
         Ok(execution) => execution,
         Err(error) if error.code == "license_limit" => {
@@ -1320,6 +1335,20 @@ async fn advance_runtime(
                 .advance_agent_runtime(
                     runtime.id,
                     Some("run skipped: license limit reached"),
+                    chrono::Utc::now()
+                        + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
+                )
+                .await;
+            return Ok(());
+        }
+        // The hourly quota was used up by a parallel start: delay the tick like the check
+        // above does.
+        Err(error) if error.code == "rate_limited" => {
+            let _ = state
+                .store
+                .advance_agent_runtime(
+                    runtime.id,
+                    Some(&format!("run delayed: {}", error.message)),
                     chrono::Utc::now()
                         + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
                 )

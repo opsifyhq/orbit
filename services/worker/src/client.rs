@@ -330,6 +330,28 @@ impl WorkerClient {
         Ok(())
     }
 
+    /// Post an event with an id the API uses to recognise a retry of the same post, so an
+    /// event whose response was lost is not stored twice (#433). Pass the same `event_id`
+    /// to every attempt of one event.
+    pub async fn event_once(
+        &self,
+        execution_id: Uuid,
+        request: &EventRequest<'_>,
+        event_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let mut body = serde_json::to_value(request)?;
+        if let Some(object) = body.as_object_mut() {
+            object.insert("eventId".into(), serde_json::json!(event_id));
+        }
+        let _: serde_json::Value = self
+            .post_json(
+                &format!("/api/v1/worker/executions/{execution_id}/events"),
+                &body,
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn complete(
         &self,
         execution_id: Uuid,

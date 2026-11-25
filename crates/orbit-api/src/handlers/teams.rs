@@ -1654,8 +1654,8 @@ pub(crate) async fn start_step_with(
     definition: &TeamDefinition,
     start: StepStart<'_>,
 ) -> Result<TeamStep, ApiError> {
-    // Every team step creates an execution through `create_execution_with_limit`, so
-    // manual runs, scheduled/queue starts and dispatcher auto-run share the same guard.
+    // Every team step creates an execution through `create_execution_within_agent_limits`,
+    // so manual runs, scheduled/queue starts and dispatcher auto-run share the same guards.
     let StepStart {
         step_index,
         agent_id,
@@ -1852,8 +1852,10 @@ pub(crate) async fn start_step_with(
             .get_execution_by_idempotency_key(run.org_id, &idempotency_key)
             .await?
             .is_some();
-    let execution = state
-        .create_execution_with_limit(orbit_store::executions::NewExecution {
+    // The hourly quota is checked again under the agent's lock with the insert (#433).
+    let execution = crate::preflight::create_execution_within_agent_limits(
+        state,
+        orbit_store::executions::NewExecution {
             org_id: run.org_id,
             agent_id: agent.id,
             agent_version_id: version.id,
@@ -1876,8 +1878,11 @@ pub(crate) async fn start_step_with(
             idempotency_key: Some(&idempotency_key),
             team_run_id: Some(run.id),
             team_step_index: Some(step_index as i32),
-        })
-        .await?;
+        },
+        &spec,
+        crate::preflight::AgentLimits::QuotaOnly,
+    )
+    .await?;
     if !replayed {
         for clamp in &autonomy_clamps {
             if let Err(error) = state

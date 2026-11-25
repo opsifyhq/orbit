@@ -85,6 +85,12 @@ Events are forwarded by the worker to `execution_events` (with a monotonic `seq`
 `orbit.execution.updated` for subscribers. Adapters should emit events incrementally,
 not only at completion.
 
+The worker retries an event post on a transport error, 5xx, 408 or 429, and sends the same
+`eventId` (a UUID) with every attempt of one event. When the API already stored an event
+with that id for the execution, it returns the stored row and does not add or publish it
+again, so a post whose response was lost is not recorded twice. Workers that send no
+`eventId` keep the old behaviour: every post appends.
+
 ## Version skew between API and workers
 
 Workers decode the context the API sends with strict types (`deny_unknown_fields` on the
