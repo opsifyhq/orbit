@@ -75,7 +75,12 @@ its triggers only fire once it is Active. Use **Pause** and **Resume** on the ag
 stop and restart triggers. **Archive agent** stops triggers and means the agent can no
 longer run or be edited; its versions and execution history are kept. **Restore agent**
 (also offered in the Archived filter of the Agents list) activates an archived agent again.
-**Delete permanently** is offered only for archived agents.
+**Delete permanently** is offered only for archived agents. The confirmation lists what goes
+with the agent (executions, triggers, tool policies, memory, and outputs that are deleted or
+no longer sent for it), and the audit entry records the same list. An agent that an agent
+team or a worker profile still lists, or that agent team runs used, cannot be deleted: the
+page names them so you can remove it there first (the API answers `409` with them in
+`details`, path `usedBy`; `GET /api/v1/agents/{id}/delete-impact` returns both lists).
 
 Editing creates a new immutable version; executions pin the version they started with.
 Undoing a change (returning to an earlier configuration) is saved as a new version too;

@@ -31,6 +31,7 @@ import { capabilityLabel, effectLabel, effectTone, humanizeIdentifier } from "@/
 import { queryKeys, unwrap, useConnectors } from "@/lib/queries";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
+import { deleteFailureMessage } from "@/lib/delete-impact";
 
 function configValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -70,7 +71,7 @@ export default function ConnectionPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.connections });
       router.push("/connections");
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error) => toast.error(deleteFailureMessage("connection", error, errorMessage(error))),
   });
 
   if (connection.isLoading) {
@@ -105,7 +106,7 @@ export default function ConnectionPage() {
   async function confirmRemove() {
     const ok = await confirm({
       title: `Remove connection ${data.name}?`,
-      description: "Its stored credential is deleted and agents lose access through it. This cannot be undone.",
+      description: "Its stored credential is deleted. This cannot be undone. A connection that agents, agent teams, environment mappings or worker profiles still use is not removed; you are told which ones.",
       confirmLabel: "Remove connection",
       destructive: true,
     });

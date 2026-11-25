@@ -319,6 +319,8 @@ licence messages instead.
 | **Archived** filter → **Restore agent** on the agent page | The agent returns as before |
 | **Delete permanently** | Names the agents and says execution history is kept; a partial failure leaves the failed ids selected |
 | Skills list → select a skill an agent uses → delete | The confirmation names the agents and teams that use it |
+| Archived agent in an agent team → **Delete permanently** on its page | A message names the team; nothing is deleted. Remove it from the team, retry: the confirmation lists executions, triggers and outputs that go with it |
+| Provider or connection an agent uses → **Delete** / **Remove connection** | The refusal names the agent (and team, environment mapping or worker profile); the item stays |
 | Change the filter or search with rows ticked | Only ticked rows that are still on screen are counted and acted on |
 
 ---

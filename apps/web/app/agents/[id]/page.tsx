@@ -48,6 +48,8 @@ import { copyText } from "@/lib/browser";
 import { agentSpecSchema } from "@orbit/contracts";
 import { queryKeys, unwrap, useAgent, useAgentVersions, useExecutions, useOutputs, useSkills } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
+import { useConfirmAgentDelete } from "@/components/agents/use-confirm-agent-delete";
+import { deleteFailureMessage } from "@/lib/delete-impact";
 import { formatDateTime, relativeTime, titleCase } from "@/lib/utils";
 import { autonomyName, brandName, capabilityLabel, cronDescription } from "@/lib/presentation";
 
@@ -60,6 +62,7 @@ export default function AgentDetailPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const confirm = useConfirm();
+  const confirmAgentDelete = useConfirmAgentDelete();
   const agent = useAgent(agentId);
   const skillList = useSkills();
   const outputs = useOutputs();
@@ -152,7 +155,7 @@ export default function AgentDetailPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
       router.push("/agents");
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error) => toast.error(deleteFailureMessage("agent", error, errorMessage(error))),
   });
 
   if (agent.isLoading) {
@@ -234,13 +237,7 @@ export default function AgentDetailPage() {
   }
 
   async function deleteAgent() {
-    const confirmed = await confirm({
-      title: `Delete ${data.name} permanently?`,
-      description: "This removes the agent and its whole execution history. It cannot be undone.",
-      confirmLabel: "Delete agent",
-      destructive: true,
-    });
-    if (confirmed) remove.mutate(true);
+    if (await confirmAgentDelete({ id: agentId, name: data.name })) remove.mutate(true);
   }
 
   return (

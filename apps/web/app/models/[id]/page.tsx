@@ -34,6 +34,7 @@ import {
   plural,
   providerState,
 } from "@/lib/provider-meta";
+import { deleteFailureMessage } from "@/lib/delete-impact";
 import { deleteProvider, setProviderEnabled, useProvider, useProviderTests, useTestProvider } from "@/lib/providers";
 import { queryKeys } from "@/lib/queries";
 import { formatDateTime, relativeTime } from "@/lib/utils";
@@ -65,7 +66,7 @@ export default function ProviderPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.providers });
       router.push("/models");
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error) => toast.error(deleteFailureMessage("provider", error, errorMessage(error))),
   });
 
   if (provider.isLoading) {
@@ -113,7 +114,7 @@ export default function ProviderPage() {
     const ok = await confirm({
       title: `Delete provider ${data.name}?`,
       description:
-        "Agents and worker profiles that use it cannot run until you pick another provider. Its stored credential is deleted. This cannot be undone.",
+        "Its stored credential is deleted. This cannot be undone. A provider that agents, agent teams or worker profiles still use is not deleted; you are told which ones.",
       confirmLabel: "Delete provider",
       destructive: true,
     });

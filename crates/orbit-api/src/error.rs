@@ -125,6 +125,14 @@ impl From<StoreError> for ApiError {
         match err {
             StoreError::NotFound(what) => ApiError::not_found(what),
             StoreError::Conflict(message) => ApiError::conflict(message),
+            StoreError::InUse { resource, used_by } => {
+                let mut error = ApiError::conflict(StoreError::in_use_message(&resource, &used_by));
+                error.details = used_by
+                    .into_iter()
+                    .map(|dependant| ValidationIssue::new("usedBy", dependant))
+                    .collect();
+                error
+            }
             StoreError::Invalid(message) => ApiError::bad_request(message),
             StoreError::Database(err) => {
                 if let Some(db) = err.as_database_error() {

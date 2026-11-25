@@ -37,7 +37,9 @@ you know your provider endpoint expects it.
 model, a filter by type with counts, status (**Enabled**, **Disabled**, or **Test failed**
 after a failed test in this session), the default model and catalog size, and row checkboxes
 for **Change access**. Each provider has a page with **Test**, **Edit**, and **Disable**,
-**Export as YAML** and **Delete** under ⋯.
+**Export as YAML** and **Delete** under ⋯. A provider that an agent, agent team or worker
+profile still names cannot be deleted: the page lists them (the API answers `409` with them in
+`details`, path `usedBy`).
 
 **Add provider** and **Edit** open Provider Studio, one section at a time:
 

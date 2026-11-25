@@ -15087,3 +15087,185 @@ async fn a_workflow_run_is_started_once_by_whoever_gets_there_first() {
             .unwrap();
     assert_eq!(executions, 2);
 }
+
+fn delete_req(path: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(path)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn used_by(body: &Value) -> Vec<String> {
+    body["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|detail| detail["path"] == "usedBy")
+        .filter_map(|detail| detail["message"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// #434: providers, connections and agents that are still used cannot be deleted; the 409
+/// names what uses them, and a permanent agent delete records what went with it.
+#[tokio::test]
+async fn in_use_providers_connections_and_agents_refuse_delete() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let suffix = Uuid::now_v7().simple().to_string();
+
+    // Provider named by an agent's model.
+    let provider_name = format!("in-use-{suffix}");
+    let (status, provider) = send(
+        &app.router,
+        post(
+            "/api/v1/providers",
+            json!({ "name": provider_name, "kind": "openai_compatible",
+                    "config": { "baseUrl": "http://localhost:9999/v1", "model": "qwen" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{provider}");
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    let mut agent = definition();
+    agent["metadata"]["name"] = json!(format!("Uses provider {suffix}"));
+    agent["spec"]["model"] =
+        json!({ "management": "platform", "provider": provider_name, "model": "qwen" });
+    let (status, body) = send(&app.router, post("/api/v1/agents", agent)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let provider_agent = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/providers/{provider_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+    assert_eq!(used_by(&body), [format!("agent Uses provider {suffix}")]);
+
+    // Connection used by an environment mapping.
+    let (status, connection) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({ "connectorSlug": "telegram", "name": format!("Bot {suffix}"),
+                    "credential": "123456:bot-secret" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{connection}");
+    let connection_id = connection["id"].as_str().unwrap().to_string();
+    let (status, mapping) = send(
+        &app.router,
+        post(
+            "/api/v1/env-mappings",
+            json!({ "name": format!("map-{suffix}"),
+                    "mappings": [{ "envVar": "TOKEN", "connectionId": connection_id }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{mapping}");
+    let (status, body) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/connections/{connection_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        used_by(&body),
+        [format!("environment mapping map-{suffix}")]
+    );
+
+    // Agent listed in a team.
+    let team_name = format!("Uses agent {suffix}");
+    let (status, team) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": team_name, "mode": "pipeline",
+                    "steps": [{ "agentId": app.agent_id }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let agent_path = format!("/api/v1/agents/{}", app.agent_id);
+    let (status, impact) = send(&app.router, get(&format!("{agent_path}/delete-impact"))).await;
+    assert_eq!(status, StatusCode::OK, "{impact}");
+    assert_eq!(impact["usedBy"], json!([format!("agent team {team_name}")]));
+    assert!(
+        impact["removes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("1 trigger")),
+        "{impact}"
+    );
+    let (status, body) = send(&app.router, delete_req(&format!("{agent_path}?hard=true"))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(used_by(&body), [format!("agent team {team_name}")]);
+    // The bulk delete applies the same rule.
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agents/bulk/delete",
+            json!({ "ids": [app.agent_id], "dryRun": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["failed"][0]["code"], "conflict", "{body}");
+
+    // Once the dependants are gone the deletes go through.
+    let (status, _) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/agent-teams/{team_id}")),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (status, body) = send(&app.router, delete_req(&format!("{agent_path}?hard=true"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (entries, _) = app
+        .store
+        .list_audit_logs(app.org_id, 10, None, Some("agent.deleted"))
+        .await
+        .unwrap();
+    let entry = entries.into_iter().next().expect("audit entry");
+    assert!(
+        entry.metadata["removed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("1 trigger")),
+        "{:?}",
+        entry.metadata
+    );
+
+    let (status, _) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/agents/{provider_agent}?hard=true")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/providers/{provider_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _) = send(
+        &app.router,
+        delete_req(&format!(
+            "/api/v1/env-mappings/{}",
+            mapping["id"].as_str().unwrap()
+        )),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (status, body) = send(
+        &app.router,
+        delete_req(&format!("/api/v1/connections/{connection_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}

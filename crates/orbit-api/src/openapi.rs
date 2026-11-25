@@ -38,6 +38,7 @@ use crate::handlers;
         handlers::bulk_lifecycle::bulk_archive_agents,
         handlers::bulk_lifecycle::bulk_delete_agents,
         handlers::agents::activate_agent,
+        handlers::agents::agent_delete_impact,
         handlers::agents::pause_agent,
         handlers::agents::list_versions,
         handlers::agents::export_agent,
