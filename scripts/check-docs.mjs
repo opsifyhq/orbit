@@ -122,7 +122,11 @@ function isExternal(target) {
 }
 
 function exists(fromFile, target) {
-  const resolved = path.normalize(path.join(path.dirname(fromFile), target));
+  // Changelog fragments are pasted into the root CHANGELOG.md, so their links are root-relative.
+  const base = fromFile.startsWith('changelog.d/') && path.basename(fromFile) !== 'README.md'
+    ? ''
+    : path.dirname(fromFile);
+  const resolved = path.normalize(path.join(base, target));
   if (fileSet.has(resolved)) return { resolved, isMarkdown: resolved.endsWith('.md') };
   if (!resolved.includes('..') && fileSet.has(path.join(resolved, 'README.md'))) {
     return { resolved: path.join(resolved, 'README.md'), isMarkdown: true };

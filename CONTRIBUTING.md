@@ -60,8 +60,12 @@ After an API change, run `pnpm api:generate` and commit the regenerated
 
 ## Document it
 
-- Add a line to the `Unreleased` section of [`CHANGELOG.md`](./CHANGELOG.md) for anything
-  a user or operator would notice. Mark upgrade steps with **Upgrade:**.
+- For anything a user or operator would notice, add a changelog fragment
+  `changelog.d/<issue>.<type>.md` (type: `added`, `changed`, `deprecated`, `removed`,
+  `fixed` or `security`) instead of editing [`CHANGELOG.md`](./CHANGELOG.md), so pull
+  requests do not conflict. The content is the list item as it should read in the
+  changelog; mark upgrade steps with **Upgrade:**. See
+  [`changelog.d/README.md`](./changelog.d/README.md).
 - Update the page under [`docs/`](./docs/README.md) that describes the behaviour you
   changed. A new page must be listed in `docs/navigation.yaml`; a test fails otherwise.
 - Keep the phase table in `AGENTS.md` and the status table in `README.md` accurate.
