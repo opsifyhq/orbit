@@ -10,19 +10,15 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
-- `PATCH /api/v1/agent-teams/{id}` is a partial update: fields left out keep their value
-  and `null` clears an optional field (before, a client that left out `autonomy`,
-  `connectionIds` or `workSource` cleared them). `expectedUpdatedAt` refuses a write over
-  someone else's change with 409; the team editor sends it (#432).
-- Manual queue enqueue stores a batch all or nothing (at most 500 items). An item whose
-  `externalKey` is already queued is returned unchanged with `created: false`, and the
-  response is 200 when nothing was new. `GET .../queue` takes `limit` and `before` to page
-  back through older items (#432).
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
 
-### Added
+### Fixed
 
-- Audit entries for team create, update and delete, team run start (with
-  `autoApprove`) and queue enqueue, run, retry, requeue and cancel (#432).
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
