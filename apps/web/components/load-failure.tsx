@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { CloudOff, RefreshCw, ShieldX } from "lucide-react";
+import { CloudOff, Compass, RefreshCw, ShieldX } from "lucide-react";
 
 import { errorMessage } from "@orbit/api-client";
 import { Button } from "@/components/ui/button";
@@ -56,11 +56,15 @@ export function LoadFailure({
   }
   // Only the server can say "not found". No data and no error means the request has not
   // completed (offline, paused), which is a reason to retry, not a missing object.
-  if (status === 404) {
+  // A 400 on a page's own object means the id in the link is malformed (an old or
+  // mistyped link): the same answer as a missing object, not a raw parser message and a
+  // Retry that cannot help (#456).
+  if (status === 404 || status === 400) {
     return (
       <EmptyState
+        icon={<Compass />}
         title={`${title} not found`}
-        description="It may have been deleted, or the link is wrong."
+        description="It may have been deleted, or the link is old or mistyped."
         action={backButton}
       />
     );

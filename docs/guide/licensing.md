@@ -19,7 +19,7 @@ no outbound request. The license is a signed file that ORBIT verifies locally.
 | Marketplace | — | planned |
 
 Only features that actually exist are gated. The verifier still accepts the signed flags
-`resource_permissions`, `shared_connections`, `quotas` and `marketplace` for forward
+`shared_connections`, `quotas` and `marketplace` for forward
 compatibility, but they are **not advertised as available**: the API returns them in the raw
 `features` list and exposes only shipped flags in `availableFeatures`.
 

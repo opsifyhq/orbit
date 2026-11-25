@@ -491,21 +491,21 @@ async fn run_execution_inner(
         &state.client,
         execution_id,
         &spec,
-        &input.task,
+        &context.tool_policies,
         &input.payload,
     )
     .await
     {
         Ok(hydrated) => {
             input.payload = hydrated.payload;
-            for note in hydrated.notes {
+            for event in hydrated.events {
                 append_event(
                     &state,
                     &execution,
-                    ExecutionEventKind::Log,
-                    LogLevel::Info,
-                    &note,
-                    serde_json::json!({ "connector": "x" }),
+                    event.kind,
+                    event.level,
+                    &event.message,
+                    event.data,
                 )
                 .await;
             }
@@ -599,6 +599,25 @@ async fn run_execution_inner(
             };
             return fail_execution(&state, &execution, error).await;
         }
+    }
+
+    // Before ORBIT writes its own harness files: a checkout must not add plugins, tools or
+    // agent definitions that the harness would load as code (#428).
+    let removed =
+        crate::harness_files::remove_repository_harness_files(&workspace, &execution.input).await;
+    if !removed.is_empty() {
+        append_event(
+            &state,
+            &execution,
+            ExecutionEventKind::Status,
+            LogLevel::Warn,
+            &format!(
+                "removed {} harness file(s) the repository ships; harnesses only load what ORBIT writes",
+                removed.len()
+            ),
+            serde_json::json!({ "removed": removed }),
+        )
+        .await;
     }
 
     let mut subagent_model_selectors = std::collections::BTreeMap::new();

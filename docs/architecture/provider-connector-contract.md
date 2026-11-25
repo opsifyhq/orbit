@@ -167,8 +167,12 @@ transport option (`mcp` capability provider), not the only connector mechanism.
   `posts.search` capability, loads the connection's bearer token, calls
   `GET /2/tweets/search/recent`, and injects up to 10 posts into the harness input as
   `externalContext` with `provenance.trusted=false`. The query comes from
-  `payload.query`, then `connection.config.query`, then the task text. App-only bearer
-  tokens are sufficient for this read.
+  `payload.query`, then `connection.config.query`; without either, hydration is skipped
+  (the task text is never sent to X). The search is evaluated like a broker call: the
+  capability allowlist, autonomy and the organisation's tool policy rules apply, a deny
+  or require-approval decision skips hydration (a run cannot wait for approval before it
+  starts), and each search is recorded as a `tool_call` event. App-only bearer tokens are
+  sufficient for this read.
 - **X posting**: `posts.create` is the tool `x_posts_create`, served only for `x` bindings.
   It calls `POST /2/tweets` with the connection credential as a user-context bearer token,
   accepts `text` plus `replyTo` / `reply.in_reply_to_tweet_id`, and has the

@@ -25,8 +25,14 @@ impl S3Connector {
             "objects.list" => {
                 let bucket = args.get("bucket").and_then(Value::as_str);
                 let prefix = args.get("prefix").and_then(Value::as_str);
-                let objects = self.client.list_objects(bucket, prefix).await?;
-                Ok(json!({ "count": objects.len(), "objects": objects }))
+                let token = args.get("continuationToken").and_then(Value::as_str);
+                let page = self.client.list_objects(bucket, prefix, token).await?;
+                Ok(json!({
+                    "count": page.objects.len(),
+                    "objects": page.objects,
+                    "truncated": page.truncated,
+                    "nextContinuationToken": page.next_continuation_token,
+                }))
             }
             "objects.get" => {
                 let bucket = args.get("bucket").and_then(Value::as_str);

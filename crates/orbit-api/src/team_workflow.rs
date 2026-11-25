@@ -13,16 +13,17 @@
 use serde_json::Value;
 
 use orbit_domain::{
-    final_steps, outcome_directive, parse_outcome, plan, WorkflowActivation, WorkflowDefinition,
-    WorkflowNode, WorkflowStepState, WorkflowStepStatus, WorkflowVerdict,
+    final_steps, outcome_directive, parse_outcome, plan, without_outcome_line, WorkflowActivation,
+    WorkflowDefinition, WorkflowNode, WorkflowStepState, WorkflowStepStatus, WorkflowVerdict,
 };
 use orbit_store::{TeamRun, TeamStep};
 
 use crate::error::ApiError;
 use crate::handlers::teams::{
-    announce_cancel, auto_launch_step, execution_error_message, finalize_run, is_temporary_limit,
-    start_step_with, FirstSteps, StepStart, TeamDefinition, TeamModelOverride, WorkflowStepStart,
-    ADVANCE_LEASE_SECS, LIMITED_STEP_RETRY_WINDOW_SECS, START_STEP_RETRY_WINDOW_SECS,
+    announce_cancel, auto_launch_step, execution_error_message, fail_run_after_launch_error,
+    finalize_run, is_temporary_limit, start_step_with, FirstSteps, StepStart, TeamDefinition,
+    TeamModelOverride, WorkflowStepStart, ADVANCE_LEASE_SECS, LIMITED_STEP_RETRY_WINDOW_SECS,
+    START_STEP_RETRY_WINDOW_SECS,
 };
 use crate::state::AppState;
 
@@ -74,18 +75,35 @@ fn answer_text(output: Option<&Value>) -> &str {
 fn combined_output(steps: &[&TeamStep]) -> Option<Value> {
     match steps {
         [] => None,
-        [only] => only.output.clone(),
+        [only] => handed_on(only),
         many => Some(Value::Object(
             many.iter()
-                .map(|step| {
-                    (
-                        step.name.clone(),
-                        step.output.clone().unwrap_or(Value::Null),
-                    )
-                })
+                .map(|step| (step.name.clone(), handed_on(step).unwrap_or(Value::Null)))
                 .collect(),
         )),
     }
+}
+
+/// A step's output as the next step receives it: without the `OUTCOME:` line a step with
+/// outcomes ends its answer with. The stored output keeps the line.
+fn handed_on(step: &TeamStep) -> Option<Value> {
+    let mut output = step.output.clone()?;
+    let Some(outcome) = step.outcome.as_deref() else {
+        return Some(output);
+    };
+    match &mut output {
+        Value::String(text) => *text = without_outcome_line(text, outcome),
+        Value::Object(fields) => {
+            for key in ["text", "summary"] {
+                if let Some(Value::String(text)) = fields.get_mut(key) {
+                    *text = without_outcome_line(text, outcome);
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(output)
 }
 
 async fn is_terminal(state: &AppState, execution_id: uuid::Uuid) -> anyhow::Result<bool> {
@@ -361,9 +379,10 @@ pub(crate) async fn advance(
         {
             Ok(created) => {
                 next_index += 1;
-                auto_launch_step(state, run, definition, &created, None)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.message))?;
+                if let Err(error) = auto_launch_step(state, run, definition, &created, None).await {
+                    fail_run_after_launch_error(state, run, &created, &error).await;
+                    return Ok(());
+                }
                 continue;
             }
             Err(error) => error,

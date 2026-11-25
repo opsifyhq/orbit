@@ -26,6 +26,11 @@ interface Command {
 
 const PaletteContext = React.createContext<{ open: () => void } | null>(null);
 
+/** The palette, or null outside the signed-in shell (a page that may render either way). */
+export function useOptionalCommandPalette() {
+  return React.useContext(PaletteContext);
+}
+
 export function useCommandPalette() {
   const context = React.useContext(PaletteContext);
   if (!context) throw new Error("useCommandPalette must be used inside <CommandPaletteProvider>");
