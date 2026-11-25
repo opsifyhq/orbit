@@ -117,8 +117,9 @@ stopping profiles needs `settings:write`.
   `worker_exited` (non-zero exit) or `worker_lost` (node/pod gone). Exit code 137 alone is
   SIGKILL, not OOM. Every in-flight execution on that worker fails with the same reason,
   pod name, restart count, exit code and termination time; team runs are not retried
-  automatically. The API polls live launches every 15 seconds, so this happens even when
-  nobody has the Workers page open
+  automatically. Only executions that were still in flight are reported: one that finished
+  first (for example with its own `succeeded` result) keeps its result. The API polls live
+  launches every 15 seconds, so this happens even when nobody has the Workers page open
 
 The profile can also generate copy-paste Docker/Compose/Kubernetes bootstrap output with a
 scoped token. Generating bootstrap output (an explicit **Generate** button in the dialog)

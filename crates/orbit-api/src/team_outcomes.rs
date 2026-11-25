@@ -105,7 +105,22 @@ async fn close_queue_loop_inner(
         None => None,
     };
 
-    let retry = retry_allowed && status == "failed" && item.max_attempts > item.attempts + 1;
+    let mut retry = retry_allowed && status == "failed" && item.max_attempts > item.attempts + 1;
+    // Durable form of the "without retry" decision (#394): a run that lost a worker is
+    // not retried even when it reaches this through the team poller or the outcome
+    // reconciler instead of `close_queue_loop_without_retry`.
+    if retry
+        && state
+            .store
+            .team_run_execution_failed_with(
+                run.id,
+                &crate::handlers::teams::ended_without_retry_codes(),
+            )
+            .await?
+            .is_some()
+    {
+        retry = false;
+    }
     let outcome = match status {
         "succeeded" => "done",
         "failed" if retry => "retry",

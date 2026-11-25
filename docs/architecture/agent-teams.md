@@ -212,7 +212,14 @@ issue through the connector:
 | cancelled | claim label removed | — |
 
 The queue item records `succeeded`, `failed` or `cancelled` accordingly, and failures
-respect `maxAttempts`. Operators can retry, requeue or cancel an item from the UI or
+respect `maxAttempts`. A run is never retried automatically when one of its executions was
+ended by the platform because its worker went away (`worker_lost`, `worker_oom`,
+`worker_evicted`, `worker_exited` or `harness_unresponsive`): its side effects are unknown,
+so its item ends `failed` and an operator decides whether to run it again. Nothing runs after
+such a step either, even through a workflow's "failed" line. The decision is read from the
+stored execution error, so it holds whichever path (reaper, launch poller, team-run loop or
+outcome reconciler) handles the run first, and across API restarts. `worker_did_not_start`
+is not in that list: nothing ran, so the item keeps its retry. Operators can retry, requeue or cancel an item from the UI or
 `POST …/queue/{item_id}/{retry|requeue|cancel}`:
 
 | Action | Allowed from | Effect |

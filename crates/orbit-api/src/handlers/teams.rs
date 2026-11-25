@@ -2184,6 +2184,21 @@ fn run_definition(run: &TeamRun) -> Option<TeamDefinition> {
 }
 
 async fn advance_claimed(state: &AppState, run: TeamRun) -> anyhow::Result<()> {
+    // A step whose worker went away may have had side effects, so the run ends without
+    // a retry and nothing runs after that step. The reaper and the launch poller apply
+    // that through `fail_team_run_for_execution`, but this tick can see the failed
+    // execution first, or the API may have restarted in between (#394). Decide from the
+    // stored execution so whichever path gets here first ends the run the same way.
+    if let Some(execution) = state
+        .store
+        .team_run_execution_failed_with(run.id, &ended_without_retry_codes())
+        .await?
+    {
+        fail_team_run_for_execution(state, &execution).await?;
+        if state.store.get_team_run(run.org_id, run.id).await?.status != "running" {
+            return Ok(());
+        }
+    }
     if let Some(definition) = run_definition(&run) {
         if let Some(workflow) = definition.workflow() {
             return crate::team_workflow::advance(state, &run, &definition, workflow).await;
@@ -2262,6 +2277,20 @@ pub(crate) fn execution_error_message(execution: &ExecutionRecord) -> String {
         .filter(|message| !message.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| "worker failed".into())
+}
+
+/// Error codes of executions the platform ended because their worker went away: a lost
+/// worker or boot (`worker_lost`), a runtime termination (`worker_oom`, `worker_evicted`,
+/// `worker_exited`) or a harness that stopped reporting (`harness_unresponsive`). Their
+/// outcome is unknown, so their team run is neither continued nor retried (#343, #394).
+/// `worker_did_not_start` is not one of them: nothing ran, so the queue may retry it.
+pub(crate) fn ended_without_retry_codes() -> Vec<&'static str> {
+    orbit_contracts::WorkerTerminationReason::ALL
+        .iter()
+        .copied()
+        .filter(|code| *code != "worker_did_not_start")
+        .chain(["harness_unresponsive"])
+        .collect()
 }
 
 /// Fail the team run whose current step owns an execution ended by the platform (worker
@@ -2529,5 +2558,28 @@ mod prompt_separation_tests {
         let input = json!({ "instructions": "goal" });
         assert_eq!(run_instruction(&input), "Team run");
         assert_eq!(configured_goal(&input), "goal");
+    }
+}
+
+#[cfg(test)]
+mod ended_without_retry_tests {
+    use super::ended_without_retry_codes;
+
+    #[test]
+    fn lost_and_terminated_workers_end_without_retry_but_a_worker_that_never_started_does_not() {
+        let codes = ended_without_retry_codes();
+        for code in [
+            "worker_lost",
+            "worker_oom",
+            "worker_evicted",
+            "worker_exited",
+            "harness_unresponsive",
+        ] {
+            assert!(codes.contains(&code), "{code}");
+        }
+        // Nothing ran, so the queue keeps its retry (#399), also once it is a termination
+        // reason of its own.
+        assert!(!codes.contains(&"worker_did_not_start"));
+        assert!(!codes.contains(&"harness_error"));
     }
 }
