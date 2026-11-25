@@ -18,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useConfirm } from "@/components/ui/confirm";
+import { scrollBehavior } from "@/lib/motion";
 import { brandName } from "@/lib/presentation";
 import {
   DEFAULT_MAX_RUNS,
@@ -644,6 +646,14 @@ export function WorkflowEditor({
 
   const selectedNode = selection?.kind === "node" ? value.nodes.find((node) => node.id === selection.id) : undefined;
   const selectedEdge = selection?.kind === "edge" ? value.edges.find((edge) => edge.id === selection.id) : undefined;
+  const confirm = useConfirm();
+  const stepName = (id: string) =>
+    id === WORKFLOW_START ? "Start" : value.nodes.find((node) => node.id === id)?.name || "an unnamed step";
+  const announcement = selectedNode
+    ? `Step ${selectedNode.name || "without a name"} selected.`
+    : selectedEdge
+      ? `Line from ${stepName(selectedEdge.from)} to ${stepName(selectedEdge.to)} selected.`
+      : "";
 
   // A new step continues from the selected step, or from the end of the line when the
   // workflow has one. Then its fields come into view, ready for a name.
@@ -679,9 +689,9 @@ export function WorkflowEditor({
     // Bring the first fields into view, but keep the canvas on screen above them.
     const top = panel.current?.getBoundingClientRect().top ?? 0;
     const wanted = window.innerHeight - 280;
-    if (view === "canvas" && !full && top > wanted) window.scrollBy({ top: top - wanted, behavior: "smooth" });
+    if (view === "canvas" && !full && top > wanted) window.scrollBy({ top: top - wanted, behavior: scrollBehavior() });
     input.focus({ preventScroll: true });
-    if (view === "list" || full) input.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (view === "list" || full) input.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
     input.select();
     setOpening(null);
   }, [opening, selectedNode, view, full]);
@@ -734,10 +744,15 @@ export function WorkflowEditor({
               <DropdownMenuItem
                 key={example.id}
                 className="flex-col items-start gap-0.5"
-                onSelect={() => {
+                onSelect={async () => {
                   if (
                     value.nodes.length &&
-                    !window.confirm("Replace the current workflow with this example? You choose the agents afterwards.")
+                    !(await confirm({
+                      title: "Replace the current workflow?",
+                      description: `The steps and lines are replaced by the "${example.title}" example. You choose the agents afterwards; Undo brings the current workflow back.`,
+                      confirmLabel: "Replace workflow",
+                      cancelLabel: "Keep mine",
+                    }))
                   )
                     return;
                   change(example.build());
@@ -887,7 +902,11 @@ export function WorkflowEditor({
   );
 
   const inspector = (
-    <div ref={panel} className="scroll-mb-24 rounded-lg border bg-card p-4" aria-live="polite">
+    <div ref={panel} className="scroll-mb-24 rounded-lg border bg-card p-4">
+      {/* One short line for screen readers instead of reading the whole form (#448). */}
+      <p className="sr-only" aria-live="polite">
+        {announcement}
+      </p>
       {selectedNode ? (
         <>
           <h3 className="mb-3 text-sm font-semibold">Step</h3>
