@@ -454,6 +454,20 @@ pub async fn create_token(
             "at least one harness is required",
         )]));
     }
+    // A token for a harness kind that does not exist can never claim anything (#438).
+    let unknown: Vec<ValidationIssue> = harnesses
+        .iter()
+        .filter(|kind| kind.parse::<orbit_domain::HarnessKind>().is_err())
+        .map(|kind| {
+            ValidationIssue::new(
+                "harnesses",
+                format!("unknown harness '{kind}'; use mock, opencode, pi, claude_code or generic"),
+            )
+        })
+        .collect();
+    if !unknown.is_empty() {
+        return Err(ApiError::validation(unknown));
+    }
     let issued = issue_worker_token();
     let record = state
         .store

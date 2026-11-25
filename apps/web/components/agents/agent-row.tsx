@@ -49,7 +49,7 @@ export function AgentRow({
           <p className="mt-0.5 line-clamp-1 text-[13px] text-muted-foreground">
             {agent.description || "No description"}
           </p>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
             <span>{agent.harness ? brandName(agent.harness) : "Harness per run"}</span>
             <span>{autonomyName(agent.autonomyLevel)}</span>
             <span>{relativeTime(agent.updatedAt)}</span>

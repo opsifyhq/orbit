@@ -33,11 +33,22 @@ pub struct WorkerSession {
     pub native_tool_permissions: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerSecret {
     pub secret_ref: String,
     pub value: String,
+}
+
+/// `Debug` never prints the plaintext value (AGENTS.md rule 4, #451): a future
+/// `tracing::debug!(?context)` or error dump must not leak a credential.
+impl std::fmt::Debug for WorkerSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerSecret")
+            .field("secret_ref", &self.secret_ref)
+            .field("value", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,11 +96,22 @@ pub struct WorkerSubagentModel {
     pub model: Option<WorkerModel>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerEnv {
     pub env_var: String,
     pub value: String,
+}
+
+/// `Debug` never prints the plaintext value (AGENTS.md rule 4, #451): a future
+/// `tracing::debug!(?context)` or error dump must not leak a credential.
+impl std::fmt::Debug for WorkerEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerEnv")
+            .field("env_var", &self.env_var)
+            .field("value", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,5 +493,26 @@ impl WorkerClient {
             .into_iter()
             .map(|entry| (entry.env_var, entry.value))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_never_contains_secret_values() {
+        let secret = WorkerSecret {
+            secret_ref: "secret://provider/1".into(),
+            value: "sk-plaintext".into(),
+        };
+        let env = WorkerEnv {
+            env_var: "GH_TOKEN".into(),
+            value: "ghp-plaintext".into(),
+        };
+        for text in [format!("{secret:?}"), format!("{env:?}")] {
+            assert!(!text.contains("plaintext"), "{text}");
+            assert!(text.contains("[redacted]"), "{text}");
+        }
     }
 }

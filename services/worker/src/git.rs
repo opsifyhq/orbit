@@ -15,14 +15,31 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{WorkerClient, WorkerConnection};
 
-const ORBIT_GENERATED_PATHS: &[&str] = &[
+/// Paths ORBIT writes into a workspace, or removes from a checkout before a run
+/// (`harness_files::REMOVED_PATHS`). `repo.commit` never stages them, so neither ORBIT's
+/// files nor those removals end up in the repository.
+pub(crate) const ORBIT_GENERATED_PATHS: &[&str] = &[
     "AGENTS.md",
     "opencode.json",
+    "opencode.jsonc",
+    ".opencode/agent",
     ".opencode/agents",
-    ".opencode/plugins/orbit-policy.ts",
+    ".opencode/plugin",
+    ".opencode/plugins",
+    ".opencode/tool",
+    ".opencode/tools",
+    ".opencode/mode",
+    ".opencode/modes",
+    ".opencode/opencode.json",
+    ".opencode/opencode.jsonc",
+    ".opencode/package.json",
+    ".opencode/bun.lock",
+    ".opencode/bun.lockb",
+    ".opencode/node_modules",
     ".opencode/skills",
     ".pi/mcp.json",
-    ".pi/extensions/orbit-policy.ts",
+    ".pi/settings.json",
+    ".pi/extensions",
     ".pi/skills",
     ".pi-sessions",
 ];
@@ -1241,6 +1258,44 @@ mod tests {
         let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
         let paths = String::from_utf8(staged.stdout).unwrap();
         assert_eq!(paths.lines().collect::<Vec<_>>(), ["src/change.rs"]);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn removed_repository_harness_files_are_not_committed_as_deletions() {
+        let workspace =
+            std::env::temp_dir().join(format!("orbit-git-stage-harness-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        git(&workspace, &["init", "--quiet"]);
+        git(&workspace, &["config", "user.email", "t@example.com"]);
+        git(&workspace, &["config", "user.name", "t"]);
+        for rel in [
+            ".opencode/plugins/team.ts",
+            ".pi/extensions/team.ts",
+            "README.md",
+        ] {
+            let path = workspace.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "tracked\n").unwrap();
+        }
+        git(&workspace, &["add", "-A"]);
+        git(&workspace, &["commit", "--quiet", "-m", "init"]);
+
+        let removed = crate::harness_files::remove_repository_harness_files(
+            &workspace,
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(removed.len(), 2, "{removed:?}");
+        std::fs::write(workspace.join("README.md"), "changed\n").unwrap();
+
+        stage_workspace_changes(&workspace, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let staged = git(&workspace, &["diff", "--cached", "--name-only"]);
+        let paths = String::from_utf8(staged.stdout).unwrap();
+        assert_eq!(paths.lines().collect::<Vec<_>>(), ["README.md"]);
         let _ = std::fs::remove_dir_all(workspace);
     }
 

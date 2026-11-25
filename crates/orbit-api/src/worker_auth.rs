@@ -40,11 +40,18 @@ impl FromRequestParts<AppState> for WorkerAuth {
             .find_worker_token_by_hash(&hash_api_token(token))
             .await?
             .ok_or_else(|| ApiError::unauthorized("invalid or revoked worker token"))?;
-        let store = state.store.clone();
-        let token_id = record.id;
-        tokio::spawn(async move {
-            let _ = store.touch_worker_token(token_id).await;
-        });
+        // Only when the stored time is stale: the store throttles the write too, but this
+        // also saves spawning a task and a query on most requests (#447).
+        let stale = record
+            .last_used_at
+            .is_none_or(|used| chrono::Utc::now() - used > chrono::Duration::seconds(60));
+        if stale {
+            let store = state.store.clone();
+            let token_id = record.id;
+            tokio::spawn(async move {
+                let _ = store.touch_worker_token(token_id).await;
+            });
+        }
         Ok(Self {
             token_id: record.id,
             org_id: record.org_id,

@@ -332,25 +332,6 @@ pub struct AuditLogEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentInstance {
-    pub id: Uuid,
-    pub org_id: Uuid,
-    pub agent_id: Uuid,
-    pub agent_version_id: Uuid,
-    pub harness_id: Uuid,
-    pub name: String,
-    pub deployment_target: String,
-    pub harness_ref: Option<String>,
-    pub state: String,
-    pub health: serde_json::Value,
-    pub config: serde_json::Value,
-    pub last_heartbeat_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct Approval {
     pub id: Uuid,
     pub org_id: Uuid,

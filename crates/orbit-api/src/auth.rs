@@ -244,7 +244,48 @@ async fn resolve_oidc(state: &AppState, token: Option<&str>) -> Result<AuthConte
     })
 }
 
-/// Additive OIDC group -> access-team membership sync. Never removes manual memberships.
+fn team_role_rank(role: &str) -> u8 {
+    match role {
+        "lead" => 3,
+        "member" => 2,
+        "viewer" => 1,
+        _ => 0,
+    }
+}
+
+/// For each mapped team slug the user's groups reach: the highest role any of those
+/// groups grants and the group that grants it (the name an auto-created team gets).
+/// Independent of the order of the mapping and of the groups claim (#437).
+fn mapped_team_roles<'a>(
+    team_groups: &'a [(String, String, String)],
+    groups: &[String],
+) -> std::collections::BTreeMap<&'a str, (&'a str, &'a str)> {
+    let mut roles: std::collections::BTreeMap<&str, (&str, &str)> = Default::default();
+    for (group, slug, role) in team_groups {
+        if !groups.iter().any(|value| value == group) {
+            continue;
+        }
+        roles
+            .entry(slug.as_str())
+            .and_modify(|best| {
+                if team_role_rank(role) > team_role_rank(best.1) {
+                    *best = (group.as_str(), role.as_str());
+                }
+            })
+            .or_insert((group.as_str(), role.as_str()));
+    }
+    roles
+}
+
+/// A mapped group grants at least `target`: write only when the user has no membership or
+/// a lower role. A role raised by hand stays; one lowered below the mapping comes back.
+fn team_sync_needs_write(current: Option<&str>, target: &str) -> bool {
+    current.is_none_or(|current| team_role_rank(current) < team_role_rank(target))
+}
+
+/// Additive OIDC group -> access-team membership sync. Never removes a membership and
+/// never lowers a role; a request whose memberships already satisfy the mapping writes
+/// nothing.
 async fn sync_oidc_teams(
     state: &AppState,
     user_id: uuid::Uuid,
@@ -260,12 +301,14 @@ async fn sync_oidc_teams(
     let Some(oidc) = state.auth.oidc.as_ref() else {
         return Ok(());
     };
+    let mapped = mapped_team_roles(&oidc.team_groups, groups);
+    if mapped.is_empty() {
+        return Ok(());
+    }
     let teams = state.store.list_access_teams(org_id).await?;
-    for (group, team_slug, team_role) in &oidc.team_groups {
-        if !groups.iter().any(|value| value == group) {
-            continue;
-        }
-        let team = match teams.iter().find(|team| &team.slug == team_slug) {
+    let current = state.store.list_user_team_roles(org_id, user_id).await?;
+    for (team_slug, (group, team_role)) in mapped {
+        let team = match teams.iter().find(|team| team.slug == team_slug) {
             Some(team) => team.clone(),
             None if oidc.auto_create_teams && orbit_domain::is_valid_slug(team_slug) => match state
                 .store
@@ -286,10 +329,16 @@ async fn sync_oidc_teams(
                 continue;
             }
         };
-        state
-            .store
-            .upsert_team_member(team.id, user_id, team_role)
-            .await?;
+        let role_now = current
+            .iter()
+            .find(|(team_id, _)| *team_id == team.id)
+            .map(|(_, role)| role.as_str());
+        if team_sync_needs_write(role_now, team_role) {
+            state
+                .store
+                .upsert_team_member(team.id, user_id, team_role)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -358,6 +407,38 @@ fn synced_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn team_sync_takes_the_highest_role_in_any_order() {
+        let mapping = |pairs: &[(&str, &str, &str)]| -> Vec<(String, String, String)> {
+            pairs
+                .iter()
+                .map(|(g, t, r)| (g.to_string(), t.to_string(), r.to_string()))
+                .collect()
+        };
+        let groups = vec!["admins".to_string(), "devs".to_string()];
+        for team_groups in [
+            mapping(&[("admins", "core", "lead"), ("devs", "core", "member")]),
+            mapping(&[("devs", "core", "member"), ("admins", "core", "lead")]),
+        ] {
+            let roles = mapped_team_roles(&team_groups, &groups);
+            assert_eq!(roles.get("core"), Some(&("admins", "lead")));
+        }
+        let team_groups = mapping(&[("ops", "core", "lead"), ("devs", "web", "viewer")]);
+        let roles = mapped_team_roles(&team_groups, &groups);
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles.get("web"), Some(&("devs", "viewer")));
+    }
+
+    #[test]
+    fn team_sync_writes_only_to_add_or_raise() {
+        assert!(team_sync_needs_write(None, "member"));
+        assert!(team_sync_needs_write(Some("viewer"), "member"));
+        // Unchanged claims: no write on every request.
+        assert!(!team_sync_needs_write(Some("member"), "member"));
+        // A lead promoted by hand keeps the role.
+        assert!(!team_sync_needs_write(Some("lead"), "member"));
+    }
 
     #[test]
     fn email_linking_needs_a_non_false_verified_claim() {

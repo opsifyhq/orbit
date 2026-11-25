@@ -203,7 +203,7 @@ impl From<axum::extract::rejection::JsonRejection> for ApiError {
 /// Maximum number of bytes of a foreign plain-text error body copied into the envelope.
 const FOREIGN_BODY_LIMIT: usize = 1024;
 
-fn code_for_status(status: StatusCode) -> &'static str {
+pub(crate) fn code_for_status(status: StatusCode) -> &'static str {
     match status.as_u16() {
         400 => "bad_request",
         401 => "unauthorized",
