@@ -68,7 +68,7 @@ async fn test_app_with_license(
     allow_anonymous: bool,
     license: Option<LicenseStatus>,
 ) -> Option<TestApp> {
-    let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
+    let url = orbit_store::test_database_url()?;
     let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
     let store = Store::connect(&url, 5)
@@ -1777,7 +1777,7 @@ async fn reset_approval_policy(app: &TestApp) {
 }
 
 async fn raw_pool() -> sqlx::PgPool {
-    sqlx::PgPool::connect(&std::env::var("ORBIT_TEST_DATABASE_URL").unwrap())
+    sqlx::PgPool::connect(&orbit_store::test_database_url().unwrap())
         .await
         .unwrap()
 }
@@ -13655,7 +13655,7 @@ async fn reactivating_archived_agent_respects_agent_limit() {
 
 #[tokio::test]
 async fn concurrent_agent_creates_cannot_race_past_the_limit() {
-    let Some(url) = std::env::var("ORBIT_TEST_DATABASE_URL").ok() else {
+    let Some(url) = orbit_store::test_database_url() else {
         return;
     };
     // Derive the limit from the current installation-wide count: one slot is available.
