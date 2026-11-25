@@ -106,6 +106,12 @@ pub async fn create_trigger(
         agent.owner_team_id,
         &agent.visibility,
     )?;
+    // An archived agent cannot run, so a trigger on it could only fail (#438).
+    if agent.status == "archived" {
+        return Err(ApiError::conflict(
+            "the agent is archived; restore it before adding a trigger",
+        ));
+    }
     let version = state.store.get_current_version(auth.org_id, &agent).await?;
     let spec = crate::handlers::parse_spec(&version)?;
     crate::preflight::require_spec_references_use(&state, auth.org_id, &access, &spec).await?;

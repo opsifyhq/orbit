@@ -7,28 +7,9 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.4"
+    "version": "0.28.7"
   },
   "paths": {
-    "/api/v1/agent-instances": {
-      "get": {
-        "tags": [
-          "agents"
-        ],
-        "operationId": "list_agent_instances",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentInstancePage"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/agent-teams": {
       "get": {
         "tags": [
@@ -131,6 +112,7 @@
         "tags": [
           "agent-teams"
         ],
+        "summary": "Partial update: fields left out keep their stored value, an explicit `null` clears an\noptional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a\nwrite over someone else's change with 409.",
         "operationId": "update_team",
         "parameters": [
           {
@@ -162,6 +144,9 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "the team changed after `expectedUpdatedAt`"
           }
         }
       }
@@ -174,6 +159,32 @@
         "operationId": "list",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page, 1 to 500 (default 500).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return the items created before this item: pass the first (oldest) id of the\nprevious page to page back.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
             "name": "team_id",
             "in": "path",
             "required": true,
@@ -185,6 +196,7 @@
         ],
         "responses": {
           "200": {
+            "description": "the newest items, oldest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -225,13 +237,27 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "200": {
+            "description": "every item was already queued",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/TeamQueueItem"
+                    "$ref": "#/components/schemas/EnqueuedItem"
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "at least one item was created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnqueuedItem"
                   }
                 }
               }
@@ -4728,109 +4754,6 @@
           }
         }
       },
-      "AgentInstance": {
-        "type": "object",
-        "required": [
-          "id",
-          "orgId",
-          "agentId",
-          "agentVersionId",
-          "harnessId",
-          "name",
-          "deploymentTarget",
-          "state",
-          "health",
-          "config",
-          "createdAt",
-          "updatedAt"
-        ],
-        "properties": {
-          "agentId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "agentVersionId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "config": {},
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "deploymentTarget": {
-            "type": "string"
-          },
-          "harnessId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "harnessRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "health": {},
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "lastHeartbeatAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "name": {
-            "type": "string"
-          },
-          "orgId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "state": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "AgentInstancePage": {
-        "type": "object",
-        "required": [
-          "items",
-          "total"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AgentInstanceView"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "total": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "AgentInstanceView": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/AgentInstance"
-          }
-        ]
-      },
       "AgentMetadata": {
         "type": "object",
         "required": [
@@ -6054,7 +5977,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Lifetime in days, 1 to 3650. Leave it out for a token that does not expire."
           },
           "name": {
             "type": "string"
@@ -6244,6 +6168,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          "expectedUpdatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "PATCH only: the team's `updatedAt` as the client read it. When the team changed\nsince, the update is refused with 409 instead of overwriting the other change."
           },
           "harness": {
             "type": [
@@ -6811,9 +6743,29 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/QueueItemInput"
-            }
+            },
+            "description": "1 to 500 items. The batch is stored all or nothing."
           }
         }
+      },
+      "EnqueuedItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TeamQueueItem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "created"
+            ],
+            "properties": {
+              "created": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "description": "A queue item as enqueued: `created` is false when an item with that `externalKey`\nwas already queued, which is then returned unchanged."
       },
       "EnvMapping": {
         "type": "object",
@@ -8015,7 +7967,8 @@
             "$ref": "#/components/schemas/MetaFeatures"
           },
           "license": {
-            "$ref": "#/components/schemas/LicenseStatus"
+            "$ref": "#/components/schemas/PublicLicense",
+            "description": "What an anonymous caller may know about the licence. Customer, licence id, limits\nand dates are only in the authenticated `GET /api/v1/license` (#449)."
           },
           "version": {
             "type": "string"
@@ -8398,7 +8351,7 @@
             "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
           },
           "config": {
-            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc."
+            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On\nupdate, absent or `null` keeps the stored settings and an object replaces them."
           },
           "enabled": {
             "type": "boolean"
@@ -8805,6 +8758,32 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "PublicLicense": {
+        "type": "object",
+        "description": "The licence summary served without authentication by `GET /api/v1/meta`.",
+        "required": [
+          "tier",
+          "valid",
+          "availableFeatures"
+        ],
+        "properties": {
+          "availableFeatures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Licensed features this release ships."
+          },
+          "tier": {
+            "type": "string",
+            "description": "`community`, `enterprise`, …"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "False for community, invalid or fully expired licences."
           }
         }
       },

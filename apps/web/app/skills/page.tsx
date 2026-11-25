@@ -192,7 +192,7 @@ export default function SkillsPage() {
                       >
                         {description || "No description: agents cannot tell when to use it"}
                       </p>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <span className="font-mono">{skill.slug}</span>
                         <span>{usageSummary(users)}</span>
                         <span>{relativeTime(skill.updatedAt)}</span>

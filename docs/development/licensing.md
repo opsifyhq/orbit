@@ -124,15 +124,15 @@ The private signing key is vendor-side only (offline/HSM) and must never be comm
 
 ## What a licence enables today
 
-The signed `features` list can name six flags. Two are advertised as available today and
-gated by the API; the remaining four are accepted and verified for forward compatibility but
-are not advertised as shipped product features.
+The signed `features` list can name six flags. Three are advertised as available today and
+gated by the API; the remaining three are accepted and verified for forward compatibility
+but are not advertised as shipped product features.
 
 | Feature | Enforced for | Advertised |
 |---|---|---|
 | `custom_roles` | Creating, changing and deleting custom roles, and assigning one to a user | Yes |
 | `teams` | Access teams and their members (`/api/v1/teams`) and OIDC group-to-team sync | Yes |
-| `resource_permissions` | Existing sharing endpoints (`/api/v1/sharing/...`) still require this flag | No |
+| `resource_permissions` | Changing a resource's visibility (`/api/v1/sharing/...`) | Yes |
 | `shared_connections` | Not enforced yet | No |
 | `quotas` | Not enforced yet | No |
 | `marketplace` | Not enforced yet | No |

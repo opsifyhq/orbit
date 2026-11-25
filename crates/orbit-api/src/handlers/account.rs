@@ -159,6 +159,9 @@ pub async fn list_api_tokens(
     ))
 }
 
+/// Longest API token lifetime, in days (ten years).
+const MAX_TOKEN_DAYS: i64 = 3650;
+
 #[utoipa::path(post, path = "/api/v1/api-tokens", tag = "account", request_body = CreateApiTokenRequest, responses((status = 201, body = CreatedApiToken)))]
 pub async fn create_api_token(
     State(state): State<AppState>,
@@ -201,10 +204,24 @@ pub async fn create_api_token(
     if !denied.is_empty() {
         return Err(ApiError::validation(denied));
     }
+    // A zero, negative or oversized lifetime used to create a token that never expires
+    // (or a silently shortened one); refuse it instead (#438).
+    if body
+        .expires_in_days
+        .is_some_and(|days| !(1..=MAX_TOKEN_DAYS).contains(&days))
+    {
+        return Err(ApiError::validation(vec![
+            orbit_domain::ValidationIssue::new(
+                "expiresInDays",
+                format!(
+                    "must be 1 to {MAX_TOKEN_DAYS}; leave it out for a token that does not expire"
+                ),
+            ),
+        ]));
+    }
     let expires_at = body
         .expires_in_days
-        .filter(|days| *days > 0)
-        .map(|days| Utc::now() + Duration::days(days.min(3650)));
+        .map(|days| Utc::now() + Duration::days(days));
     let issued = issue_api_token();
     let view = state
         .store

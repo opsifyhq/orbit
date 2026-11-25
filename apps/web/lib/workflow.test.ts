@@ -5,19 +5,28 @@ import {
   WORKFLOW_EXAMPLES,
   WORKFLOW_START,
   addStep,
+  apart,
   cleanWorkflow,
+  conditionOfPort,
   connect,
+  isArranged,
+  isPlain,
   lastStep,
   layoutWorkflow,
   limitReached,
   liveEdges,
   loopSteps,
   nodeRunStates,
+  nodeHeight,
   patchStep,
+  portOf,
   removeStep,
   slugify,
+  stepPorts,
   suggestCondition,
   takenEdges,
+  tidy,
+  withPositions,
   workflowFromSteps,
   workflowIssues,
   type Workflow,
@@ -33,7 +42,8 @@ test("every example is a valid workflow once agents are chosen", () => {
     const built = example.build();
     assert.ok(workflowIssues(built).every((issue) => issue.message.includes("no agent yet")), example.id);
     assert.deepEqual(workflowIssues(withAgents(built)), [], example.id);
-    assert.ok(built.nodes.every((node) => node.position), example.id);
+    // Examples are arranged for the user, not placed by hand.
+    assert.ok(isArranged(built), example.id);
   }
 });
 
@@ -95,7 +105,8 @@ test("editing keeps the graph consistent", () => {
   assert.equal(workflow.edges.length, 2);
   assert.equal(lastStep(workflow), second.id);
   // A branch from the same step lands below its sibling, not on top of it.
-  const sibling = addStep({ ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, position: node.position ?? { x: 0, y: 0 } })) }, first.id);
+  assert.ok(isArranged(workflow), "steps added to an arranged workflow stay arranged");
+  const sibling = addStep(withPositions(workflow), first.id);
   const placed = sibling.workflow.nodes.map((node) => `${node.position?.x},${node.position?.y}`);
   assert.equal(new Set(placed).size, placed.length);
   assert.equal(lastStep(sibling.workflow), undefined);
@@ -126,6 +137,131 @@ test("editing keeps the graph consistent", () => {
     workflow.edges.map((edge) => edge.to),
     [first.id],
   );
+});
+
+test("a step lists its outputs, and a line knows which one it leaves", () => {
+  const review = WORKFLOW_EXAMPLES.find((example) => example.id === "review-loop")!.build();
+  const node = (id: string) => review.nodes.find((item) => item.id === id)!;
+  // A step without outcomes has one output and a small card.
+  assert.deepEqual(stepPorts(review, node("build")).map((port) => port.id), ["success"]);
+  assert.ok(isPlain(stepPorts(review, node("build"))));
+  // Outcomes come first, in the order they were given; unused extras are not listed.
+  assert.deepEqual(stepPorts(review, node("review")).map((port) => port.label), ["approved", "changes"]);
+  assert.deepEqual(
+    stepPorts(review, node("review"), true).map((port) => port.label),
+    ["approved", "changes", "done", "failed", "always"],
+  );
+  assert.ok(nodeHeight(review, node("review")) > nodeHeight(review, node("build")));
+  // A line that follows a failure adds that output to the card.
+  const handled = connect(review, "build", "fix", "failure").workflow;
+  assert.deepEqual(stepPorts(handled, node("build")).map((port) => port.id), ["success", "failure"]);
+  // An outcome the step no longer has still shows, so its line has somewhere to leave from.
+  const stale = patchStep(review, "review", { outcomes: ["approved"] });
+  assert.deepEqual(stepPorts(stale, stale.nodes[1]).map((port) => port.label), ["approved", "outcome?"]);
+  for (const edge of review.edges) assert.deepEqual(conditionOfPort(portOf(edge)), { when: edge.when, outcome: edge.outcome ?? null });
+});
+
+test("a workflow stays arranged until a step is placed by hand", () => {
+  const example = WORKFLOW_EXAMPLES[0].build();
+  const added = addStep(example, "ship");
+  assert.ok(isArranged(added.workflow));
+  // Dropping a step at a place fixes every step where it is shown.
+  const dropped = addStep(example, "ship", { at: { x: 900, y: 40 } });
+  assert.ok(dropped.workflow.nodes.every((node) => node.position));
+  assert.deepEqual(dropped.workflow.nodes.at(-1)?.position, { x: 900, y: 40 });
+  assert.ok(isArranged(tidy(dropped.workflow)));
+  // From an output: the new line follows it.
+  const failed = addStep(example, "build", { port: "failure" });
+  assert.equal(failed.workflow.edges.at(-1)?.when, "failure");
+  const second = addStep(example, WORKFLOW_START);
+  assert.deepEqual(second.workflow.edges.at(-1), { id: "line-6", from: WORKFLOW_START, to: second.id, when: "always" });
+});
+
+test("steps in a column never overlap, whatever their size", () => {
+  const node = (id: string, outcomes?: string[]) => ({ id, name: id, agentId: "a", outcomes });
+  const workflow: Workflow = {
+    nodes: [node("split", ["a", "b", "c"]), node("one", ["x", "y", "z", "w"]), node("two"), node("three", ["p", "q"])],
+    edges: [
+      { id: "s", from: WORKFLOW_START, to: "split", when: "always" },
+      { id: "1", from: "split", to: "one", when: "outcome", outcome: "a" },
+      { id: "2", from: "split", to: "two", when: "outcome", outcome: "b" },
+      { id: "3", from: "split", to: "three", when: "outcome", outcome: "c" },
+    ],
+  };
+  const layout = layoutWorkflow(workflow);
+  const column = ["one", "two", "three"].map((id) => ({ id, y: layout.get(id)!.y, h: nodeHeight(workflow, workflow.nodes.find((item) => item.id === id)!) }));
+  // In the order of the outputs they follow, with room between them.
+  for (let index = 1; index < column.length; index += 1) {
+    assert.ok(column[index].y >= column[index - 1].y + column[index - 1].h + 20, column[index].id);
+  }
+});
+
+test("a loop back into parallel steps keeps them side by side", () => {
+  const node = (id: string, outcomes?: string[]) => ({ id, name: id, agentId: "a", outcomes });
+  const line = (id: string, from: string, to: string, outcome?: string) => ({
+    id,
+    from,
+    to,
+    when: outcome ? ("outcome" as const) : ("success" as const),
+    outcome,
+  });
+  const layout = layoutWorkflow({
+    nodes: [node("plan"), node("frontend"), node("backend"), node("integrate", ["ok", "redo-ui", "redo-api"]), node("ship")],
+    edges: [
+      { id: "s", from: WORKFLOW_START, to: "plan", when: "always" },
+      line("1", "plan", "frontend"),
+      line("2", "plan", "backend"),
+      line("3", "frontend", "integrate"),
+      line("4", "backend", "integrate"),
+      line("5", "integrate", "ship", "ok"),
+      line("6", "integrate", "frontend", "redo-ui"),
+      line("7", "integrate", "backend", "redo-api"),
+    ],
+  });
+  assert.equal(layout.get("frontend")!.x, layout.get("backend")!.x);
+  assert.ok(layout.get("backend")!.x < layout.get("integrate")!.x);
+  assert.ok(layout.get("integrate")!.x < layout.get("ship")!.x);
+});
+
+test("steps that Start does not reach are still laid out as a chain", () => {
+  const node = (id: string) => ({ id, name: id, agentId: "a" });
+  const workflow: Workflow = {
+    nodes: ["first", "loose", "after", "ring-a", "ring-b"].map(node),
+    edges: [
+      { id: "s", from: WORKFLOW_START, to: "first", when: "always" },
+      { id: "1", from: "loose", to: "after", when: "success" },
+      { id: "2", from: "ring-a", to: "ring-b", when: "success" },
+      { id: "3", from: "ring-b", to: "ring-a", when: "success" },
+    ],
+  };
+  const layout = layoutWorkflow(workflow);
+  assert.ok(layout.get("loose")!.x < layout.get("after")!.x);
+  assert.ok(layout.get("ring-a")!.x < layout.get("ring-b")!.x);
+  // No two cards share a place.
+  const boxes = workflow.nodes.map((item) => ({ ...layout.get(item.id)!, h: nodeHeight(workflow, item) }));
+  for (const a of boxes) {
+    for (const b of boxes) {
+      if (a === b) continue;
+      assert.ok(a.x !== b.x || a.y + a.h <= b.y || b.y + b.h <= a.y, JSON.stringify([a, b]));
+    }
+  }
+});
+
+test("steps placed by hand never lie on top of each other", () => {
+  const node = (id: string, y: number, outcomes?: string[]) => ({ id, name: id, agentId: "a", outcomes, position: { x: 0, y } });
+  const workflow: Workflow = {
+    // "tall" has four outputs, so its card reaches well past where "under" was placed.
+    nodes: [node("tall", 0, ["a", "b", "c", "d"]), node("under", 100), node("far", 600), { ...node("beside", 20), position: { x: 400, y: 20 } }],
+    edges: [{ id: "s", from: WORKFLOW_START, to: "tall", when: "always" }],
+  };
+  const shown = withPositions(workflow);
+  const at = (id: string) => shown.nodes.find((item) => item.id === id)!.position!;
+  assert.ok(at("under").y >= nodeHeight(workflow, workflow.nodes[0]) + 12);
+  // What did not overlap stays where it was put.
+  assert.deepEqual(at("tall"), { x: 0, y: 0 });
+  assert.deepEqual(at("far"), { x: 0, y: 600 });
+  assert.deepEqual(at("beside"), { x: 400, y: 20 });
+  assert.equal(apart(shown), shown);
 });
 
 test("loops are found and laid out left to right", () => {

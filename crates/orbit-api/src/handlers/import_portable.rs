@@ -766,6 +766,7 @@ async fn translate(
                 autonomy,
                 steps,
                 workflow,
+                expected_updated_at: None,
             })))
         }
         PortableKind::Trigger => {
@@ -1308,7 +1309,8 @@ async fn apply_item(
             team.id
         }
         (Translated::Team(request), Some(id)) => {
-            let _ = crate::handlers::teams::update_team(s, a, Path(id), ApiJson(*request)).await?;
+            // An import replaces the whole team, unlike a PATCH, which merges.
+            let _ = crate::handlers::teams::replace_team(&s, &a, id, *request, None).await?;
             id
         }
         (Translated::Trigger(request), None) => {

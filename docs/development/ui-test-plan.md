@@ -211,7 +211,7 @@ approvals UI is still being finished.
 | Save a team | Card shows mode, agents (primary/subagent), skills, optional work source |
 | Run | Primary executes, then each subagent in order; steps visible in the run dialog |
 | Queue | Enqueue `owner/repo#123`, run pending, retry/requeue/cancel per item |
-| Team Studio → Agents → **Workflow** | The agents chosen so far become a line of steps on the canvas. **Examples** inserts a workflow; dragging from a step's right dot to another step adds a line; selecting a step or line opens its fields below the canvas (beside it on very wide screens); **List** shows the same steps as a form and is the default on a phone |
+| Team Studio → Agents → **Workflow** | The agents chosen so far become a line of steps on the canvas. **Examples** inserts a workflow; dragging from an output dot to another step adds a line in that output's colour and with its condition; letting go over empty canvas adds a connected step; the selected step offers its other outputs (done, failed, always) under its card without moving anything; selecting a step or line opens its fields below the canvas (beside it on very wide screens and in **Full screen**), with **Inputs** and **Outputs** sections; dragging a step enables **Tidy up**, which arranges the steps again; Cmd/Ctrl-click selects several steps and dragging one moves and saves them all; on a touch screen, dragging from an output to empty canvas adds a step too; **Undo** and **Redo** step through changes; **List** shows the same steps as a form and is the default on a phone |
 | Workflow problems | Saving with a step that no line leads to, a step without an agent, or an outcome line without that outcome names the problem in the Agents section |
 | Run a workflow team | The run page draws the graph: finished steps are coloured, the working step spins, steps and lines not reached are dashed; a step that ran twice shows `2×`; the step list shows **Run 2** and the reported outcome. A run that fails on a loop limit marks the step as **limit reached**. The Run dialog starts with a blank task; blank runs the team's goal. A workflow too large for the card pans, shows a small map and opens whole with the **Open larger** button; at 360px the picture is an overview and **Steps as text** is open |
 | `/agent-teams` list | Same layout as Agents: search, **All / Picks up issues / On demand** filter, status column, row checkboxes with **Change access**, count under the list |
@@ -340,3 +340,13 @@ licence messages instead.
 
 For each failure: page, action, expected vs actual, request id (response header
 `x-request-id`), screenshot, and whether it reproduces after `down -v`.
+
+### Workflow canvas keyboard and touch (#448)
+
+- Tab to a step on the canvas, press Enter: the editor panel shows that step and a screen
+  reader announces "Step … selected". Escape clears it.
+- With a step selected, arrow keys move it 5px (Shift: 20px); after the key is released the
+  new position stays when you select another step, and Tidy up is enabled.
+- Connection dots react within 10px of the dot (touch or mouse), except where a line starts.
+- Examples over an existing workflow open the in-app "Replace the current workflow?" dialog.
+- With the OS "reduce motion" setting on, selecting a step and "show everything" do not animate.

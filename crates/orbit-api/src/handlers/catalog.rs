@@ -6,7 +6,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use orbit_contracts::{validate_provider_config, HarnessDescriptor, ProviderKind};
-use orbit_domain::HarnessKind;
+use orbit_domain::{HarnessKind, ImplementationStatus};
 use orbit_security::{new_secret_ref, AuthContext, Permission, SecretValue};
 
 use crate::audit;
@@ -65,13 +65,16 @@ pub async fn list_harnesses(
     Ok(Json(items))
 }
 
+/// A stored harness row with no adapter in this build's registry. Without an adapter it
+/// cannot run, so it is reported as planned; the registry descriptors are the only source
+/// of an adapter's real status (AGENTS.md rule 6).
 fn fallback_descriptor(kind: HarnessKind, name: &str, description: &str) -> HarnessDescriptor {
     HarnessDescriptor {
         kind,
         name: name.to_string(),
         description: description.to_string(),
         capabilities: Default::default(),
-        implementation_status: kind.implementation_status(),
+        implementation_status: ImplementationStatus::Planned,
         config_schema: serde_json::json!({ "type": "object" }),
         docs_url: None,
     }
@@ -930,7 +933,10 @@ async fn probe_connection(
                     orbit_s3::S3Config::from_connection(config, credential)?;
                 let client = orbit_s3::S3Client::new(config, credentials)?;
                 match client.list_buckets().await {
-                    Ok(buckets) => Ok(format!("S3 reachable; {} bucket(s) visible", buckets.len())),
+                    Ok(buckets) => Ok(format!(
+                        "S3 reachable; {} allowed bucket(s) visible",
+                        buckets.len()
+                    )),
                     Err(list_error) => {
                         // Many least-privilege credentials can list objects in one bucket
                         // but not enumerate every bucket.
@@ -941,12 +947,12 @@ async fn probe_connection(
                             .or_else(|| client.config().allowed_buckets.first().cloned());
                         if let Some(bucket) = bucket {
                             client
-                                .list_objects(Some(&bucket), None)
+                                .list_objects(Some(&bucket), None, None)
                                 .await
-                                .map(|objects| {
+                                .map(|page| {
                                     format!(
                                         "S3 reachable; {} object(s) visible in {bucket}",
-                                        objects.len()
+                                        page.objects.len()
                                     )
                                 })
                                 .map_err(|probe| {

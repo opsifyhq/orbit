@@ -5,6 +5,7 @@ mod dispatch;
 mod git;
 mod github;
 mod gitlab;
+mod harness_files;
 mod liveness;
 mod mcp_broker;
 mod prompt;
@@ -68,7 +69,9 @@ impl WorkerConfig {
             workspace_root: std::env::var("ORBIT_WORKSPACE_ROOT")
                 .unwrap_or_else(|_| "/tmp/orbit-workspaces".into()),
             harnesses: std::env::var("ORBIT_WORKER_HARNESSES")
-                .unwrap_or_else(|_| "mock,opencode,claude_code,pi,generic".into())
+                // Only harnesses with an available adapter: a worker that claimed planned
+                // ones (claude_code, generic) could only fail those runs (#452).
+                .unwrap_or_else(|_| "mock,opencode,pi".into())
                 .split(',')
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())

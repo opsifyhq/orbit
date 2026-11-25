@@ -1,5 +1,6 @@
 "use client";
 
+import { scrollBehavior } from "@/lib/motion";
 import { LoadFailure } from "@/components/load-failure";
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
@@ -45,7 +46,7 @@ export default function TeamRunPage() {
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const showStep = useCallback((stepIndex: number) => {
     setHighlighted(stepIndex);
-    document.getElementById(`team-step-${stepIndex}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    document.getElementById(`team-step-${stepIndex}`)?.scrollIntoView({ block: "center", behavior: scrollBehavior() });
   }, []);
 
   if (run.isLoading) {

@@ -17,7 +17,7 @@ import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionListHeader, ExecutionRow } from "@/components/executions/execution-row";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
-import { usePagedExecutions } from "@/lib/queries";
+import { useAgentTeams, usePagedExecutions, useTeamRuns } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 
 /**
@@ -145,6 +145,24 @@ function Executions() {
     });
   }
 
+  // Team-run groups are named after their team and task, not a run id (#456). The runs
+  // list covers the recent runs; an older group falls back to the id.
+  const teamRuns = useTeamRuns({ limit: 100 });
+  const teams = useAgentTeams();
+  const teamRunInfo = useMemo(() => {
+    const teamNames = new Map((teams.data ?? []).map((team) => [team.id, team.name]));
+    return new Map(
+      (teamRuns.data ?? []).map((run) => [
+        run.id,
+        {
+          team: teamNames.get(run.teamId) ?? null,
+          task: String((run.input as { task?: unknown } | null)?.task ?? ""),
+          status: run.status,
+        },
+      ]),
+    );
+  }, [teamRuns.data, teams.data]);
+
   const filtered = status !== "all" || archived !== "active";
   const shown = paged.items.length;
   const total = paged.total;
@@ -216,19 +234,30 @@ function Executions() {
                       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                     )}
                     {group.kind === "team" ? (
-                      <>
-                        <Workflow className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <Link
-                          href={`/agent-teams/runs/${key.slice("team:".length)}`}
-                          className="font-medium text-primary underline-offset-4 hover:underline"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          Agent team run
-                        </Link>
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {key.slice("team:".length, "team:".length + 8)}
-                        </span>
-                      </>
+                      (() => {
+                        const runId = key.slice("team:".length);
+                        const info = teamRunInfo.get(runId);
+                        return (
+                          <>
+                            <Workflow className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            <Link
+                              href={`/agent-teams/runs/${runId}`}
+                              className="shrink-0 font-medium text-primary underline-offset-4 hover:underline"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              {info?.team ?? "Agent team run"}
+                            </Link>
+                            {info?.task ? (
+                              <span className="min-w-0 truncate text-muted-foreground">{info.task}</span>
+                            ) : (
+                              <span className="font-mono text-xs text-muted-foreground">{runId.slice(0, 8)}</span>
+                            )}
+                            {info ? (
+                              <ExecutionStatusBadge status={info.status} hideLabel className="h-4 w-4 shrink-0" />
+                            ) : null}
+                          </>
+                        );
+                      })()
                     ) : (
                       <>
                         <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" />

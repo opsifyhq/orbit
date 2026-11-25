@@ -97,7 +97,7 @@ export default function TeamRunsPage() {
                           {run.finishedAt ? `Took ${formatDuration(run.createdAt, run.finishedAt)}` : "Not finished"}
                         </p>
                       )}
-                      <p className="mt-1.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground md:hidden">
+                      <p className="mt-1.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <span>{team}</span>
                         <span>{relativeTime(run.createdAt)}</span>
                       </p>
