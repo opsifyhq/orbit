@@ -3712,6 +3712,78 @@ async fn worker_context_withholds_credential_from_unauthorized_principal() {
         body["subagentModels"][0]["model"]["credential"]["value"],
         "sk-victim-secret"
     );
+    // The stored input carries no prompt (#429); the worker context adds the current one.
+    assert_eq!(
+        body["execution"]["input"]["team"]["subagents"][0]["instructions"],
+        sub_definition.spec.instructions.system.as_str()
+    );
+}
+
+/// #429: a native team stores its subagents as references; their system prompts never
+/// appear in the run, step or execution read by team viewers.
+#[tokio::test]
+async fn native_team_runs_do_not_store_subagent_prompts() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut primary = definition();
+    primary["metadata"]["name"] = json!("Native primary");
+    primary["spec"]["harness"]["type"] = json!("opencode");
+    let mut secret = definition();
+    secret["metadata"]["name"] = json!("Private specialist");
+    secret["spec"]["instructions"] =
+        json!({ "system": "SECRET-SUBAGENT-PROMPT", "constraints": ["SECRET-CONSTRAINT"] });
+    let mut ids = Vec::new();
+    for body in [primary, secret] {
+        let definition: orbit_domain::AgentDefinition = serde_json::from_value(body).unwrap();
+        let (agent, _) = app
+            .store
+            .create_agent(app.org_id, None, &definition)
+            .await
+            .unwrap();
+        app.store
+            .set_agent_status(app.org_id, agent.id, orbit_domain::AgentStatus::Active)
+            .await
+            .unwrap();
+        ids.push(agent.id);
+    }
+    let (status, team) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "Native", "mode": "native",
+                    "steps": [{ "agentId": ids[0] }, { "agentId": ids[1] }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let team_id = team["id"].as_str().unwrap();
+    let (status, detail) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "native run" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{detail}");
+    let run_id = detail["run"]["id"].as_str().unwrap();
+    let execution_id = detail["steps"][0]["executionId"].as_str().unwrap();
+    let (_, run) = send(&app.router, get(&format!("/api/v1/team-runs/{run_id}"))).await;
+    let (_, execution) = send(
+        &app.router,
+        get(&format!("/api/v1/executions/{execution_id}")),
+    )
+    .await;
+    assert_eq!(
+        execution["input"]["team"]["subagents"][0]["agentId"],
+        ids[1].to_string()
+    );
+    for body in [&detail, &run, &execution] {
+        let text = body.to_string();
+        assert!(!text.contains("SECRET-SUBAGENT-PROMPT"), "{text}");
+        assert!(!text.contains("SECRET-CONSTRAINT"), "{text}");
+    }
 }
 
 /// #305: a step's model override reaches the worker context, so the step runs the model

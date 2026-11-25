@@ -535,6 +535,7 @@ async fn build_context(
     }
     let model = resolve_model(&state.store, org_id, &spec, access.as_ref()).await?;
     let mut subagent_models = Vec::new();
+    let mut subagent_instructions = std::collections::HashMap::new();
     for (agent_id, name, subagent_override) in team_subagents(execution) {
         let agent = state
             .store
@@ -549,6 +550,10 @@ async fn build_context(
         let mut sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
             ApiError::internal(format!("subagent '{name}' spec is invalid: {error}"))
         })?;
+        subagent_instructions.insert(
+            agent_id,
+            crate::handlers::teams::subagent_instructions(&sub_spec),
+        );
         if let Some(override_model) = &subagent_override {
             override_model.apply(&mut sub_spec.model);
         }
@@ -600,7 +605,7 @@ async fn build_context(
             .await,
     )?;
     Ok(WorkerExecutionContext {
-        execution: execution.clone(),
+        execution: with_subagent_instructions(execution, &subagent_instructions),
         spec,
         model,
         subagent_models,
@@ -624,6 +629,35 @@ fn team_ids(execution: &ExecutionRecord, key: &str) -> Vec<Uuid> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The execution as the worker sees it: each native subagent gets its current system
+/// prompt, which the stored input deliberately leaves out (#429).
+fn with_subagent_instructions(
+    execution: &ExecutionRecord,
+    instructions: &std::collections::HashMap<Uuid, String>,
+) -> ExecutionRecord {
+    let mut execution = execution.clone();
+    if let Some(subagents) = execution
+        .input
+        .get_mut("team")
+        .and_then(|team| team.get_mut("subagents"))
+        .and_then(|value| value.as_array_mut())
+    {
+        for subagent in subagents {
+            let id = subagent
+                .get("agentId")
+                .and_then(|value| value.as_str())
+                .and_then(|value| value.parse::<Uuid>().ok());
+            if let (Some(text), Some(object)) = (
+                id.and_then(|id| instructions.get(&id)),
+                subagent.as_object_mut(),
+            ) {
+                object.insert("instructions".into(), serde_json::json!(text));
+            }
+        }
+    }
+    execution
 }
 
 type SubagentRef = (
