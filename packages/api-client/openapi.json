@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.4"
+    "version": "0.28.7"
   },
   "paths": {
     "/api/v1/agent-instances": {
@@ -8398,7 +8398,7 @@
             "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
           },
           "config": {
-            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc."
+            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On\nupdate, absent or `null` keeps the stored settings and an object replaces them."
           },
           "enabled": {
             "type": "boolean"

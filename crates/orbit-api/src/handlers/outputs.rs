@@ -49,9 +49,10 @@ pub struct OutputRequest {
     /// S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`.
     #[serde(default)]
     pub s3_credential: Option<String>,
-    /// Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc.
+    /// Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On
+    /// update, absent or `null` keeps the stored settings and an object replaces them.
     #[serde(default)]
-    pub config: serde_json::Value,
+    pub config: Option<serde_json::Value>,
     /// Numeric Telegram user/group/channel id (for example `-100…`).
     #[serde(default)]
     pub chat_id: Option<String>,
@@ -479,6 +480,19 @@ pub async fn deliveries(
     ))
 }
 
+/// The request's `config`: `None` when absent or `null`, an object as given, anything
+/// else a validation error.
+fn request_config(body: &OutputRequest) -> Result<Option<serde_json::Value>, ApiError> {
+    match &body.config {
+        None => Ok(None),
+        Some(config) if config.is_object() => Ok(Some(config.clone())),
+        Some(_) => Err(ApiError::validation(vec![ValidationIssue::new(
+            "config",
+            "config must be an object",
+        )])),
+    }
+}
+
 #[utoipa::path(post, path = "/api/v1/outputs", tag = "outputs", request_body = OutputRequest, responses((status = 201, body = OutputView)))]
 pub async fn create(
     State(state): State<AppState>,
@@ -501,8 +515,9 @@ pub async fn create(
         )])
     })?;
     guard_credential(kind, value).await?;
+    let config = request_config(&body)?.unwrap_or_else(|| serde_json::json!({}));
     if kind == OutputKind::S3 {
-        orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
+        orbit_s3::S3Config::for_output(&config, Some(value)).map_err(|message| {
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
@@ -523,6 +538,7 @@ pub async fn create(
                 .as_ref()
                 .and_then(|target| target.message_thread_id.as_deref()),
             body.enabled,
+            &config,
         )
         .await
     {
@@ -536,15 +552,6 @@ pub async fn create(
     let output = state
         .store
         .set_output_agent_ids(auth.org_id, output.id, &target_agents)
-        .await?;
-    let config = if body.config.is_object() {
-        body.config.clone()
-    } else {
-        serde_json::json!({})
-    };
-    let output = state
-        .store
-        .set_output_config(auth.org_id, output.id, &config)
         .await?;
     audit::record(
         &state,
@@ -575,17 +582,24 @@ pub async fn update(
         body.agent_ids.clone()
     };
     require_target_manage(&state, &auth, &access, &target_agents, body.team_id).await?;
+    // An update without `config` (the on/off toggle, a rename) keeps the stored settings;
+    // only an object replaces them. Changing kind starts from `{}` (#390).
+    let config = match request_config(&body)? {
+        Some(config) => config,
+        None if existing.kind == kind.as_str() => existing.config.clone(),
+        None => serde_json::json!({}),
+    };
     if kind == OutputKind::S3 {
         // Checked with or without a new credential: an S3 output that cannot write to its
         // own bucket is refused instead of failing every delivery (#386).
-        orbit_s3::S3Config::parse_output(&body.config).map_err(|message| {
+        orbit_s3::S3Config::parse_output(&config).map_err(|message| {
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
     let secret_ref = if let Some(value) = credential(&body, kind) {
         guard_credential(kind, value).await?;
         if kind == OutputKind::S3 {
-            orbit_s3::S3Config::for_output(&body.config, Some(value)).map_err(|message| {
+            orbit_s3::S3Config::for_output(&config, Some(value)).map_err(|message| {
                 ApiError::validation(vec![ValidationIssue::new("config", message)])
             })?;
         }
@@ -619,6 +633,7 @@ pub async fn update(
                 .as_ref()
                 .and_then(|target| target.message_thread_id.as_deref()),
             body.enabled,
+            &config,
         )
         .await
     {
@@ -633,15 +648,6 @@ pub async fn update(
     let output = state
         .store
         .set_output_agent_ids(auth.org_id, output.id, &target_agents)
-        .await?;
-    let config = if body.config.is_object() {
-        body.config.clone()
-    } else {
-        serde_json::json!({})
-    };
-    let output = state
-        .store
-        .set_output_config(auth.org_id, output.id, &config)
         .await?;
     audit::record(
         &state,
