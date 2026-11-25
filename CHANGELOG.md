@@ -8,12 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
 ### Fixed
 
-- API log lines carry the right request id: the request span was entered across an
-  `await`, so on a busy server a line could show another request's id. Refused (4xx) and
-  failed (5xx) requests now leave one `request finished` line with status, route and
-  latency at the default level (#444).
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
