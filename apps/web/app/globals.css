@@ -48,6 +48,14 @@
     --ink-accent: 247 76% 58%;
     --overlay: 240 26% 8%;
 
+    /* Workflow lines that follow an outcome: one colour per outcome of a step. */
+    --flow-1: 247 76% 58%;
+    --flow-2: 205 86% 40%;
+    --flow-3: 32 92% 40%;
+    --flow-4: 178 76% 28%;
+    --flow-5: 322 68% 46%;
+    --flow-6: 84 60% 30%;
+
     --radius: 0.625rem;
     --shadow-overlay: 0 1px 2px hsl(240 30% 10% / 0.06), 0 12px 32px -8px hsl(240 30% 10% / 0.18);
   }
@@ -85,6 +93,13 @@
     --ink-muted: 240 9% 66%;
     --ink-accent: 247 100% 78%;
     --overlay: 240 30% 3%;
+
+    --flow-1: 247 100% 76%;
+    --flow-2: 205 88% 64%;
+    --flow-3: 38 90% 58%;
+    --flow-4: 174 60% 52%;
+    --flow-5: 322 84% 72%;
+    --flow-6: 84 54% 56%;
 
     --shadow-overlay: 0 1px 2px hsl(0 0% 0% / 0.4), 0 16px 40px -8px hsl(0 0% 0% / 0.6);
   }
@@ -305,6 +320,13 @@
   outline: 2px solid hsl(var(--ring));
   outline-offset: 3px;
   border-radius: calc(var(--radius) + 2px);
+}
+.orbit-workflow .react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 2.5;
+}
+.orbit-workflow .react-flow__handle.connectingto,
+.orbit-workflow .react-flow__handle.valid {
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.3);
 }
 @keyframes orbit-line-flow {
   to {

@@ -10,16 +10,15 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ### Changed
 
-- An unknown path shows an ORBIT "This page does not exist" page: it names the path,
-  opens search, and links to Overview, Executions, Agents and Agent teams. A detail page
-  whose link has a malformed id says "not found" instead of a parser error and a Retry
-  that cannot help (#456).
-- Lists (agents, teams, skills, connectors, model providers, outputs, environments, team
-  runs) and execution rows lay out by their own width, not the window's, so names stay
-  readable with the sidebar open at tablet widths (#456).
-- Team-run groups in Executions show the team name, the task and the run status instead
-  of "Agent team run" and an id (#456).
-- Create and edit pages have their own browser title ("New agent", "Edit skill") (#456).
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
+### Fixed
+
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
