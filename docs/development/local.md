@@ -66,8 +66,8 @@ After `down -v` the issued worker token is gone. Repeat steps 1 and 2 of the fas
 replace the `ORBIT_WORKER_TOKEN` line in `.env`.
 
 The Makefile targets `make compose-up`, `compose-down`, `compose-logs` and
-`compose-reset` do not pass `--env-file`, so they fail to load the Compose file; use the
-commands above instead.
+`compose-reset` run the same commands with `--env-file .env`, and stop with a hint when
+`.env` is missing.
 
 ## Fast iteration without rebuilding Rust images
 
@@ -177,10 +177,10 @@ your machine (`~/.pi/agent`) and claims only `pi` executions:
 
 ## The MCP broker binary
 
-Images and the Kubernetes launcher run the tool broker as a subcommand of the worker
-(`orbit-worker mcp-broker`). The host scripts `dev-worker-opencode.sh` and
-`dev-worker-docker.sh` still build the separate `orbit-mcp-broker` binary
-(`services/mcp-broker`) and point `ORBIT_MCP_BROKER_BIN` at it. If `ORBIT_MCP_BROKER_BIN`
+Images, the Kubernetes launcher and the host scripts (`dev-worker-opencode.sh`,
+`dev-worker-docker.sh`, `dev-worker-pi.sh`) run the tool broker as a subcommand of the
+worker (`orbit-worker mcp-broker`); the scripts point `ORBIT_MCP_BROKER_BIN` at
+`target/debug/orbit-worker`. There is no separate broker binary. If `ORBIT_MCP_BROKER_BIN`
 ends in `orbit-worker` the worker appends `mcp-broker`; otherwise it runs the binary as
 given. The default is `/usr/local/bin/orbit-worker`.
 

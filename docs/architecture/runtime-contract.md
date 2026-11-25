@@ -104,8 +104,9 @@ and must not start the harness.
 A worker process has a per-process `bootId` (UUID v7) and `startedAt` timestamp in addition
 to its routing `workerId`. Every worker heartbeat includes both and the ids of all active
 executions. For each listed execution the API refreshes `last_execution_heartbeat_at` and
-extends `execution_lease_until` by `ORBIT_EXECUTION_LEASE_SECONDS` (90 by default), which is
-several heartbeat intervals. A missing field is treated as an older worker: its runs stay
+extends `execution_lease_until` by 90 seconds (`EXECUTION_LEASE_SECONDS` in
+`crates/orbit-api/src/background.rs`; not configurable), which is several heartbeat
+intervals. A missing field is treated as an older worker: its runs stay
 on worker-level heartbeat liveness only, so mixed-version rolling upgrades are safe.
 
 When a heartbeat arrives with a new `bootId`, executions still active under the previous
