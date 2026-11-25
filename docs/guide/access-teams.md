@@ -65,6 +65,13 @@ remain visible while non-default teams stay isolated.
 Organization owner/admin bypass these checks. Use/run is enforced when starting an
 execution with a team-owned agent or connection.
 
+**Members added from OIDC groups.** With [group to team sync](../development/oidc-team-sync.md)
+a mapped group grants *at least* its role. A user in several groups mapped to one team
+gets the highest of their roles. A lead can raise a synced member's role by hand and it
+stays; a role lowered below the group's mapping is raised again on that user's next
+request. Removing a synced member lasts only until their next request; remove them from
+the IdP group instead.
+
 ## Team access overview
 
 Open a team from **Teams** (or visit `/teams/{id}`) to see its access overview. The page uses
