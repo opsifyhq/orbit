@@ -1,6 +1,8 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { Callout } from "@/components/ui/callout";
+import { approvalArguments, rowValue, truncationNotice } from "@/lib/approval-arguments";
 import { brandName, effectLabel, effectTone } from "@/lib/presentation";
 import { titleCase } from "@/lib/utils";
 import type { ApprovalWithExecution } from "@/lib/types";
@@ -11,9 +13,13 @@ export function ApprovalDetails({ approval }: { approval: ApprovalWithExecution 
     connector?: string;
     connectionName?: string;
     effect?: string;
-    arguments?: Record<string, unknown>;
+    arguments?: unknown;
+    argumentsBytes?: unknown;
+    argumentsTruncated?: unknown;
   };
-  const args = action.arguments ?? {};
+  const shown = approvalArguments(action);
+  const args = shown.args;
+  const notice = truncationNotice(shown);
   const rows = actionRows(action.capability, args);
   const tone = effectTone(action.effect);
   return (
@@ -46,13 +52,18 @@ export function ApprovalDetails({ approval }: { approval: ApprovalWithExecution 
           ))}
         </dl>
       ) : null}
-      {Object.keys(args).length ? (
-        <details>
+      {notice ? (
+        <Callout tone="warning" title="Arguments truncated">
+          {notice}
+        </Callout>
+      ) : null}
+      {shown.text ? (
+        <details open={shown.truncated}>
           <summary className="w-fit cursor-pointer select-none text-muted-foreground hover:text-foreground">
             Full arguments
           </summary>
           <pre className="code-block mt-1.5 max-h-48 whitespace-pre-wrap break-words bg-card">
-            {JSON.stringify(args, null, 2)}
+            {shown.text}
           </pre>
         </details>
       ) : null}
@@ -67,7 +78,7 @@ function actionRows(
   const rows: Array<[string, string]> = [];
   const push = (label: string, value: unknown) => {
     if (value !== undefined && value !== null && String(value).trim() !== "") {
-      rows.push([label, String(value).slice(0, 1000)]);
+      rows.push([label, rowValue(value)]);
     }
   };
   // Where it happens comes first: the same action on another repository is another decision.

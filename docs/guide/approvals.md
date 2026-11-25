@@ -40,7 +40,9 @@ decided (409).
 
 To decide, open **Approvals** in the sidebar. **Waiting for a decision** lists each request
 with the agent, the call (for example "Comment on issue #12"), its arguments and when it
-expires. Choose **Approve** or **Reject**. If a request has expired, the card says "Expired
+expires. The arguments are shown in full up to 64 KiB. A longer call shows only its
+start and its end, with an "Arguments truncated" warning that gives the full size; approving
+it allows the whole call, so reject it if you need to see the rest. Choose **Approve** or **Reject**. If a request has expired, the card says "Expired
 ...; the action was refused" and both buttons are disabled. **Recent decisions** shows the
 status (Approved, Rejected or Expired), the agent, the time, the comment if there is one,
 and a link to the execution.

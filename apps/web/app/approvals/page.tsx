@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Section } from "@/components/ui/section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { approvalArguments } from "@/lib/approval-arguments";
 import { queryKeys, unwrap, useApprovals } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
 import { formatDateTime, relativeTime, titleCase } from "@/lib/utils";
@@ -244,9 +245,9 @@ function ApprovalCard({
 function approvalTitle(approval: ApprovalWithExecution): string {
   const action = (approval.requestedAction ?? {}) as {
     capability?: string;
-    arguments?: Record<string, unknown>;
+    arguments?: unknown;
   };
-  const args = action.arguments ?? {};
+  const args = approvalArguments(action).args;
   switch (action.capability) {
     case "repo.commit":
       return `Commit changes${args.message ? `: ${String(args.message).slice(0, 80)}` : ""}`;
