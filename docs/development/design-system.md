@@ -197,19 +197,37 @@ that uses React Flow. Rules for it, and for any later canvas:
 - The canvas is never the only way to do something. Every edit it offers is also a form
   field (the step and line panel, and the List view, which is the default on phones),
   and a read-only canvas comes with the same content as text ("Steps as text").
-- Colours come from the tokens: `success`, `destructive` and `primary` for a line's
-  condition, `muted-foreground` for neutral lines. A condition is always also written on
-  the line; colour is never the only signal.
+- A step card has its input on the left and one output per result on the right. A line
+  takes the colour of the output it leaves: `success` for done, `destructive` for failed,
+  `muted-foreground` for always, and `--flow-1` to `--flow-6` for a step's outcomes in
+  the order they are listed. Every output is named on the card (a card with a single
+  unnamed output hands on when the step is done), the legend under the canvas says what
+  the colours mean, and the text list repeats each condition in words: colour is never
+  the only signal. Lines carry no labels of their own, except how often a run followed
+  them.
+- An output with a line is a filled dot, one without is hollow. Lines that arrive at the
+  same step are spread out, and a line whose straight curve would cross a step runs
+  along a free lane instead.
 - The mouse wheel scrolls the page, not the canvas. Zoom with the controls or a pinch.
 - State that is not reached yet is dashed and dimmed; the working step spins.
-- Layout: the way forward is one level line from Start, left to right. A step that only
-  leads back (a fix that returns to its review) hangs below that line, and its line
-  returns the short way, up into the step it goes back to. Lines never arc around the
-  whole picture.
+- Layout: the way forward is one level line from Start, left to right. Steps in a
+  column are ordered by the outputs they follow, to keep lines from crossing. A step
+  that only leads back (a fix that returns to its review) hangs below that line, and
+  its line leaves its output, runs underneath and goes up into the step it returns to
+  (or round to its input, when another step sits under that one). Which line of a loop
+  "goes back" is the one that leads nearer to Start. Lines never arc around the whole
+  picture.
+- Selecting a step never moves anything: the outputs no line uses yet ("failed",
+  "always") float under the selected card of an editor.
+- A workflow is arranged automatically until the user drags a step; positions are only
+  stored then. "Tidy up" removes them again. Cards never overlap: placed steps whose
+  cards would meet (a card grows with its outputs) are moved apart, the lower one down.
 - A view is never smaller than readable. It takes the full width of the page, is as tall
-  as the workflow needs, and is not drawn below 70%: a larger workflow pans, with a small
-  map, and opens whole in a dialog (the button next to the zoom buttons). On a phone the
-  picture is an overview and the text list is open.
+  as the workflow needs, and is not drawn below 70% (an editor inside a page: 60%): a
+  larger workflow pans, with a small map in a strip of its own, and opens whole in a
+  dialog (the button next to the zoom buttons). On a phone the picture is an overview
+  and the text list is open. The editor has a full-screen mode that shows everything
+  and zooms with the wheel.
 - A view's buttons sit in a strip of their own along the top, so they never cover a step.
 
 ## Navigation
