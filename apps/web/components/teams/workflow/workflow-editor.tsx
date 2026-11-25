@@ -106,6 +106,50 @@ function ConditionSelect({
   );
 }
 
+/**
+ * "Run at most": the box can be emptied and retyped (#442). While it has focus it shows what
+ * was typed and saves each value in range; on blur an empty box means the default and
+ * anything else is clamped to 1-MAX_RUNS_LIMIT.
+ */
+function RunLimitInput({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: number | null | undefined;
+  onChange: (next: number | null) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const inRange = (n: number) => Number.isInteger(n) && n >= 1 && n <= MAX_RUNS_LIMIT;
+  return (
+    <Input
+      id={id}
+      type="number"
+      inputMode="numeric"
+      className="w-24"
+      min={1}
+      max={MAX_RUNS_LIMIT}
+      step={1}
+      placeholder={String(DEFAULT_MAX_RUNS)}
+      value={draft ?? String(value ?? DEFAULT_MAX_RUNS)}
+      onChange={(event) => {
+        const text = event.target.value;
+        setDraft(text);
+        const n = Number(text);
+        if (text.trim() && inRange(n) && n !== value) onChange(n);
+      }}
+      onBlur={() => {
+        if (draft === null) return;
+        const n = Math.round(Number(draft));
+        const next = !draft.trim() || Number.isNaN(n) ? null : Math.min(MAX_RUNS_LIMIT, Math.max(1, n));
+        if (next !== (value ?? null)) onChange(next);
+        setDraft(null);
+      }}
+    />
+  );
+}
+
 /** Outcome labels as removable chips with an input that adds on Enter or comma. */
 function OutcomeInput({ value, onChange, id }: { value: string[]; onChange: (next: string[]) => void; id: string }) {
   const [draft, setDraft] = useState("");
@@ -408,15 +452,7 @@ function StepFields({
           hint="This step is on a loop. When it would run more often than this, the run fails instead of going round again."
         >
           <div className="flex items-center gap-2">
-            <Input
-              id={`${key}-max`}
-              type="number"
-              className="w-24"
-              min={1}
-              max={MAX_RUNS_LIMIT}
-              value={node.maxRuns ?? DEFAULT_MAX_RUNS}
-              onChange={(event) => patch({ maxRuns: event.target.value ? Number(event.target.value) : null })}
-            />
+            <RunLimitInput id={`${key}-max`} value={node.maxRuns} onChange={(maxRuns) => patch({ maxRuns })} />
             <span className="text-[13px] text-muted-foreground">times in one run</span>
           </div>
         </Field>
