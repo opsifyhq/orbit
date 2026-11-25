@@ -44,7 +44,14 @@ import { autonomyDraft, teamAutonomyInput, type TeamApprovalChoice } from "@/lib
 import type { AgentTeam, TeamRepository, WorkSource } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { cleanWorkflow, workflowFromSteps, workflowIssues, type Workflow } from "@/lib/workflow";
+import {
+  agentLabel,
+  cleanWorkflow,
+  workflowFromSteps,
+  workflowIssues,
+  type AgentListState,
+  type Workflow,
+} from "@/lib/workflow";
 
 import { MODE_HINT, MODE_LABEL, StepNumber, modelLabel, type TeamMode } from "./team-parts";
 import { WorkflowEditor } from "./workflow/workflow-editor";
@@ -270,6 +277,9 @@ export function TeamForm({
     });
 
   const agentOptions = (agents.data?.items ?? []).filter((agent) => agent.status !== "archived");
+  // The editor gets archived agents too, so a step that still names one says "Archived agent".
+  const workflowAgents = (agents.data?.items ?? []).map((agent) => ({ ...agent, archived: agent.status === "archived" }));
+  const agentsState: AgentListState = agents.isError ? "error" : agents.isPending ? "loading" : "ready";
   const agentById = new Map((agents.data?.items ?? []).map((agent) => [agent.id, agent]));
   const primary = agentById.get(draft.steps[0]?.agentId ?? "");
   const isWorkflow = draft.mode === "workflow";
@@ -511,7 +521,8 @@ export function TeamForm({
               <WorkflowEditor
                 value={workflow}
                 onChange={(next) => set("workflow", next)}
-                agents={agentOptions}
+                agents={workflowAgents}
+                agentsState={agentsState}
                 issues={workflowProblems}
                 revealProblem={revealProblem}
               />
@@ -549,7 +560,11 @@ export function TeamForm({
                               {agent.harness ? ` (${brandName(agent.harness)})` : ""}
                             </option>
                           ))}
-                          {step.agentId && !chosenAgent ? <option value={step.agentId}>Unavailable agent</option> : null}
+                          {step.agentId && (!chosenAgent || chosenAgent.status === "archived") ? (
+                            <option value={step.agentId}>
+                              {agentLabel(step.agentId, workflowAgents, agentsState)}
+                            </option>
+                          ) : null}
                         </Select>
                         <p className="text-xs text-muted-foreground">
                           {index === 0

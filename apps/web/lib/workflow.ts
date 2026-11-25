@@ -9,6 +9,8 @@ export const WORKFLOW_START = "start";
 export const DEFAULT_MAX_RUNS = 3;
 export const MAX_RUNS_LIMIT = 10;
 export const MAX_STEPS = 30;
+export const MAX_LINES = 120;
+export const MAX_INSTRUCTIONS = 4000;
 
 export type WorkflowWhen = "always" | "success" | "failure" | "outcome";
 
@@ -172,6 +174,19 @@ export function workflowIssues(workflow: Workflow): WorkflowIssue[] {
   const issues: WorkflowIssue[] = [];
   if (!workflow.nodes.length) return [{ message: "Add at least one step." }];
   if (workflow.nodes.length > MAX_STEPS) issues.push({ message: `A workflow can have at most ${MAX_STEPS} steps.` });
+  if (workflow.edges.length > MAX_LINES) issues.push({ message: `A workflow can have at most ${MAX_LINES} lines.` });
+  const stepIds = new Set<string>();
+  for (const node of workflow.nodes) {
+    if (node.id === WORKFLOW_START || node.id.length > 40 || !SLUG.test(node.id))
+      issues.push({ message: `${node.name.trim() || "A step"} has an id the server does not accept.`, nodeId: node.id });
+    else if (stepIds.has(node.id)) issues.push({ message: `Two steps share the id "${node.id}".`, nodeId: node.id });
+    stepIds.add(node.id);
+  }
+  const lineIds = new Set<string>();
+  for (const edge of workflow.edges) {
+    if (!edge.id.trim() || lineIds.has(edge.id)) issues.push({ message: "Every line needs its own id.", edgeId: edge.id });
+    lineIds.add(edge.id);
+  }
   const ids = new Set(workflow.nodes.map((node) => node.id));
   const names = new Map<string, number>();
   for (const node of workflow.nodes) {
@@ -181,6 +196,8 @@ export function workflowIssues(workflow: Workflow): WorkflowIssue[] {
     else if (name.length > 60) issues.push({ message: `"${name.slice(0, 24)}…" is longer than 60 characters.`, nodeId: node.id });
     names.set(name.toLowerCase(), (names.get(name.toLowerCase()) ?? 0) + 1);
     if (!node.agentId) issues.push({ message: `${label} has no agent yet.`, nodeId: node.id });
+    if ((node.instructions ?? "").length > MAX_INSTRUCTIONS)
+      issues.push({ message: `${label}: instructions are longer than ${MAX_INSTRUCTIONS} characters.`, nodeId: node.id });
     const outcomes = node.outcomes ?? [];
     if (outcomes.some((outcome) => !isOutcomeLabel(outcome)))
       issues.push({ message: `${label}: outcomes use lower-case letters, digits, "-" or "_".`, nodeId: node.id });
@@ -205,6 +222,11 @@ export function workflowIssues(workflow: Workflow): WorkflowIssue[] {
       continue;
     }
     const source = workflow.nodes.find((node) => node.id === edge.from);
+    if (!isStartEdge(edge) && edge.when !== "outcome" && edge.outcome)
+      issues.push({
+        message: `The line from ${source?.name.trim() || "a step"} names an outcome but does not follow one.`,
+        edgeId: edge.id,
+      });
     if (!isStartEdge(edge) && edge.when === "outcome") {
       if (!edge.outcome)
         issues.push({ message: `Choose the outcome for the line from ${source?.name.trim() || "a step"}.`, edgeId: edge.id });
@@ -675,6 +697,56 @@ export function suggestCondition(workflow: Workflow, from: string): { when: Work
   if (!outcomes.length) return { when: "success" };
   const used = new Set(edgesFrom(workflow, from).map((edge) => (edge.when === "outcome" ? edge.outcome : null)));
   return { when: "outcome", outcome: outcomes.find((outcome) => !used.has(outcome)) ?? outcomes[0] };
+}
+
+/**
+ * What "Add an input" adds to `nodeId`: a line from the first other step that does not
+ * lead here yet in the condition it most likely wants. Null when every such line exists,
+ * so the button can say there is nothing to add instead of doing nothing.
+ */
+export function nextInput(workflow: Workflow, nodeId: string): Workflow | null {
+  for (const source of workflow.nodes) {
+    if (source.id === nodeId) continue;
+    const suggestion = suggestCondition(workflow, source.id);
+    const result = connect(workflow, source.id, nodeId, suggestion.when, suggestion.outcome);
+    if (result.workflow !== workflow) return result.workflow;
+  }
+  return null;
+}
+
+/**
+ * What "Add an output" adds to `nodeId`: a line in the suggested condition to the first
+ * step it does not lead to yet, or back to itself when there is no other step. Null when
+ * every such line exists.
+ */
+export function nextOutput(workflow: Workflow, nodeId: string): Workflow | null {
+  const suggestion = suggestCondition(workflow, nodeId);
+  const others = workflow.nodes.filter((item) => item.id !== nodeId);
+  const targets = others.length ? others : workflow.nodes.filter((item) => item.id === nodeId);
+  for (const target of targets) {
+    const result = connect(workflow, nodeId, target.id, suggestion.when, suggestion.outcome);
+    if (result.workflow !== workflow) return result.workflow;
+  }
+  return null;
+}
+
+/** An agent a step can name. Archived agents are listed so their steps can say so. */
+export interface WorkflowAgent {
+  id: string;
+  name: string;
+  archived?: boolean;
+}
+
+/** Whether the list of agents has arrived. */
+export type AgentListState = "loading" | "error" | "ready";
+
+/** How a step names its agent: archived ones say so, and a list still loading is not "unavailable". */
+export function agentLabel(id: string, agents: WorkflowAgent[], state: AgentListState = "ready"): string {
+  const agent = agents.find((item) => item.id === id);
+  if (agent) return agent.archived ? `Archived agent: ${agent.name}` : agent.name;
+  if (state === "loading") return "Loading agents…";
+  if (state === "error") return "Agents could not be loaded";
+  return "Unavailable agent";
 }
 
 export function patchEdge(workflow: Workflow, id: string, patch: Partial<WorkflowEdge>): Workflow {
