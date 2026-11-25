@@ -31,6 +31,9 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     pub details: Vec<ValidationIssue>,
+    /// Caused by a storage failure a retry can clear (#436). Not serialized; lets callers
+    /// keep work queued instead of failing it for good.
+    transient: bool,
 }
 
 impl ApiError {
@@ -40,6 +43,7 @@ impl ApiError {
             code,
             message: message.into(),
             details: Vec::new(),
+            transient: false,
         }
     }
 
@@ -57,6 +61,7 @@ impl ApiError {
             code: "validation_error",
             message,
             details: issues,
+            transient: false,
         }
     }
 
@@ -90,6 +95,12 @@ impl ApiError {
 
     pub fn status(&self) -> StatusCode {
         self.status
+    }
+
+    /// Whether a retry may succeed: the error came from a storage failure such as a pool
+    /// timeout or a dropped connection, not from the request or the stored data.
+    pub fn is_transient(&self) -> bool {
+        self.transient
     }
 }
 
@@ -135,8 +146,12 @@ impl From<StoreError> for ApiError {
                         ));
                     }
                 }
-                tracing::error!(error = %err, "store error");
-                ApiError::internal("a storage error occurred")
+                let error = StoreError::Database(err);
+                tracing::error!(error = %error, "store error");
+                ApiError {
+                    transient: error.is_transient(),
+                    ..ApiError::internal("a storage error occurred")
+                }
             }
             other => {
                 tracing::error!(error = %other, "store error");
@@ -287,4 +302,33 @@ pub async fn envelope_rejections(
 /// Router fallback for unmatched routes.
 pub async fn not_found_fallback() -> ApiError {
     ApiError::not_found("no such route")
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    #[test]
+    fn storage_outages_are_transient_and_keep_the_generic_message() {
+        let error = ApiError::from(StoreError::Database(sqlx::Error::PoolTimedOut));
+        assert!(error.is_transient());
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.code, "internal");
+        assert_eq!(error.message, "a storage error occurred");
+        assert!(error.clone().is_transient());
+    }
+
+    #[test]
+    fn missing_rows_and_request_errors_are_not_transient() {
+        for error in [
+            ApiError::from(StoreError::NotFound("agent".into())),
+            ApiError::from(StoreError::Conflict("x".into())),
+            ApiError::from(StoreError::Internal("cipher".into())),
+            ApiError::from(StoreError::Database(sqlx::Error::RowNotFound)),
+            ApiError::internal("stored agent spec is invalid"),
+            ApiError::conflict("harness 'mock' is disabled"),
+        ] {
+            assert!(!error.is_transient(), "{error}");
+        }
+    }
 }

@@ -11214,6 +11214,80 @@ async fn worker_facing_paths_still_receive_env_values_and_resolved_secrets() {
 }
 
 #[tokio::test]
+async fn worker_env_refuses_a_mapping_it_cannot_resolve() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let secret_ref = format!("test/env-gone-{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &secret_ref,
+            &orbit_security::SecretValue::new("soon-deleted-value"),
+            "t",
+        )
+        .await
+        .unwrap();
+    let (status, created) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("env-gone-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "envMappings": [{ "envVar": "GONE_TOKEN", "secretKey": secret_ref }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/worker-profiles/{id}/enable"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, token) = send(
+        &app.router,
+        post(&format!("/api/v1/worker-profiles/{id}/token"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    let token = token["token"].as_str().unwrap().to_string();
+    let (status, resolved) = send(
+        &app.router,
+        worker_request("GET", "/api/v1/worker/env", &token, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(resolved[0]["envVar"], "GONE_TOKEN");
+
+    // The secret disappears: the worker gets an error naming the variable (#436), not
+    // a 200 with a shorter list that would start the run without it.
+    sqlx::query("DELETE FROM secrets WHERE org_id = $1 AND reference = $2")
+        .bind(app.org_id)
+        .bind(&secret_ref)
+        .execute(&raw_pool().await)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        worker_request("GET", "/api/v1/worker/env", &token, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("GONE_TOKEN"),
+        "{body}"
+    );
+    assert!(!body.to_string().contains("soon-deleted-value"));
+}
+
+#[tokio::test]
 async fn env_mappings_hold_references_only() {
     let Some(app) = test_app(true).await else {
         return;
@@ -12817,13 +12891,24 @@ async fn team_env_mappings_are_checked_for_the_run_principal() {
         return;
     };
     let owner = owner_user(&app).await;
+    // The secret must exist: an unresolvable mapping fails the run on its own (#436).
+    let secret_ref = format!("test/team-env-{}", Uuid::now_v7());
+    app.store
+        .put_secret(
+            Some(app.org_id),
+            &secret_ref,
+            &orbit_security::SecretValue::new("team-env-value"),
+            "t",
+        )
+        .await
+        .unwrap();
     let mapping = app
         .store
         .create_env_mapping(
             app.org_id,
             &format!("private-{}", Uuid::now_v7().simple()),
             "",
-            &json!([{ "envVar": "TOKEN", "secretKey": "x" }]),
+            &json!([{ "envVar": "TOKEN", "secretKey": secret_ref }]),
         )
         .await
         .unwrap();

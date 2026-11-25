@@ -101,6 +101,36 @@ impl StoreError {
             _ => false,
         }
     }
+
+    /// The database was unreachable or refused the statement for a reason that a retry
+    /// can clear: a pool timeout, a dropped connection, a serialization failure, a
+    /// deadlock, an exhausted server or an administrator shutdown (#436). Callers keep
+    /// work queued or retry instead of recording a permanent failure.
+    pub fn is_transient(&self) -> bool {
+        let Self::Database(err) = self else {
+            return false;
+        };
+        match err {
+            sqlx::Error::PoolTimedOut
+            | sqlx::Error::PoolClosed
+            | sqlx::Error::WorkerCrashed
+            | sqlx::Error::BeginFailed
+            | sqlx::Error::Io(_)
+            | sqlx::Error::Tls(_)
+            | sqlx::Error::Protocol(_) => true,
+            sqlx::Error::Database(db) => db.code().is_some_and(|code| is_transient_sqlstate(&code)),
+            _ => false,
+        }
+    }
+}
+
+/// SQLSTATE classes a retry can clear: 08 connection exception, 40 transaction rollback
+/// (serialization failure, deadlock), 53 insufficient resources, 57P operator
+/// intervention (shutdown, cannot connect now).
+fn is_transient_sqlstate(code: &str) -> bool {
+    ["08", "40", "53", "57P"]
+        .iter()
+        .any(|prefix| code.starts_with(prefix))
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -299,4 +329,43 @@ pub(crate) fn page_of<T>(
         None
     };
     (items, next)
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    #[test]
+    fn connection_and_pool_failures_are_transient() {
+        assert!(StoreError::Database(sqlx::Error::PoolTimedOut).is_transient());
+        assert!(StoreError::Database(sqlx::Error::PoolClosed).is_transient());
+        assert!(
+            StoreError::Database(sqlx::Error::Io(std::io::Error::other("reset"))).is_transient()
+        );
+        assert!(
+            StoreError::Database(sqlx::Error::Protocol("unexpected eof".into())).is_transient()
+        );
+    }
+
+    #[test]
+    fn missing_rows_and_bad_data_are_not_transient() {
+        assert!(!StoreError::NotFound("agent".into()).is_transient());
+        assert!(!StoreError::Conflict("x".into()).is_transient());
+        assert!(!StoreError::Invalid("x".into()).is_transient());
+        assert!(!StoreError::Internal("cipher".into()).is_transient());
+        assert!(!StoreError::Database(sqlx::Error::RowNotFound).is_transient());
+        assert!(!StoreError::Database(sqlx::Error::ColumnNotFound("x".into())).is_transient());
+    }
+
+    #[test]
+    fn sqlstate_classes() {
+        for code in [
+            "08006", "08001", "40001", "40P01", "53300", "57P01", "57P03",
+        ] {
+            assert!(is_transient_sqlstate(code), "{code}");
+        }
+        for code in ["23505", "23503", "42P01", "22P02", "57014"] {
+            assert!(!is_transient_sqlstate(code), "{code}");
+        }
+    }
 }

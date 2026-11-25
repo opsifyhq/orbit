@@ -1067,35 +1067,64 @@ pub async fn runtime_tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A runtime bookkeeping write whose failure must not stop the tick, but must not vanish
+/// either (#436).
+fn logged<T>(runtime_id: uuid::Uuid, what: &str, result: Result<T, orbit_store::StoreError>) {
+    if let Err(error) = result {
+        tracing::warn!(%runtime_id, %error, "agent runtime {what} write failed");
+    }
+}
+
 async fn advance_runtime(
     state: &AppState,
     runtime: orbit_store::agent_runtimes::AgentRuntime,
 ) -> Result<(), RuntimeTickError> {
-    let _ = state.store.heartbeat_agent_runtime(runtime.id).await;
+    logged(
+        runtime.id,
+        "heartbeat",
+        state.store.heartbeat_agent_runtime(runtime.id).await,
+    );
+    // Only a missing agent stops the runtime; any other lookup error is a storage
+    // failure, retried with backoff on the next tick (#436).
     let agent = match state
         .store
         .get_agent(runtime.org_id, runtime.agent_id)
         .await
     {
         Ok(agent) => agent,
-        Err(_) => {
-            let _ = state
-                .store
-                .halt_agent_runtime(runtime.id, "agent no longer exists")
-                .await;
+        Err(orbit_store::StoreError::NotFound(_)) => {
+            logged(
+                runtime.id,
+                "halt",
+                state
+                    .store
+                    .halt_agent_runtime(runtime.id, "agent no longer exists")
+                    .await,
+            );
             return Ok(());
         }
+        Err(error) => return Err(error.into()),
     };
     if agent.status != "active" {
-        let _ = state
-            .store
-            .halt_agent_runtime(runtime.id, "agent is not active")
-            .await;
+        logged(
+            runtime.id,
+            "halt",
+            state
+                .store
+                .halt_agent_runtime(runtime.id, "agent is not active")
+                .await,
+        );
         return Ok(());
     }
 
+    // A last execution that cannot be read is not "finished": starting another run on a
+    // read error could run two at once. Only a row that is really gone counts as done.
     let last = match runtime.last_execution_id {
-        Some(id) => state.store.get_execution(runtime.org_id, id).await.ok(),
+        Some(id) => match state.store.get_execution(runtime.org_id, id).await {
+            Ok(execution) => Some(execution),
+            Err(orbit_store::StoreError::NotFound(_)) => None,
+            Err(error) => return Err(error.into()),
+        },
         None => None,
     };
     let last_terminal = last.as_ref().is_none_or(|execution| {
@@ -1106,14 +1135,22 @@ async fn advance_runtime(
     });
     if runtime.status == "stopping" {
         if last_terminal {
-            let _ = state.store.finish_agent_runtime_stop(runtime.id).await;
+            logged(
+                runtime.id,
+                "finish stop",
+                state.store.finish_agent_runtime_stop(runtime.id).await,
+            );
         } else if let Some(id) = runtime.last_execution_id {
             // An execution launched by a tick that raced the Stop is not covered by the
             // handler's cancel; cancel it here so Stop does not wait for a full run.
-            let _ = state
-                .store
-                .request_execution_cancel(runtime.org_id, id)
-                .await;
+            logged(
+                runtime.id,
+                "cancel execution",
+                state
+                    .store
+                    .request_execution_cancel(runtime.org_id, id)
+                    .await,
+            );
         }
         return Ok(());
     }
@@ -1222,6 +1259,10 @@ async fn advance_runtime(
         .err(),
         Ok(None) => None,
     };
+    // A storage failure while checking access is not a refusal: retry it (#436).
+    if let Some(error) = denied.as_ref().filter(|error| error.is_transient()) {
+        return Err(RuntimeTickError::Transient(error.clone().into()));
+    }
     if let Some(error) = denied {
         crate::preflight::audit_denied_run(
             state,
@@ -1233,10 +1274,14 @@ async fn advance_runtime(
             runtime.created_by.or(agent.owner_user_id),
         )
         .await;
-        let _ = state
-            .store
-            .halt_agent_runtime(runtime.id, &format!("run refused: {}", error.message))
-            .await;
+        logged(
+            runtime.id,
+            "halt",
+            state
+                .store
+                .halt_agent_runtime(runtime.id, &format!("run refused: {}", error.message))
+                .await,
+        );
         return Ok(());
     }
     let delayed = match crate::preflight::require_harness_available(
@@ -1252,15 +1297,19 @@ async fn advance_runtime(
         Err(error) => Err(error),
     };
     if let Err(error) = delayed {
-        let _ = state
-            .store
-            .advance_agent_runtime(
-                runtime.id,
-                Some(&format!("run delayed: {}", error.message)),
-                chrono::Utc::now()
-                    + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
-            )
-            .await;
+        logged(
+            runtime.id,
+            "delay",
+            state
+                .store
+                .advance_agent_runtime(
+                    runtime.id,
+                    Some(&format!("run delayed: {}", error.message)),
+                    chrono::Utc::now()
+                        + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
+                )
+                .await,
+        );
         return Ok(());
     }
     let input = serde_json::json!({
@@ -1315,15 +1364,19 @@ async fn advance_runtime(
             .await;
             // Skip this tick without counting it as a failure: the runtime stays
             // enabled and tries again at its normal interval.
-            let _ = state
-                .store
-                .advance_agent_runtime(
-                    runtime.id,
-                    Some("run skipped: license limit reached"),
-                    chrono::Utc::now()
-                        + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
-                )
-                .await;
+            logged(
+                runtime.id,
+                "skip",
+                state
+                    .store
+                    .advance_agent_runtime(
+                        runtime.id,
+                        Some("run skipped: license limit reached"),
+                        chrono::Utc::now()
+                            + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
+                    )
+                    .await,
+            );
             return Ok(());
         }
         Err(error) => return Err(RuntimeTickError::Transient(error.into())),
@@ -1340,10 +1393,14 @@ async fn advance_runtime(
         )
         .await?;
     if recorded.is_none() {
-        let _ = state
-            .store
-            .request_execution_cancel(runtime.org_id, execution.id)
-            .await;
+        logged(
+            runtime.id,
+            "cancel execution",
+            state
+                .store
+                .request_execution_cancel(runtime.org_id, execution.id)
+                .await,
+        );
     }
 
     Ok(())

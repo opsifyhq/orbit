@@ -22,7 +22,7 @@ use orbit_domain::{
     ModelManagement, ToolPolicyRule, TriggerSpec,
 };
 use orbit_store::{
-    Approval, Connection, ConnectorRecord, ExecutionRecord, Skill, Store, WorkerProfile,
+    Approval, Connection, ConnectorRecord, ExecutionRecord, Skill, Store, StoreError, WorkerProfile,
 };
 
 use crate::access::AccessScope;
@@ -461,6 +461,25 @@ pub async fn claim(
                 execution: Some(context),
             }))
         }
+        Err(error) if error.is_transient() => {
+            // A storage blip is not a configuration error: hand the execution back to the
+            // queue so a later claim runs it (#436). If even that write fails, the row
+            // stays `dispatched` and the dispatch timeout ends it.
+            state.metrics.worker_claim("error");
+            match state
+                .store
+                .release_claimed_execution(execution.id, &body.worker_id)
+                .await
+            {
+                Ok(_) => {
+                    tracing::warn!(execution_id = %execution.id, error = %error, "claimed execution returned to the queue after a transient error")
+                }
+                Err(release) => {
+                    tracing::warn!(execution_id = %execution.id, error = %release, "could not return a claimed execution to the queue")
+                }
+            }
+            Err(error)
+        }
         Err(error) => {
             state.metrics.worker_claim("error");
             let message = error.message.clone();
@@ -541,12 +560,22 @@ async fn build_context(
             .store
             .get_agent(org_id, agent_id)
             .await
-            .map_err(|_| ApiError::conflict(format!("subagent '{name}' no longer exists")))?;
+            .map_err(|error| match error {
+                StoreError::NotFound(_) => {
+                    ApiError::conflict(format!("subagent '{name}' no longer exists"))
+                }
+                other => other.into(),
+            })?;
         let version = state
             .store
             .get_current_version(org_id, &agent)
             .await
-            .map_err(|_| ApiError::conflict(format!("subagent '{name}' has no current version")))?;
+            .map_err(|error| match error {
+                StoreError::NotFound(_) => {
+                    ApiError::conflict(format!("subagent '{name}' has no current version"))
+                }
+                other => other.into(),
+            })?;
         let mut sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
             ApiError::internal(format!("subagent '{name}' spec is invalid: {error}"))
         })?;
@@ -827,8 +856,14 @@ async fn resolve_team_env(
         }
     }
     for mapping_id in team_ids(execution, "envMappingIds") {
-        let Ok(mapping) = store.get_env_mapping(org_id, mapping_id).await else {
-            continue;
+        let mapping = match store.get_env_mapping(org_id, mapping_id).await {
+            Ok(mapping) => mapping,
+            Err(StoreError::NotFound(_)) => {
+                return Err(ApiError::conflict(format!(
+                    "environment mapping {mapping_id} no longer exists"
+                )))
+            }
+            Err(error) => return Err(error.into()),
         };
         // Checked when the team was saved, and again here: access removed since then
         // must not keep handing the mapping's secrets to runs (#322).
@@ -844,39 +879,12 @@ async fn resolve_team_env(
                 mapping.name
             )));
         }
-        let Ok(items) = serde_json::from_value::<Vec<EnvMapping>>(mapping.mappings) else {
-            continue;
-        };
-        for item in items {
-            let value = if let Some(connection_id) = item.connection_id {
-                match store.get_connection(org_id, connection_id).await {
-                    Ok(connection) => match connection.credential_ref {
-                        Some(reference) => store
-                            .get_secret_value_for_org(org_id, &reference)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|value| value.expose().to_string()),
-                        None => None,
-                    },
-                    Err(_) => None,
-                }
-            } else if let Some(reference) = item.secret_ref.as_ref().or(item.secret_key.as_ref()) {
-                store
-                    .get_secret_value_for_org(org_id, reference)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|value| value.expose().to_string())
-            } else {
-                None
-            };
-            if let Some(value) = value {
-                resolved.push(ResolvedEnv {
-                    env_var: item.env_var,
-                    value,
-                });
-            }
+        for item in parse_env_mappings(&mapping.name, mapping.mappings)? {
+            let value = resolve_mapped_value(store, org_id, &item).await?;
+            resolved.push(ResolvedEnv {
+                env_var: item.env_var,
+                value,
+            });
         }
     }
     Ok(resolved)
@@ -1665,70 +1673,93 @@ pub async fn resolve_env(
     State(state): State<AppState>,
     auth: WorkerAuth,
 ) -> Result<Json<Vec<ResolvedEnv>>, ApiError> {
-    // Get the worker's profile to find env_mappings
+    // A failed lookup is an error, never a shorter list (#436): the worker retries a
+    // storage error and fails the run on a mapping that cannot be resolved, instead of
+    // starting it without the variable.
     let profile = match auth.profile_id {
-        Some(id) => state.store.get_worker_profile(auth.org_id, id).await.ok(),
+        Some(id) => match state.store.get_worker_profile(auth.org_id, id).await {
+            Ok(profile) => Some(profile),
+            Err(StoreError::NotFound(_)) => None,
+            Err(error) => return Err(error.into()),
+        },
         None => None,
     };
     let mut mappings: Vec<EnvMapping> = Vec::new();
     if let Some(profile) = &profile {
         // Reusable mappings first, then inline mappings (inline wins on duplicates).
-        if let Ok(attached) = state
+        for mapping in state
             .store
             .list_worker_profile_env_mappings(profile.id)
-            .await
+            .await?
         {
-            for mapping in attached {
-                if let Ok(items) = serde_json::from_value::<Vec<EnvMapping>>(mapping.mappings) {
-                    mappings.extend(items);
-                }
-            }
+            mappings.extend(parse_env_mappings(&mapping.name, mapping.mappings)?);
         }
-        if let Ok(items) = serde_json::from_value::<Vec<EnvMapping>>(profile.env_mappings.clone()) {
-            mappings.extend(items);
-        }
+        mappings.extend(parse_env_mappings(
+            &profile.name,
+            profile.env_mappings.clone(),
+        )?);
     }
 
     let mut resolved = Vec::new();
     for mapping in mappings {
-        let value = if let Some(conn_id) = mapping.connection_id {
-            // Fetch connection and extract the secret value
-            match state.store.get_connection(auth.org_id, conn_id).await {
-                Ok(conn) => {
-                    if let Some(ref secret_ref) = conn.credential_ref {
-                        state
-                            .store
-                            .get_secret_value_for_org(auth.org_id, secret_ref)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|s| s.expose().to_string())
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None,
-            }
-        } else if let Some(secret_ref) = mapping.secret_ref.as_ref().or(mapping.secret_key.as_ref())
-        {
-            state
-                .store
-                .get_secret_value_for_org(auth.org_id, secret_ref)
-                .await
-                .ok()
-                .flatten()
-                .map(|s| s.expose().to_string())
-        } else {
-            None
-        };
-        if let Some(value) = value {
-            resolved.push(ResolvedEnv {
-                env_var: mapping.env_var,
-                value,
-            });
-        }
+        let value = resolve_mapped_value(&state.store, auth.org_id, &mapping).await?;
+        resolved.push(ResolvedEnv {
+            env_var: mapping.env_var,
+            value,
+        });
     }
     Ok(Json(resolved))
+}
+
+fn parse_env_mappings(owner: &str, value: serde_json::Value) -> Result<Vec<EnvMapping>, ApiError> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_value(value).map_err(|error| {
+        ApiError::conflict(format!(
+            "environment mappings of '{owner}' are invalid: {error}"
+        ))
+    })
+}
+
+/// The value one environment mapping points at. A connection, credential or secret that
+/// no longer exists is a conflict naming the variable, so the run fails with a clear
+/// message; storage errors pass through so the worker retries them.
+async fn resolve_mapped_value(
+    store: &Store,
+    org_id: Uuid,
+    mapping: &EnvMapping,
+) -> Result<String, ApiError> {
+    let env_var = &mapping.env_var;
+    let reference = if let Some(connection_id) = mapping.connection_id {
+        let connection = match store.get_connection(org_id, connection_id).await {
+            Ok(connection) => connection,
+            Err(StoreError::NotFound(_)) => {
+                return Err(ApiError::conflict(format!(
+                    "environment variable {env_var}: connection {connection_id} no longer exists"
+                )))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        connection.credential_ref.ok_or_else(|| {
+            ApiError::conflict(format!(
+                "environment variable {env_var}: connection '{}' has no credential",
+                connection.name
+            ))
+        })?
+    } else if let Some(reference) = mapping.secret_ref.as_ref().or(mapping.secret_key.as_ref()) {
+        reference.clone()
+    } else {
+        return Err(ApiError::conflict(format!(
+            "environment variable {env_var}: the mapping names no connection or secret"
+        )));
+    };
+    match store.get_secret_value_for_org(org_id, &reference).await? {
+        Some(value) => Ok(value.expose().to_string()),
+        None => Err(ApiError::conflict(format!(
+            "environment variable {env_var}: its secret no longer exists"
+        ))),
+    }
 }
 
 /// Workers never read triggers, and workers older than the schedule `task` field refuse
