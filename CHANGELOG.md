@@ -8,13 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
 ### Fixed
 
-- A team run no longer ends with steps still "running": every path that ends a run
-  (queue cancel, a failed start, a failed run) closes its running steps. A run whose
-  worker launch fails is ended before the error is returned, and a launch that fails for
-  a later step fails the run instead of leaving a queued execution nothing will claim
-  (#431).
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 

@@ -4340,10 +4340,10 @@ async fn installation_wide_execution_count_uses_created_at_index() {
         .await
         .unwrap();
 
-    let before = store
-        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
-        .await
-        .unwrap();
+    // Other tests share the database and delete executions, so a before/after count of
+    // the whole installation can stay flat while this test inserts one. Count only from
+    // just before the insert instead: whatever else happens, this execution is in it.
+    let since = chrono::Utc::now() - chrono::Duration::seconds(5);
     store
         .create_execution(NewExecution {
             org_id: org,
@@ -4365,13 +4365,13 @@ async fn installation_wide_execution_count_uses_created_at_index() {
         })
         .await
         .unwrap();
-    let after = store
-        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+    let counted = store
+        .count_all_executions_since_installation(since)
         .await
         .unwrap();
     assert!(
-        after > before,
-        "the installation-wide count must include the new execution: {before} -> {after}"
+        counted >= 1,
+        "the installation-wide count must include the new execution: {counted}"
     );
 
     let pool = store.pool();

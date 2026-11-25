@@ -19,7 +19,7 @@ from inside the cluster.
 | Setting | Helm value | Effect |
 |---|---|---|
 | `ORBIT_METRICS_ADDR` (e.g. `0.0.0.0:9090`) | `monitoring.port` | Serve `/metrics` (and `/healthz`) on a dedicated listener. The API port then answers `/metrics` with 404. |
-| `ORBIT_METRICS_TOKEN` | `monitoring.token.existingSecret`, `monitoring.token.key` | Require `Authorization: Bearer <token>`. Without it the endpoint answers 401. |
+| `ORBIT_METRICS_TOKEN` | `monitoring.token.existingSecret`, `monitoring.token.key` | Require `Authorization: Bearer <token>`. Without it the endpoint answers 401. An empty value (for example an empty Secret key) stops the API at startup rather than leaving the endpoint open. |
 
 On the API port, `/metrics` shares the per-IP budget for anonymous routes
 (`ORBIT_ANON_RATE_LIMIT_PER_MINUTE`, default 120 per minute). One Prometheus scraping
