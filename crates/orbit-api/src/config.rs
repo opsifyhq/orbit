@@ -42,7 +42,8 @@ pub struct ApiConfig {
     /// Dedicated listener for `/metrics` (`ORBIT_METRICS_ADDR`). When set, the main
     /// listener no longer serves `/metrics`.
     pub metrics_addr: Option<String>,
-    /// Bearer token a scraper must present (`ORBIT_METRICS_TOKEN`). Unset = open.
+    /// Bearer token a scraper must present (`ORBIT_METRICS_TOKEN`). Unset = open; set but
+    /// empty is a startup error.
     pub metrics_token: Option<String>,
 }
 
@@ -110,7 +111,7 @@ impl ApiConfig {
                 30,
             ),
             metrics_addr: env_opt("ORBIT_METRICS_ADDR"),
-            metrics_token: env_opt("ORBIT_METRICS_TOKEN"),
+            metrics_token: metrics_token(std::env::var("ORBIT_METRICS_TOKEN").ok())?,
         })
     }
 
@@ -247,6 +248,20 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
+/// `ORBIT_METRICS_TOKEN`: unset leaves `/metrics` open, a value requires it. A variable
+/// that is present but blank (an empty Secret key, say) is refused instead of silently
+/// opening the endpoint (#398).
+fn metrics_token(value: Option<String>) -> anyhow::Result<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.trim().is_empty() => anyhow::bail!(
+            "ORBIT_METRICS_TOKEN is set but empty; set a token or unset the variable to \
+             serve /metrics without one"
+        ),
+        Some(value) => Ok(Some(value.trim().to_string())),
+    }
+}
+
 fn env_opt(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -293,6 +308,17 @@ fn env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_metrics_token_is_refused() {
+        assert_eq!(metrics_token(None).unwrap(), None);
+        assert_eq!(
+            metrics_token(Some(" scrape ".into())).unwrap().as_deref(),
+            Some("scrape")
+        );
+        assert!(metrics_token(Some(String::new())).is_err());
+        assert!(metrics_token(Some("  \n".into())).is_err());
+    }
 
     #[test]
     fn composes_url_from_components() {
