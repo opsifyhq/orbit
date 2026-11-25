@@ -8,12 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
-### Security
+### Changed
 
-- X context hydration follows tool policy: a deny or require-approval rule for
-  `posts.search` skips it, and each search is recorded as a tool call. Without a `query`
-  in the run payload or the connection config, hydration is skipped instead of sending
-  the task text to X (#430).
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
+### Fixed
+
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
