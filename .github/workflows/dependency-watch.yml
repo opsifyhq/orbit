@@ -35,7 +35,7 @@ jobs:
             echo
             jq -r '.[] | "- **\(.name)**: `\(.current)` → `\(.candidate)`" + (if .note != "" then " — \(.note)" else "" end)' /tmp/proposals.json
             echo
-            echo "Run `node scripts/check-external-versions.mjs` after updating `versions.json` and the pinned files."
+            echo 'Run `node scripts/check-external-versions.mjs` after updating `versions.json` and the pinned files.'
           } > /tmp/issue.md
           gh label create dependency-update --color FBCA04 --description "Automated dependency proposal" 2>/dev/null || true
           existing=$(gh issue list --label dependency-update --state open --limit 1 --json number --jq '.[0].number // empty')

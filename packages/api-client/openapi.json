@@ -7,28 +7,9 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.4"
+    "version": "0.28.7"
   },
   "paths": {
-    "/api/v1/agent-instances": {
-      "get": {
-        "tags": [
-          "agents"
-        ],
-        "operationId": "list_agent_instances",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentInstancePage"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/agent-teams": {
       "get": {
         "tags": [
@@ -4728,109 +4709,6 @@
           }
         }
       },
-      "AgentInstance": {
-        "type": "object",
-        "required": [
-          "id",
-          "orgId",
-          "agentId",
-          "agentVersionId",
-          "harnessId",
-          "name",
-          "deploymentTarget",
-          "state",
-          "health",
-          "config",
-          "createdAt",
-          "updatedAt"
-        ],
-        "properties": {
-          "agentId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "agentVersionId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "config": {},
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "deploymentTarget": {
-            "type": "string"
-          },
-          "harnessId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "harnessRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "health": {},
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "lastHeartbeatAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "name": {
-            "type": "string"
-          },
-          "orgId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "state": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "AgentInstancePage": {
-        "type": "object",
-        "required": [
-          "items",
-          "total"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AgentInstanceView"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "total": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "AgentInstanceView": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/AgentInstance"
-          }
-        ]
-      },
       "AgentMetadata": {
         "type": "object",
         "required": [
@@ -6054,7 +5932,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Lifetime in days, 1 to 3650. Leave it out for a token that does not expire."
           },
           "name": {
             "type": "string"
@@ -8015,7 +7894,8 @@
             "$ref": "#/components/schemas/MetaFeatures"
           },
           "license": {
-            "$ref": "#/components/schemas/LicenseStatus"
+            "$ref": "#/components/schemas/PublicLicense",
+            "description": "What an anonymous caller may know about the licence. Customer, licence id, limits\nand dates are only in the authenticated `GET /api/v1/license` (#449)."
           },
           "version": {
             "type": "string"
@@ -8805,6 +8685,32 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "PublicLicense": {
+        "type": "object",
+        "description": "The licence summary served without authentication by `GET /api/v1/meta`.",
+        "required": [
+          "tier",
+          "valid",
+          "availableFeatures"
+        ],
+        "properties": {
+          "availableFeatures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Licensed features this release ships."
+          },
+          "tier": {
+            "type": "string",
+            "description": "`community`, `enterprise`, …"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "False for community, invalid or fully expired licences."
           }
         }
       },

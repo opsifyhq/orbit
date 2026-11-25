@@ -24,10 +24,9 @@ pub const FEATURE_MARKETPLACE: &str = "marketplace";
 
 /// Feature flags that are signed and verified, but have no shipped product feature yet.
 /// They are kept in the verifier for forward compatibility and must not be advertised as
-/// available. Gating that exists today uses [`FEATURE_TEAMS`] and
-/// [`FEATURE_CUSTOM_ROLES`].
+/// available. Gating that exists today uses [`FEATURE_TEAMS`], [`FEATURE_CUSTOM_ROLES`]
+/// and [`FEATURE_RESOURCE_PERMISSIONS`] (the sharing endpoints, #449).
 pub const RESERVED_FEATURES: &[&str] = &[
-    FEATURE_RESOURCE_PERMISSIONS,
     FEATURE_SHARED_CONNECTIONS,
     FEATURE_QUOTAS,
     FEATURE_MARKETPLACE,
@@ -67,7 +66,8 @@ struct LicenseClaims {
     customer: Option<String>,
     #[serde(default)]
     plan: Option<String>,
-    #[serde(default)]
+    /// ADR 0010 writes the claim as `orgSlug`; `org_slug` is accepted too (#449).
+    #[serde(default, alias = "orgSlug")]
     org_slug: Option<String>,
     #[serde(default)]
     features: Vec<String>,
@@ -566,6 +566,16 @@ mod tests {
     }
 
     #[test]
+    fn org_slug_claim_is_read_under_its_documented_name() {
+        let signing = SigningKey::from_bytes(&[12u8; 32]);
+        let mut claims = claims(30, 30);
+        claims["orgSlug"] = serde_json::json!("acme");
+        let status = verifier_for(&signing, "test").verify(&token_for(&signing, "test", claims));
+        assert!(status.valid);
+        assert_eq!(status.org_slug.as_deref(), Some("acme"));
+    }
+
+    #[test]
     fn reserved_flags_are_verified_but_not_advertised() {
         let signing = SigningKey::from_bytes(&[11u8; 32]);
         let mut claims = claims(30, 30);
@@ -580,7 +590,10 @@ mod tests {
         let status = verifier_for(&signing, "test").verify(&token_for(&signing, "test", claims));
         assert!(status.valid);
         assert_eq!(status.features.len(), 6);
-        assert_eq!(status.available_features, ["custom_roles", "teams"]);
+        assert_eq!(
+            status.available_features,
+            ["custom_roles", "teams", "resource_permissions"]
+        );
         // Gates keep reading signed flags; advertising does not.
         assert!(status.has_feature(FEATURE_QUOTAS));
     }

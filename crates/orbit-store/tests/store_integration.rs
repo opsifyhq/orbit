@@ -11,7 +11,7 @@ use orbit_store::executions::{EventFilter, NewExecution};
 use orbit_store::{Store, WorkerProfile};
 
 async fn test_store() -> Option<Store> {
-    let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
+    let url = orbit_store::test_database_url()?;
     let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
     let store = Store::connect(&url, 5)
@@ -327,6 +327,11 @@ async fn worker_tokens_are_hashed_scoped_and_revocable() {
         .unwrap()
         .expect("token should resolve by hash");
     assert_eq!(found.id, record.id);
+    // #447: the first use is recorded; repeated uses within a minute do not write again.
+    assert!(store.touch_worker_token(record.id).await.unwrap());
+    for _ in 0..5 {
+        assert!(!store.touch_worker_token(record.id).await.unwrap());
+    }
     store.revoke_worker_token(org, record.id).await.unwrap();
     assert!(store
         .find_worker_token_by_hash(&issued.hash)
@@ -3478,11 +3483,46 @@ async fn terminal_team_run_cannot_be_overwritten_and_lease_release_needs_the_tok
         .await
         .unwrap());
 
+    // A run that ends closes its running steps (#431); a non-terminal update does not.
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Guard Step Agent"))
+        .await
+        .unwrap();
+    store
+        .create_team_step(
+            run.id,
+            org,
+            0,
+            "first",
+            agent.id,
+            version.id,
+            &[],
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .update_team_run(run.id, "running", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_team_steps(run.id).await.unwrap()[0].status,
+        "running"
+    );
+
     // Terminal runs are never overwritten.
     store
         .update_team_run(run.id, "failed", None, Some("boom"))
         .await
         .unwrap();
+    let steps = store.list_team_steps(run.id).await.unwrap();
+    assert_eq!(steps[0].status, "cancelled");
+    assert_eq!(
+        steps[0].error.as_deref(),
+        Some("stopped because the run ended")
+    );
+    assert!(steps[0].finished_at.is_some());
     let err = store
         .update_team_run(run.id, "running", None, None)
         .await
@@ -4305,10 +4345,10 @@ async fn installation_wide_execution_count_uses_created_at_index() {
         .await
         .unwrap();
 
-    let before = store
-        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
-        .await
-        .unwrap();
+    // Other tests share the database and delete executions, so a before/after count of
+    // the whole installation can stay flat while this test inserts one. Count only from
+    // just before the insert instead: whatever else happens, this execution is in it.
+    let since = chrono::Utc::now() - chrono::Duration::seconds(5);
     store
         .create_execution(NewExecution {
             org_id: org,
@@ -4330,13 +4370,13 @@ async fn installation_wide_execution_count_uses_created_at_index() {
         })
         .await
         .unwrap();
-    let after = store
-        .count_all_executions_since_installation(chrono::Utc::now() - chrono::Duration::hours(24))
+    let counted = store
+        .count_all_executions_since_installation(since)
         .await
         .unwrap();
     assert!(
-        after > before,
-        "the installation-wide count must include the new execution: {before} -> {after}"
+        counted >= 1,
+        "the installation-wide count must include the new execution: {counted}"
     );
 
     let pool = store.pool();

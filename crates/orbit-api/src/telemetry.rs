@@ -5,9 +5,8 @@ use tracing_subscriber::EnvFilter;
 /// Initialise structured logging. JSON output is used in production and when
 /// `ORBIT_LOG_FORMAT=json`; human-readable logs are used in development.
 ///
-/// OpenTelemetry export is enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see
-/// docs/architecture/overview.md). Traces are correlated with the request id and the
-/// `traceparent` field carried by events.
+/// There is no OpenTelemetry export: logs go to stdout and metrics are served as
+/// Prometheus text (ADR 0014).
 pub fn init(service_name: &str) {
     let environment = std::env::var("ORBIT_ENV").unwrap_or_else(|_| "development".into());
     let json = std::env::var("ORBIT_LOG_FORMAT")

@@ -177,7 +177,7 @@ export default function EnvironmentsPage() {
                       <p className="mt-0.5 line-clamp-1 font-mono text-xs text-muted-foreground" title={mapping.mappings.map((entry) => entry.envVar).join(", ")}>
                         {variableSummary(mapping)}
                       </p>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <span className="tabular sm:hidden">
                           {count} {count === 1 ? "variable" : "variables"}
                         </span>

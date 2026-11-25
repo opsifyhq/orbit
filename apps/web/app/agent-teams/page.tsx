@@ -217,7 +217,7 @@ export default function AgentTeamsPage() {
                       <p className="mt-0.5 line-clamp-1 text-[13px] text-muted-foreground">
                         {team.description || team.definition.instructions || "No description"}
                       </p>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <LineupText team={team} agentName={agentName} />
                         <span>{MODE_LABEL[mode]}</span>
                         <span>{relativeTime(team.updatedAt)}</span>

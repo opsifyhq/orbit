@@ -191,7 +191,7 @@ pub async fn meta(State(state): State<AppState>) -> Json<MetaResponse> {
         environment: state.environment.clone(),
         auth: oidc_public_config(&state),
         events_driver: state.events_driver.clone(),
-        license: state.license_status(),
+        license: (&state.license_status()).into(),
         docs_url: crate::docs::DOCS_URL.to_string(),
         features: MetaFeatures {
             harness_execution: true,
