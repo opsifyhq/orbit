@@ -201,13 +201,8 @@ pub async fn run(
         }
     };
 
-    let stderr = String::new();
     if !status.success() {
-        let message = format!(
-            "per-execution container exited with {}: {}",
-            status,
-            stderr.trim()
-        );
+        let message = format!("per-execution container exited with {status}");
         tracing::warn!(execution_id = %execution.id, %message, "container execution failed");
         let current = state.client.context(execution.id).await?;
         if !matches!(

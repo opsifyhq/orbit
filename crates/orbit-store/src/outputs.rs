@@ -47,13 +47,14 @@ impl Store {
         telegram_chat_id: Option<&str>,
         telegram_message_thread_id: Option<&str>,
         enabled: bool,
+        config: &serde_json::Value,
     ) -> StoreResult<Output> {
         sqlx::query_as::<_, Output>(
             r#"
             INSERT INTO outputs (id, org_id, name, kind, agent_id, team_id, events, secret_ref,
                                  template, telegram_chat_id, telegram_message_thread_id, enabled,
-                                 agent_ids)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                 agent_ids, config)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
             "#,
         )
@@ -70,6 +71,7 @@ impl Store {
         .bind(telegram_message_thread_id)
         .bind(enabled)
         .bind(agent_id.map(|id| vec![id]).unwrap_or_default())
+        .bind(config)
         .fetch_one(&self.pool)
         .await
         .map_err(|error| {
@@ -100,7 +102,10 @@ impl Store {
         telegram_chat_id: Option<&str>,
         telegram_message_thread_id: Option<&str>,
         enabled: bool,
+        config: &serde_json::Value,
     ) -> StoreResult<Output> {
+        // The row and its config in one statement: a failure cannot leave an S3 output
+        // with its settings from another kind or with `{}` (#390).
         sqlx::query_as::<_, Output>(
             r#"
             UPDATE outputs
@@ -108,6 +113,7 @@ impl Store {
                 agent_ids = CASE WHEN $5::uuid IS NOT NULL THEN ARRAY[$5] ELSE agent_ids END,
                 secret_ref = COALESCE($8, secret_ref), template = $9,
                 telegram_chat_id = $10, telegram_message_thread_id = $11, enabled = $12,
+                config = $13,
                 enqueue_from = CASE WHEN $12 AND NOT enabled THEN now() ELSE enqueue_from END,
                 enqueue_cursor = CASE WHEN $12 AND NOT enabled THEN now() ELSE enqueue_cursor END,
                 updated_at = now()
@@ -127,6 +133,7 @@ impl Store {
         .bind(telegram_chat_id)
         .bind(telegram_message_thread_id)
         .bind(enabled)
+        .bind(config)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| StoreError::NotFound("output".into()))

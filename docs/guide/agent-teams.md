@@ -52,8 +52,10 @@ A workflow is a team whose agents are arranged as a graph instead of a line. Cho
 **Outcomes.** An agent that runs a failing test suite still finishes its run
 successfully, so "succeeded" cannot mean "the tests passed". A step with outcomes is
 told to end its answer with a line `OUTCOME: <label>`, and ORBIT reads that line to
-choose the next step. If the agent does not report one of the listed outcomes, the step
-counts as failed.
+choose the next step. ORBIT takes the last such line that names a listed outcome (by the
+whole label or its first word, so `OUTCOME: pass (2 warnings)` counts as `pass`); a later
+line such as `Outcome: see the notes above` does not hide it. If no line names one of the
+listed outcomes, the step counts as failed.
 
 **Limits.** A step on a loop runs at most 3 times in one run unless you set another
 limit (1 to 10) on the step. When a step would run more often, the run fails and says
@@ -69,18 +71,40 @@ have changed things, so nothing runs after it automatically.
 
 **What a step receives.** The run's task, the team goal, its own instructions, and the
 output of the step that handed over. After a join it receives the outputs of all of
-them, by step name.
+them, by step name. The `OUTCOME:` line of a step is for ORBIT: the next step, and the
+result of the run, get the answer without it.
 
 Parallel steps are separate executions on separate workers, so they do not share files.
 Let them push to branches, and let the joining step combine the branches.
 
-In the editor, the **Canvas** shows the graph: drag a step to move it, drag from the dot
-on its right side to another step to connect them, select a step or a line to edit it,
-and press Backspace to remove it. **Add step** continues from the selected step (or from
-the end of the line) and follows the next outcome that has no line yet. Saving a
-workflow with a problem opens the step that has it. **List** shows the same steps as a form, which is the
-default on a phone. **Examples** inserts a ready-made workflow (review loop, parallel
-work, test before deploy) to adapt. The run page draws the graph with the state of every
+**The editor.** The **Canvas** shows the graph. Each step is a card with its **input**
+on the left and its **outputs** on the right: one dot per outcome, and "done", "failed"
+and "always" where a line uses them (the selected step offers the others under its
+card). A line has
+the colour of the output it leaves: green for done, red for failed, grey for always and
+one colour per outcome, so a branch can be followed by eye. A dot is filled when a line
+leaves it and hollow when nothing follows.
+
+- Drag from an output to another step to connect them; the line gets that output's
+  condition. Let go over empty canvas to add a new step there.
+- Select a step or a line to edit it in the panel; Backspace removes it. Each step
+  lists its **Inputs** (the start of a run, and the steps it follows) and its
+  **Outputs** (what happens next), and both can be changed from either end.
+- The steps are **arranged for you** after every change. Drag a step to place them
+  yourself; **Tidy up** hands the arrangement back. Cmd/Ctrl-click adds steps to the
+  selection so several can be dragged at once. Steps you placed are moved apart when
+  their cards would lie on top of each other.
+- **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z) step through your changes.
+- **Full screen** gives the canvas the whole window, with the panel beside it and the
+  mouse wheel zooming.
+- **Add step** continues from the selected step (or from the end of the line) and
+  follows the next outcome that has no line yet. A step can also repeat itself: choose
+  "This step again" as the next step.
+
+Saving a workflow with a problem opens the step that has it. **List** shows the same
+steps as a form, with the same inputs and outputs, and is the default on a phone.
+**Examples** inserts a ready-made workflow (review loop, parallel work, test before
+deploy) to adapt. The run page draws the graph with the state of every
 step and the lines the run followed; select a step there to find its row in the list.
 When a run is cancelled, or fails while other branches are still working, those steps
 are shown as stopped.

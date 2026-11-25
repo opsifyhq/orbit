@@ -118,6 +118,9 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound("agent team".into()))
     }
 
+    /// Replace a team's name, description and definition. With `expected_updated_at`, the
+    /// write only happens when the team was not changed since the caller read it; a stale
+    /// write is a conflict (#432).
     pub async fn update_agent_team(
         &self,
         org_id: Uuid,
@@ -125,12 +128,14 @@ impl Store {
         name: &str,
         description: &str,
         definition: &Value,
+        expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> StoreResult<AgentTeam> {
-        sqlx::query_as::<_, AgentTeam>(
+        let updated = sqlx::query_as::<_, AgentTeam>(
             r#"
             UPDATE agent_teams
             SET name = $3, description = $4, definition = $5, updated_at = now()
             WHERE org_id = $1 AND id = $2
+              AND ($6::timestamptz IS NULL OR updated_at = $6)
             RETURNING *
             "#,
         )
@@ -139,9 +144,21 @@ impl Store {
         .bind(name)
         .bind(description)
         .bind(definition)
+        .bind(expected_updated_at)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| StoreError::NotFound("agent team".into()))
+        .await?;
+        match updated {
+            Some(team) => Ok(team),
+            None if expected_updated_at.is_some()
+                && self.get_agent_team(org_id, team_id).await.is_ok() =>
+            {
+                Err(StoreError::Conflict(
+                    "the agent team was changed after you loaded it; reload it and save again"
+                        .into(),
+                ))
+            }
+            None => Err(StoreError::NotFound("agent team".into())),
+        }
     }
 
     pub async fn delete_agent_team(&self, org_id: Uuid, team_id: Uuid) -> StoreResult<()> {
@@ -456,6 +473,8 @@ impl Store {
         .await?)
     }
 
+    /// End a running team run. Steps still `running` are closed in the same statement
+    /// (#431): a finished run must never show a live step, whichever path ended it.
     pub async fn finish_team_run(
         &self,
         run_id: Uuid,
@@ -465,11 +484,21 @@ impl Store {
     ) -> StoreResult<Option<TeamRun>> {
         Ok(sqlx::query_as::<_, TeamRun>(
             r#"
-            UPDATE team_runs
-            SET status = $2, output = COALESCE($3, output), error = $4,
-                finished_at = now(), updated_at = now()
-            WHERE id = $1 AND status = 'running'
-            RETURNING *
+            WITH run AS (
+                UPDATE team_runs
+                SET status = $2, output = COALESCE($3, output), error = $4,
+                    finished_at = now(), updated_at = now()
+                WHERE id = $1 AND status = 'running'
+                RETURNING *
+            ), closed AS (
+                UPDATE team_steps
+                SET status = 'cancelled',
+                    error = CASE WHEN $2 = 'cancelled' THEN error
+                                 ELSE 'stopped because the run ended' END,
+                    finished_at = now(), updated_at = now()
+                WHERE run_id IN (SELECT id FROM run) AND status = 'running'
+            )
+            SELECT * FROM run
             "#,
         )
         .bind(run_id)
@@ -488,15 +517,26 @@ impl Store {
         error: Option<&str>,
     ) -> StoreResult<TeamRun> {
         let finished = matches!(status, "succeeded" | "failed" | "cancelled");
+        // As in `finish_team_run`, a run that ends closes its running steps (#431).
         sqlx::query_as::<_, TeamRun>(
             r#"
-            UPDATE team_runs
-            SET status = $2, output = COALESCE($3, output), error = $4,
-                finished_at = CASE WHEN $5 THEN now() ELSE finished_at END,
-                updated_at = now()
-            WHERE id = $1
-              AND (status NOT IN ('succeeded', 'failed', 'cancelled') OR status = $2)
-            RETURNING *
+            WITH run AS (
+                UPDATE team_runs
+                SET status = $2, output = COALESCE($3, output), error = $4,
+                    finished_at = CASE WHEN $5 THEN now() ELSE finished_at END,
+                    updated_at = now()
+                WHERE id = $1
+                  AND (status NOT IN ('succeeded', 'failed', 'cancelled') OR status = $2)
+                RETURNING *
+            ), closed AS (
+                UPDATE team_steps
+                SET status = 'cancelled',
+                    error = CASE WHEN $2 = 'cancelled' THEN error
+                                 ELSE 'stopped because the run ended' END,
+                    finished_at = now(), updated_at = now()
+                WHERE $5 AND run_id IN (SELECT id FROM run) AND status = 'running'
+            )
+            SELECT * FROM run
             "#,
         )
         .bind(run_id)

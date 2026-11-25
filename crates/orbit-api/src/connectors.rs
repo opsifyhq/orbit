@@ -233,7 +233,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             webhooks: false,
             capabilities: vec![
                 capability("buckets.list", "List buckets", "Lists buckets allowed on the connection.", CapabilityEffect::Read),
-                capability("objects.list", "List objects", "Lists objects under a key prefix.", CapabilityEffect::Read),
+                capability("objects.list", "List objects", "Lists objects under the connection's key prefix, a page at a time.", CapabilityEffect::Read),
                 capability("objects.get", "Get object", "Reads an object, capped by maxObjectBytes.", CapabilityEffect::Read),
                 capability("objects.put", "Put object", "Writes or replaces an object, capped by maxObjectBytes.", CapabilityEffect::ExternalSideEffect),
                 capability("objects.delete", "Delete object", "Deletes an object.", CapabilityEffect::ExternalSideEffect),
