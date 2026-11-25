@@ -525,8 +525,16 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
     }
 }
 
-/// Connection config fields that name an endpoint ORBIT sends the credential to.
-const CONNECTION_URL_FIELDS: [&str; 4] = ["baseUrl", "cloneBaseUrl", "url", "apiServer"];
+/// Connection config fields that name an endpoint ORBIT sends the credential to. `endpoint`
+/// is the S3 connection's and S3 output's.
+const CONNECTION_URL_FIELDS: [&str; 5] =
+    ["baseUrl", "cloneBaseUrl", "url", "apiServer", "endpoint"];
+
+/// Fields that, with the URL fields, decide where a stored credential is sent: for S3 the
+/// provider and region pick the host when no endpoint is set (#389). Each with the value
+/// an absent field means.
+const CREDENTIAL_BOUND_FIELDS: [(&str, Option<&str>); 2] =
+    [("provider", Some("amazon")), ("region", Some("us-east-1"))];
 
 /// Validate URL-typed connection config fields against the outbound policy
 /// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`); errors are 422s on
@@ -762,22 +770,29 @@ pub async fn update_connection(
     Ok(Json(ConnectionView::from(row)))
 }
 
-/// The first endpoint field whose value differs between two connection configs, ignoring
-/// surrounding whitespace and trailing slashes.
-fn changed_url_field(
+/// The first field that decides where the credential goes (an endpoint URL, or an S3
+/// provider or region) whose value differs between two configs, ignoring surrounding
+/// whitespace, trailing slashes and case. Used for connections and S3 outputs alike.
+pub(crate) fn changed_url_field(
     before: &serde_json::Value,
     after: &serde_json::Value,
 ) -> Option<&'static str> {
-    let normalized = |config: &serde_json::Value, field: &str| {
+    let normalized = |config: &serde_json::Value, field: &str, default: Option<&str>| {
         config
             .get(field)
             .and_then(|value| value.as_str())
             .map(|value| value.trim().trim_end_matches('/').to_ascii_lowercase())
             .filter(|value| !value.is_empty())
+            .or_else(|| default.map(str::to_string))
     };
     CONNECTION_URL_FIELDS
         .into_iter()
-        .find(|field| normalized(before, field) != normalized(after, field))
+        .map(|field| (field, None))
+        .chain(CREDENTIAL_BOUND_FIELDS)
+        .find(|(field, default)| {
+            normalized(before, field, *default) != normalized(after, field, *default)
+        })
+        .map(|(field, _)| field)
 }
 
 #[utoipa::path(delete, path = "/api/v1/connections/{connection_id}", tag = "connectors", responses((status = 204)))]

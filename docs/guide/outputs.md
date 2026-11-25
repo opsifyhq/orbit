@@ -38,7 +38,9 @@ Creating, changing, deleting and testing outputs needs `settings:write`.
 
 An S3 output uploads the rendered run text (the same summary plus template note) to
 Amazon S3 or RustFS. Configure the provider, bucket, optional key prefix, endpoint,
-region and path-style toggle. The object key is `<keyPrefix><deliveryId>.txt`, so a retry
+region and path-style toggle. Changing the endpoint, provider or region of a saved S3
+output needs the credential again, and the region must be a plain name such as
+`eu-west-1`. The object key is `<keyPrefix><deliveryId>.txt`, so a retry
 overwrites the same object instead of creating a duplicate.
 
 An output writes only to the bucket it names: that bucket is its allowlist, so there is no
