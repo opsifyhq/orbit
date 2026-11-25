@@ -901,7 +901,7 @@ export function WorkflowCanvas({
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        colorMode={dark ? "dark" : "light"}
+        forceColorMode={dark ? "dark" : "light"}
         onInit={(instance) => setFlow(instance as unknown as ReactFlowInstance)}
         onNodesChange={onNodesChange}
         onNodeDragStart={() => {
