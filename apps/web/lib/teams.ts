@@ -34,9 +34,8 @@ export function getAgentTeam(teamId: string): Promise<AgentTeam> {
 }
 
 /**
- * Create/update body. The API rebuilds the whole definition from it, so every field the
- * team has must be sent back, including the ones no form control edits (team model,
- * harness, step models): leaving one out clears it.
+ * Create/update body. On update, fields left out keep their stored value and `null`
+ * clears an optional field, so a cleared form field must be sent as `null`.
  */
 export type TeamInput = {
   name: string;
@@ -45,20 +44,25 @@ export type TeamInput = {
   /** The graph, for mode "workflow". `steps` is then derived by the API. */
   workflow?: Workflow | null;
   instructions: string;
-  repository?: string;
-  branch?: string;
+  repository?: string | null;
+  branch?: string | null;
   workSource?: WorkSource | null;
   repositories?: TeamRepository[];
-  workerProfileId?: string;
+  workerProfileId?: string | null;
   autoLaunch?: boolean;
   skills: string[];
   model?: TeamModel | null;
   harness?: string | null;
   connectionIds: string[];
   envMappingIds: string[];
-  timeoutSeconds?: number;
+  timeoutSeconds?: number | null;
   autonomy?: TeamAutonomy | null;
   steps: TeamStepInput[];
+  /**
+   * Update only: the team's `updatedAt` as loaded. The API refuses the save with 409 when
+   * someone else changed the team since.
+   */
+  expectedUpdatedAt?: string;
 };
 
 export function createAgentTeam(input: TeamInput): Promise<AgentTeam> {

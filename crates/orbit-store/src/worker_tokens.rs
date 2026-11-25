@@ -59,12 +59,22 @@ impl Store {
         Ok(record)
     }
 
-    pub async fn touch_worker_token(&self, token_id: Uuid) -> StoreResult<()> {
-        sqlx::query("UPDATE worker_tokens SET last_used_at = now() WHERE id = $1")
-            .bind(token_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    /// Record that the token was used. Written at most once a minute: every worker
+    /// request authenticates, and a running execution polls about once a second, so an
+    /// unconditional write made this one row the hottest in the database (#447).
+    /// Returns whether the row was written.
+    pub async fn touch_worker_token(&self, token_id: Uuid) -> StoreResult<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE worker_tokens SET last_used_at = now()
+            WHERE id = $1
+              AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
+            "#,
+        )
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn revoke_worker_token(&self, org_id: Uuid, token_id: Uuid) -> StoreResult<()> {

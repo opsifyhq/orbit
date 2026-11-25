@@ -17,6 +17,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { pageTitle } from "@/lib/page-title";
+
 export interface NavItem {
   href: string;
   label: string;
@@ -106,5 +108,5 @@ export function currentNavItem(pathname: string): NavItem | undefined {
 
 export function pageLabel(pathname: string): string {
   if (isWorkPath(pathname)) return "Start work";
-  return currentNavItem(pathname)?.label ?? "ORBIT";
+  return pageTitle(pathname, currentNavItem(pathname)?.label ?? "ORBIT");
 }

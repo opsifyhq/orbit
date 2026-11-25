@@ -42,7 +42,7 @@ struct Org {
 }
 
 async fn env() -> Option<Env> {
-    let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
+    let url = orbit_store::test_database_url()?;
     let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
     let store = Store::connect(&url, 5)
