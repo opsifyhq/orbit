@@ -6,7 +6,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use orbit_contracts::{validate_provider_config, HarnessDescriptor, ProviderKind};
-use orbit_domain::HarnessKind;
+use orbit_domain::{HarnessKind, ImplementationStatus};
 use orbit_security::{new_secret_ref, AuthContext, Permission, SecretValue};
 
 use crate::audit;
@@ -65,13 +65,16 @@ pub async fn list_harnesses(
     Ok(Json(items))
 }
 
+/// A stored harness row with no adapter in this build's registry. Without an adapter it
+/// cannot run, so it is reported as planned; the registry descriptors are the only source
+/// of an adapter's real status (AGENTS.md rule 6).
 fn fallback_descriptor(kind: HarnessKind, name: &str, description: &str) -> HarnessDescriptor {
     HarnessDescriptor {
         kind,
         name: name.to_string(),
         description: description.to_string(),
         capabilities: Default::default(),
-        implementation_status: kind.implementation_status(),
+        implementation_status: ImplementationStatus::Planned,
         config_schema: serde_json::json!({ "type": "object" }),
         docs_url: None,
     }

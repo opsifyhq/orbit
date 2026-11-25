@@ -39,7 +39,7 @@ Every table is scoped by `org_id` unless it is global infrastructure.
 | `organizations`, `users` | tenant and members |
 | `agents`, `agent_versions`, `harnesses` | agent definitions, immutable versions, harness registry |
 | `agent_runtimes` | continuous "keep running" runtime of an agent (one live row per agent) |
-| `agent_instances` | **legacy**: read through `GET /api/v1/agent-instances`, but no code inserts rows |
+| `agent_instances` | **legacy**: no code reads or writes it; kept because migrations are append-only |
 | `providers`, `connectors`, `connections`, `secrets` | model providers, connector manifests, authorized accounts, encrypted secrets |
 | `executions`, `execution_events`, `approvals` | runs, append-only events, human decisions |
 | `triggers` | manual and schedule triggers (webhook and event kinds are stored, never fire) |
@@ -97,9 +97,10 @@ append-only and shows the return (migration 0049 dropped `UNIQUE (agent_id, chec
 The `definition_yaml` column retains the original YAML for export.
 
 ### AgentInstance (legacy)
-The `agent_instances` table and the `GET /api/v1/agent-instances` endpoint exist
-(`agent_version_id`, `harness_id`, `state`, `harness_instance_ref`, `health`, `config`),
-but no code creates instances, so the list is always empty. The `create_instance`
+The `agent_instances` table exists (`agent_version_id`, `harness_id`, `state`,
+`harness_instance_ref`, `health`, `config`), but no code creates or reads instances; the
+`GET /api/v1/agent-instances` endpoint, which always returned an empty list, was removed
+(#452). The `create_instance`
 family of methods on `HarnessAdapter` is likewise not used by the platform. Continuous
 operation is modelled by `AgentRuntime`.
 

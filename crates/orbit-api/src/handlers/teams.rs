@@ -285,6 +285,29 @@ fn prepare_mode(body: &mut CreateTeamRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Where a step's agent was given, for a validation message (#438): `steps[i].agentId`,
+/// or for a workflow every node that uses the agent (`workflow.nodes[j].agentId`), since
+/// a workflow's steps are derived from its nodes.
+fn step_agent_paths(body: &CreateTeamRequest, index: usize, agent_id: Uuid) -> Vec<String> {
+    if let Some(workflow) = body
+        .workflow
+        .as_ref()
+        .filter(|_| body.mode == WORKFLOW_MODE)
+    {
+        let paths: Vec<String> = workflow
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.agent_id == agent_id)
+            .map(|(position, _)| format!("workflow.nodes[{position}].agentId"))
+            .collect();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    vec![format!("steps[{index}].agentId")]
+}
+
 pub(crate) fn parse_definition(team: &AgentTeam) -> Result<TeamDefinition, ApiError> {
     serde_json::from_value(team.definition.clone())
         .map_err(|error| ApiError::internal(format!("team definition is invalid: {error}")))
@@ -699,11 +722,20 @@ pub async fn create_team(
 ) -> Result<(StatusCode, Json<AgentTeam>), ApiError> {
     auth.require(Permission::SettingsWrite)?;
     prepare_mode(&mut body)?;
-    if body.name.trim().is_empty() || body.steps.is_empty() {
-        return Err(ApiError::validation(vec![
-            ValidationIssue::new("name", "name is required"),
-            ValidationIssue::new("steps", "at least one step is required"),
-        ]));
+    // Only the fields that are actually wrong (#438): a team with a name but no steps used
+    // to be told "name: name is required" as well.
+    let mut required = Vec::new();
+    if body.name.trim().is_empty() {
+        required.push(ValidationIssue::new("name", "name is required"));
+    }
+    if body.steps.is_empty() {
+        required.push(ValidationIssue::new(
+            "steps",
+            "at least one step is required",
+        ));
+    }
+    if !required.is_empty() {
+        return Err(ApiError::validation(required));
     }
     if body
         .timeout_seconds
@@ -736,12 +768,14 @@ pub async fn create_team(
     }
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
-    for step in &body.steps {
+    for (index, step) in body.steps.iter().enumerate() {
         if !agent_ids.insert(step.agent_id) {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                "the same agent cannot appear twice in one team",
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    "the same agent cannot appear twice in one team",
+                ));
+            }
         }
         // An agent the caller cannot view is reported exactly like a missing one.
         let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
@@ -751,10 +785,12 @@ pub async fn create_team(
             Err(_) => false,
         };
         if !viewable {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                format!("unknown agent '{}'", step.agent_id),
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    format!("unknown agent '{}'", step.agent_id),
+                ));
+            }
         }
     }
     if let Some(source) = &body.work_source {
@@ -929,11 +965,20 @@ pub(crate) async fn replace_team(
     let stored = require_team_manage(state, auth, team_id).await?;
     let expected_updated_at = expected_updated_at.or(body.expected_updated_at);
     prepare_mode(&mut body)?;
-    if body.name.trim().is_empty() || body.steps.is_empty() {
-        return Err(ApiError::validation(vec![
-            ValidationIssue::new("name", "name is required"),
-            ValidationIssue::new("steps", "at least one step is required"),
-        ]));
+    // Only the fields that are actually wrong (#438): a team with a name but no steps used
+    // to be told "name: name is required" as well.
+    let mut required = Vec::new();
+    if body.name.trim().is_empty() {
+        required.push(ValidationIssue::new("name", "name is required"));
+    }
+    if body.steps.is_empty() {
+        required.push(ValidationIssue::new(
+            "steps",
+            "at least one step is required",
+        ));
+    }
+    if !required.is_empty() {
+        return Err(ApiError::validation(required));
     }
     if body
         .timeout_seconds
@@ -966,12 +1011,14 @@ pub(crate) async fn replace_team(
     }
     let access = crate::access::AccessScope::load(state, auth).await?;
     let mut agent_ids = std::collections::BTreeSet::new();
-    for step in &body.steps {
+    for (index, step) in body.steps.iter().enumerate() {
         if !agent_ids.insert(step.agent_id) {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                "the same agent cannot appear twice in one team",
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    "the same agent cannot appear twice in one team",
+                ));
+            }
         }
         // An agent the caller cannot view is reported exactly like a missing one.
         let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
@@ -981,10 +1028,12 @@ pub(crate) async fn replace_team(
             Err(_) => false,
         };
         if !viewable {
-            issues.push(ValidationIssue::new(
-                "steps.agentId",
-                format!("unknown agent '{}'", step.agent_id),
-            ));
+            for path in step_agent_paths(&body, index, step.agent_id) {
+                issues.push(ValidationIssue::new(
+                    path,
+                    format!("unknown agent '{}'", step.agent_id),
+                ));
+            }
         }
     }
     if let Some(source) = &body.work_source {
@@ -1301,6 +1350,23 @@ pub async fn cancel_run(
     Ok(Json(TeamRunDetail { run, steps }))
 }
 
+/// A subagent's system prompt: its instructions followed by its constraints. Never stored
+/// in the run: execution and step input are readable by anyone who can view the team or
+/// the primary agent, and a subagent may be private (#429). The worker context adds it
+/// when a worker claims the step.
+pub(crate) fn subagent_instructions(spec: &orbit_domain::AgentSpec) -> String {
+    let mut instructions = spec.instructions.system.clone();
+    if !spec.instructions.constraints.is_empty() {
+        instructions.push_str("\n\nConstraints:\n");
+        for constraint in &spec.instructions.constraints {
+            instructions.push_str(&format!("- {constraint}\n"));
+        }
+    }
+    instructions
+}
+
+/// The native subagents of a team, as references: id, name, description and model, but
+/// no instructions (see [`subagent_instructions`]).
 async fn native_subagents(
     state: &AppState,
     org_id: Uuid,
@@ -1318,13 +1384,6 @@ async fn native_subagents(
         if let Some(override_model) = &model_override {
             override_model.apply(&mut spec.model);
         }
-        let mut instructions = spec.instructions.system.clone();
-        if !spec.instructions.constraints.is_empty() {
-            instructions.push_str("\n\nConstraints:\n");
-            for constraint in &spec.instructions.constraints {
-                instructions.push_str(&format!("- {constraint}\n"));
-            }
-        }
         let model = match (&spec.model.provider, &spec.model.model) {
             (Some(provider), Some(model)) if !model.contains('/') => {
                 Some(format!("{provider}/{model}"))
@@ -1337,7 +1396,6 @@ async fn native_subagents(
             "name": agent.name,
             "slug": agent.slug,
             "description": agent.description,
-            "instructions": instructions,
             "model": model,
             "modelOverride": model_override,
         }));
@@ -1975,10 +2033,20 @@ pub async fn create_run(
         serde_json::json!({ "teamId": team.id, "autoApprove": body.auto_approve }),
     )
     .await;
-    let first = match start_first_steps(&state, &run, &definition).await {
+    let started = async {
+        let first = start_first_steps(&state, &run, &definition).await?;
+        for step in &first.started {
+            auto_launch_step(&state, &run, &definition, step, Some(&auth)).await?;
+        }
+        Ok::<_, ApiError>(first)
+    }
+    .await;
+    let first = match started {
         Ok(first) => first,
         Err(error) => {
-            // A workflow may have started some of its parallel first steps already.
+            // The run exists and a workflow may have started some of its parallel first
+            // steps: end it before reporting the error, so a client that retries does not
+            // leave a second run behind (#431). Ending the run closes its steps.
             if let Ok(cancelled) = state
                 .store
                 .request_team_run_cancel(run.org_id, run.id)
@@ -1993,9 +2061,6 @@ pub async fn create_run(
             return Err(error);
         }
     };
-    for step in &first.started {
-        auto_launch_step(&state, &run, &definition, step, Some(&auth)).await?;
-    }
     Ok((
         StatusCode::CREATED,
         Json(TeamRunDetail {
@@ -2381,10 +2446,40 @@ async fn continue_after_success(
             return Err(anyhow::anyhow!(error.message));
         }
     };
-    auto_launch_step(state, run, definition, &created, None)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+    if let Err(error) = auto_launch_step(state, run, definition, &created, None).await {
+        fail_run_after_launch_error(state, run, &created, &error).await;
+    }
     Ok(())
+}
+
+/// A step was created but its worker could not be launched. Nothing would ever claim the
+/// queued execution and the next tick sees a step that is already running, so the run is
+/// failed now with the launch error instead of waiting for ever (#431).
+pub(crate) async fn fail_run_after_launch_error(
+    state: &AppState,
+    run: &TeamRun,
+    step: &TeamStep,
+    error: &ApiError,
+) {
+    tracing::warn!(run_id = %run.id, step = %step.name, error = %error.message, "team step worker launch failed");
+    match state
+        .store
+        .request_team_run_cancel(run.org_id, run.id)
+        .await
+    {
+        Ok(cancelled) => announce_cancel(state, run.org_id, &cancelled).await,
+        Err(cancel_error) => {
+            tracing::warn!(error = %cancel_error, run_id = %run.id, "failed to cancel executions after a launch error")
+        }
+    }
+    let message = format!(
+        "could not launch a worker for step '{}': {}",
+        step.name, error.message
+    );
+    // `finalize_run` also closes the queue item of a queued run, offering a retry.
+    if let Err(finish_error) = finalize_run(state, run, "failed", None, Some(&message)).await {
+        tracing::warn!(error = %finish_error, run_id = %run.id, "failed to fail a team run after a launch error");
+    }
 }
 
 /// Retry queue outcomes that were never applied (terminal run, item still `running`) and

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use orbit_contracts::{HarnessDescriptor, ProviderKind};
 use orbit_domain::{AgentDefinition, AgentSpec, HarnessKind};
 use orbit_store::{
-    Agent, AgentInstance, AgentVersion, ConnectionWithConnector, ConnectorRecord, DashboardSummary,
+    Agent, AgentVersion, ConnectionWithConnector, ConnectorRecord, DashboardSummary,
     ExecutionEventRecord, ExecutionRecord, Organization, Provider, Trigger, User,
 };
 
@@ -266,21 +266,6 @@ pub struct UpdateAgentRequest {
     /// version by now, the update is refused with 409 instead of overwriting it.
     #[serde(default)]
     pub expected_version: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentInstanceView {
-    #[serde(flatten)]
-    pub instance: AgentInstance,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentInstancePage {
-    pub items: Vec<AgentInstanceView>,
-    pub next_cursor: Option<String>,
-    pub total: i64,
 }
 
 // ---------------------------------------------------------------- executions
@@ -585,9 +570,33 @@ pub struct MetaResponse {
     pub auth: serde_json::Value,
     pub events_driver: String,
     pub features: MetaFeatures,
-    pub license: orbit_security::LicenseStatus,
+    /// What an anonymous caller may know about the licence. Customer, licence id, limits
+    /// and dates are only in the authenticated `GET /api/v1/license` (#449).
+    pub license: PublicLicense,
     /// Route of the embedded documentation index (authenticated).
     pub docs_url: String,
+}
+
+/// The licence summary served without authentication by `GET /api/v1/meta`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLicense {
+    /// `community`, `enterprise`, …
+    pub tier: String,
+    /// False for community, invalid or fully expired licences.
+    pub valid: bool,
+    /// Licensed features this release ships.
+    pub available_features: Vec<String>,
+}
+
+impl From<&orbit_security::LicenseStatus> for PublicLicense {
+    fn from(status: &orbit_security::LicenseStatus) -> Self {
+        Self {
+            tier: status.tier.clone(),
+            valid: status.valid,
+            available_features: status.available_features.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -603,6 +612,7 @@ pub struct CreateApiTokenRequest {
     pub name: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Lifetime in days, 1 to 3650. Leave it out for a token that does not expire.
     #[serde(default)]
     pub expires_in_days: Option<i64>,
 }

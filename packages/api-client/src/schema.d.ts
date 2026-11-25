@@ -4,22 +4,6 @@
  */
 
 export interface paths {
-    "/api/v1/agent-instances": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_agent_instances"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/agent-teams": {
         parameters: {
             query?: never;
@@ -1786,37 +1770,6 @@ export interface components {
             /** Format: uuid */
             versionId: string;
         };
-        AgentInstance: {
-            /** Format: uuid */
-            agentId: string;
-            /** Format: uuid */
-            agentVersionId: string;
-            config: unknown;
-            /** Format: date-time */
-            createdAt: string;
-            deploymentTarget: string;
-            /** Format: uuid */
-            harnessId: string;
-            harnessRef?: string | null;
-            health: unknown;
-            /** Format: uuid */
-            id: string;
-            /** Format: date-time */
-            lastHeartbeatAt?: string | null;
-            name: string;
-            /** Format: uuid */
-            orgId: string;
-            state: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        AgentInstancePage: {
-            items: components["schemas"]["AgentInstanceView"][];
-            nextCursor?: string | null;
-            /** Format: int64 */
-            total: number;
-        };
-        AgentInstanceView: components["schemas"]["AgentInstance"];
         AgentMetadata: {
             description?: string;
             labels?: {
@@ -2203,7 +2156,10 @@ export interface components {
             webhooks: boolean;
         };
         CreateApiTokenRequest: {
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Lifetime in days, 1 to 3650. Leave it out for a token that does not expire.
+             */
             expiresInDays?: number | null;
             name: string;
             scopes?: string[];
@@ -2841,7 +2797,11 @@ export interface components {
             environment: string;
             eventsDriver: string;
             features: components["schemas"]["MetaFeatures"];
-            license: components["schemas"]["LicenseStatus"];
+            /**
+             * @description What an anonymous caller may know about the licence. Customer, licence id, limits
+             *     and dates are only in the authenticated `GET /api/v1/license` (#449).
+             */
+            license: components["schemas"]["PublicLicense"];
             version: string;
         };
         /** @enum {string} */
@@ -3105,6 +3065,15 @@ export interface components {
             name: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        /** @description The licence summary served without authentication by `GET /api/v1/meta`. */
+        PublicLicense: {
+            /** @description Licensed features this release ships. */
+            availableFeatures: string[];
+            /** @description `community`, `enterprise`, … */
+            tier: string;
+            /** @description False for community, invalid or fully expired licences. */
+            valid: boolean;
         };
         QueueItemInput: {
             externalKey: string;
@@ -3787,25 +3756,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    list_agent_instances: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentInstancePage"];
-                };
-            };
-        };
-    };
     list_teams: {
         parameters: {
             query?: never;

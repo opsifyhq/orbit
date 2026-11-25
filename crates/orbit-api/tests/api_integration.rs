@@ -68,7 +68,7 @@ async fn test_app_with_license(
     allow_anonymous: bool,
     license: Option<LicenseStatus>,
 ) -> Option<TestApp> {
-    let url = std::env::var("ORBIT_TEST_DATABASE_URL").ok()?;
+    let url = orbit_store::test_database_url()?;
     let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
     let cipher = Arc::new(SecretCipher::from_base64_key(&key).unwrap());
     let store = Store::connect(&url, 5)
@@ -1000,6 +1000,139 @@ async fn token_for(store: &Store, org_id: Uuid, user_id: Uuid, name: &str) -> St
     issued.token
 }
 
+/// #438: team validation names only the fields that are wrong, with the step's index.
+#[tokio::test]
+async fn team_validation_points_at_the_right_field() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "No steps", "mode": "pipeline" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let paths: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|detail| detail["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["steps"]);
+
+    let unknown = Uuid::now_v7();
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "Bad agent", "mode": "pipeline",
+                    "steps": [{ "agentId": app.agent_id }, { "agentId": unknown }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "steps[1].agentId");
+}
+
+/// #438: NUL characters, unknown worker-token harnesses and triggers on archived agents
+/// are refused with 4xx instead of a 500 or a resource that can never work.
+#[tokio::test]
+async fn invalid_text_harnesses_and_archived_triggers_are_refused() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut nul = definition();
+    nul["metadata"]["name"] = json!("bad\u{0000}name");
+    let (status, body) = send(&app.router, post("/api/v1/agents", nul)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "body");
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/skills",
+            json!({ "name": "x", "slug": "x", "content": "a\u{0000}" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/worker-tokens",
+            json!({ "name": "t", "harnesses": ["zzz"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["details"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("zzz"));
+
+    app.store
+        .set_agent_status(
+            app.org_id,
+            app.agent_id,
+            orbit_domain::AgentStatus::Archived,
+        )
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/triggers",
+            json!({ "agentId": app.agent_id, "kind": "manual", "config": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+/// #438: a token lifetime outside 1..=3650 days is refused, not turned into a token that
+/// never expires.
+#[tokio::test]
+async fn api_token_lifetime_must_be_positive_and_bounded() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for days in [-1, 0, 3651] {
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/api-tokens",
+                json!({ "name": "ci", "scopes": ["agents:read"], "expiresInDays": days }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{days}: {body}");
+        assert_eq!(body["error"]["details"][0]["path"], "expiresInDays");
+    }
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/api-tokens",
+            json!({ "name": "ci", "scopes": ["agents:read"], "expiresInDays": 30 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["expiresAt"].is_string(), "{body}");
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/api-tokens",
+            json!({ "name": "forever", "scopes": ["agents:read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["expiresAt"].is_null(), "{body}");
+}
+
 #[tokio::test]
 async fn private_agents_are_hidden_from_other_users() {
     let Some(app) = test_app(true).await else {
@@ -1777,7 +1910,7 @@ async fn reset_approval_policy(app: &TestApp) {
 }
 
 async fn raw_pool() -> sqlx::PgPool {
-    sqlx::PgPool::connect(&std::env::var("ORBIT_TEST_DATABASE_URL").unwrap())
+    sqlx::PgPool::connect(&orbit_store::test_database_url().unwrap())
         .await
         .unwrap()
 }
@@ -3712,6 +3845,78 @@ async fn worker_context_withholds_credential_from_unauthorized_principal() {
         body["subagentModels"][0]["model"]["credential"]["value"],
         "sk-victim-secret"
     );
+    // The stored input carries no prompt (#429); the worker context adds the current one.
+    assert_eq!(
+        body["execution"]["input"]["team"]["subagents"][0]["instructions"],
+        sub_definition.spec.instructions.system.as_str()
+    );
+}
+
+/// #429: a native team stores its subagents as references; their system prompts never
+/// appear in the run, step or execution read by team viewers.
+#[tokio::test]
+async fn native_team_runs_do_not_store_subagent_prompts() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let mut primary = definition();
+    primary["metadata"]["name"] = json!("Native primary");
+    primary["spec"]["harness"]["type"] = json!("opencode");
+    let mut secret = definition();
+    secret["metadata"]["name"] = json!("Private specialist");
+    secret["spec"]["instructions"] =
+        json!({ "system": "SECRET-SUBAGENT-PROMPT", "constraints": ["SECRET-CONSTRAINT"] });
+    let mut ids = Vec::new();
+    for body in [primary, secret] {
+        let definition: orbit_domain::AgentDefinition = serde_json::from_value(body).unwrap();
+        let (agent, _) = app
+            .store
+            .create_agent(app.org_id, None, &definition)
+            .await
+            .unwrap();
+        app.store
+            .set_agent_status(app.org_id, agent.id, orbit_domain::AgentStatus::Active)
+            .await
+            .unwrap();
+        ids.push(agent.id);
+    }
+    let (status, team) = send(
+        &app.router,
+        post(
+            "/api/v1/agent-teams",
+            json!({ "name": "Native", "mode": "native",
+                    "steps": [{ "agentId": ids[0] }, { "agentId": ids[1] }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let team_id = team["id"].as_str().unwrap();
+    let (status, detail) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team_id}/runs"),
+            json!({ "task": "native run" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{detail}");
+    let run_id = detail["run"]["id"].as_str().unwrap();
+    let execution_id = detail["steps"][0]["executionId"].as_str().unwrap();
+    let (_, run) = send(&app.router, get(&format!("/api/v1/team-runs/{run_id}"))).await;
+    let (_, execution) = send(
+        &app.router,
+        get(&format!("/api/v1/executions/{execution_id}")),
+    )
+    .await;
+    assert_eq!(
+        execution["input"]["team"]["subagents"][0]["agentId"],
+        ids[1].to_string()
+    );
+    for body in [&detail, &run, &execution] {
+        let text = body.to_string();
+        assert!(!text.contains("SECRET-SUBAGENT-PROMPT"), "{text}");
+        assert!(!text.contains("SECRET-CONSTRAINT"), "{text}");
+    }
 }
 
 /// #305: a step's model override reaches the worker context, so the step runs the model
@@ -4699,6 +4904,14 @@ async fn cancelling_a_queue_item_stops_its_execution() {
             .status,
         "cancelled"
     );
+    // #431: the run's steps end with it.
+    let steps = app.store.list_team_steps(run).await.unwrap();
+    assert!(!steps.is_empty());
+    assert!(
+        steps.iter().all(|step| step.status == "cancelled"),
+        "{:?}",
+        steps.iter().map(|step| &step.status).collect::<Vec<_>>()
+    );
 
     // While that execution is still stopping, the item cannot be requeued.
     let (status, body) = send(
@@ -4824,6 +5037,40 @@ async fn deleting_a_team_stops_its_executions() {
         cancel_requested,
         "a detached execution must still be stopped"
     );
+}
+
+/// #431: a direct run whose worker launch fails is ended before the error is returned,
+/// with its steps closed, so a retry does not leave a second run behind.
+#[tokio::test]
+async fn failed_launch_of_a_direct_run_ends_the_run() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "autoLaunch": true, "workerProfileId": Uuid::now_v7() }),
+    )
+    .await;
+    let (status, body) = send(
+        &app.router,
+        post(
+            &format!("/api/v1/agent-teams/{team}/runs"),
+            json!({ "task": "launch fails" }),
+        ),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    let runs =
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, status FROM team_runs WHERE team_id = $1")
+            .bind(team)
+            .fetch_all(&raw_pool().await)
+            .await
+            .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].1, "failed");
+    let steps = app.store.list_team_steps(runs[0].0).await.unwrap();
+    assert!(steps.iter().all(|step| step.status != "running"));
 }
 
 #[tokio::test]
@@ -12938,29 +13185,6 @@ async fn user_list_hides_other_users_oidc_identity_from_non_privileged_callers()
 }
 
 #[tokio::test]
-async fn agent_instances_listing_is_scoped_like_agents() {
-    let Some(app) = test_app(true).await else {
-        return;
-    };
-    let fx = d2_fixture(&app).await;
-    let (status, body) = send(
-        &app.router,
-        auth_get("/api/v1/agent-instances", &fx.mallory_token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["total"], 0);
-    // The scoped query itself (the table is never written by the product today).
-    let access = orbit_store::access::ResourceAccess::new(fx.mallory.id, false, vec![]);
-    assert!(app
-        .store
-        .list_agent_instances(app.org_id, Some(&access))
-        .await
-        .unwrap()
-        .is_empty());
-}
-
-#[tokio::test]
 async fn settings_write_holder_cannot_grant_beyond_own_permissions_in_roles() {
     let Some(app) = licensed_test_app().await else {
         return;
@@ -13837,7 +14061,7 @@ async fn reactivating_archived_agent_respects_agent_limit() {
 
 #[tokio::test]
 async fn concurrent_agent_creates_cannot_race_past_the_limit() {
-    let Some(url) = std::env::var("ORBIT_TEST_DATABASE_URL").ok() else {
+    let Some(url) = orbit_store::test_database_url() else {
         return;
     };
     // Derive the limit from the current installation-wide count: one slot is available.
@@ -13901,7 +14125,7 @@ async fn reserved_license_flags_are_not_advertised() {
     assert_eq!(body["license"]["features"].as_array().unwrap().len(), 6);
     assert_eq!(
         body["license"]["availableFeatures"],
-        json!(["custom_roles", "teams"])
+        json!(["custom_roles", "teams", "resource_permissions"])
     );
     assert!(body["warnings"]
         .as_array()
@@ -13918,8 +14142,11 @@ async fn reserved_license_flags_are_not_advertised() {
     assert_eq!(status, StatusCode::OK, "{meta}");
     assert_eq!(
         meta["license"]["availableFeatures"],
-        json!(["custom_roles", "teams"])
+        json!(["custom_roles", "teams", "resource_permissions"])
     );
+    // #449: /meta is public; customer, licence id, limits and dates are not in it.
+    let keys: Vec<&String> = meta["license"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["availableFeatures", "tier", "valid"], "{meta}");
 }
 
 #[tokio::test]

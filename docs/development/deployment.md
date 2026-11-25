@@ -336,7 +336,7 @@ ENTRYPOINT ["/usr/local/bin/orbit-worker"]
 |---|---|---|
 | `ORBIT_API_URL` | yes | Control plane URL (e.g. `http://orbit-api:8080`) |
 | `ORBIT_WORKER_TOKEN` | yes | Worker auth token. Platform workers get one per launch; custom workers use `POST /api/v1/worker-tokens` or a profile bootstrap manifest. |
-| `ORBIT_WORKER_HARNESSES` | no | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`). Default: all kinds; set it explicitly |
+| `ORBIT_WORKER_HARNESSES` | no | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`). Default: `mock,opencode,pi` (the available adapters); set it explicitly |
 | `ORBIT_WORKER_TARGET` | no | `local` (default), `docker`, or `kubernetes` (must match agent placement) |
 | `ORBIT_WORKSPACE_ROOT` | no | Writable scratch dir (default `/tmp/orbit-workspaces`) |
 | `ORBIT_WORKER_POLL_MS` | no | Poll interval in ms (default `1000`) |
@@ -435,6 +435,7 @@ Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explain
 | `ORBIT_OUTBOUND_ALLOWED_HOSTS` | empty | Hostnames, IPs or CIDRs exempt from the outbound block |
 | `ORBIT_LICENSE`, `ORBIT_LICENSE_FILE` | unset | Licence token inline or as a file (`/etc/orbit/license.jwt` is also checked). See [licensing.md](licensing.md) |
 | `ORBIT_LOG_FORMAT` | `text` (`json` in production) | Log format |
+| `RUST_LOG` | `info` | Log filter. At `info`, every 4xx (`info`) and 5xx (`warn`) request leaves one `request finished` line with status, route, latency and `request.id`; successful requests are logged at `debug` |
 | `ORBIT_ALLOW_API_TOKENS` | `true` | Set `false` to reject API tokens (`orbit_sk_…`) |
 | `ORBIT_AUTH_MODE` and `ORBIT_DEV_*` | `dev` | See [local.md](local.md). `ORBIT_DEV_USER_ROLE` (default `owner`) sets the dev user's role |
 

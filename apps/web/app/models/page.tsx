@@ -188,7 +188,7 @@ export default function ModelsPage() {
                       >
                         {test && !test.ok ? <span className="font-sans text-[13px] text-destructive">{test.error}</span> : endpointLabel(provider)}
                       </p>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground md:hidden">
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [@container(min-width:60rem)]:hidden">
                         <span className="sm:hidden">{kindLabel(provider.kind)}</span>
                         <span className="max-w-full truncate font-mono">{modelText}</span>
                         <span>{plural(catalog.length, "model", "models")}</span>
