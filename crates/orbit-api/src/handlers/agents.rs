@@ -359,17 +359,20 @@ pub async fn activate_agent(
     let agent = require_agent_manage(&state, &auth, agent_id).await?;
     // Draft and paused agents already count as non-archived. Restoring an archived one
     // adds a seat to the installation-wide agent count, so it needs the same guard as
-    // creating a new agent.
-    let _agent_limit = if agent.status == AgentStatus::Archived.as_str() {
-        state.agent_limit_guard().await?
-    } else {
-        None
-    };
+    // creating a new agent. The status is read under the lock: an agent archived
+    // concurrently after `require_agent_manage` must still be counted (#396).
+    let agent_limit = state.license_limit_lock("agents").await?;
+    if agent_limit.is_some() {
+        let current = state.store.get_agent(auth.org_id, agent.id).await?;
+        if current.status == AgentStatus::Archived.as_str() {
+            state.enforce_agent_limit().await?;
+        }
+    }
     state
         .store
         .set_agent_status(auth.org_id, agent_id, AgentStatus::Active)
         .await?;
-    drop(_agent_limit);
+    drop(agent_limit);
     audit::record(
         &state,
         &auth,

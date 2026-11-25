@@ -236,8 +236,12 @@ impl Store {
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .clone()
         };
-        let _local = lock.lock_owned().await;
+        // The local queue counts toward the same deadline as the advisory lock, so a slow
+        // holder in this process cannot make callers wait without bound (#396).
         let deadline = Instant::now() + LICENSE_LOCK_WAIT;
+        let _local = tokio::time::timeout_at(deadline.into(), lock.lock_owned())
+            .await
+            .map_err(|_| StoreError::Conflict("license limit is busy; retry".into()))?;
         let mut retry_delay = LICENSE_LOCK_RETRY_BASE;
 
         loop {

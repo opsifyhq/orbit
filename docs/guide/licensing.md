@@ -95,14 +95,15 @@ A license problem never prevents ORBIT from starting.
 
 | Limit | Counted as | Checked when |
 |---|---|---|
-| `seats` | active users in all orgs | a new user is provisioned (e.g. first OIDC login) |
+| `seats` | active users in all orgs | a new user is provisioned (e.g. first OIDC login); a first login that links a user an administrator already created uses no new seat |
 | `agents` | non-archived agents in all orgs | creating an agent (including import) or re-activating an archived agent |
 | `workers` | running worker launches in all orgs | launching a worker (manual, team or dispatcher) |
 | `executions_per_day` | executions in the last 24h in all orgs | creating any execution: manual run, rerun, team step (including dispatcher auto-run), scheduled trigger or continuous runtime tick |
 
 Checks and inserts share a database advisory lock, so concurrent API replicas cannot pass
 the limit together. The lock and count are only taken when the license actually defines
-the limit. Warnings appear at 80% in **Settings → Platform → License** and
+the limit, and only for the count and the insert: a worker launch releases the lock once
+its pending launch row exists (the row already counts), before it calls the launcher. Warnings appear at 80% in **Settings → Platform → License** and
 `GET /api/v1/license`. At 100% the create is rejected with `402 license_limit`. Using a
 feature the license does not include (for example creating an access team without `teams`)
 is rejected with `402 license_required`.

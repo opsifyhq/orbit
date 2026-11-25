@@ -194,7 +194,14 @@ async fn resolve_oidc(state: &AppState, token: Option<&str>) -> Result<AuthConte
             }
             // The only API path that provisions new users. Count all orgs and hold the
             // lock until the insert so concurrent first logins cannot exceed the seats.
-            let _seat_limit = state.seat_limit_guard().await?;
+            // A login that links a pre-provisioned user (same email, decided under the
+            // lock) adds no seat, so it is not refused at the limit (#396).
+            let seat_limit = state.license_limit_lock("seats").await?;
+            if seat_limit.is_some()
+                && !links_existing_user(state, &identity.subject, identity.email.as_deref()).await?
+            {
+                state.enforce_seat_limit().await?;
+            }
             let link_by_email =
                 may_link_by_email(identity.email_verified, oidc.require_verified_email);
             match state
@@ -242,6 +249,25 @@ async fn resolve_oidc(state: &AppState, token: Option<&str>) -> Result<AuthConte
         scopes,
         token_id: None,
     })
+}
+
+/// Whether an OIDC first login would bind an existing user row instead of inserting
+/// one. Mirrors the email normalisation in `Store::upsert_oidc_user`; any existing row
+/// with that email (linkable or refused) means no new seat is consumed.
+async fn links_existing_user(
+    state: &AppState,
+    subject: &str,
+    email: Option<&str>,
+) -> Result<bool, ApiError> {
+    let email = email
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(subject)
+        .to_lowercase();
+    Ok(state
+        .store
+        .get_user_by_email(state.default_org_id, &email)
+        .await?
+        .is_some())
 }
 
 fn team_role_rank(role: &str) -> u8 {

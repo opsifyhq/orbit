@@ -1895,6 +1895,11 @@ async fn same_agent_queues_on_different_harnesses() {
 /// (or interleave with a tick) run one at a time.
 static RUNTIME_TICK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// License tests derive a limit from an installation-wide count; tests that lower that
+/// count (archiving agents, ending worker launches) must not run in between.
+static AGENT_COUNT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static WORKER_LAUNCH_COUNT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Approval policy is a platform-wide setting; tests that change it must not overlap.
 static APPROVAL_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -6360,6 +6365,7 @@ async fn worker_event_and_memory_kinds_are_validated() {
 /// POST (a GET must not change state), and a live launch cannot be deleted.
 #[tokio::test]
 async fn bootstrap_keeps_existing_worker_tokens_and_live_launches_are_kept() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -6935,6 +6941,7 @@ async fn startup_reconciliation_reaps_expired_leases_but_not_live_ones() {
 
 #[tokio::test]
 async fn worker_launches_follow_profile_visibility() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -9628,6 +9635,7 @@ fn bulk_failed_ids(body: &Value) -> Vec<Uuid> {
 
 #[tokio::test]
 async fn bulk_agents_archive_delete_manage_access_and_partial_failures() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -10387,6 +10395,7 @@ async fn worker_memory_honours_the_agents_retention_days() {
 
 #[tokio::test]
 async fn archiving_a_live_worker_launch_is_a_conflict() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -11116,6 +11125,7 @@ async fn worker_profile_env_update_validates_keep_and_value_types() {
 
 #[tokio::test]
 async fn worker_facing_paths_still_receive_env_values_and_resolved_secrets() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -11716,6 +11726,7 @@ async fn licensed_test_app() -> Option<TestApp> {
 
 #[tokio::test]
 async fn settings_write_holder_cannot_touch_other_teams_worker_objects() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
     let Some(app) = test_app(true).await else {
         return;
     };
@@ -14035,6 +14046,7 @@ async fn execution_limit_skips_runtime_tick_without_stopping_it() {
 
 #[tokio::test]
 async fn opencode_import_respects_agent_limit() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
     let Some(mut app) = test_app(true).await else {
         return;
     };
@@ -14071,6 +14083,7 @@ async fn opencode_import_respects_agent_limit() {
 
 #[tokio::test]
 async fn reactivating_archived_agent_respects_agent_limit() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
     let Some(mut app) = test_app(true).await else {
         return;
     };
@@ -14107,6 +14120,7 @@ async fn reactivating_archived_agent_respects_agent_limit() {
 
 #[tokio::test]
 async fn concurrent_agent_creates_cannot_race_past_the_limit() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
     let Some(url) = orbit_store::test_database_url() else {
         return;
     };
@@ -14149,6 +14163,274 @@ async fn concurrent_agent_creates_cannot_race_past_the_limit() {
     assert!(
         limited >= 1,
         "the remaining creates must be refused: {limited}"
+    );
+}
+
+/// A launcher stub that reports each request on `seen` and answers after `delay`.
+async fn slow_launcher(
+    delay: std::time::Duration,
+) -> (String, tokio::sync::mpsc::UnboundedReceiver<()>) {
+    let (seen, received) = tokio::sync::mpsc::unbounded_channel();
+    let mock = axum::Router::new().route(
+        "/launches",
+        axum::routing::post(move || {
+            let seen = seen.clone();
+            async move {
+                let _ = seen.send(());
+                tokio::time::sleep(delay).await;
+                axum::Json(json!({ "status": "running", "runtimeId": "pod-1", "workerId": "w-1" }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    (format!("http://{addr}"), received)
+}
+
+/// Create and enable a worker profile through the API; returns its id.
+async fn enabled_worker_profile(router: &axum::Router, prefix: &str) -> String {
+    let (status, created) = send(
+        router,
+        post(
+            "/api/v1/worker-profiles",
+            json!({
+                "name": format!("{prefix}-{}", Uuid::now_v7()),
+                "harnessKind": "mock",
+                "target": "kubernetes",
+                "authSecretName": "orbit-pi-auth",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let (status, body) = send(
+        router,
+        post(&format!("/api/v1/worker-profiles/{id}/enable"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    id
+}
+
+#[tokio::test]
+async fn worker_limit_guard_is_inactive_without_a_limit() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // An unlimited license takes no advisory lock and counts nothing for launches (#396).
+    assert!(app.state.worker_limit_guard().await.unwrap().is_none());
+    assert!(app
+        .state
+        .license_limit_lock("workers")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn worker_launch_releases_the_license_lock_before_calling_the_launcher() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let current = app
+        .store
+        .count_active_worker_launches_installation()
+        .await
+        .unwrap();
+    app.state.license =
+        LicenseHandle::from_status(licensed(&[], json!({ "workers": current + 1000 })));
+    let (url, mut received) = slow_launcher(std::time::Duration::from_secs(5)).await;
+    app.state.launcher_url = Some(url);
+    app.state.launcher_token = Some("launcher-token".into());
+    let router = build_router(app.state.clone());
+    let profile = enabled_worker_profile(&router, "slow-launch").await;
+
+    let first = {
+        let router = router.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                post(
+                    &format!("/api/v1/worker-profiles/{profile}/launch"),
+                    json!({}),
+                ),
+            )
+            .await
+        })
+    };
+    // The first launch is now inside the launcher call...
+    tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+        .await
+        .expect("the launcher must be called")
+        .unwrap();
+    // ...and a second launch's limit check does not wait for it.
+    let guard = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        app.state.worker_limit_guard(),
+    )
+    .await
+    .expect("the worker limit lock must not be held across the launcher call")
+    .unwrap();
+    assert!(guard.is_some());
+    drop(guard);
+
+    let (status, body) = first.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
+async fn concurrent_worker_launches_cannot_race_past_the_limit() {
+    let _serial = WORKER_LAUNCH_COUNT_LOCK.lock().await;
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let (url, _received) = slow_launcher(std::time::Duration::from_millis(200)).await;
+    app.state.launcher_url = Some(url);
+    app.state.launcher_token = Some("launcher-token".into());
+    let unlimited = build_router(app.state.clone());
+    let first = enabled_worker_profile(&unlimited, "race-a").await;
+    let second = enabled_worker_profile(&unlimited, "race-b").await;
+
+    // One slot is available installation-wide.
+    let current = app
+        .store
+        .count_active_worker_launches_installation()
+        .await
+        .unwrap();
+    app.state.license =
+        LicenseHandle::from_status(licensed(&[], json!({ "workers": current + 1 })));
+    let router = build_router(app.state.clone());
+
+    let mut tasks = Vec::new();
+    for profile in [first, second] {
+        let router = router.clone();
+        tasks.push(tokio::spawn(async move {
+            send(
+                &router,
+                post(
+                    &format!("/api/v1/worker-profiles/{profile}/launch"),
+                    json!({}),
+                ),
+            )
+            .await
+        }));
+    }
+    let mut created = 0;
+    let mut limited = 0;
+    for task in tasks {
+        let (status, body) = task.await.unwrap();
+        if status == StatusCode::CREATED {
+            created += 1;
+        } else {
+            assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+            assert_eq!(body["error"]["code"], "license_limit");
+            limited += 1;
+        }
+    }
+    // Other tests share this database and may add launches concurrently, so the second
+    // launch is always refused but the first may be too.
+    assert!(
+        created <= 1,
+        "at most one launch may pass the lock: {created}"
+    );
+    assert!(limited >= 1, "the other launch must be refused: {limited}");
+}
+
+#[tokio::test]
+async fn concurrent_idempotent_execution_at_the_limit_returns_the_first_execution() {
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    let path = format!("/api/v1/agents/{}/executions", app.agent_id);
+    let key = format!("limit-race-{}", Uuid::now_v7());
+    let request = |key: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(&path)
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(
+                json!({ "task": "idempotent at the limit" }).to_string(),
+            ))
+            .unwrap()
+    };
+    // The "first" request inserts through an unlimited router; the duplicate runs at a
+    // zero limit, so only the lookup under the lock can save it from a 402 (#396).
+    let unlimited = build_router(app.state.clone());
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": 0 })));
+    let limited = build_router(app.state.clone());
+
+    let held = app
+        .state
+        .license_limit_lock("executions_per_day")
+        .await
+        .unwrap()
+        .expect("a configured limit takes the lock");
+    let duplicate = {
+        let router = limited.clone();
+        let request = request(&key);
+        tokio::spawn(async move { send(&router, request).await })
+    };
+    // Let the duplicate miss the fast-path lookup and queue on the lock.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let (status, first) = send(&unlimited, request(&key)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    drop(held);
+
+    let (status, body) = duplicate.await.unwrap();
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["id"], first["id"]);
+}
+
+#[tokio::test]
+async fn activating_an_agent_archived_concurrently_respects_agent_limit() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
+    let Some(mut app) = test_app(true).await else {
+        return;
+    };
+    // At a zero limit, restoring any archived agent is refused.
+    app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "agents": 0 })));
+    let router = build_router(app.state.clone());
+    let agent_id = app.agent_id;
+
+    let held = app
+        .state
+        .license_limit_lock("agents")
+        .await
+        .unwrap()
+        .expect("a configured limit takes the lock");
+    // The request reads the agent while it is still active...
+    let activate = {
+        let router = router.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                post(&format!("/api/v1/agents/{agent_id}/activate"), json!({})),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // ...and it is archived before the request gets the lock.
+    app.store
+        .set_agent_status(app.org_id, agent_id, orbit_domain::AgentStatus::Archived)
+        .await
+        .unwrap();
+    drop(held);
+
+    let (status, body) = activate.await.unwrap();
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "license_limit");
+    assert_eq!(
+        app.store
+            .get_agent(app.org_id, agent_id)
+            .await
+            .unwrap()
+            .status,
+        "archived"
     );
 }
 
