@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 
@@ -21,6 +21,7 @@ import {
   filterEvents,
   groupTimelineEvents,
   parseEventFilters,
+  sameTimelineGroup,
   toolOptions,
   type EventFilters,
   type TimelineEventGroup,
@@ -112,14 +113,15 @@ export function ExecutionTimeline({
     // `updateFilters` reads the current URL when it runs; only typing should schedule it.
   }, [toolText]);
 
-  function toggleGroup(key: string) {
+  // Stable, so memoised rows and groups are not rendered again on every stream flush.
+  const toggleGroup = useCallback((key: string) => {
     setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  }
+  }, []);
 
   useEffect(() => {
     if (follow && liveNow.current && logRef.current) {
@@ -295,8 +297,9 @@ export function ExecutionTimeline({
               <EventGroup
                 key={`group-${entry.events[0].seq}`}
                 group={entry}
+                groupId={String(entry.events[0].seq)}
                 expanded={expandedGroups.has(String(entry.events[0].seq))}
-                onToggle={() => toggleGroup(String(entry.events[0].seq))}
+                onToggle={toggleGroup}
               />
             ) : (
               <EventLine key={entry.event.seq} event={entry.event} />
@@ -338,20 +341,27 @@ export function ExecutionTimeline({
   );
 }
 
-function EventGroup({
-  group,
-  expanded,
-  onToggle,
-}: {
+// Rows are memoised: a live run flushes new events every 50 ms, and without this
+// each flush rendered every row again (5,000 rows in "Everything" on a long run).
+// Event objects keep their identity across flushes, so only new rows render.
+// `content-visibility: auto` lets the browser skip layout and paint for rows outside
+// the scroll box, which does the job of windowing without a list library.
+const ROW_VISIBILITY = "[content-visibility:auto] [contain-intrinsic-size:auto_2.75rem]";
+
+type EventGroupProps = {
   group: TimelineEventGroup;
+  groupId: string;
   expanded: boolean;
-  onToggle: () => void;
-}) {
+  onToggle: (groupId: string) => void;
+};
+
+const EventGroup = memo(
+  function EventGroup({ group, groupId, expanded, onToggle }: EventGroupProps) {
   return (
-    <div className="border-b border-border/70 last:border-b-0">
+    <div className={cn("border-b border-border/70 last:border-b-0", ROW_VISIBILITY)}>
       <button
         type="button"
-        onClick={onToggle}
+        onClick={() => onToggle(groupId)}
         aria-expanded={expanded}
         className="flex w-full min-h-9 items-center justify-between gap-2 py-2 text-left text-[13px] font-medium text-muted-foreground hover:text-foreground"
       >
@@ -374,7 +384,13 @@ function EventGroup({
       ) : null}
     </div>
   );
-}
+  },
+  (previous, next) =>
+    previous.groupId === next.groupId &&
+    previous.expanded === next.expanded &&
+    previous.onToggle === next.onToggle &&
+    sameTimelineGroup(previous.group, next.group),
+);
 
 const TONE_TEXT: Record<string, string> = {
   plain: "text-foreground",
@@ -444,12 +460,17 @@ function AgentProse({ text }: { text: string }) {
   );
 }
 
-function EventLine({ event }: { event: ExecutionEventRecord }) {
+const EventLine = memo(function EventLine({ event }: { event: ExecutionEventRecord }) {
   const view = describeEvent(event);
   const hasData = Boolean(event.data && typeof event.data === "object" && Object.keys(event.data).length);
 
   return (
-    <div className="grid grid-cols-[4.25rem_minmax(0,1fr)] gap-x-3 border-b border-border/70 py-2.5 text-[13px] last:border-b-0 sm:grid-cols-[4.25rem_4.75rem_minmax(0,1fr)]">
+    <div
+      className={cn(
+        "grid grid-cols-[4.25rem_minmax(0,1fr)] gap-x-3 border-b border-border/70 py-2.5 text-[13px] last:border-b-0 sm:grid-cols-[4.25rem_4.75rem_minmax(0,1fr)]",
+        ROW_VISIBILITY,
+      )}
+    >
       <time
         className="tabular pt-px font-mono text-xs text-muted-foreground"
         dateTime={event.createdAt}
@@ -488,16 +509,24 @@ function EventLine({ event }: { event: ExecutionEventRecord }) {
           ) : null}
         </div>
         {view.detail ? <p className="mt-0.5 break-words text-muted-foreground">{view.detail}</p> : null}
-        {hasData ? (
-          <details className="mt-1">
-            <summary className="w-fit cursor-pointer select-none rounded text-xs text-muted-foreground hover:text-foreground">
-              Details
-            </summary>
-            <pre className="code-block mt-1.5 max-h-64 whitespace-pre-wrap">{JSON.stringify(event.data, null, 2)}</pre>
-          </details>
-        ) : null}
+        {hasData ? <EventData data={event.data} /> : null}
       </div>
     </div>
+  );
+});
+
+/** The raw event data, formatted only once someone opens it. */
+function EventData({ data }: { data: unknown }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="mt-1" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="w-fit cursor-pointer select-none rounded text-xs text-muted-foreground hover:text-foreground">
+        Details
+      </summary>
+      {open ? (
+        <pre className="code-block mt-1.5 max-h-64 whitespace-pre-wrap">{JSON.stringify(data, null, 2)}</pre>
+      ) : null}
+    </details>
   );
 }
 

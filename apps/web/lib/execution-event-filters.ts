@@ -248,3 +248,14 @@ export function groupTimelineEvents(
   flush();
   return entries;
 }
+
+/**
+ * Whether two renders of the same group show the same thing. `groupTimelineEvents`
+ * builds new group objects on every stream flush; the timeline compares them with
+ * this so a group whose events did not change is not rendered again.
+ */
+export function sameTimelineGroup(a: TimelineEventGroup, b: TimelineEventGroup): boolean {
+  if (a === b) return true;
+  if (a.key !== b.key || a.label !== b.label || a.events.length !== b.events.length) return false;
+  return a.events.every((event, index) => event === b.events[index]);
+}

@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
 import { listEnvMappings, workerProfileEnvMappings } from "./env-mappings";
@@ -40,6 +40,13 @@ import {
   type TeamRunPage,
 } from "./teams";
 import { workerLaunches } from "./launcher";
+import {
+  hasActiveRun,
+  hasActiveRunOutsideHead,
+  headOutrunsPages,
+  mergeRunPages,
+  TERMINAL_RUN_STATUSES,
+} from "./team-run-pages";
 
 export function unwrap<T>(result: {
   data?: T;
@@ -484,7 +491,7 @@ export function useTeamQueue(teamId: string) {
   });
 }
 
-const TERMINAL_RUN = new Set(["succeeded", "completed", "failed", "cancelled", "timed_out", "rejected"]);
+const TERMINAL_RUN = TERMINAL_RUN_STATUSES;
 
 /** One run and its steps; polls until the run is finished. */
 export function useTeamRun(runId: string) {
@@ -513,24 +520,68 @@ export function useTeamRuns(
   });
 }
 
-/** Paged team runs for the registry list: the server filters and supplies the cursor. */
+/**
+ * Paged team runs for the registry list: the server filters and supplies the cursor.
+ *
+ * Only the newest page is polled (every 3 s while a run is active, 15 s otherwise) and
+ * merged over the pages "Load older runs" added; refetching the infinite query itself
+ * would request every loaded page on each tick. `items` and `total` are what to show.
+ */
 export function usePagedTeamRuns(
   options: { archived?: boolean; q?: string; limit?: number } = {},
 ) {
   const { archived, q, limit } = options;
-  return useInfiniteQuery<TeamRunPage>({
-    queryKey: [...queryKeys.teamRuns, "page", archived ?? "all", q ?? "", limit ?? 100],
-    queryFn: ({ pageParam }) =>
-      listTeamRuns({ archived, q, limit, cursor: typeof pageParam === "string" ? pageParam : undefined }),
+  const queryClient = useQueryClient();
+  const scope = [archived ?? "all", q ?? "", limit ?? 100] as const;
+  const headKey = [...queryKeys.teamRuns, "page-head", ...scope];
+  const pages = useInfiniteQuery<TeamRunPage>({
+    queryKey: [...queryKeys.teamRuns, "page", ...scope],
+    queryFn: async ({ pageParam }) => {
+      const cursor = typeof pageParam === "string" ? pageParam : undefined;
+      const page = await listTeamRuns({ archived, q, limit, cursor });
+      // The first page doubles as the polled head, so mounting makes one request.
+      if (!cursor) queryClient.setQueryData(headKey, page);
+      return page;
+    },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     refetchInterval: (query) =>
-      query.state.data?.pages.some((page) =>
-        page.items.some((run) => !TERMINAL_RUN.has(run.status)),
-      )
-        ? 3_000
-        : 15_000,
+      hasActiveRunOutsideHead(queryClient.getQueryData<TeamRunPage>(headKey), query.state.data?.pages ?? [])
+        ? 30_000
+        : false,
   });
+  const head = useQuery<TeamRunPage>({
+    queryKey: headKey,
+    queryFn: () => listTeamRuns({ archived, q, limit }),
+    enabled: pages.isSuccess,
+    staleTime: 2_000,
+    refetchInterval: (query) => {
+      const runs = mergeRunPages(query.state.data, pages.data?.pages ?? []);
+      return hasActiveRun(runs) ? 3_000 : 15_000;
+    },
+  });
+
+  const loaded = pages.data?.pages;
+  const outrun = headOutrunsPages(head.data, loaded ?? []);
+  const { refetch } = pages;
+  useEffect(() => {
+    if (outrun) void refetch();
+  }, [outrun, refetch]);
+
+  const items = useMemo(() => mergeRunPages(head.data, loaded ?? []), [head.data, loaded]);
+  const total = head.data?.total ?? loaded?.[0]?.total ?? 0;
+  // A newest page that is the whole list means there is nothing older to load.
+  const hasNextPage = head.data && !head.data.nextCursor ? false : pages.hasNextPage;
+  return {
+    items,
+    total,
+    hasNextPage,
+    isLoading: pages.isLoading,
+    isError: pages.isError,
+    error: pages.error,
+    isFetchingNextPage: pages.isFetchingNextPage,
+    fetchNextPage: pages.fetchNextPage,
+  };
 }
 
 export function useWorkerLaunches(includeInactive = false) {
