@@ -415,7 +415,8 @@ async fn translate(
             if config.is_null() {
                 config = json!({});
             }
-            if let Err(error) = crate::handlers::catalog::validate_connection_urls(&config).await {
+            if let Err(error) = crate::handlers::catalog::validate_connection_config(&config).await
+            {
                 for issue in &error.details {
                     found.issue(issue.path.clone(), issue.message.clone());
                 }

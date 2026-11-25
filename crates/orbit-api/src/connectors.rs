@@ -183,7 +183,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             slug: "kubernetes".into(),
             name: "Kubernetes".into(),
             version: "0.2.0".into(),
-            description: "Read-only Kubernetes inspection: namespaces, pods, logs, deployments and events.".into(),
+            description: "Kubernetes inspection (namespaces, pods, logs, deployments, events) and controlled recovery (restart a deployment, delete a pod).".into(),
             auth: vec![AuthMethod::ApiToken],
             webhooks: false,
             capabilities: vec![
@@ -202,7 +202,7 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                 capability(
                     "pods.delete",
                     "Delete pod",
-                    "Deletes one pod; its Deployment/ReplicaSet recreates it. Use for a stuck pod.",
+                    "Deletes one pod in an allowed namespace; its Deployment/ReplicaSet recreates it.",
                     CapabilityEffect::ExternalSideEffect,
                 ),
                 capability("events.list", "List events", "Lists namespace events.", CapabilityEffect::Read),

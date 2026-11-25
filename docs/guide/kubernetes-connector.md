@@ -2,7 +2,7 @@
 
 Cluster inspection and controlled recovery for agents: list
 namespaces/pods/deployments/events, read pod details and bounded logs, restart a deployment
-or delete a stuck pod. No arbitrary apply, exec, port-forward or Secret access.
+or delete a pod. No arbitrary apply, exec, port-forward or Secret access.
 
 ## Connection
 
@@ -52,13 +52,20 @@ Pod and deployment results have container `env[].value` and the
 so plain environment values in a manifest do not reach the agent. `valueFrom` references
 (Secret or ConfigMap name and key) are kept.
 
+Object names must be Kubernetes names (lowercase letters, digits, `-` and `.`, starting and
+ending with a letter or digit) and namespaces must be DNS labels, so `.`, `..` and empty
+values are refused before any request. `defaultNamespace` and every `namespaces` entry
+(other than a standalone `*`) are checked the same way when the connection is saved.
+
 ## Test connection
 
 The connection **Test** button parses the credential and connects to the API server. It
 first lists the namespaces visible to the credential; if that returns 403 it probes a
 bounded pod list in the configured/default namespace. A kubeconfig scoped to one namespace
 therefore tests successfully without cluster-wide `list namespaces` RBAC. Unsupported
-kubeconfig auth, rejected TLS settings and RBAC failures return a readable message; the
+kubeconfig auth, rejected TLS settings and RBAC failures return a readable message. Only
+a Kubernetes `Status` message is passed on; any other response body is reported by its
+status code alone, so a misdirected `apiServer` cannot be read back through the test. The
 result is stored as the connection's check status. The check is advisory: a failed test marks the connection
 "Check failed" (status `error`), but runs do not check that status, so agents keep using
 the connection, and testing again after a fix sets it back to connected. A test never
@@ -76,8 +83,11 @@ Recovery capabilities are explicit external side effects:
 
 - `deployments.restart`: patches `kubectl.kubernetes.io/restartedAt` on the pod template,
   which triggers a normal rolling restart.
-- `pods.delete`: deletes one pod so its Deployment/ReplicaSet recreates it. `gracePeriodSeconds`
-  is optional (0–300, default 0).
+- `pods.delete`: deletes one pod so its Deployment/ReplicaSet recreates it. Any pod in an
+  allowed namespace can be deleted; ORBIT does not check that the pod is stuck, so limit
+  it with approvals and RBAC. `gracePeriodSeconds` is optional (0–300); without it the
+  pod's own `terminationGracePeriodSeconds` applies, as with `kubectl delete pod`, and `0`
+  force-deletes. The result is `{deleted, namespace, name}`, not the deleted Pod.
 
 They follow autonomy and approvals like any other write: L3 asks, L4 with `auto`
 approval runs immediately, and tool policies can deny them. The connection-level
