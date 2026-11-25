@@ -256,6 +256,17 @@ The OpenCode and Pi adapters share the same supervisor, so their behaviour canno
   a symlink at the file path is unlinked and replaced, and the file is opened with
   `O_NOFOLLOW`. A cloned repository can ship symlinks, so this prevents it from
   redirecting those writes elsewhere on the host.
+- **Repository harness files** (`services/worker/src/harness_files.rs`). After checkout and
+  before ORBIT writes its own files, the worker removes what a harness would load as code
+  from the workspace root and every checked-out repository: `.opencode/` plugins, tools,
+  agents, modes, `package.json` and `node_modules`, `.opencode/opencode.json(c)`,
+  `opencode.jsonc`, and `.pi/extensions`, `.pi/settings.json` and `.pi/mcp.json`. A
+  symlinked `.opencode` or `.pi` is unlinked. From a repository `opencode.json` only
+  `$schema`, `instructions`, `permission`, `tools`, `share`, `autoupdate` and `snapshot`
+  are kept (`plugin`, `agent`, `formatter`, `lsp`, `provider`, `mcp` and others are
+  dropped). Skills, commands and prompts stay. The removals are reported as one execution
+  event and are never staged by `repo.commit`, so they do not reach the repository; an
+  agent therefore cannot commit changes to those paths either.
 - **Environment scrubbing** (`process_env.rs`). The harness does not inherit the worker's
   environment. Only an allowlist is passed through (`PATH`, `HOME`, `USER`, `LANG`,
   `TMPDIR`, TLS certificate variables, and names starting with `XDG_` or `LC_`), plus the
