@@ -4540,6 +4540,183 @@ async fn worker_boot_change_fails_executions_from_the_previous_boot() {
     );
 }
 
+/// #395: during a rolling update the terminating pod keeps heartbeating under the same
+/// worker id. Its older boot must not fail the executions of the newer boot.
+#[tokio::test]
+async fn a_late_heartbeat_from_an_older_boot_keeps_the_newer_boots_executions() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Rolling Boot Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "rolling-boot").await;
+    let worker_id = format!("worker-rolling-{}", uuid::Uuid::now_v7());
+    let boot_a = uuid::Uuid::now_v7();
+    let started_a = chrono::Utc::now() - chrono::Duration::seconds(120);
+    let beat = |boot: uuid::Uuid, started: chrono::DateTime<chrono::Utc>| {
+        let store = &store;
+        let worker_id = &worker_id;
+        async move {
+            store
+                .upsert_worker_heartbeat_with_boot(
+                    org,
+                    token.id,
+                    worker_id,
+                    &["mock".into()],
+                    "local",
+                    Some("host"),
+                    Some(boot),
+                    Some(started),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    assert!(!beat(boot_a, started_a).await.boot_changed);
+
+    // Boot B takes over and claims a run.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let boot_b = uuid::Uuid::now_v7();
+    let started_b = chrono::Utc::now();
+    assert!(beat(boot_b, started_b).await.boot_changed);
+    let execution = queued_execution(&store, org, user, &agent, &version).await;
+    store
+        .claim_execution_for_launch(execution.id, &worker_id, token.id)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .touch_execution_leases(
+            org,
+            token.id,
+            &worker_id,
+            Some(boot_b),
+            Some(started_b),
+            &[execution.id],
+            60,
+        )
+        .await
+        .unwrap();
+
+    // The old pod's last beats arrive late: no boot change, nothing failed.
+    for _ in 0..2 {
+        let late = beat(boot_a, started_a).await;
+        assert!(late.accepted);
+        assert!(!late.boot_changed);
+        assert!(late.failed_executions.is_empty());
+    }
+    let stored = store.get_execution(org, execution.id).await.unwrap();
+    assert_eq!(stored.status, "dispatched");
+    assert_eq!(stored.worker_boot_id, Some(boot_b));
+    let recorded: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT boot_id FROM worker_heartbeats WHERE worker_id = $1")
+            .bind(&worker_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(recorded, Some(boot_b), "the older boot is not remembered");
+
+    // B keeps beating without a change, and a genuinely newer boot still fails B's run.
+    assert!(!beat(boot_b, started_b).await.boot_changed);
+    let boot_c = uuid::Uuid::now_v7();
+    let restarted = beat(boot_c, chrono::Utc::now()).await;
+    assert!(restarted.boot_changed);
+    assert_eq!(restarted.failed_executions.len(), 1);
+    assert_eq!(restarted.failed_executions[0].id, execution.id);
+}
+
+/// #395: renewing the lease of a run the worker keeps listing is not activity, so a run
+/// that never starts is still ended, and an ignored cancel is still forced.
+#[tokio::test]
+async fn lease_renewal_does_not_hide_a_run_that_never_starts() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Hung Start Agent"))
+        .await
+        .unwrap();
+    let token = worker_token(&store, org, "hung-start").await;
+    let worker_id = format!("worker-hung-{}", uuid::Uuid::now_v7());
+    let boot = uuid::Uuid::now_v7();
+    let started_at = chrono::Utc::now();
+    store
+        .upsert_worker_heartbeat_with_boot(
+            org,
+            token.id,
+            &worker_id,
+            &["mock".into()],
+            "local",
+            Some("host"),
+            Some(boot),
+            Some(started_at),
+        )
+        .await
+        .unwrap();
+
+    let hung = queued_execution(&store, org, user, &agent, &version).await;
+    let cancelled = queued_execution(&store, org, user, &agent, &version).await;
+    for id in [hung.id, cancelled.id] {
+        store
+            .claim_execution_for_launch(id, &worker_id, token.id)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    store
+        .request_execution_cancel(org, cancelled.id)
+        .await
+        .unwrap();
+    for (id, interval) in [(hung.id, "1 hour"), (cancelled.id, "2 minutes")] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE executions SET created_at = now() - interval '{interval}', \
+             started_at = now() - interval '{interval}', updated_at = now() - interval '{interval}' \
+             WHERE id = $1"
+        )))
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+
+    // The worker still lists both runs on every heartbeat.
+    let touched = store
+        .touch_execution_leases(
+            org,
+            token.id,
+            &worker_id,
+            Some(boot),
+            Some(started_at),
+            &[hung.id, cancelled.id],
+            60,
+        )
+        .await
+        .unwrap();
+    assert_eq!(touched.len(), 2);
+
+    let reaped = store
+        .reap_unstarted_executions(Some(org), 600, 60)
+        .await
+        .unwrap();
+    let mut ids: Vec<uuid::Uuid> = reaped.iter().map(|row| row.id).collect();
+    ids.sort();
+    let mut expected = vec![hung.id, cancelled.id];
+    expected.sort();
+    assert_eq!(ids, expected);
+    let hung_now = store.get_execution(org, hung.id).await.unwrap();
+    assert_eq!(hung_now.status, "failed");
+    assert_eq!(hung_now.error.unwrap()["code"], "worker_did_not_start");
+    assert_eq!(
+        store.get_execution(org, cancelled.id).await.unwrap().status,
+        "cancelled"
+    );
+}
+
 /// #343: a worker killed by the runtime cannot report its own failure, so every in-flight
 /// execution on it must be findable — not only the ones already `running`.
 #[tokio::test]

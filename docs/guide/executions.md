@@ -74,7 +74,7 @@ ended is expired and cannot be decided (409).
   spent waiting for an approval is added. Raise the timeout in Agent Studio ("Run limits")
   or give the agent a smaller task.
 - `worker_lost` (a `failed` run): the worker running it stopped sending heartbeats for 90
-  seconds, restarted with a new boot id while the run was still active, or its pod/node
+  seconds, restarted with a newer boot id while the run was still active, or its pod/node
   disappeared, so the outcome is unknown. Check whether it changed anything before running
   it again.
 - `worker_oom` (a `failed` run): the container runtime OOM-killed the worker. Raise the

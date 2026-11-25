@@ -72,12 +72,22 @@ impl Store {
     ) -> StoreResult<HeartbeatOutcome> {
         let mut tx = self.pool.begin().await?;
         // Lock the row so two concurrent boots cannot both read the same predecessor.
-        let previous_boot_id: Option<Option<Uuid>> = sqlx::query_scalar(
-            "SELECT boot_id FROM worker_heartbeats WHERE worker_id = $1 FOR UPDATE",
+        let previous: Option<(Option<Uuid>, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "SELECT boot_id, boot_started_at FROM worker_heartbeats WHERE worker_id = $1 FOR UPDATE",
         )
         .bind(worker_id)
         .fetch_optional(&mut *tx)
         .await?;
+        let (previous_boot_id, previous_boot_started_at) = previous.unwrap_or((None, None));
+        // During a rolling update the terminating pod keeps heartbeating under the same
+        // worker id. Its boot is older than the recorded one: it is neither a restart nor
+        // the boot to remember, so it must not fail the newer boot's executions.
+        let stale_boot = match (previous_boot_id, boot_id) {
+            (Some(previous), Some(current)) if previous != current => {
+                boot_is_older(current, boot_started_at, previous, previous_boot_started_at)
+            }
+            _ => false,
+        };
 
         let result = sqlx::query(
             r#"
@@ -92,8 +102,10 @@ impl Store {
                 last_heartbeat_at = now(),
                 org_id = EXCLUDED.org_id,
                 token_id = EXCLUDED.token_id,
-                boot_id = COALESCE(EXCLUDED.boot_id, worker_heartbeats.boot_id),
-                boot_started_at = COALESCE(EXCLUDED.boot_started_at, worker_heartbeats.boot_started_at)
+                boot_id = CASE WHEN $9 THEN worker_heartbeats.boot_id
+                               ELSE COALESCE(EXCLUDED.boot_id, worker_heartbeats.boot_id) END,
+                boot_started_at = CASE WHEN $9 THEN worker_heartbeats.boot_started_at
+                                       ELSE COALESCE(EXCLUDED.boot_started_at, worker_heartbeats.boot_started_at) END
             WHERE worker_heartbeats.token_id IS NULL
                OR worker_heartbeats.token_id = EXCLUDED.token_id
             "#,
@@ -106,6 +118,7 @@ impl Store {
         .bind(token_id)
         .bind(boot_id)
         .bind(boot_started_at)
+        .bind(stale_boot)
         .execute(&mut *tx)
         .await?;
 
@@ -119,10 +132,11 @@ impl Store {
             });
         }
 
-        let boot_changed = matches!(
-            (previous_boot_id.flatten(), boot_id),
-            (Some(previous), Some(current)) if previous != current
-        );
+        let boot_changed = !stale_boot
+            && matches!(
+                (previous_boot_id, boot_id),
+                (Some(previous), Some(current)) if previous != current
+            );
         let failed_executions = if boot_changed {
             let current_boot_id = boot_id.expect("boot_id is Some when boot_changed");
             let rows = sqlx::query_as::<_, ExecutionRecord>(
@@ -172,6 +186,10 @@ impl Store {
     /// ids the caller does not list are left untouched. Boot identity is stamped once,
     /// so a legacy worker that reports it later inherits it without overwriting an
     /// already-recorded boot. Returns the ids whose leases were actually renewed.
+    ///
+    /// Renewal is not activity: `updated_at` is left alone, so a `dispatched` run that
+    /// its worker keeps listing but never starts is still ended by
+    /// [`Self::reap_unstarted_executions`] (#395).
     #[allow(clippy::too_many_arguments)]
     pub async fn touch_execution_leases(
         &self,
@@ -189,8 +207,7 @@ impl Store {
             SET last_execution_heartbeat_at = now(),
                 execution_lease_until = now() + make_interval(secs => $7),
                 worker_boot_id = COALESCE(worker_boot_id, $5),
-                worker_boot_started_at = COALESCE(worker_boot_started_at, $6),
-                updated_at = now()
+                worker_boot_started_at = COALESCE(worker_boot_started_at, $6)
             WHERE org_id = $1
               AND worker_id = $2
               AND worker_token_id = $3
@@ -535,4 +552,79 @@ pub fn harness_unresponsive_error() -> serde_json::Value {
         "message": "worker stopped reporting this execution; outcome is unknown",
         "retryable": true
     })
+}
+
+/// Whether boot `current` started before boot `previous`.
+///
+/// The reported start times decide when both are known; otherwise the UUIDv7 timestamps
+/// do. Boots that cannot be ordered (no times, non-v7 ids, the same millisecond) are not
+/// older, so they keep the previous rule that any other boot is a restart.
+fn boot_is_older(
+    current: Uuid,
+    current_started_at: Option<DateTime<Utc>>,
+    previous: Uuid,
+    previous_started_at: Option<DateTime<Utc>>,
+) -> bool {
+    if let (Some(current), Some(previous)) = (current_started_at, previous_started_at) {
+        if current != previous {
+            return current < previous;
+        }
+    }
+    match (v7_millis(current), v7_millis(previous)) {
+        (Some(current), Some(previous)) => current < previous,
+        _ => false,
+    }
+}
+
+fn v7_millis(id: Uuid) -> Option<u64> {
+    if id.get_version_num() != 7 {
+        return None;
+    }
+    let bytes = id.as_bytes();
+    Some(
+        bytes[..6]
+            .iter()
+            .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte)),
+    )
+}
+
+#[cfg(test)]
+mod boot_order_tests {
+    use super::*;
+
+    fn v7_at(millis: u64) -> Uuid {
+        let mut bytes = *Uuid::now_v7().as_bytes();
+        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+        Uuid::from_bytes(bytes)
+    }
+
+    #[test]
+    fn start_times_decide_when_both_are_known() {
+        let earlier = Utc::now() - chrono::Duration::seconds(30);
+        let later = Utc::now();
+        // Ids deliberately ordered the other way: the reported start time wins.
+        let (a, b) = (v7_at(2_000), v7_at(1_000));
+        assert!(boot_is_older(a, Some(earlier), b, Some(later)));
+        assert!(!boot_is_older(b, Some(later), a, Some(earlier)));
+    }
+
+    #[test]
+    fn uuidv7_timestamps_decide_without_start_times() {
+        let (old, new) = (v7_at(1_000), v7_at(2_000));
+        assert!(boot_is_older(old, None, new, None));
+        assert!(!boot_is_older(new, None, old, None));
+        let at = Utc::now();
+        assert!(
+            boot_is_older(old, Some(at), new, Some(at)),
+            "equal times fall back to ids"
+        );
+    }
+
+    #[test]
+    fn boots_that_cannot_be_ordered_are_not_older() {
+        let v4 = Uuid::new_v4();
+        assert!(!boot_is_older(v4, None, v7_at(2_000), None));
+        assert!(!boot_is_older(v7_at(1_000), None, v4, None));
+        assert!(!boot_is_older(v7_at(1_000), None, v7_at(1_000), None));
+    }
 }
