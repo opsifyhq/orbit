@@ -310,14 +310,18 @@ mod tests {
 
     use super::*;
 
-    /// Writing an executable while another test forks can fail the exec with ETXTBSY.
+    /// Keeps the stub tests from overlapping each other's process groups and timings.
     static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// The stub runs as `/bin/sh <script>` rather than exec-ing the script itself: exec-ing a
+    /// file just written fails with ETXTBSY when any other test in the binary forks while
+    /// the write descriptor is open, and `SERIAL` only covers this module.
     fn stub(dir: &Path, body: &str) -> Command {
         let path = dir.join("stub.sh");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut command = Command::new(&path);
+        let mut command = Command::new("/bin/sh");
+        command.arg(&path);
         command.current_dir(dir);
         command
     }
