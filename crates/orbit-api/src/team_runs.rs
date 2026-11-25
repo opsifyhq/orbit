@@ -612,36 +612,21 @@ pub(crate) async fn start_step_with(
     // that requested the run (falling back to the team owner).
     let team = state.store.get_agent_team(run.org_id, run.team_id).await?;
     let team_connections = team_connection_ids(definition);
-    match crate::preflight::background_access(
+    match crate::preflight::evaluate_background(&crate::preflight::BackgroundPreflight {
         state,
-        run.org_id,
-        &[run.requested_by, team.owner_user_id],
-    )
-    .await?
+        org_id: run.org_id,
+        owners: &[run.requested_by, team.owner_user_id],
+        agent: &agent,
+        spec: &spec,
+        harness: harness_kind,
+        extra_connection_ids: &team_connections,
+        team: Some(&team),
+    })
+    .await
     {
-        Some(access) => {
-            access.require_use(
-                "agent team",
-                team.owner_user_id,
-                team.owner_team_id,
-                &team.visibility,
-            )?;
-            crate::preflight::Preflight {
-                state,
-                org_id: run.org_id,
-                access: &access,
-                agent: &agent,
-                spec: &spec,
-                harness: harness_kind,
-                extra_connection_ids: &team_connections,
-            }
-            .run()
-            .await?;
-        }
-        None => {
-            crate::preflight::require_harness_available(state, run.org_id, harness_kind).await?;
-            crate::preflight::require_hourly_quota(state, run.org_id, agent.id, &spec).await?;
-        }
+        crate::preflight::BackgroundVerdict::Allowed => {}
+        crate::preflight::BackgroundVerdict::Denied(error)
+        | crate::preflight::BackgroundVerdict::Delayed(_, error) => return Err(error),
     }
     let native = definition.mode == "native";
     if native && harness_kind != HarnessKind::OpenCode {

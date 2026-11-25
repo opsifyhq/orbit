@@ -12,9 +12,11 @@
 //! 4. the agent's `autonomy.maxExecutionsPerHour` quota has headroom.
 //!
 //! Callers with an HTTP request build the [`AccessScope`] from the request identity.
-//! Background callers have no request, so they resolve a stored identity with
-//! [`background_access`] (trigger owner, runtime creator, team-run requester) and load
-//! its scope with `AccessScope::load_for_user`, i.e. access is re-evaluated at run time.
+//! Background callers have no request: trigger fires, runtime ticks and team steps all go
+//! through [`evaluate_background`], which resolves a stored identity with
+//! [`background_access`] (trigger owner, runtime creator, team-run requester), loads its
+//! scope with `AccessScope::load_for_user` (access is re-evaluated at run time) and returns
+//! a [`BackgroundVerdict`] the caller maps to its own action.
 //!
 //! Other entry points that need the same rules (for example the trigger-create and queue
 //! visibility fixes in #135 / #132) can call [`Preflight::authorize_access`] or
@@ -349,6 +351,86 @@ pub async fn background_access(
         )),
         None => Ok(None),
     }
+}
+
+/// Why a background start should wait instead of being refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelayReason {
+    /// The harness is disabled or not yet available.
+    HarnessUnavailable,
+    /// The agent's `autonomy.maxExecutionsPerHour` quota is used up.
+    HourlyQuota,
+}
+
+/// The outcome of [`evaluate_background`]. Callers decide what each verdict means for
+/// them (fail and audit, halt, skip the tick, retry later).
+#[derive(Debug)]
+pub enum BackgroundVerdict {
+    Allowed,
+    /// The identity could not be loaded or may not run this (access, connections,
+    /// provider, team use). The error is what the caller reports.
+    Denied(ApiError),
+    /// The run is allowed but cannot start now.
+    Delayed(DelayReason, ApiError),
+}
+
+/// Inputs for [`evaluate_background`].
+pub struct BackgroundPreflight<'a> {
+    pub state: &'a AppState,
+    pub org_id: Uuid,
+    /// Candidate identities, most specific first (see [`background_access`]).
+    pub owners: &'a [Option<Uuid>],
+    pub agent: &'a Agent,
+    pub spec: &'a AgentSpec,
+    pub harness: HarnessKind,
+    /// Connections used outside the agent spec (team shared connections, work source).
+    pub extra_connection_ids: &'a [Uuid],
+    /// For team steps: the identity must also be able to use the team.
+    pub team: Option<&'a orbit_store::AgentTeam>,
+}
+
+/// The single preflight for starts without an HTTP caller (trigger fire, runtime tick,
+/// team step): load the stored identity, check team use and [`Preflight::authorize_access`]
+/// for it, then harness availability and the hourly quota. Unowned (legacy) resources skip
+/// the identity checks and run under platform authority.
+pub async fn evaluate_background(input: &BackgroundPreflight<'_>) -> BackgroundVerdict {
+    let access = match background_access(input.state, input.org_id, input.owners).await {
+        Ok(access) => access,
+        Err(error) => return BackgroundVerdict::Denied(error),
+    };
+    if let Some(access) = &access {
+        if let Some(team) = input.team {
+            if let Err(error) = access.require_use(
+                "agent team",
+                team.owner_user_id,
+                team.owner_team_id,
+                &team.visibility,
+            ) {
+                return BackgroundVerdict::Denied(error);
+            }
+        }
+        let preflight = Preflight {
+            state: input.state,
+            org_id: input.org_id,
+            access,
+            agent: input.agent,
+            spec: input.spec,
+            harness: input.harness,
+            extra_connection_ids: input.extra_connection_ids,
+        };
+        if let Err(error) = preflight.authorize_access().await {
+            return BackgroundVerdict::Denied(error);
+        }
+    }
+    if let Err(error) = require_harness_available(input.state, input.org_id, input.harness).await {
+        return BackgroundVerdict::Delayed(DelayReason::HarnessUnavailable, error);
+    }
+    if let Err(error) =
+        require_hourly_quota(input.state, input.org_id, input.agent.id, input.spec).await
+    {
+        return BackgroundVerdict::Delayed(DelayReason::HourlyQuota, error);
+    }
+    BackgroundVerdict::Allowed
 }
 
 /// The identity a background start acts as when it needs a full [`AuthContext`] (queue
