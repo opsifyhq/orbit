@@ -94,6 +94,10 @@ Nobody can give out more than they hold:
 - The same applies to sign-in mappings: changing the OIDC default role or a group-to-role
   mapping to a role with permissions the caller does not hold returns `403`. Mappings an
   Owner set earlier do not block edits of other OIDC fields.
+- Changing whom ORBIT trusts for sign-in (the OIDC issuer, JWKS URL, audience, client id,
+  redirect URI, identity and role claims, provisioning, role sync, verified-email and
+  mapped-group rules, and team mappings) needs every permission (an Owner). See
+  [oidc.md](oidc.md#configure-from-the-ui).
 - Team isolation (`PUT /settings/access`) and four-eyes approvals
   (`PUT /settings/approvals`) affect the whole organization and need every permission (an
   Owner), not only `settings:write`.

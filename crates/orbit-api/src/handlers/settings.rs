@@ -237,6 +237,16 @@ pub async fn update_oidc(
     if !issues.is_empty() {
         return Err(ApiError::validation(issues));
     }
+    let trust_changes = changed_oidc_trust_fields(previous.as_ref(), &merged);
+    if !trust_changes.is_empty() {
+        require_full_authority(
+            &auth,
+            &format!(
+                "the OIDC sign-in trust settings ({})",
+                trust_changes.join(", ")
+            ),
+        )?;
+    }
     require_oidc_role_ceiling(&auth, previous.as_ref(), &merged)?;
     let value = serde_json::to_value(&merged).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let stored = state
@@ -254,6 +264,65 @@ pub async fn update_oidc(
     )
     .await;
     Ok(Json(settings))
+}
+
+/// Fields that decide whom ORBIT trusts for sign-in and how identities are linked and
+/// provisioned (#387). Changing any of them needs full authority, like the other
+/// installation-wide security switches: a new issuer locks out every existing user and
+/// lets the new identity provider link never-signed-in accounts (Owners included) by
+/// email, and team mappings can grant access-team roles the role ceiling does not cover.
+/// Returns the API names of the fields that change; nothing stored yet counts as the
+/// defaults.
+fn changed_oidc_trust_fields(
+    previous: Option<&OidcSettings>,
+    next: &OidcSettings,
+) -> Vec<&'static str> {
+    let defaults;
+    let previous = match previous {
+        Some(previous) => previous,
+        None => {
+            defaults = serde_json::from_value::<OidcSettings>(serde_json::json!({}))
+                .expect("every OIDC setting has a default");
+            &defaults
+        }
+    };
+    let text = |a: &str, b: &str| a.trim() != b.trim();
+    let mut changed = Vec::new();
+    for (name, differs) in [
+        ("issuer", text(&previous.issuer, &next.issuer)),
+        ("jwksUrl", text(&previous.jwks_url, &next.jwks_url)),
+        ("audience", text(&previous.audience, &next.audience)),
+        ("clientId", text(&previous.client_id, &next.client_id)),
+        (
+            "redirectUri",
+            text(&previous.redirect_uri, &next.redirect_uri),
+        ),
+        ("emailClaim", text(&previous.email_claim, &next.email_claim)),
+        ("roleClaim", text(&previous.role_claim, &next.role_claim)),
+        (
+            "autoProvision",
+            previous.auto_provision != next.auto_provision,
+        ),
+        ("syncRoles", previous.sync_roles != next.sync_roles),
+        (
+            "requireVerifiedEmail",
+            previous.require_verified_email != next.require_verified_email,
+        ),
+        (
+            "requireMappedGroup",
+            previous.require_mapped_group != next.require_mapped_group,
+        ),
+        ("teamGroups", previous.team_groups != next.team_groups),
+        (
+            "autoCreateTeams",
+            previous.auto_create_teams != next.auto_create_teams,
+        ),
+    ] {
+        if differs {
+            changed.push(name);
+        }
+    }
+    changed
 }
 
 /// Grant ceiling for OIDC role mappings (#324). A user with `settings:write` must not be
@@ -789,6 +858,58 @@ mod ceiling_tests {
         // Adding a new owner mapping is still refused.
         let next = settings("operator", &[("admins", "owner"), ("mine", "owner")]);
         assert!(require_oidc_role_ceiling(&delegated_admin(), Some(&before), &next).is_err());
+    }
+
+    /// #387: whom ORBIT trusts for sign-in is an Owner decision, not a settings:write one.
+    #[test]
+    fn trust_fields_need_full_authority() {
+        let before = settings("viewer", &[]);
+        assert!(changed_oidc_trust_fields(Some(&before), &before.clone()).is_empty());
+        type Edit = fn(&mut OidcSettings);
+        let edits: [(&str, Edit); 13] = [
+            ("issuer", |s| s.issuer = "https://evil.example.com".into()),
+            ("jwksUrl", |s| {
+                s.jwks_url = "https://evil.example.com/jwks".into()
+            }),
+            ("audience", |s| s.audience = "other".into()),
+            ("clientId", |s| s.client_id = "other".into()),
+            ("redirectUri", |s| {
+                s.redirect_uri = "https://evil.example.com/cb".into()
+            }),
+            ("emailClaim", |s| {
+                s.email_claim = "preferred_username".into()
+            }),
+            ("roleClaim", |s| s.role_claim = "roles".into()),
+            ("autoProvision", |s| s.auto_provision = !s.auto_provision),
+            ("syncRoles", |s| s.sync_roles = !s.sync_roles),
+            ("requireVerifiedEmail", |s| {
+                s.require_verified_email = !s.require_verified_email
+            }),
+            ("requireMappedGroup", |s| {
+                s.require_mapped_group = !s.require_mapped_group
+            }),
+            ("teamGroups", |s| {
+                s.team_groups.insert("mine".into(), "ops:lead".into());
+            }),
+            ("autoCreateTeams", |s| {
+                s.auto_create_teams = !s.auto_create_teams
+            }),
+        ];
+        for (field, edit) in edits {
+            let mut next = before.clone();
+            edit(&mut next);
+            assert_eq!(changed_oidc_trust_fields(Some(&before), &next), vec![field]);
+        }
+        // Whitespace-only differences are not a change.
+        let mut next = before.clone();
+        next.issuer = format!(" {} ", before.issuer);
+        assert!(changed_oidc_trust_fields(Some(&before), &next).is_empty());
+        // Role mappings and scopes stay under the #324 ceiling instead.
+        let mut next = settings("operator", &[("ops", "viewer")]);
+        next.scopes = "openid email".into();
+        assert!(changed_oidc_trust_fields(Some(&before), &next).is_empty());
+        // Nothing stored yet: configuring an issuer is a change.
+        assert_eq!(changed_oidc_trust_fields(None, &before), vec!["issuer"]);
     }
 
     #[test]
