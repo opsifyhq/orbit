@@ -416,7 +416,7 @@ Defaults are those in the code. Variables of the form `ORBIT_OIDC_*` are explain
 <
 | `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` | `120` | Per-source-IP budget per 60-second window on public/unauthenticated routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger). Excess requests get `429 rate_limited` with `Retry-After`; authenticated and worker routes are unaffected. Behind an L7 proxy the peer is the proxy, so keep proxy-side client-IP limits too |
 | `ORBIT_METRICS_ADDR` | _(unset)_ | Dedicated listener for `/metrics` and `/healthz`, e.g. `0.0.0.0:9090`. When set, the API port stops serving `/metrics`. See [Observability](observability.md) |
-| `ORBIT_METRICS_TOKEN` | _(unset)_ | Bearer token a Prometheus scraper must send to read `/metrics`. Unset leaves the endpoint open |
+| `ORBIT_METRICS_TOKEN` | _(unset)_ | Bearer token a Prometheus scraper must send to read `/metrics`. Unset leaves the endpoint open; set but empty stops the API at startup |
 | `ORBIT_SEED_DEMO` | `true` | Seed demo data |
 | `ORBIT_SEED_WORKER_PROFILE` | `true` | Seed a launchable mock worker profile |
 | `ORBIT_DEFAULT_ORG_SLUG`, `ORBIT_DEFAULT_ORG_NAME` | `orbit`, `ORBIT` | Default organization |
