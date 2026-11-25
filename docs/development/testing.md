@@ -86,7 +86,7 @@ and committed. Three checks keep them in step with the code:
   router serves an operation the document does not describe, or the reverse.
 - `committed_openapi_document_is_current` in the same module fails when the committed
   `openapi.json` differs from the document the code produces (the version field is
-  ignored).
+  ignored; `./scripts/check-versions.sh` keeps it equal to the release version).
 - `node scripts/generate-api-client.mjs --check` (also `pnpm api:generate --check`) fails
   when `schema.d.ts` differs from what `openapi.json` generates.
 
@@ -103,14 +103,15 @@ tags:
 | Job | Checks |
 |---|---|
 | Rust | `./scripts/check-versions.sh`, the tag matches the chart `appVersion` (tags only), `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo audit`, `cargo test --workspace` with PostgreSQL, and the NATS integration tests against a JetStream server |
+| Rust MSRV | `cargo check --workspace --all-targets --locked` on the `rust-version` declared in `Cargo.toml` (1.94) |
 | Web | `pnpm -r typecheck` (web app, API client and contracts), `pnpm docs:check`, `pnpm --filter @orbit/web test`, the API client check, `pnpm --filter @orbit/web build`, `pnpm audit --audit-level=high` |
 | Secret scan | TruffleHog, failing on verified secrets only |
-| Helm | `helm lint`, and `helm template` for the default values, `values-prod.example.yaml` and a variant with the network policy and a fixed worker |
+| Helm | `helm lint`, and `helm template` for the default values, `values-prod.example.yaml`, a variant with the network policy and a fixed worker, and one with the ServiceMonitor; every render is validated with `kubeconform -strict` against Kubernetes 1.30 (and the default values without the launcher admission policies against 1.27, the chart's floor). ServiceMonitor, a CRD, is skipped |
 | Migrations | Pull requests and pushes to `main`: a migration that already exists may not be edited, renamed or deleted |
 | Image build check | Pull requests only: the api, worker, web and launcher Dockerfiles build, and the OpenCode and Pi worker images build on that worker image through a local registry (nothing is published) |
 
 Container images, the Helm chart and the worker binary are published only from `v*`
-tags, and the chart and the GitHub release only after all six images were pushed; see
+tags after the Rust, MSRV and web jobs pass, and the chart and the GitHub release only after all six images were pushed; see
 [releasing.md](releasing.md). Images are not scanned for vulnerabilities in CI.
 
 ## What to run for a change
