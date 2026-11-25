@@ -215,7 +215,7 @@ async fn connector_for_work_source(
             .to_string(),
         other => anyhow::bail!("unsupported work source provider '{other}'"),
     };
-    orbit_security::check_outbound_url(&base_url, &orbit_security::OutboundPolicy::from_env())
+    orbit_security::check_outbound_url(&base_url, &state.outbound)
         .await
         .map_err(|error| anyhow::anyhow!("work source baseUrl refused: {error}"))?;
     Ok(Some(WorkSourceConnector {
@@ -223,7 +223,10 @@ async fn connector_for_work_source(
         connection_config: connection.config.clone(),
         base_url,
         token,
-        client: orbit_security::guarded_client(std::time::Duration::from_secs(20)),
+        client: orbit_security::guarded_client_with_policy(
+            std::time::Duration::from_secs(20),
+            state.outbound.clone(),
+        ),
     }))
 }
 

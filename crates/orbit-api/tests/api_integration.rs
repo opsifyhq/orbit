@@ -64,6 +64,17 @@ async fn test_app(allow_anonymous: bool) -> Option<TestApp> {
     test_app_with_license(allow_anonymous, None).await
 }
 
+/// A test app whose outbound policy exempts 127.0.0.1, for tests that talk to a mock server
+/// on loopback. The policy lives in this app's state only, so other tests keep the
+/// default policy that refuses loopback (#445).
+async fn test_app_allowing_loopback() -> Option<TestApp> {
+    let mut app = test_app(true).await?;
+    app.state.outbound = orbit_security::OutboundPolicy::new(true, "127.0.0.1");
+    // The router keeps its own clone of the state, so rebuild it.
+    app.router = build_router(app.state.clone());
+    Some(app)
+}
+
 async fn test_app_with_license(
     allow_anonymous: bool,
     license: Option<LicenseStatus>,
@@ -153,6 +164,9 @@ async fn test_app_with_license(
         archive_after_days: None,
         output_delivery_retention_days: None,
         shutdown: shutdown.clone(),
+        // The default policy: loopback is refused. Tests that talk to a local mock opt in
+        // with `test_app_allowing_loopback` instead of changing the process environment (#445).
+        outbound: orbit_security::OutboundPolicy::default(),
         license: license.map(LicenseHandle::from_status).unwrap_or_else(|| {
             orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
                 token: None,
@@ -5333,16 +5347,43 @@ async fn stored_queue_item_with_a_foreign_repository_is_refused_on_start() {
     assert_eq!(runs, 0);
 }
 
+/// #445: the outbound policy comes from each app's state, not from the process
+/// environment, so a test that exempts loopback cannot loosen the guard for another test
+/// running in the same process.
+#[tokio::test]
+async fn outbound_policy_is_per_app_state() {
+    let Some(strict) = test_app(true).await else {
+        return;
+    };
+    let Some(loopback) = test_app_allowing_loopback().await else {
+        return;
+    };
+    let body = |name: &str| {
+        json!({
+            "name": format!("{name}-{}", Uuid::now_v7()),
+            "kind": "webhook",
+            "webhookUrl": "http://127.0.0.1:9/hook",
+            "enabled": false
+        })
+    };
+    let (status, created) = send(&loopback.router, post("/api/v1/outputs", body("loopback"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (status, refused) = send(&strict.router, post("/api/v1/outputs", body("strict"))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert!(refused["error"]["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(|detail| detail["path"] == "webhookUrl")));
+}
+
 /// #384: the outcome writer only touches the work source's repository, whatever
 /// repository the queue item carries.
 #[tokio::test]
 async fn outcome_writer_never_contacts_a_foreign_repository() {
-    let Some(app) = test_app(true).await else {
-        return;
-    };
     // The mock GitHub listens on loopback, which the outbound guard (#142) blocks unless
     // explicitly allowed.
-    std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
+    let Some(app) = test_app_allowing_loopback().await else {
+        return;
+    };
     let hits: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
     let recorded = hits.clone();
     let mock = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -5521,11 +5562,13 @@ mod output_delivery {
     /// deliver_pending is global across orgs; serialize these tests so counts are exact.
     fn guard() -> &'static tokio::sync::Mutex<()> {
         static GUARD: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-        // The test hooks listen on 127.0.0.1; the outbound guard (#142) blocks loopback
-        // unless explicitly allowlisted.
-        static ALLOW: std::sync::Once = std::sync::Once::new();
-        ALLOW.call_once(|| std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1"));
         GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    /// The test hooks listen on 127.0.0.1, which the outbound guard (#142) refuses unless
+    /// the app's policy exempts it.
+    async fn delivery_app() -> Option<TestApp> {
+        test_app_allowing_loopback().await
     }
 
     #[derive(Clone)]
@@ -5622,7 +5665,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn s3_output_uploads_one_signed_object() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -5739,7 +5782,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn s3_output_created_like_the_web_form_delivers() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -5762,7 +5805,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn s3_output_config_that_cannot_deliver_is_refused() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -5807,7 +5850,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn turning_an_s3_output_off_and_on_keeps_its_settings() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -5850,7 +5893,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn s3_access_denied_is_permanent_and_server_errors_retry() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -5970,7 +6013,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn concurrent_deliver_pending_sends_each_delivery_once() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6014,7 +6057,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn interrupted_send_is_retried_after_lease_expiry() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6062,7 +6105,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn runs_finished_during_long_outage_are_delivered_once() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6082,7 +6125,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn new_output_does_not_backfill_old_runs() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6102,7 +6145,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn client_errors_are_permanent_and_server_errors_retry() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6158,7 +6201,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn deleted_or_disabled_output_leaves_no_pending_rows() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -6194,7 +6237,7 @@ mod output_delivery {
 
     #[tokio::test]
     async fn delivery_history_shows_results_and_hides_runs_from_members() {
-        let Some(app) = test_app(true).await else {
+        let Some(app) = delivery_app().await else {
             return;
         };
         let _guard = guard().lock().await;
@@ -11676,42 +11719,9 @@ async fn settings_write_has_a_ceiling_for_toggles_and_access_teams() {
 }
 
 async fn licensed_test_app() -> Option<TestApp> {
-    let mut app = test_app(true).await?;
-    use ed25519_dalek::{Signer, SigningKey};
-
-    let signing = SigningKey::from_bytes(&[202u8; 32]);
-    let kid = "orbit-test-role-grants";
-    let public_key =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes());
-    std::env::set_var(
-        "ORBIT_LICENSE_PUBLIC_KEYS",
-        json!({ kid: public_key }).to_string(),
-    );
-    let encode = |value: Value| {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&value).expect("license JSON"))
-    };
-    let header = encode(json!({ "alg": "EdDSA", "kid": kid }));
-    let claims = encode(json!({
-        "v": 1,
-        "id": "orbit-test-role-grants",
-        "customer": "Test",
-        "plan": "enterprise",
-        "features": ["custom_roles", "teams"],
-        "issued_at": "2020-01-01T00:00:00Z",
-        "expires_at": "2099-01-01T00:00:00Z",
-        "grace_days": 0,
-    }));
-    let signed = format!("{header}.{claims}");
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(signing.sign(signed.as_bytes()).to_bytes());
-    app.state.license = orbit_security::LicenseHandle::load(orbit_security::LicenseSource {
-        token: Some(format!("{signed}.{signature}")),
-        file: None,
-    });
-    // The router keeps its own clone of the state, so rebuild it with the licensed one.
-    app.router = orbit_api::build_router(app.state.clone());
-    Some(app)
+    // The licence is installed as a verified status: signing a token here would need a
+    // test key in ORBIT_LICENSE_PUBLIC_KEYS, which is process-wide state (#445).
+    test_app_with_license(true, Some(licensed(&["custom_roles", "teams"], json!({})))).await
 }
 
 #[tokio::test]
