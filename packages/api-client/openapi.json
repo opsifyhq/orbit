@@ -8278,7 +8278,7 @@
             "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
           },
           "config": {
-            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc."
+            "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On\nupdate, absent or `null` keeps the stored settings and an object replaces them."
           },
           "enabled": {
             "type": "boolean"

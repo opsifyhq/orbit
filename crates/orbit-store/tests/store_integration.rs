@@ -1399,6 +1399,7 @@ async fn team_output_enqueue_uses_the_partial_unique_index() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -1463,6 +1464,7 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -1479,6 +1481,7 @@ async fn output_delivery_history_lists_newest_first_with_the_run_task() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -1595,6 +1598,7 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
             Some("-1001234567890"),
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -1790,6 +1794,7 @@ async fn env_mappings_and_outputs_round_trip() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .expect("output");
@@ -3685,6 +3690,7 @@ async fn hard_deleting_an_agent_removes_its_history_but_not_team_run_history() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -3766,6 +3772,7 @@ async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
@@ -3783,6 +3790,7 @@ async fn output_webhook_secret_is_removed_with_its_output_and_on_replacement() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();

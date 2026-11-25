@@ -2920,7 +2920,10 @@ export interface components {
             botToken?: string | null;
             /** @description Numeric Telegram user/group/channel id (for example `-100…`). */
             chatId?: string | null;
-            /** @description Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. */
+            /**
+             * @description Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On
+             *     update, absent or `null` keeps the stored settings and an object replaces them.
+             */
             config?: unknown;
             enabled?: boolean;
             events?: string[];

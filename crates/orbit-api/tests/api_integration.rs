@@ -5433,6 +5433,7 @@ mod output_delivery {
                 None,
                 None,
                 true,
+                &serde_json::json!({}),
             )
             .await
             .unwrap()
@@ -5475,6 +5476,7 @@ mod output_delivery {
                 None,
                 None,
                 true,
+                &serde_json::json!({}),
             )
             .await
             .unwrap();
@@ -5620,6 +5622,49 @@ mod output_delivery {
             stored.config["bucket"], "orbit",
             "a refused update changes nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn turning_an_s3_output_off_and_on_keeps_its_settings() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        let before = app.store.get_output(app.org_id, output_id).await.unwrap();
+        assert_eq!(before.config["bucket"], "orbit");
+
+        // What the web app's on/off toggle sends: no config, no credential (#390).
+        for enabled in [false, true] {
+            let mut body = s3_form_body("s3-toggle", &hook.url, Some("orbit"));
+            let fields = body.as_object_mut().unwrap();
+            fields.remove("s3Credential");
+            fields.remove("config");
+            fields.insert("name".into(), json!(before.name));
+            fields.insert("enabled".into(), json!(enabled));
+            let (status, response) = send(
+                &app.router,
+                patch_json(&format!("/api/v1/outputs/{output_id}"), body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{response}");
+            assert_eq!(response["enabled"], enabled);
+            let stored = app.store.get_output(app.org_id, output_id).await.unwrap();
+            assert_eq!(stored.config, before.config, "enabled={enabled}");
+        }
+
+        // A config that is not an object is refused rather than stored as {}.
+        let mut body = s3_form_body("s3-toggle", &hook.url, Some("orbit"));
+        body.as_object_mut().unwrap().remove("s3Credential");
+        body["name"] = json!(before.name);
+        body["config"] = json!("bucket=orbit");
+        let (status, response) = send(
+            &app.router,
+            patch_json(&format!("/api/v1/outputs/{output_id}"), body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
     }
 
     #[tokio::test]
@@ -8661,6 +8706,7 @@ async fn output_webhook_urls_are_validated_on_create_and_update() {
             None,
             None,
             true,
+            &serde_json::json!({}),
         )
         .await
         .unwrap();
