@@ -313,7 +313,11 @@ harness tool call ──► worker broker /policy or /tools/call
   if the agent requests the identical capability and arguments again in the same run.
 - Management API: `GET/POST /api/v1/tool-policies`, `PATCH/DELETE
   /api/v1/tool-policies/{id}` (`settings:read` / `settings:write`).
-- Approvals record the rule, reason, impact and arguments for the reviewer. Every deny
+- Approvals record the rule, reason, impact and arguments for the reviewer. The
+  `requestedAction` carries the arguments whole up to 64 KiB of serialised JSON, with
+  `argumentsBytes` and `argumentsTruncated`; larger arguments become a string with the head,
+  the tail and the number of bytes left out between them. Event and audit payloads keep
+  shorter copies, and a cut copy ends with `[truncated: N bytes in total]`. Every deny
   and approval is audited and emitted as a `tool_call` execution event.
 
 What is enforced for native tools today:

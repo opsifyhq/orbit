@@ -1313,13 +1313,13 @@ async fn policy_check(
                 "connectionName": serde_json::Value::Null,
                 "effect": effect.as_str(),
                 "agentName": state.execution.agent_name,
-                "arguments": truncate_json(&call.arguments, 4000),
                 "argumentsHash": args_hash,
                 "reason": outcome.reason,
                 "impact": outcome.impact,
                 "rule": outcome.rule_name,
                 "source": "tool_policy",
             });
+            let action = with_approval_arguments(action, &call.arguments);
             match request_approval_action(&state, &call.tool, action, &call.arguments).await {
                 Ok(_) => respond(StatusCode::OK, &outcome),
                 Err(error) => (
@@ -1376,11 +1376,11 @@ async fn request_approval(
         "connectionName": connection_name,
         "effect": tool.effect.as_str(),
         "agentName": state.execution.agent_name,
-        "arguments": truncate_json(arguments, 4000),
         "reason": policy.and_then(|policy| policy.reason.clone()),
         "impact": policy.and_then(|policy| policy.impact.clone()),
         "rule": policy.and_then(|policy| policy.rule_name.clone()),
     });
+    let action = with_approval_arguments(action, arguments);
     request_approval_action(state, &tool.capability, action, arguments).await
 }
 
@@ -1661,17 +1661,117 @@ fn truncate(value: &str, limit: usize) -> String {
     }
 }
 
+/// Shortened arguments for events and audit payloads. A value over the limit becomes a
+/// string that says it was cut and how large the original was, so a reader never takes a
+/// shortened value for the whole one.
 fn truncate_json(value: &Value, limit: usize) -> Value {
     match serde_json::to_string(value) {
         Ok(serialized) if serialized.len() <= limit => value.clone(),
-        Ok(serialized) => json!(truncate(&serialized, limit)),
+        Ok(serialized) => json!(format!(
+            "{} [truncated: {} bytes in total]",
+            truncate(&serialized, limit),
+            serialized.len()
+        )),
         Err(_) => Value::Null,
     }
+}
+
+/// How much of a call's arguments an approval request carries in full. A person decides
+/// on what they are shown, so this is far above the event limit; the API body limit
+/// (2 MiB by default) and the per-execution pending-approval cap bound the total.
+const APPROVAL_ARGUMENTS_LIMIT: usize = 64 * 1024;
+
+/// Add the arguments to an approval `requestedAction`, with `argumentsBytes` (size of the
+/// serialised arguments) and `argumentsTruncated`. Arguments up to
+/// [`APPROVAL_ARGUMENTS_LIMIT`] are kept whole. Larger ones become a string with the head
+/// and the tail of the serialised arguments and a line naming how many bytes were left out
+/// in between, so the end of a long command is never hidden from the approver.
+fn with_approval_arguments(mut action: Value, arguments: &Value) -> Value {
+    let (shown, bytes, truncated) = approval_arguments(arguments, APPROVAL_ARGUMENTS_LIMIT);
+    if let Some(map) = action.as_object_mut() {
+        map.insert("arguments".into(), shown);
+        map.insert("argumentsBytes".into(), json!(bytes));
+        map.insert("argumentsTruncated".into(), json!(truncated));
+    }
+    action
+}
+
+fn approval_arguments(arguments: &Value, limit: usize) -> (Value, usize, bool) {
+    let Ok(serialized) = serde_json::to_string(arguments) else {
+        return (Value::Null, 0, true);
+    };
+    let bytes = serialized.len();
+    if bytes <= limit {
+        return (arguments.clone(), bytes, false);
+    }
+    let half = limit / 2;
+    let mut head_end = half;
+    while head_end > 0 && !serialized.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = bytes - half;
+    while tail_start < bytes && !serialized.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let omitted = tail_start - head_end;
+    let shown = format!(
+        "{}\n… [{omitted} of {bytes} bytes left out here] …\n{}",
+        &serialized[..head_end],
+        &serialized[tail_start..]
+    );
+    (json!(shown), bytes, true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_arguments_keep_a_5000_byte_command_whole() {
+        let command = format!("{}; rm -rf /important", "echo harmless ".repeat(360));
+        let arguments = json!({ "command": command });
+        let action = with_approval_arguments(json!({ "capability": "bash" }), &arguments);
+        assert!(serde_json::to_string(&arguments).unwrap().len() > 5000);
+        assert_eq!(action["arguments"], arguments);
+        assert_eq!(action["argumentsTruncated"], json!(false));
+        assert_eq!(
+            action["argumentsBytes"],
+            json!(serde_json::to_string(&arguments).unwrap().len())
+        );
+    }
+
+    #[test]
+    fn approval_arguments_over_the_limit_keep_head_and_tail_and_say_so() {
+        let command = format!("{}rm -rf /important", "é".repeat(APPROVAL_ARGUMENTS_LIMIT));
+        let arguments = json!({ "command": command });
+        let bytes = serde_json::to_string(&arguments).unwrap().len();
+        let action = with_approval_arguments(json!({ "capability": "bash" }), &arguments);
+        assert_eq!(action["argumentsTruncated"], json!(true));
+        assert_eq!(action["argumentsBytes"], json!(bytes));
+        let shown = action["arguments"]
+            .as_str()
+            .expect("truncated arguments are a string");
+        assert!(shown.starts_with("{\"command\":\"é"));
+        assert!(
+            shown.ends_with("rm -rf /important\"}"),
+            "the tail stays visible"
+        );
+        assert!(shown.contains("bytes left out here] …"));
+        assert!(shown.contains(&format!(" of {bytes} bytes")));
+        assert!(shown.len() < APPROVAL_ARGUMENTS_LIMIT + 200);
+    }
+
+    #[test]
+    fn truncated_event_arguments_say_they_are_truncated() {
+        let arguments = json!({ "command": "x".repeat(5000) });
+        let shown = truncate_json(&arguments, 4000);
+        let text = shown.as_str().unwrap();
+        assert!(text.ends_with(&format!(
+            "[truncated: {} bytes in total]",
+            serde_json::to_string(&arguments).unwrap().len()
+        )));
+        assert_eq!(truncate_json(&json!({ "a": 1 }), 4000), json!({ "a": 1 }));
+    }
 
     #[tokio::test]
     async fn connector_http_client_refuses_loopback_and_metadata_targets() {
