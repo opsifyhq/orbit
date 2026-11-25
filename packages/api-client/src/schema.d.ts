@@ -2151,7 +2151,10 @@ export interface components {
             webhooks: boolean;
         };
         CreateApiTokenRequest: {
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Lifetime in days, 1 to 3650. Leave it out for a token that does not expire.
+             */
             expiresInDays?: number | null;
             name: string;
             scopes?: string[];

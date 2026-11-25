@@ -612,6 +612,7 @@ pub struct CreateApiTokenRequest {
     pub name: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Lifetime in days, 1 to 3650. Leave it out for a token that does not expire.
     #[serde(default)]
     pub expires_in_days: Option<i64>,
 }
