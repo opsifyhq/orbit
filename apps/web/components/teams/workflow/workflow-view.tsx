@@ -10,13 +10,15 @@ import {
   limitReached,
   liveEdges,
   nodeRunStates,
+  portOf,
   startsRun,
+  stepPorts,
   takenEdges,
   type Workflow,
   type WorkflowStepRun,
 } from "@/lib/workflow";
 
-import { WorkflowCanvas, type WorkflowSelection } from "./workflow-canvas";
+import { WorkflowCanvas, WorkflowLegend, portColor, type WorkflowSelection } from "./workflow-canvas";
 
 /**
  * A workflow to look at: on the team page as it is defined, on a run page with how each
@@ -80,6 +82,7 @@ export function WorkflowView({
         live={live}
         onExpand={() => setExpanded(true)}
       />
+      <WorkflowLegend workflow={workflow} />
       <Dialog open={expanded} onOpenChange={setExpanded}>
         <DialogContent className="flex h-[92dvh] w-[96vw] max-w-[96vw] flex-col gap-3 sm:max-w-[96vw]">
           <DialogHeader>
@@ -128,12 +131,22 @@ export function WorkflowView({
                   </span>
                 </p>
                 {lines.length ? (
-                  <ul className="mt-0.5 list-disc pl-5 text-[13px] text-muted-foreground">
-                    {lines.map((edge) => (
-                      <li key={edge.id}>
-                        Then {stepName(edge.to)}, {conditionPhrase(edge)}
-                      </li>
-                    ))}
+                  <ul className="mt-1 space-y-0.5 text-[13px] text-muted-foreground">
+                    {lines.map((edge) => {
+                      const port = stepPorts(workflow, node).find((item) => item.id === portOf(edge));
+                      return (
+                        <li key={edge.id} className="flex items-baseline gap-2">
+                          <span
+                            className="h-2 w-2 shrink-0 translate-y-[-1px] rounded-full"
+                            style={{ background: port ? portColor(port) : undefined }}
+                            aria-hidden
+                          />
+                          <span>
+                            Then {stepName(edge.to)}, {conditionPhrase(edge)}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : null}
               </li>

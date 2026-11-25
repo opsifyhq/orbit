@@ -14400,6 +14400,19 @@ async fn a_workflow_branches_on_an_outcome_and_loops_until_it_changes() {
     assert_eq!(execution.input["payload"]["previous"]["text"], "built");
 
     finish_workflow_step(&app, run_id, "test", Succeeded, "2 failures\nOUTCOME: fail").await;
+    // The fix step gets the test report without the line that was meant for the platform;
+    // the step itself keeps its full answer.
+    let steps = app.store.list_team_steps(run_id).await.unwrap();
+    assert_eq!(
+        steps[1].output.as_ref().unwrap()["text"],
+        "2 failures\nOUTCOME: fail"
+    );
+    let fix = app
+        .store
+        .get_execution_by_id(steps[2].execution_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(fix.input["payload"]["previous"]["text"], "2 failures");
     finish_workflow_step(&app, run_id, "fix", Succeeded, "patched").await;
     finish_workflow_step(
         &app,
