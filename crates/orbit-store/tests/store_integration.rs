@@ -3436,6 +3436,184 @@ async fn archived_agent_can_be_restored() {
     ));
 }
 
+/// The two halves of a team step start: insert the execution, then the step row.
+async fn insert_step(
+    store: &Store,
+    org: uuid::Uuid,
+    user: uuid::Uuid,
+    agent: &orbit_store::Agent,
+    version_id: uuid::Uuid,
+    run_id: uuid::Uuid,
+    key: &str,
+) -> (orbit_store::TeamStep, orbit_store::ExecutionRecord) {
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version_id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "t" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: Some(key),
+            team_run_id: Some(run_id),
+            team_step_index: Some(1),
+        })
+        .await
+        .unwrap();
+    let step = store
+        .create_team_step(
+            run_id,
+            org,
+            1,
+            "step",
+            agent.id,
+            version_id,
+            &[],
+            &serde_json::json!({}),
+            Some(execution.id),
+        )
+        .await
+        .unwrap();
+    (step, execution)
+}
+
+/// #393: a cancel and a step start can interleave either way. The step start checks its
+/// run after creating its execution, and the cancel sweeps again after marking the run, so
+/// no execution of a cancelled run is left live whichever side moves first.
+#[tokio::test]
+async fn a_step_started_during_a_cancel_never_keeps_running() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Cancel Race Agent"))
+        .await
+        .unwrap();
+    let team = store
+        .create_agent_team(
+            org,
+            "Cancel Race Team",
+            "",
+            &serde_json::json!({}),
+            Some(user),
+        )
+        .await
+        .unwrap();
+    // 1. The cancel marks the run before the step start checks it. The cancel's first
+    //    sweep ran before the insert and the second sweep is left out here: the step
+    //    start's own check must stop the execution. A claimed one is asked to stop.
+    let run = store
+        .create_team_run(org, team.id, &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    assert!(store
+        .request_team_run_cancel(org, run.id)
+        .await
+        .unwrap()
+        .is_empty());
+    let (step, execution) =
+        insert_step(&store, org, user, &agent, version.id, run.id, "race-1").await;
+    store
+        .finish_team_run(run.id, "cancelled", None, Some("cancelled by operator"))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .claim_execution(execution.id, "worker-a")
+        .await
+        .unwrap()
+        .unwrap();
+    let settled = store
+        .settle_step_of_ended_run(org, run.id, step.id, execution.id)
+        .await
+        .unwrap()
+        .expect("the run ended, so the step is settled");
+    assert_eq!(settled.step.unwrap().status, "cancelled");
+    let flagged = settled.execution.expect("claimed execution asked to stop");
+    assert_eq!(flagged.status, "dispatched");
+    assert!(store.is_cancel_requested(execution.id).await.unwrap());
+    // Settling again changes nothing more.
+    assert!(store
+        .settle_step_of_ended_run(org, run.id, step.id, execution.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .execution
+        .is_none());
+
+    // 2. The step start checks while the run is still running (after the cancel's first
+    //    sweep missed it); the cancel then marks the run, and its second sweep stops it.
+    let run = store
+        .create_team_run(org, team.id, &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    assert!(store
+        .request_team_run_cancel(org, run.id)
+        .await
+        .unwrap()
+        .is_empty());
+    let (step, execution) =
+        insert_step(&store, org, user, &agent, version.id, run.id, "race-2").await;
+    assert!(store
+        .settle_step_of_ended_run(org, run.id, step.id, execution.id)
+        .await
+        .unwrap()
+        .is_none());
+    store
+        .finish_team_run(run.id, "cancelled", None, Some("cancelled by operator"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store.team_run_has_live_executions(run.id).await.unwrap(),
+        "without the second sweep the execution would keep running"
+    );
+    let late = store.request_team_run_cancel(org, run.id).await.unwrap();
+    assert_eq!(
+        late.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![execution.id]
+    );
+    assert!(!store.team_run_has_live_executions(run.id).await.unwrap());
+    assert_eq!(
+        store.get_execution(org, execution.id).await.unwrap().status,
+        "cancelled"
+    );
+
+    // 3. Deleting the team marks its running runs first; a step start that races it sees
+    //    the run ended and stops its own (queued) execution.
+    let run = store
+        .create_team_run(org, team.id, &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+    let (step, execution) =
+        insert_step(&store, org, user, &agent, version.id, run.id, "race-3").await;
+    assert_eq!(
+        store
+            .cancel_running_team_runs(org, team.id, "team deleted")
+            .await
+            .unwrap(),
+        1
+    );
+    let settled = store
+        .settle_step_of_ended_run(org, run.id, step.id, execution.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.execution.unwrap().status, "cancelled");
+    assert_eq!(
+        store.get_team_run(org, run.id).await.unwrap().status,
+        "cancelled"
+    );
+}
+
 #[tokio::test]
 async fn terminal_team_run_cannot_be_overwritten_and_lease_release_needs_the_token() {
     let Some(store) = test_store().await else {

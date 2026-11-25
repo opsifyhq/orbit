@@ -209,7 +209,7 @@ issue through the connector:
 | succeeded | claim label removed, `doneLabel` added | Posted, including any PR/MR URLs found in the output |
 | failed (attempts left) | claim label removed, ready labels restored | — |
 | failed (exhausted) | claim label removed, `failedLabel` added | — |
-| cancelled | claim label removed | — |
+| cancelled (the run or its queue item was cancelled) | claim label removed, `failedLabel` added | — |
 
 The queue item records `succeeded`, `failed` or `cancelled` accordingly, and failures
 respect `maxAttempts`. Operators can retry, requeue or cancel an item from the UI or
@@ -219,7 +219,7 @@ respect `maxAttempts`. Operators can retry, requeue or cancel an item from the U
 |---|---|---|
 | `retry` | `failed`, `cancelled`, and only while `attempts < maxAttempts` | back to `pending`, consumes an attempt |
 | `requeue` | `pending`, `failed`, `cancelled` | back to `pending`, no attempt consumed; never revives `succeeded` or `running` items, and refused (409) while the previous run's execution is still stopping |
-| `cancel` | `pending`, `running`, `failed` | `cancelled`; the item's run is cancelled and its live execution is asked to stop (a queued one is cancelled outright) |
+| `cancel` | `pending`, `running`, `failed` | `cancelled`; the item's run is cancelled and its live execution is asked to stop (a queued one is cancelled outright). A `running` item gets the cancelled outcome above on its source issue; if the connector fails, the item stays `running` until the outcome loop applies it |
 
 Item status is limited to `pending`, `running`, `succeeded`, `failed` and `cancelled`
 (a CHECK constraint since migration 0041).
@@ -248,6 +248,11 @@ bounded:
   than 600 seconds (for example the API died between claiming and creating the run)
   returns to `pending` with the error "start interrupted; re-queued". The same loop also
   re-applies run outcomes to queue items that were never closed.
+- **Cancel during a step start.** Cancelling a run (or its queue item, or deleting the
+  team) asks the run's live executions to stop again after the run is marked cancelled.
+  A step start checks the run again after creating its execution and, if the run ended
+  meanwhile, stops that execution and closes the step itself. Either that later sweep or
+  the check catches every step started during a cancel.
 - **Rerun.** `POST /api/v1/executions/{id}/rerun` replays one terminal execution. It
   returns 409 for a team step (an execution with a team run or team context), because
   replaying it would hand the team's connections, mappings and subagents to anyone who

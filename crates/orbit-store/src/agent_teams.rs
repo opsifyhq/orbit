@@ -7,6 +7,15 @@ use uuid::Uuid;
 use crate::models::{AgentTeam, TeamRun, TeamStep};
 use crate::{decode_cursor, page_of, Store, StoreError, StoreResult};
 
+/// What [`Store::settle_step_of_ended_run`] changed for a step whose run had ended.
+#[derive(Debug)]
+pub struct SettledStep {
+    /// The step after closing it; `None` when it no longer exists (team deleted).
+    pub step: Option<TeamStep>,
+    /// The execution, when it was cancelled or asked to stop.
+    pub execution: Option<crate::models::ExecutionRecord>,
+}
+
 /// A step of a workflow run to create.
 pub struct NewWorkflowStep<'a> {
     pub run_id: Uuid,
@@ -171,6 +180,38 @@ impl Store {
             return Err(StoreError::NotFound("agent team".into()));
         }
         Ok(())
+    }
+
+    /// Mark every running run of a team `cancelled` (closing their running steps), before
+    /// the team is deleted. A step start that races the delete then sees its run ended
+    /// and stops its own execution (#393). Returns how many runs changed.
+    pub async fn cancel_running_team_runs(
+        &self,
+        org_id: Uuid,
+        team_id: Uuid,
+        error: &str,
+    ) -> StoreResult<u64> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            WITH runs AS (
+                UPDATE team_runs
+                SET status = 'cancelled', error = $3, finished_at = now(), updated_at = now()
+                WHERE org_id = $1 AND team_id = $2 AND status = 'running'
+                RETURNING id
+            ), closed AS (
+                UPDATE team_steps
+                SET status = 'cancelled', finished_at = now(), updated_at = now()
+                WHERE run_id IN (SELECT id FROM runs) AND status = 'running'
+            )
+            SELECT id FROM runs
+            "#,
+        )
+        .bind(org_id)
+        .bind(team_id)
+        .bind(error)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids.len() as u64)
     }
 
     pub async fn create_team_run(
@@ -638,6 +679,69 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    /// Called by the step creator right after it inserted a step and its execution:
+    /// when the run is no longer `running` (cancelled or ended meanwhile, or the team was
+    /// deleted), stop that execution and close that step. `None` while the run is running.
+    ///
+    /// Together with the second sweep the cancel paths run after marking the run (#393),
+    /// this closes the race between a cancel and a step start: if this check still sees
+    /// the run `running`, the insert committed before the run was marked, so the cancel's
+    /// later sweep sees the execution; otherwise this check stops it.
+    pub async fn settle_step_of_ended_run(
+        &self,
+        org_id: Uuid,
+        run_id: Uuid,
+        step_id: Uuid,
+        execution_id: Uuid,
+    ) -> StoreResult<Option<SettledStep>> {
+        let mut tx = self.pool.begin().await?;
+        let running: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM team_runs WHERE id = $1 AND status = 'running')",
+        )
+        .bind(run_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if running {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        // Queued: no worker has it, cancel outright. Claimed: ask its worker to stop.
+        let execution = sqlx::query_as::<_, crate::models::ExecutionRecord>(
+            r#"
+            UPDATE executions
+            SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                finished_at = CASE WHEN status = 'queued' THEN now() ELSE finished_at END,
+                cancel_requested = true, updated_at = now()
+            WHERE org_id = $1 AND id = $2
+              AND (status = 'queued'
+                   OR (status IN ('dispatched', 'running', 'awaiting_approval')
+                       AND NOT cancel_requested))
+            RETURNING *
+            "#,
+        )
+        .bind(org_id)
+        .bind(execution_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE team_steps
+            SET status = 'cancelled', error = 'the run ended before this step started',
+                finished_at = now(), updated_at = now()
+            WHERE id = $1 AND status = 'running'
+            "#,
+        )
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await?;
+        let step = sqlx::query_as::<_, TeamStep>("SELECT * FROM team_steps WHERE id = $1")
+            .bind(step_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(SettledStep { step, execution }))
     }
 
     /// The step an execution belongs to, if it is a team step.
