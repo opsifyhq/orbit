@@ -8,15 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
-### Security
+### Changed
 
-- The unauthenticated `GET /api/v1/meta` returns only the licence tier, whether it is
-  valid and the available features. Customer, licence id, limits and dates stay in the
-  authenticated `GET /api/v1/license` (#449).
-- A licence's `orgSlug` claim (as written in ADR 0010) is read; it is recorded, not
-  enforced. `resource_permissions`, which the sharing endpoints require, is listed as an
-  available feature instead of triggering the "not available in this release" warning
-  (#449).
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
+### Fixed
+
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
