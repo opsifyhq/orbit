@@ -6,6 +6,7 @@ import { api } from "./api";
 import { apiErrorFromBody, handleUnauthorized, isNoAccessError, isSessionError, request } from "./http";
 import { listEnvMappings, workerProfileEnvMappings } from "./env-mappings";
 import { listOutputs } from "./outputs";
+import { queryKeys } from "./query-keys";
 import type {
   AgentDetail,
   AgentPage,
@@ -60,33 +61,7 @@ export function unwrap<T>(result: {
   return result.data;
 }
 
-export const queryKeys = {
-  meta: ["meta"] as const,
-  me: ["me"] as const,
-  dashboard: ["dashboard"] as const,
-  agents: (params?: Record<string, unknown>) => ["agents", params ?? {}] as const,
-  agent: (id: string) => ["agent", id] as const,
-  agentVersions: (id: string) => ["agent", id, "versions"] as const,
-  executions: (params?: Record<string, unknown>) => ["executions", params ?? {}] as const,
-  execution: (id: string) => ["execution", id] as const,
-  executionEvents: (id: string) => ["execution", id, "events"] as const,
-  harnesses: ["harnesses"] as const,
-  providers: ["providers"] as const,
-  connectors: ["connectors"] as const,
-  connections: ["connections"] as const,
-  tokens: ["api-tokens"] as const,
-  approvals: (status?: string) => ["approvals", status ?? "all"] as const,
-  workers: ["workers"] as const,
-  skills: ["skills"] as const,
-  skill: (id: string) => ["skills", id] as const,
-  workerProfiles: ["worker-profiles"] as const,
-  workerLaunches: ["worker-launches"] as const,
-  agentTeams: ["agent-teams"] as const,
-  agentTeam: (id: string) => ["agent-teams", id] as const,
-  teamQueue: (id: string) => ["agent-teams", id, "queue"] as const,
-  teamRuns: ["team-runs"] as const,
-  teamRun: (id: string) => ["team-runs", "detail", id] as const,
-};
+export { queryKeys } from "./query-keys";
 
 export function useMeta() {
   return useQuery<MetaResponse>({

@@ -100,7 +100,6 @@ export function WorkerEditor({
   );
   const { values } = form;
   const [accessDirty, setAccessDirty] = useState(false);
-  useUnsavedChanges({ accessDirty }, { enabled: Boolean(editing) });
   const [confirmRelaunch, setConfirmRelaunch] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
@@ -116,11 +115,14 @@ export function WorkerEditor({
   // Seed the checkbox state once. Refetches return the same mappings, and re-seeding
   // would throw away any unsaved ticks the user has made in the meantime.
   const envMappingsSeeded = useRef(false);
+  // The attached mappings as stored, once loaded: the baseline for the unsaved-changes guard.
+  const [storedEnvMappingIds, setStoredEnvMappingIds] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (!editing || !profileEnvMappings.data || envMappingsSeeded.current) return;
     envMappingsSeeded.current = true;
     const attached = profileEnvMappings.data.map((mapping) => mapping.id);
+    setStoredEnvMappingIds(attached);
     form.set({
       envMappingIds:
         attachMappingId && !attached.includes(attachMappingId) ? [...attached, attachMappingId] : attached,
@@ -131,6 +133,15 @@ export function WorkerEditor({
 
   // Saving while an attached-mapping read failed would send a form with no ids and
   // detach every mapping. Wait for a successful read before allowing a save.
+  // Seeding the attached mappings after they load is not an edit; ticking one afterwards
+  // (or arriving with one pre-ticked from Environments) is.
+  const { envMappingIds, ...guardedValues } = values;
+  useUnsavedChanges({
+    values: guardedValues,
+    envMappingsChanged: !sameIds(envMappingIds, storedEnvMappingIds ?? (editing ? envMappingIds : [])),
+    accessDirty,
+  });
+
   const envMappingsLoading = Boolean(editing) && profileEnvMappings.isLoading;
   const envMappingsFailed = Boolean(editing) && profileEnvMappings.isError;
   const envMappingsBlocked = envMappingsLoading || envMappingsFailed;
@@ -435,4 +446,8 @@ export function WorkerEditor({
       </div>
     </div>
   );
+}
+
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
 }

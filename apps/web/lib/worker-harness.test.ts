@@ -55,3 +55,16 @@ test("unknown harnesses get a readable label", () => {
   assert.equal(harnessLabel("opencode"), "OpenCode");
   assert.equal(harnessLabel("my_harness"), "My Harness");
 });
+
+test("providers for different harnesses that share a provider name resolve by the worker's harness (#400)", () => {
+  const shared: WorkerProviderLike[] = [
+    { name: "Anthropic (OpenCode)", kind: "harness_managed", config: { harness: "opencode", provider: "anthropic", settings: { models: ["a-oc"] } } },
+    { name: "Anthropic (Pi)", kind: "harness_managed", config: { harness: "pi", provider: "anthropic", settings: { models: ["a-pi"] } } },
+  ];
+  assert.equal(resolveProvider(shared, "anthropic", "pi").selectedProvider?.name, "Anthropic (Pi)");
+  assert.deepEqual(resolveProvider(shared, "anthropic", "pi").providerModels, ["a-pi"]);
+  assert.equal(resolveProvider(shared, "anthropic", "opencode").selectedProvider?.name, "Anthropic (OpenCode)");
+  assert.equal(resolveProvider(shared, "anthropic").selectedProvider?.name, "Anthropic (OpenCode)", "without a harness the first wins");
+  assert.equal(harnessMismatch("pi", "anthropic", shared), null, "a Pi provider of that name exists");
+  assert.equal(harnessMismatch("mock", "anthropic", shared)?.providerHarness, "opencode");
+});

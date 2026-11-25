@@ -15,7 +15,7 @@ import type { WorkerFormApi } from "./worker-form";
 /** Name, harness and target. */
 export function BasicsFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
   const { values, set } = form;
-  const { selectedProvider } = resolveProvider(providers, values.provider);
+  const { selectedProvider } = resolveProvider(providers, values.provider, values.harness);
   return (
     <>
       <Field label="Name" htmlFor="wp-name">

@@ -15,6 +15,7 @@ import { listAccessTeams } from "@/lib/access-teams";
 import { request } from "@/lib/http";
 import { errorMessage } from "@orbit/api-client";
 import { useLicense } from "@/lib/queries";
+import { sharingInvalidationKeys } from "@/lib/query-keys";
 
 type Sharing = { visibility: string; ownerTeamId?: string | null };
 
@@ -108,8 +109,9 @@ export const ResourceAccessFields = forwardRef<ResourceAccessHandle, ResourceAcc
       toast.success("Access updated");
       setDraftDirty(false);
       onDirtyChange?.(false);
-      void queryClient.invalidateQueries({ queryKey: ["sharing", resource, id] });
-      void queryClient.invalidateQueries({ queryKey: [resource] });
+      for (const queryKey of sharingInvalidationKeys(resource, id)) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
       return true;
     } catch (error) {
       toast.error(`Access could not be updated: ${errorMessage(error)}`);
