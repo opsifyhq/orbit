@@ -441,6 +441,14 @@ function callHash(tool: string, input: unknown) {
   return createHash("sha256").update(tool + "\u001f" + canon(input ?? {})).digest("hex")
 }
 
+// OpenCode names MCP tools `<server>_<tool>`. ORBIT's configuration replaces the
+// workspace's MCP servers, and the adapter refuses to start when the workspace defines
+// custom tools that could be named `orbit_...`, so only the ORBIT MCP server can produce
+// such an id. The broker skips native classification only for that origin (#401).
+function originOf(tool: string): string | undefined {
+  return tool.startsWith("orbit_") ? "orbit" : undefined
+}
+
 // The effect is derived by the broker from the tool name; it is never declared here.
 async function checkPolicy(tool: string, input: unknown): Promise<string | undefined> {
   const base = process.env.ORBIT_BROKER_URL
@@ -457,6 +465,7 @@ async function checkPolicy(tool: string, input: unknown): Promise<string | undef
       tool,
       arguments: input ?? {},
       argumentsHash: callHash(tool, input),
+      origin: originOf(tool),
     }),
   })
   const body = await response.json().catch(() => ({}))
@@ -492,6 +501,29 @@ export default Plugin.define({
 })
 "#,
     )
+}
+
+/// Custom tool files in the workspace whose OpenCode tool ids could start with `orbit_`:
+/// OpenCode names a tool file's default export after the file and other exports
+/// `<file>_<export>`, so `orbit.ts` or `orbit_x.ts` would share the namespace of ORBIT's
+/// MCP tools (`orbit_<tool>`), which the broker trusts as coming from the ORBIT MCP
+/// server (#401).
+fn workspace_tools_in_orbit_namespace(workspace: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for dir in [".opencode/tool", ".opencode/tools"] {
+        let Ok(entries) = std::fs::read_dir(workspace.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
+            if stem == "orbit" || stem.starts_with("orbit_") {
+                found.push(format!("{dir}/{name}"));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 fn write_open_code_mcp_config(workspace: &Path, bridge: &OrbitMcpBridge) -> std::io::Result<()> {
@@ -816,6 +848,16 @@ impl OpenCodeHarnessAdapter {
             )
         })?;
         if let Some(bridge) = &settings.orbit_mcp {
+            let claimed = workspace_tools_in_orbit_namespace(&workspace);
+            if !claimed.is_empty() {
+                return Err(HarnessError::new(
+                    HarnessErrorKind::InvalidConfig,
+                    format!(
+                        "the workspace defines OpenCode tools named like ORBIT's own tools ({}); rename them so their names do not start with \"orbit\"",
+                        claimed.join(", ")
+                    ),
+                ));
+            }
             write_open_code_mcp_config(&workspace, bridge).map_err(|error| {
                 HarnessError::new(
                     HarnessErrorKind::Internal,
@@ -1227,6 +1269,34 @@ mod tests {
         assert!(!source.contains("continue"), "a tool is skipped");
         assert!(source.contains("for (const tool of tools)"));
         assert!(source.contains("checkPolicy(tool.id, input)"));
+        assert!(source.contains("origin: originOf(tool)"));
+    }
+
+    /// #401: a workspace tool file that could produce an `orbit_...` id is found, so the
+    /// run refuses to start instead of letting it pass as an ORBIT tool.
+    #[test]
+    fn workspace_tools_in_the_orbit_namespace_are_found() {
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(workspace_tools_in_orbit_namespace(workspace.path()).is_empty());
+        for file in [
+            ".opencode/tool/orbit.ts",
+            ".opencode/tools/orbit_github_issues_list.js",
+            ".opencode/tool/Orbit_x.ts",
+            ".opencode/tool/lint.ts",
+            ".opencode/tool/orbiter.ts",
+        ] {
+            let path = workspace.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "export default {}").unwrap();
+        }
+        assert_eq!(
+            workspace_tools_in_orbit_namespace(workspace.path()),
+            vec![
+                ".opencode/tool/Orbit_x.ts",
+                ".opencode/tool/orbit.ts",
+                ".opencode/tools/orbit_github_issues_list.js",
+            ]
+        );
     }
 
     #[test]

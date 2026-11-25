@@ -325,16 +325,37 @@ What is enforced for native tools today:
   (`.pi/extensions/orbit-policy.ts`). Both call `POST /policy` before **every** tool call,
   including tools they do not know by name, and block the call on any deny, error or
   missing broker. Unknown tools count as `write`, so a new tool fails closed.
-- ORBIT's own MCP tools reach the hook under their MCP names (`orbit_<tool>`,
-  `mcp__orbit__<tool>`). `/policy` lets them through because the broker checks them when
-  they are called.
+- ORBIT's own MCP tools reach the hook under their MCP names (`orbit_<tool>` in
+  OpenCode, `mcp__orbit__<tool>` in Pi). `/policy` lets them through, because the broker
+  checks them when they are called, only when the hook also reports their origin as the
+  ORBIT MCP server (`"origin": "orbit"`) (#401). A name alone proves nothing: a bare name
+  (`github_issues_list`), a missing origin or another origin is checked as a native tool,
+  where an unknown name is a `write`, and the run records a warning.
+  - Pi: the extension reads the origin from Pi's tool registry (`pi.getAllTools()`):
+    only tools registered by Pi's built-in MCP extension (`sourceInfo.path` =
+    `builtin:mcp`) with the namespace `mcp__orbit` count. Without that API, no origin is
+    sent and ORBIT's tools are checked as native tools (fail closed).
+  - OpenCode: the plugin reports `orbit` for ids starting with `orbit_`. ORBIT replaces
+    the workspace's MCP servers with its own, and the adapter refuses to start
+    (`invalid_config`) when the workspace has custom tool files
+    (`.opencode/tool[s]/orbit.*`, `orbit_*.*`) that OpenCode would name `orbit_...`.
+    Workspace plugins (`.opencode/plugins/`) can register tools of any name and run code
+    when OpenCode loads them; ORBIT does not inspect them.
 - Claude Code is `planned`; its `PreToolUse` integration does not exist.
 
 **Autonomy baseline for native tools (enforced by the adapter, independent of the
 broker).** Adapters derive a native-tool baseline from `request.autonomy` and never rely
 on the broker or `/policy` being present:
 
-- Pi: at `<= RECOMMEND` only `read,grep,find,ls,codemode` are enabled.
+- Pi: at `<= RECOMMEND` only `read,grep,find,ls,codemode` are enabled. `codemode` runs a
+  model-written JavaScript script in a QuickJS sandbox with no file system, process or
+  network access of its own; the script reaches the agent's tools only through Pi's tool
+  pipeline (`ctx.executeTool`), so each nested call fires the same `tool_call` hook
+  (with `parentToolCallId`) and is checked by `/policy` with its own effect. The broker
+  therefore classifies the `codemode` call itself as `read`, like `task`/`subagent`.
+  Scripts can also run Pi's classifier models (`models.classify()`), which use the
+  configured model provider. This was read from the Pi 0.99.2 sources; it has not been
+  checked against a live run of the tested Pi version.
 - OpenCode: at `<= RECOMMEND` the generated `opencode.json` denies `bash`, `edit`,
   `write`, `patch`, `multiedit` and `apply_patch` (`permission` = `deny`, and hidden via
   `tools` = `false`), and `--auto` is never passed, regardless of the `autoApprove`
