@@ -21,8 +21,11 @@ connection also stores `defaultNamespace`, an optional public `caCert`,
 `timeoutSeconds` (default 20) and `maxLogBytes` (default 200000). Allowlists are enforced
 by ORBIT as well as RBAC, and an empty list denies:
 
-- `allowedResources` is normally derived from the selected capabilities; an explicit
-  non-empty value in Advanced config overrides that derivation.
+- `allowedResources` is normally derived from the selected capabilities, and the web form
+  derives it again on every save, so adding `pods.logs` later adds `pods/log` and removing
+  capabilities shrinks the list. A non-empty value in Advanced config that differs from what
+  the saved capabilities derive is an explicit override and is kept. The form shows the
+  list that will be saved.
 
 - `namespaces` empty: only `defaultNamespace` may be used; with neither set, every
   namespaced tool is refused. Use `["*"]` to let the kubeconfig/RBAC decide which

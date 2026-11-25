@@ -6,6 +6,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { ProviderForm } from "@/components/providers/provider-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -49,14 +51,20 @@ export default function EditProviderPage() {
   }
   const data = provider.data;
 
-  async function handleSubmit(draft: ProviderDraft, commitAccess: () => Promise<void>) {
+  async function handleSubmit(draft: ProviderDraft, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       await updateProvider(data, draft);
-      await commitAccess();
+      const accessSaved = await commitAccess();
       await queryClient.invalidateQueries({ queryKey: queryKeys.providers });
-      toast.success("Provider saved");
-      router.push(`/models/${providerId}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: "Provider saved",
+        href: `/models/${providerId}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));

@@ -1,5 +1,7 @@
 "use client";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { LoadFailure } from "@/components/load-failure";
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -47,18 +49,24 @@ function EditAgentTeamEditor({ teamId }: { teamId: string }) {
     );
   }
 
-  async function handleSubmit(input: TeamInput, commitAccess: () => Promise<void>) {
+  async function handleSubmit(input: TeamInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       // Refused with 409 if someone else saved the team after it was loaded.
       await updateAgentTeam(teamId, { ...input, expectedUpdatedAt: team.data?.updatedAt });
-      await commitAccess();
+      const accessSaved = await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams }),
         queryClient.invalidateQueries({ queryKey: queryKeys.agentTeam(teamId) }),
       ]);
-      toast.success("Agent team saved");
-      router.push(`/agent-teams/${teamId}`);
+      const outcome = resourceSaveOutcome({
+        mode: "edit",
+        saved: "Agent team saved",
+        href: `/agent-teams/${teamId}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {

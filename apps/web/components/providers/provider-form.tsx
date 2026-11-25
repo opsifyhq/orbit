@@ -204,9 +204,7 @@ export function ProviderForm({
       toast.error(local.length === 1 ? local[0].message : "Fix the highlighted sections");
       return;
     }
-    const commitAccess = async (id?: string) => {
-      await accessRef.current?.save(id);
-    };
+    const commitAccess = async (id?: string) => (await accessRef.current?.save(id)) ?? true;
     await onSubmit({ ...draft, models }, commitAccess);
   }
 

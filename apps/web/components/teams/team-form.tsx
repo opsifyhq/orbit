@@ -348,9 +348,7 @@ export function TeamForm({
       return;
     }
     // Access is stored separately; the parent commits it after the team itself is saved.
-    const commitAccess = async (id?: string) => {
-      await accessRef.current?.save(id);
-    };
+    const commitAccess = async (id?: string) => (await accessRef.current?.save(id)) ?? true;
     await onSubmit(toInput(draft), commitAccess);
   }
 

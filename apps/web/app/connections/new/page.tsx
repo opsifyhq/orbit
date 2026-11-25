@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { ConnectionForm } from "@/components/connections/connection-form";
 import { Callout } from "@/components/ui/callout";
 import { PageHeader } from "@/components/ui/page-header";
@@ -20,17 +22,23 @@ function NewConnection() {
   const connectors = useConnectors();
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(input: ConnectionInput, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(input: ConnectionInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       const created = await createConnection(input);
-      await commitAccess(created.id);
+      const accessSaved = await commitAccess(created.id);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.connections }),
         queryClient.invalidateQueries({ queryKey: queryKeys.connectors }),
       ]);
-      toast.success("Connection created");
-      router.push(`/connections/${created.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Connection created",
+        href: `/connections/${created.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {

@@ -1,5 +1,7 @@
 "use client";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { validationDetails } from "@/lib/http";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -20,7 +22,7 @@ export default function NewAgentPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(definition: AgentDefinition, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(definition: AgentDefinition, commitAccess: CommitAccess) {
     setSubmitting(true);
     setServerIssues([]);
     try {
@@ -29,11 +31,17 @@ export default function NewAgentPage() {
           body: toAgentDefinitionBody(definition),
         }),
       );
-      await commitAccess(created.id);
-      toast.success("Agent created");
+      const accessSaved = await commitAccess(created.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
-      router.push(`/agents/${created.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Agent created",
+        href: `/agents/${created.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       const details = validationDetails(error);
       setServerIssues(details);

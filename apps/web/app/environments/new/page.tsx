@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { type CommitAccess } from "@/components/resource-access-fields";
+import { resourceSaveOutcome } from "@/lib/resource-save";
 import { EnvironmentForm, type EnvironmentInput } from "@/components/environments/environment-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -21,14 +23,20 @@ function NewEnvironment() {
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
 
-  async function handleSubmit(input: EnvironmentInput, commitAccess: (id?: string) => Promise<void>) {
+  async function handleSubmit(input: EnvironmentInput, commitAccess: CommitAccess) {
     setSubmitting(true);
     try {
       const created = await createEnvMapping(input);
-      await commitAccess(created.id);
+      const accessSaved = await commitAccess(created.id);
       await queryClient.invalidateQueries({ queryKey: ["env-mappings"] });
-      toast.success("Environment created");
-      router.push(`/environments/${created.id}`);
+      const outcome = resourceSaveOutcome({
+        mode: "create",
+        saved: "Environment created",
+        href: `/environments/${created.id}`,
+        accessSaved,
+      });
+      toast[outcome.tone](outcome.message);
+      if (outcome.href) router.push(outcome.href);
     } catch (error) {
       setServerIssues(validationDetails(error));
       toast.error(errorMessage(error));
