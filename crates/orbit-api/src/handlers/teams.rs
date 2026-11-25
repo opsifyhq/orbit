@@ -490,257 +490,21 @@ pub(crate) async fn require_team_use(
     Ok(team)
 }
 
-#[utoipa::path(post, path = "/api/v1/agent-teams", tag = "agent-teams", request_body = CreateTeamRequest, responses((status = 201, body = orbit_store::AgentTeam)))]
-pub async fn create_team(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthContext>,
-    crate::extract::ApiJson(mut body): crate::extract::ApiJson<CreateTeamRequest>,
-) -> Result<(StatusCode, Json<AgentTeam>), ApiError> {
-    auth.require(Permission::SettingsWrite)?;
-    prepare_mode(&mut body)?;
-    // Only the fields that are actually wrong (#438): a team with a name but no steps used
-    // to be told "name: name is required" as well.
-    let mut required = Vec::new();
-    if body.name.trim().is_empty() {
-        required.push(ValidationIssue::new("name", "name is required"));
-    }
-    if body.steps.is_empty() {
-        required.push(ValidationIssue::new(
-            "steps",
-            "at least one step is required",
-        ));
-    }
-    if !required.is_empty() {
-        return Err(ApiError::validation(required));
-    }
-    if body
-        .timeout_seconds
-        .is_some_and(|seconds| !(1..=86_400).contains(&seconds))
-    {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "timeoutSeconds",
-            "must be 1..=86400",
-        )]));
-    }
-    if let Some(repository) = body
-        .repository
-        .as_deref()
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-    {
-        if !repository.contains('/') || repository.chars().any(char::is_whitespace) {
-            return Err(ApiError::validation(vec![ValidationIssue::new(
-                "repository",
-                "repository must be owner/repo",
-            )]));
-        }
-    }
-    let mut issues = Vec::new();
-    if let Some(source) = &body.work_source {
-        issues.extend(validate_work_source(source));
-    }
-    if !body.repositories.is_empty() {
-        issues.extend(validate_repositories(&body.repositories));
-    }
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
-    let mut agent_ids = std::collections::BTreeSet::new();
-    for (index, step) in body.steps.iter().enumerate() {
-        if !agent_ids.insert(step.agent_id) {
-            for path in step_agent_paths(&body, index, step.agent_id) {
-                issues.push(ValidationIssue::new(
-                    path,
-                    "the same agent cannot appear twice in one team",
-                ));
-            }
-        }
-        // An agent the caller cannot view is reported exactly like a missing one.
-        let viewable = match state.store.get_agent(auth.org_id, step.agent_id).await {
-            Ok(agent) => {
-                access.can_view(agent.owner_user_id, agent.owner_team_id, &agent.visibility)
-            }
-            Err(_) => false,
-        };
-        if !viewable {
-            for path in step_agent_paths(&body, index, step.agent_id) {
-                issues.push(ValidationIssue::new(
-                    path,
-                    format!("unknown agent '{}'", step.agent_id),
-                ));
-            }
-        }
-    }
-    if let Some(source) = &body.work_source {
-        validate_work_source_connection(&state, auth.org_id, &access, source, &mut issues).await;
-    }
-    if let Some(profile_id) = body.worker_profile_id {
-        let viewable = match state
-            .store
-            .get_worker_profile(auth.org_id, profile_id)
-            .await
-        {
-            Ok(profile) => access.can_view(
-                profile.owner_user_id,
-                profile.owner_team_id,
-                &profile.visibility,
-            ),
-            Err(_) => false,
-        };
-        if !viewable {
-            issues.push(ValidationIssue::new(
-                "workerProfileId",
-                format!("unknown worker profile '{profile_id}'"),
-            ));
-        }
-    }
-    issues.extend(
-        crate::preflight::unusable_skill_issues(
-            &state,
-            auth.org_id,
-            &access,
-            &body.skills,
-            "skills",
-            false,
-        )
-        .await?,
-    );
-    for connection_id in &body.connection_ids {
-        match state
-            .store
-            .get_connection(auth.org_id, *connection_id)
-            .await
-        {
-            Ok(connection)
-                if access.can_view(
-                    connection.owner_user_id,
-                    connection.owner_team_id,
-                    &connection.visibility,
-                ) => {}
-            Ok(_) => issues.push(ValidationIssue::new(
-                "connectionIds",
-                format!("connection '{connection_id}' is not visible to you"),
-            )),
-            Err(_) => issues.push(ValidationIssue::new(
-                "connectionIds",
-                format!("unknown connection '{connection_id}'"),
-            )),
-        }
-    }
-    for mapping_id in &body.env_mapping_ids {
-        let viewable = match state.store.get_env_mapping(auth.org_id, *mapping_id).await {
-            Ok(mapping) => access.can_view(
-                mapping.owner_user_id,
-                mapping.owner_team_id,
-                &mapping.visibility,
-            ),
-            Err(_) => false,
-        };
-        if !viewable {
-            issues.push(ValidationIssue::new(
-                "envMappingIds",
-                format!("unknown environment mapping '{mapping_id}'"),
-            ));
-        }
-    }
-    validate_native_primary(&state, auth.org_id, &body.mode, &body.steps, &mut issues).await;
-    let (elevations, autonomy) = validate_team_autonomy(
-        &state,
-        &auth,
-        &access,
-        body.autonomy.as_ref(),
-        &body.steps,
-        &mut issues,
-    )
-    .await;
-    if !issues.is_empty() {
-        return Err(ApiError::validation(issues));
-    }
-    let definition = serde_json::json!({
-        "mode": body.mode,
-        "instructions": body.instructions.trim(),
-        "repository": body.repository.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-        "branch": body.branch.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-        "workSource": body.work_source.as_ref().map(work_source_to_json),
-        "repositories": repositories_to_json(&body.repositories),
-        "model": body.model,
-        "workerProfileId": body.worker_profile_id,
-        "autoLaunch": body.auto_launch,
-        "skills": body.skills,
-        "harness": body.harness,
-        "connectionIds": body.connection_ids,
-        "envMappingIds": body.env_mapping_ids,
-        "timeoutSeconds": body.timeout_seconds,
-        "autonomy": autonomy,
-        "steps": body.steps.iter().map(|step| serde_json::json!({
-            "agentId": step.agent_id,
-            "model": step.model,
-        })).collect::<Vec<_>>(),
-        "workflow": body.workflow,
-    });
-    let team = state
-        .store
-        .create_agent_team(
-            auth.org_id,
-            body.name.trim(),
-            body.description.trim(),
-            &definition,
-            Some(auth.user_id),
-        )
-        .await?;
-    state
-        .store
-        .assign_resource_owner(auth.org_id, "agent_teams", team.id, auth.user_id)
-        .await?;
-    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
-    crate::audit::record(
-        &state,
-        &auth,
-        "team.created",
-        Some("agent_team"),
-        Some(team.id),
-        serde_json::json!({ "name": team.name, "mode": body.mode }),
-    )
-    .await;
-    Ok((StatusCode::CREATED, Json(team)))
+/// What a validated team request stores, plus the autonomy elevations to audit.
+struct ValidatedTeam {
+    definition: serde_json::Value,
+    elevations: Vec<AutonomyElevation>,
+    autonomy: Option<TeamAutonomy>,
 }
 
-/// Partial update: fields left out keep their stored value, an explicit `null` clears an
-/// optional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a
-/// write over someone else's change with 409.
-#[utoipa::path(
-    patch, path = "/api/v1/agent-teams/{team_id}", tag = "agent-teams",
-    request_body = CreateTeamRequest,
-    responses(
-        (status = 200, body = orbit_store::AgentTeam),
-        (status = 409, description = "the team changed after `expectedUpdatedAt`"),
-    )
-)]
-pub async fn update_team(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthContext>,
-    Path(team_id): Path<Uuid>,
-    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
-) -> Result<Json<AgentTeam>, ApiError> {
-    auth.require(Permission::SettingsWrite)?;
-    let stored = require_team_manage(&state, &auth, team_id).await?;
-    let (body, expected_updated_at) = merge_team_patch(&stored, patch)?;
-    replace_team(&state, &auth, team_id, body, expected_updated_at)
-        .await
-        .map(Json)
-}
-
-/// Validate `body` and store it as the team's whole definition. Shared by PATCH (after
-/// merging the patch onto the stored team) and portable import (a full replacement).
-pub(crate) async fn replace_team(
+/// Validation shared by team create and update: normalise the mode, check the request and
+/// everything it references for the caller, and build the definition to store.
+async fn validate_team_request(
     state: &AppState,
     auth: &AuthContext,
-    team_id: Uuid,
-    mut body: CreateTeamRequest,
-    expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> Result<AgentTeam, ApiError> {
-    auth.require(Permission::SettingsWrite)?;
-    let stored = require_team_manage(state, auth, team_id).await?;
-    let expected_updated_at = expected_updated_at.or(body.expected_updated_at);
-    prepare_mode(&mut body)?;
+    body: &mut CreateTeamRequest,
+) -> Result<ValidatedTeam, ApiError> {
+    prepare_mode(body)?;
     // Only the fields that are actually wrong (#438): a team with a name but no steps used
     // to be told "name: name is required" as well.
     let mut required = Vec::new();
@@ -789,7 +553,7 @@ pub(crate) async fn replace_team(
     let mut agent_ids = std::collections::BTreeSet::new();
     for (index, step) in body.steps.iter().enumerate() {
         if !agent_ids.insert(step.agent_id) {
-            for path in step_agent_paths(&body, index, step.agent_id) {
+            for path in step_agent_paths(body, index, step.agent_id) {
                 issues.push(ValidationIssue::new(
                     path,
                     "the same agent cannot appear twice in one team",
@@ -804,7 +568,7 @@ pub(crate) async fn replace_team(
             Err(_) => false,
         };
         if !viewable {
-            for path in step_agent_paths(&body, index, step.agent_id) {
+            for path in step_agent_paths(body, index, step.agent_id) {
                 issues.push(ValidationIssue::new(
                     path,
                     format!("unknown agent '{}'", step.agent_id),
@@ -919,6 +683,94 @@ pub(crate) async fn replace_team(
         })).collect::<Vec<_>>(),
         "workflow": body.workflow,
     });
+    Ok(ValidatedTeam {
+        definition,
+        elevations,
+        autonomy,
+    })
+}
+
+#[utoipa::path(post, path = "/api/v1/agent-teams", tag = "agent-teams", request_body = CreateTeamRequest, responses((status = 201, body = orbit_store::AgentTeam)))]
+pub async fn create_team(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    crate::extract::ApiJson(mut body): crate::extract::ApiJson<CreateTeamRequest>,
+) -> Result<(StatusCode, Json<AgentTeam>), ApiError> {
+    auth.require(Permission::SettingsWrite)?;
+    let ValidatedTeam {
+        definition,
+        elevations,
+        autonomy,
+    } = validate_team_request(&state, &auth, &mut body).await?;
+    let team = state
+        .store
+        .create_agent_team(
+            auth.org_id,
+            body.name.trim(),
+            body.description.trim(),
+            &definition,
+            Some(auth.user_id),
+        )
+        .await?;
+    state
+        .store
+        .assign_resource_owner(auth.org_id, "agent_teams", team.id, auth.user_id)
+        .await?;
+    audit_team_autonomy_elevations(&state, &auth, team.id, &elevations, autonomy.as_ref()).await;
+    crate::audit::record(
+        &state,
+        &auth,
+        "team.created",
+        Some("agent_team"),
+        Some(team.id),
+        serde_json::json!({ "name": team.name, "mode": body.mode }),
+    )
+    .await;
+    Ok((StatusCode::CREATED, Json(team)))
+}
+
+/// Partial update: fields left out keep their stored value, an explicit `null` clears an
+/// optional field. Send `expectedUpdatedAt` (the team's `updatedAt` as read) to refuse a
+/// write over someone else's change with 409.
+#[utoipa::path(
+    patch, path = "/api/v1/agent-teams/{team_id}", tag = "agent-teams",
+    request_body = CreateTeamRequest,
+    responses(
+        (status = 200, body = orbit_store::AgentTeam),
+        (status = 409, description = "the team changed after `expectedUpdatedAt`"),
+    )
+)]
+pub async fn update_team(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(team_id): Path<Uuid>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
+) -> Result<Json<AgentTeam>, ApiError> {
+    auth.require(Permission::SettingsWrite)?;
+    let stored = require_team_manage(&state, &auth, team_id).await?;
+    let (body, expected_updated_at) = merge_team_patch(&stored, patch)?;
+    replace_team(&state, &auth, team_id, body, expected_updated_at)
+        .await
+        .map(Json)
+}
+
+/// Validate `body` and store it as the team's whole definition. Shared by PATCH (after
+/// merging the patch onto the stored team) and portable import (a full replacement).
+pub(crate) async fn replace_team(
+    state: &AppState,
+    auth: &AuthContext,
+    team_id: Uuid,
+    mut body: CreateTeamRequest,
+    expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<AgentTeam, ApiError> {
+    auth.require(Permission::SettingsWrite)?;
+    let stored = require_team_manage(state, auth, team_id).await?;
+    let expected_updated_at = expected_updated_at.or(body.expected_updated_at);
+    let ValidatedTeam {
+        definition,
+        elevations,
+        autonomy,
+    } = validate_team_request(state, auth, &mut body).await?;
     let team = state
         .store
         .update_agent_team(
