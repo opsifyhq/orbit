@@ -1,0 +1,1 @@
+- `croner` 11 for schedule parsing and previews in the web app.
