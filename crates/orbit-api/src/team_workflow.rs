@@ -88,15 +88,15 @@ fn combined_output(steps: &[&TeamStep]) -> Option<Value> {
 /// outcomes ends its answer with. The stored output keeps the line.
 fn handed_on(step: &TeamStep) -> Option<Value> {
     let mut output = step.output.clone()?;
-    if step.outcome.is_none() {
+    let Some(outcome) = step.outcome.as_deref() else {
         return Some(output);
-    }
+    };
     match &mut output {
-        Value::String(text) => *text = without_outcome_line(text),
+        Value::String(text) => *text = without_outcome_line(text, outcome),
         Value::Object(fields) => {
             for key in ["text", "summary"] {
                 if let Some(Value::String(text)) = fields.get_mut(key) {
-                    *text = without_outcome_line(text);
+                    *text = without_outcome_line(text, outcome);
                     break;
                 }
             }
