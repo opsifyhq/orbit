@@ -58,8 +58,11 @@ Amazon S3 uses its regional endpoint and virtual-hosted addressing by default. R
 normally needs an explicit `endpoint` and `pathStyle: true`. The same account can also be
 used as an **S3 / object storage** connection for agent tools
 (`buckets.list`, `objects.list`, `objects.get`, `objects.put`, `objects.delete`,
-`objects.copy`). An empty bucket allowlist denies every operation; object keys must stay
-inside the configured prefix. `maxObjectBytes` caps reads and writes.
+`objects.copy`). An empty bucket allowlist denies every operation, and `buckets.list`
+shows only allowed buckets. Object keys and `objects.list` prefixes must stay inside the
+configured prefix; keys with `.` or `..` segments, backslashes or control characters, or
+over 1024 bytes are refused. `objects.list` returns 100 objects per page with `truncated`
+and a `nextContinuationToken`. `maxObjectBytes` caps reads and writes.
 
 ## Telegram bot setup
 
