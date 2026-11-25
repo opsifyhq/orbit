@@ -9184,6 +9184,35 @@ async fn kubernetes_api_server_is_guarded_and_testing_needs_write() {
         .as_array()
         .is_some_and(|details| details.iter().any(|detail| detail["path"] == "apiServer")));
 
+    // #391: namespaces are spliced into request paths, so a path-like value is refused.
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "kubernetes",
+                "name": "Dot namespace",
+                "config": {
+                    "authMode": "service_account",
+                    "apiServer": "https://93.184.216.34",
+                    "defaultNamespace": "a/../b",
+                    "namespaces": ["payments", ".."]
+                },
+                "credential": "dummy-token"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let paths: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|detail| detail["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"defaultNamespace"), "{body}");
+    assert!(paths.contains(&"namespaces"), "{body}");
+
     // A loopback API server stored before this check is refused when the test connects,
     // and the response does not echo what the address returned.
     let kubernetes = app
@@ -11659,6 +11688,40 @@ async fn settings_write_has_a_ceiling_for_toggles_and_access_teams() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // #387: whom ORBIT trusts for sign-in is an Owner decision. A delegated
+    // settings:write holder cannot swap the issuer or the team mappings.
+    for settings in [
+        json!({ "issuer": "https://idp-387.example.com", "jwksUrl": "https://idp-387.example.com/jwks" }),
+        json!({ "teamGroups": { format!("g-{}", Uuid::now_v7()): "ops:lead" }, "autoCreateTeams": true }),
+        // A unique value, so the edit is a change whatever other tests stored.
+        json!({ "audience": format!("aud-{}", Uuid::now_v7()) }),
+    ] {
+        let (status, body) = send(
+            &app.router,
+            put_json("/api/v1/settings/oidc", m, &json!({ "settings": settings })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{settings}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("trust settings"),
+            "{body}"
+        );
+    }
+    // A role-mapping-only edit within the caller's own permissions still works (#324 ceiling).
+    let (status, body) = send(
+        &app.router,
+        put_json(
+            "/api/v1/settings/oidc",
+            m,
+            &json!({ "settings": { "groupRoles": { format!("g-{}", Uuid::now_v7()): "viewer" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Mallory is not a lead of Team A: she cannot rename or delete it.
     let team_path = format!("/api/v1/teams/{}", fx.team_a);

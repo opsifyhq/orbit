@@ -1,4 +1,5 @@
-//! Read-only Kubernetes connector for the tool broker.
+//! Kubernetes connector for the tool broker: reads namespaces, pods, logs, deployments and
+//! events, and (when granted) restarts a deployment or deletes a pod.
 //!
 //! Supports a ServiceAccount token or a static kubeconfig (token/client cert only). Auth
 //! plugins (`exec`) and insecure TLS are rejected; credentials never leave the worker.
@@ -17,6 +18,8 @@ pub struct KubernetesClientConfig {
     allowed_resources: Vec<String>,
     max_log_bytes: usize,
     timeout: std::time::Duration,
+    /// The outbound policy, read from the environment when the connection is parsed.
+    policy: orbit_security::OutboundPolicy,
 }
 
 impl KubernetesClientConfig {
@@ -134,6 +137,9 @@ impl KubernetesClientConfig {
         }
 
         let namespaces = string_list(config.get("namespaces"));
+        if let Some((field, message)) = config_issues(config).into_iter().next() {
+            return Err(format!("{field}: {message}"));
+        }
         let allowed_resources = string_list(config.get("allowedResources"));
         let timeout = config
             .get("timeoutSeconds")
@@ -154,10 +160,12 @@ impl KubernetesClientConfig {
             default_namespace: config
                 .get("defaultNamespace")
                 .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
                 .map(str::to_string),
             allowed_resources,
             max_log_bytes,
             timeout: std::time::Duration::from_secs(timeout),
+            policy: orbit_security::OutboundPolicy::from_env(),
         })
     }
 
@@ -182,7 +190,7 @@ impl KubernetesClientConfig {
             .and_then(Value::as_str)
             .or(self.default_namespace.as_deref())
             .ok_or("namespace is required (or set config.defaultNamespace)")?;
-        validate_segment(namespace, "namespace")?;
+        validate_namespace(namespace)?;
         if !self.all_namespaces() && !self.allowed_namespaces().contains(&namespace) {
             return Err(format!(
                 "namespace '{namespace}' is not allowed on this connection; add it to \
@@ -206,7 +214,7 @@ impl KubernetesClientConfig {
     fn client(&self) -> Result<reqwest::Client, String> {
         let mut builder = orbit_security::guard_client_builder(
             reqwest::Client::builder().timeout(self.timeout),
-            orbit_security::OutboundPolicy::from_env(),
+            self.policy.clone(),
         );
         if let Some(pem) = &self.ca_pem {
             let certificate = reqwest::Certificate::from_pem(pem)
@@ -230,12 +238,9 @@ impl KubernetesClientConfig {
         content_type: Option<&str>,
     ) -> Result<reqwest::Response, String> {
         // The resolver guard does not see IP-literal hosts; check the address up front.
-        orbit_security::check_outbound_url(
-            &self.api_server,
-            &orbit_security::OutboundPolicy::from_env(),
-        )
-        .await
-        .map_err(|error| format!("request refused ({})", error.category()))?;
+        orbit_security::check_outbound_url(&self.api_server, &self.policy)
+            .await
+            .map_err(|error| format!("request refused ({})", error.category()))?;
         let mut request = self
             .client()?
             .request(method, format!("{}{path}", self.api_server));
@@ -301,11 +306,12 @@ impl KubernetesClientConfig {
                     }
                     let probe_body: Value = probe.json().await.unwrap_or(Value::Null);
                     return Err(format!(
-                        "Kubernetes namespace listing returned {status} and the configured namespace probe returned {probe_status}: {probe_body}"
+                        "Kubernetes namespace listing returned {status}; the probe of namespace {namespace} failed: {}",
+                        error_message(probe_status, &probe_body)
                     ));
                 }
             }
-            return Err(format!("Kubernetes returned {status}: {data}"));
+            return Err(error_message(status, &data));
         }
         let names: Vec<&str> = data
             .get("items")
@@ -446,19 +452,29 @@ impl KubernetesClientConfig {
             "pods.delete" => {
                 let namespace = self.namespace(args)?;
                 let name = required_name(args)?;
-                let grace = args
+                // Without an explicit grace period the pod's own terminationGracePeriodSeconds
+                // applies, as with `kubectl delete pod`; zero (force) only when asked for.
+                let body = args
                     .get("gracePeriodSeconds")
                     .and_then(Value::as_u64)
-                    .unwrap_or(0)
-                    .min(300);
-                self.request(
-                    reqwest::Method::DELETE,
-                    &format!("/api/v1/namespaces/{namespace}/pods/{name}"),
-                    &[],
-                    Some(&json!({ "gracePeriodSeconds": grace })),
-                    None,
-                )
-                .await?
+                    .map(|grace| json!({ "gracePeriodSeconds": grace.min(300) }));
+                let response = self
+                    .request(
+                        reqwest::Method::DELETE,
+                        &format!("/api/v1/namespaces/{namespace}/pods/{name}"),
+                        &[],
+                        body.as_ref(),
+                        None,
+                    )
+                    .await?;
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+                    return Err(error_message(status, &body));
+                }
+                // The API server answers with the deleted Pod, environment values included;
+                // the agent only needs to know the delete was accepted (#391).
+                return Ok(json!({ "deleted": true, "namespace": namespace, "name": name }));
             }
             "events.list" => {
                 let namespace = self.namespace(args)?;
@@ -492,12 +508,12 @@ impl KubernetesClientConfig {
                     }
                 }
             }
-            "pods.get" => redact_object(&mut data, "/spec"),
-            "pods.list" => redact_items(&mut data, "/spec"),
-            "deployments.get" | "deployments.restart" => {
-                redact_object(&mut data, "/spec/template/spec")
+            // Every pod and workload result is redacted as an object and as a list, so a
+            // response of an unexpected shape never passes environment values through.
+            "pods.get" | "pods.list" => redact_response(&mut data, "/spec"),
+            "deployments.get" | "deployments.restart" | "deployments.list" => {
+                redact_response(&mut data, "/spec/template/spec")
             }
-            "deployments.list" => redact_items(&mut data, "/spec/template/spec"),
             _ => {}
         }
         Ok(data)
@@ -509,6 +525,11 @@ const REDACTED: &str = "[redacted]";
 
 /// Annotations that carry a full copy of the object, including environment values.
 const MANIFEST_ANNOTATIONS: &[&str] = &["kubectl.kubernetes.io/last-applied-configuration"];
+
+fn redact_response(data: &mut Value, pod_spec: &str) {
+    redact_object(data, pod_spec);
+    redact_items(data, pod_spec);
+}
 
 fn redact_items(list: &mut Value, pod_spec: &str) {
     if let Some(items) = list.get_mut("items").and_then(Value::as_array_mut) {
@@ -578,20 +599,81 @@ fn required_name(args: &Value) -> Result<String, String> {
         .get("name")
         .and_then(Value::as_str)
         .ok_or("name is required")?;
-    validate_segment(name, "name")?;
+    validate_name(name)?;
     Ok(name.to_string())
 }
 
-fn validate_segment(value: &str, field: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 253
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | '_'))
-    {
-        return Err(format!("{field} contains invalid characters"));
+/// An object name: a DNS-1123 subdomain (lowercase alphanumerics, `-` and `.`, starting
+/// and ending with an alphanumeric, at most 253 characters). Names are spliced into
+/// request paths, so `.`, `..` and empty values must never pass: the URL parser would
+/// turn `pods/..` into the namespace and `pods/.` into the collection (#391).
+fn validate_name(value: &str) -> Result<(), String> {
+    if !is_dns_name(value, 253, true) {
+        return Err(
+            "name must be a Kubernetes object name (lowercase letters, digits, '-' and '.', \
+             starting and ending with a letter or digit)"
+                .into(),
+        );
     }
     Ok(())
+}
+
+/// A namespace: a DNS-1123 label (lowercase alphanumerics and `-`, starting and ending with
+/// an alphanumeric, at most 63 characters).
+fn validate_namespace(value: &str) -> Result<(), String> {
+    if !is_dns_name(value, 63, false) {
+        return Err(format!(
+            "'{value}' is not a Kubernetes namespace (lowercase letters, digits and '-', \
+             starting and ending with a letter or digit, at most 63 characters)"
+        ));
+    }
+    Ok(())
+}
+
+fn is_dns_name(value: &str, max_len: usize, dots: bool) -> bool {
+    let alphanumeric = |ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    !value.is_empty()
+        && value.len() <= max_len
+        && value.starts_with(alphanumeric)
+        && value.ends_with(alphanumeric)
+        && value
+            .chars()
+            .all(|ch| alphanumeric(ch) || ch == '-' || (dots && ch == '.'))
+}
+
+/// Problems with a connection's namespace settings, as `(field, message)` pairs. Used when
+/// a connection is saved and when it is parsed: `defaultNamespace` must be a namespace, and
+/// every `namespaces` entry must be a namespace or a standalone `*`.
+pub fn config_issues(config: &Value) -> Vec<(&'static str, String)> {
+    let mut issues = Vec::new();
+    match config.get("defaultNamespace") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(value)) if value.trim().is_empty() => {}
+        Some(Value::String(value)) => {
+            if let Err(message) = validate_namespace(value) {
+                issues.push(("defaultNamespace", message));
+            }
+        }
+        Some(_) => issues.push(("defaultNamespace", "must be a string".into())),
+    }
+    match config.get("namespaces") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for item in items {
+                match item.as_str().map(str::trim) {
+                    Some("") | Some("*") => {}
+                    Some(value) => {
+                        if let Err(message) = validate_namespace(value) {
+                            issues.push(("namespaces", message));
+                        }
+                    }
+                    None => issues.push(("namespaces", "entries must be strings".into())),
+                }
+            }
+        }
+        Some(_) => issues.push(("namespaces", "must be a list of namespaces".into())),
+    }
+    issues
 }
 
 /// The message of a failed request. Only a Kubernetes `Status` object's message is
@@ -909,5 +991,224 @@ users:
             }
             assert_eq!(object["metadata"]["annotations"]["team"], "payments");
         }
+    }
+
+    #[test]
+    fn dot_names_and_namespaces_are_rejected() {
+        for bad in [
+            "", ".", "..", "-web", "web-", ".web", "web.", "Web", "web_1", "a/b", "a%2Fb",
+        ] {
+            assert!(validate_name(bad).is_err(), "name {bad:?}");
+            assert!(validate_namespace(bad).is_err(), "namespace {bad:?}");
+        }
+        assert!(validate_name(&"a".repeat(254)).is_err());
+        assert!(validate_namespace(&"a".repeat(64)).is_err());
+        assert!(validate_namespace("a.b").is_err());
+        for good in ["web", "web-7d9c-x2", "a.b.c", "0"] {
+            assert!(validate_name(good).is_ok(), "name {good:?}");
+        }
+        assert!(validate_namespace("kube-system").is_ok());
+
+        let parsed = connection(json!({ "namespaces": ["*"] }));
+        for bad in [".", "..", ""] {
+            assert!(
+                parsed.namespace(&json!({ "namespace": bad })).is_err(),
+                "{bad:?}"
+            );
+            assert!(required_name(&json!({ "name": bad })).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_accepted_name_stays_the_last_path_segment() {
+        for name in ["web", "web-1", "a.b", "a..b", "x.y-z"] {
+            if validate_name(name).is_err() {
+                continue;
+            }
+            let url = reqwest::Url::parse(&format!(
+                "https://cluster/api/v1/namespaces/payments/pods/{name}"
+            ))
+            .unwrap();
+            let segments: Vec<&str> = url.path_segments().unwrap().collect();
+            assert_eq!(
+                segments,
+                vec!["api", "v1", "namespaces", "payments", "pods", name],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_settings_are_validated() {
+        assert!(config_issues(&json!({})).is_empty());
+        assert!(
+            config_issues(&json!({ "defaultNamespace": "", "namespaces": ["*", "prod"] }))
+                .is_empty()
+        );
+        let issues = config_issues(&json!({ "defaultNamespace": "a/../b" }));
+        assert_eq!(issues[0].0, "defaultNamespace");
+        let issues = config_issues(&json!({ "namespaces": ["prod", "..", "prod*"] }));
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert!(issues.iter().all(|(field, _)| *field == "namespaces"));
+        let error = KubernetesClientConfig::from_connection(
+            &json!({ "apiServer": "https://cluster", "defaultNamespace": "a/../b" }),
+            Some("token".into()),
+        )
+        .unwrap_err();
+        assert!(error.starts_with("defaultNamespace"), "{error}");
+    }
+
+    /// A plain-HTTP stand-in for the API server: answers every request with `respond`
+    /// and records each request line and body.
+    struct MockApiServer {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl MockApiServer {
+        async fn start(
+            respond: fn(&str) -> (u16, Value),
+            extra: Value,
+        ) -> (Self, KubernetesClientConfig) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buffer = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let (head, body) = loop {
+                        let read = stream.read(&mut chunk).await.unwrap_or(0);
+                        if read == 0 {
+                            break (String::from_utf8_lossy(&buffer).into_owned(), String::new());
+                        }
+                        buffer.extend_from_slice(&chunk[..read]);
+                        let text = String::from_utf8_lossy(&buffer).into_owned();
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let head = text[..end].to_string();
+                            let length = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (key, value) = line.split_once(':')?;
+                                    key.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            while buffer.len() < end + 4 + length {
+                                let read = stream.read(&mut chunk).await.unwrap_or(0);
+                                if read == 0 {
+                                    break;
+                                }
+                                buffer.extend_from_slice(&chunk[..read]);
+                            }
+                            let body = String::from_utf8_lossy(&buffer[end + 4..]).into_owned();
+                            break (head, body);
+                        }
+                    };
+                    let line = head.lines().next().unwrap_or_default().to_string();
+                    let (status, payload) = respond(&line);
+                    recorded.lock().unwrap().push((line, body));
+                    let payload = payload.to_string();
+                    let response = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+            });
+            let mut client = connection(extra);
+            client.api_server = format!("http://{addr}");
+            client.policy = orbit_security::OutboundPolicy::new(true, "127.0.0.1");
+            (Self { requests }, client)
+        }
+
+        fn requests(&self) -> Vec<(String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn pod_with_env() -> Value {
+        json!({
+            "kind": "Pod",
+            "metadata": { "name": "web", "namespace": "payments" },
+            "spec": { "containers": [{ "name": "app", "env": [
+                { "name": "DATABASE_PASSWORD", "value": "hunter2" }
+            ] }] }
+        })
+    }
+
+    #[tokio::test]
+    async fn pods_delete_returns_no_pod_and_keeps_the_default_grace_period() {
+        let (server, client) = MockApiServer::start(
+            |_| (200, pod_with_env()),
+            json!({ "namespaces": ["payments"], "allowedResources": ["pods"] }),
+        )
+        .await;
+        let result = client
+            .invoke(
+                "pods.delete",
+                &json!({ "namespace": "payments", "name": "web" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({ "deleted": true, "namespace": "payments", "name": "web" })
+        );
+        assert!(!result.to_string().contains("hunter2"));
+        let requests = server.requests();
+        assert_eq!(
+            requests[0].0,
+            "DELETE /api/v1/namespaces/payments/pods/web HTTP/1.1"
+        );
+        assert!(
+            !requests[0].1.contains("gracePeriodSeconds"),
+            "{:?}",
+            requests[0]
+        );
+
+        client
+            .invoke(
+                "pods.delete",
+                &json!({ "namespace": "payments", "name": "web", "gracePeriodSeconds": 0 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(server.requests()[1].1, r#"{"gracePeriodSeconds":0}"#);
+    }
+
+    #[tokio::test]
+    async fn pods_get_redacts_a_list_shaped_answer() {
+        let (_server, client) = MockApiServer::start(
+            |_| (200, json!({ "kind": "PodList", "items": [pod_with_env()] })),
+            json!({ "namespaces": ["payments"], "allowedResources": ["pods"] }),
+        )
+        .await;
+        let result = client
+            .invoke(
+                "pods.get",
+                &json!({ "namespace": "payments", "name": "web" }),
+            )
+            .await
+            .unwrap();
+        assert!(!result.to_string().contains("hunter2"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn connection_test_never_echoes_a_foreign_body() {
+        let (_server, client) = MockApiServer::start(
+            |_| (403, json!({ "secret": "x" })),
+            json!({ "defaultNamespace": "payments" }),
+        )
+        .await;
+        let error = client.test_connection().await.unwrap_err();
+        assert!(!error.contains("secret"), "{error}");
+        assert!(error.contains("not a Kubernetes API response"), "{error}");
+
+        let (_server, client) =
+            MockApiServer::start(|_| (500, json!({ "secret": "x" })), json!({})).await;
+        let error = client.test_connection().await.unwrap_err();
+        assert!(!error.contains("secret"), "{error}");
     }
 }

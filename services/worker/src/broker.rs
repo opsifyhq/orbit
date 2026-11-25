@@ -384,7 +384,7 @@ fn kubernetes_tool_specs(
             };
             let description = match capability.as_str() {
                 "deployments.restart" => "Restart a deployment with a rolling update.",
-                "pods.delete" => "Delete one pod so its controller recreates it. Use only for a stuck pod.",
+                "pods.delete" => "Delete one pod so its controller recreates it. Without gracePeriodSeconds the pod's own grace period applies; 0 force-deletes.",
                 _ => "Kubernetes read capability.",
             };
             ToolSpec {
