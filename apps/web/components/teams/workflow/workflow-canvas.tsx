@@ -15,6 +15,7 @@ import {
   ReactFlow,
   getBezierPath,
   useNodesState,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type EdgeProps,
@@ -27,48 +28,66 @@ import { AlertTriangle, Ban, Bot, Check, Loader2, Maximize, Maximize2, Play, Rep
 
 import {
   DEFAULT_MAX_RUNS,
+  HANDLE_Y,
   NODE_HEIGHT,
   NODE_WIDTH,
+  PORT_ROW,
   WORKFLOW_START,
-  conditionLabel,
   isStartEdge,
   loopSteps,
+  portOf,
+  portRows,
+  portY,
+  stepHeight,
+  stepPorts,
   withPositions,
   type NodeRunState,
   type Workflow,
-  type WorkflowEdge,
+  type WorkflowPort,
 } from "@/lib/workflow";
 import { cn } from "@/lib/utils";
 
 export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
 
-type Tone = "start" | "success" | "failure" | "outcome" | "always";
+/** How far left of the first step Start sits. */
+const START_OFFSET = 116;
+const START_WIDTH = 76;
+const START_COLOR = "hsl(var(--muted-foreground))";
+const FLOW_COLORS = 6;
 
-const TONE_COLOR: Record<Tone, string> = {
-  start: "hsl(var(--muted-foreground))",
-  always: "hsl(var(--muted-foreground))",
-  success: "hsl(var(--success))",
-  failure: "hsl(var(--destructive))",
-  outcome: "hsl(var(--primary))",
-};
+/**
+ * The colour of an output and of the lines that leave it: green for done, red for
+ * failed, grey for always, and one colour per outcome so a branch can be followed by eye.
+ */
+export function portColor(port: Pick<WorkflowPort, "when" | "index">): string {
+  switch (port.when) {
+    case "outcome":
+      return `hsl(var(--flow-${((port.index ?? 0) % FLOW_COLORS) + 1}))`;
+    case "failure":
+      return "hsl(var(--destructive))";
+    case "always":
+      return "hsl(var(--muted-foreground))";
+    default:
+      return "hsl(var(--success))";
+  }
+}
 
-const TONE_TEXT: Record<Tone, string> = {
-  start: "text-muted-foreground",
-  always: "text-muted-foreground",
-  success: "text-success",
-  failure: "text-destructive",
-  outcome: "text-accent-foreground",
-};
-
-function toneOf(edge: WorkflowEdge): Tone {
-  if (isStartEdge(edge)) return "start";
-  return edge.when === "always" || edge.when === "failure" || edge.when === "outcome" ? edge.when : "success";
+interface PortData extends WorkflowPort {
+  color: string;
+  /** A line leaves this output. */
+  connected: boolean;
+  /** The run shown reported this outcome. */
+  reported: boolean;
 }
 
 interface StepData extends Record<string, unknown> {
   name: string;
   agent: string | null;
-  outcomes: string[];
+  ports: PortData[];
+  /** Rows of outputs under the name; none for a step that only has "done". */
+  rows: number;
+  /** Outputs no line uses yet, offered under the selected step of an editor. */
+  extra: PortData[];
   /** Run limit, when the step sits on a loop. */
   loopLimit: number | null;
   problem: boolean;
@@ -79,38 +98,65 @@ interface StepData extends Record<string, unknown> {
 }
 
 interface LineData extends Record<string, unknown> {
-  label: string;
-  tone: Tone;
-  /** Lines between the same two steps are spread out so their labels do not overlap. */
-  shift: number;
+  color: string;
   taken: number;
   /** A run is shown and it did not follow this line. */
   idle: boolean;
   live: boolean;
+  /** Another step is selected: this line steps back. */
+  dim: boolean;
+  /** The step at one end is pointed at or selected. */
+  strong: boolean;
   /**
-   * How a line that points back is drawn: `elbow` from the left of a step that hangs
-   * below straight up into the step it returns to, `under` beneath the steps in between.
+   * How a line that cannot go straight is drawn: `under` back beneath the steps in
+   * between and up into the step it returns to, `lane` forward past a step that is in
+   * the way.
    */
-  route?: "elbow" | "under";
-  /** Where an `under` line runs. */
+  route?: "under" | "lane";
+  /** Where an `under` or `lane` line runs. */
   lane?: number;
+  /** Lines into the same step arrive next to each other, not on top of each other. */
+  spread: number;
 }
 
-const handleClass =
-  "!h-3 !w-3 !rounded-full !border-2 !border-border-strong !bg-card transition-colors hover:!border-primary";
-
 const hiddenHandle = "!pointer-events-none !h-px !w-px !min-w-0 !min-h-0 !border-0 !opacity-0";
-const BACK_LEFT = "back-left";
-const BACK_BOTTOM = "back-bottom";
 const BACK_IN = "back-in";
 
-const StepNode = memo(function StepNode({ data, selected }: NodeProps<Node<StepData>>) {
+const inputClass =
+  "!h-3 !w-3 !rounded-full !border-2 !border-border-strong !bg-card transition-[border-color,box-shadow] hover:!border-primary";
+
+function OutputHandle({ port, readOnly, top }: { port: PortData; readOnly: boolean; top?: number }) {
+  return (
+    <Handle
+      id={port.id}
+      type="source"
+      position={Position.Right}
+      isConnectable={!readOnly}
+      title={readOnly ? undefined : `Drag to the step that runs next (${port.label})`}
+      style={{
+        top,
+        borderColor: port.color,
+        background: port.connected ? port.color : "hsl(var(--card))",
+      }}
+      className={cn(
+        "!rounded-full !border-2 transition-[box-shadow,transform]",
+        readOnly ? "!h-2 !w-2" : "!h-3 !w-3 hover:!shadow-[0_0_0_4px_hsl(var(--primary)/0.25)]",
+      )}
+    />
+  );
+}
+
+const StepNode = memo(function StepNode({ id, data, selected }: NodeProps<Node<StepData>>) {
   const run = data.run;
+  // React Flow measures where the outputs are; tell it when they change.
+  const update = useUpdateNodeInternals();
+  const portKey = [...data.ports, ...data.extra].map((port) => port.id).join("|");
+  useEffect(() => update(id), [update, id, portKey]);
   return (
     <div
-      style={{ width: NODE_WIDTH, minHeight: NODE_HEIGHT }}
+      style={{ width: NODE_WIDTH }}
       className={cn(
-        "relative flex flex-col justify-center gap-1 rounded-xl border bg-card px-3 py-2.5 text-left shadow-sm transition-shadow",
+        "relative rounded-xl border bg-card text-left shadow-sm transition-shadow",
         selected ? "border-primary ring-2 ring-primary/40" : "hover:border-border-strong",
         run?.status === "running" && "border-primary",
         run?.status === "succeeded" && "border-success/60",
@@ -123,79 +169,101 @@ const StepNode = memo(function StepNode({ data, selected }: NodeProps<Node<StepD
       <Handle
         type="target"
         position={Position.Left}
+        style={{ top: HANDLE_Y }}
         isConnectable={!data.readOnly}
-        className={cn(handleClass, data.readOnly && "!opacity-0")}
+        className={cn(inputClass, data.readOnly && "!opacity-0")}
       />
-      <div className="flex items-start gap-2">
-        <p className="min-w-0 flex-1 truncate text-sm font-medium leading-5">{data.name || "Unnamed step"}</p>
-        {run ? (
-          <span
-            className={cn(
-              "mt-0.5 flex h-4 shrink-0 items-center gap-1 text-[11px] font-medium",
-              run.status === "running" && "text-primary",
-              run.status === "succeeded" && "text-success",
-              run.status === "failed" && "text-destructive",
-              run.status === "stopped" && "text-muted-foreground",
-              run.limitReached && "text-destructive",
-            )}
-          >
-            {run.runs > 1 ? <span className="tabular">{run.runs}×</span> : null}
-            {run.limitReached ? (
-              <Repeat className="h-3.5 w-3.5" aria-label="Reached its run limit" />
-            ) : run.status === "running" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-label="Running" />
-            ) : run.status === "succeeded" ? (
-              <Check className="h-3.5 w-3.5" aria-label="Succeeded" />
-            ) : run.status === "stopped" ? (
-              <Ban className="h-3.5 w-3.5" aria-label="Stopped" />
-            ) : (
-              <X className="h-3.5 w-3.5" aria-label="Failed" />
-            )}
-          </span>
-        ) : data.problem ? (
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-label="Needs attention" />
-        ) : null}
-      </div>
-      <p className={cn("flex items-center gap-1.5 text-xs", data.agent ? "text-muted-foreground" : "text-warning")}>
-        <Bot className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span className="truncate">{data.agent ?? "Choose an agent"}</span>
-      </p>
-      {run?.limitReached || run?.outcome || data.outcomes.length || data.loopLimit ? (
-        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+      <div className="flex flex-col justify-center gap-0.5 px-3" style={{ height: NODE_HEIGHT }}>
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-sm font-medium leading-5">{data.name || "Unnamed step"}</p>
+          {run ? (
+            <span
+              className={cn(
+                "flex h-4 shrink-0 items-center gap-1 text-[11px] font-medium",
+                run.status === "running" && "text-primary",
+                run.status === "succeeded" && "text-success",
+                run.status === "failed" && "text-destructive",
+                run.status === "stopped" && "text-muted-foreground",
+                run.limitReached && "text-destructive",
+              )}
+            >
+              {run.runs > 1 ? <span className="tabular">{run.runs}×</span> : null}
+              {run.limitReached ? (
+                <Repeat className="h-3.5 w-3.5" aria-label="Reached its run limit" />
+              ) : run.status === "running" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-label="Running" />
+              ) : run.status === "succeeded" ? (
+                <Check className="h-3.5 w-3.5" aria-label="Succeeded" />
+              ) : run.status === "stopped" ? (
+                <Ban className="h-3.5 w-3.5" aria-label="Stopped" />
+              ) : (
+                <X className="h-3.5 w-3.5" aria-label="Failed" />
+              )}
+            </span>
+          ) : data.problem ? (
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" aria-label="Needs attention" />
+          ) : null}
+        </div>
+        <div className={cn("flex items-center gap-1.5 text-xs", data.agent ? "text-muted-foreground" : "text-warning")}>
+          <Bot className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{data.agent ?? "Choose an agent"}</span>
           {run?.limitReached ? (
-            <span className="rounded-full bg-destructive/10 px-1.5 py-px text-[11px] font-medium text-destructive">
+            <span className="shrink-0 rounded-full bg-destructive/10 px-1.5 py-px text-[11px] font-medium text-destructive">
               limit reached
             </span>
-          ) : run?.outcome ? (
-            <span className="rounded-full bg-primary/10 px-1.5 py-px text-[11px] font-medium text-accent-foreground">
-              {run.outcome}
-            </span>
-          ) : (
-            data.outcomes.map((outcome) => (
-              <span key={outcome} className="rounded-full border px-1.5 py-px text-[11px] text-muted-foreground">
-                {outcome}
-              </span>
-            ))
-          )}
-          {data.loopLimit ? (
+          ) : data.loopLimit ? (
             <span
-              className="flex items-center gap-0.5 rounded-full border px-1.5 py-px text-[11px] text-muted-foreground"
-              title={`Runs at most ${data.loopLimit} times in one run`}
+              className="flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-px text-[11px] text-muted-foreground"
+              title={`On a loop: runs at most ${data.loopLimit} times in one run`}
             >
               <Repeat className="h-3 w-3" aria-hidden /> max {data.loopLimit}
             </span>
           ) : null}
         </div>
+      </div>
+      {data.rows ? (
+        <ul className="border-t py-1" aria-label="Outputs">
+          {data.ports.map((port) => (
+            <li
+              key={port.id}
+              className="relative flex items-center justify-end pl-3 pr-3 text-[11px] leading-none"
+              style={{ height: PORT_ROW }}
+            >
+              <span
+                className={cn(
+                  "max-w-full truncate rounded-full px-1.5 py-0.5",
+                  port.reported ? "font-semibold text-foreground" : port.connected ? "text-foreground" : "text-muted-foreground",
+                )}
+                style={port.reported ? { background: `color-mix(in srgb, ${port.color} 22%, transparent)` } : undefined}
+              >
+                {port.label}
+              </span>
+              <OutputHandle port={port} readOnly={data.readOnly} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <OutputHandle port={data.ports[0]} readOnly={data.readOnly} top={HANDLE_Y} />
+      )}
+      {/* The other outputs float under the card, so selecting a step moves nothing. */}
+      {data.extra.length ? (
+        <ul
+          className="absolute left-6 right-0 top-full z-10 mt-1.5 rounded-lg border bg-card py-1 shadow-md"
+          aria-label="More outputs"
+        >
+          {data.extra.map((port) => (
+            <li
+              key={port.id}
+              className="relative flex items-center justify-end pl-3 pr-3 text-[11px] leading-none text-muted-foreground"
+              style={{ height: PORT_ROW }}
+            >
+              <span className="max-w-full truncate px-1.5 py-0.5">{port.label}</span>
+              <OutputHandle port={port} readOnly={data.readOnly} />
+            </li>
+          ))}
+        </ul>
       ) : null}
-      <Handle
-        type="source"
-        position={Position.Right}
-        isConnectable={!data.readOnly}
-        className={cn(handleClass, data.readOnly && "!opacity-0")}
-      />
-      {/* Where lines that point back leave and arrive; never shown, drawn by LineEdge. */}
-      <Handle id={BACK_LEFT} type="source" position={Position.Left} isConnectable={false} className={hiddenHandle} />
-      <Handle id={BACK_BOTTOM} type="source" position={Position.Bottom} isConnectable={false} className={hiddenHandle} />
+      {/* Where lines that point back arrive; never shown. */}
       <Handle id={BACK_IN} type="target" position={Position.Bottom} isConnectable={false} className={hiddenHandle} />
     </div>
   );
@@ -209,7 +277,9 @@ const StartNode = memo(function StartNode({ data }: NodeProps<Node<{ readOnly: b
         type="source"
         position={Position.Right}
         isConnectable={!data.readOnly}
-        className={cn(handleClass, data.readOnly && "!opacity-0")}
+        title={data.readOnly ? undefined : "Drag to a step that starts the run"}
+        style={{ borderColor: START_COLOR, background: START_COLOR }}
+        className={cn("!rounded-full !border-2", data.readOnly ? "!h-2 !w-2" : "!h-3 !w-3")}
       />
     </div>
   );
@@ -227,31 +297,15 @@ const LineEdge = memo(function LineEdge({
   selected,
   markerEnd,
 }: EdgeProps<Edge<LineData>>) {
-  const shift = data?.shift ?? 0;
   const route = data?.route;
-  // A line to a step in an earlier column that has no route yet (a step being dragged).
-  const back = !route && targetX + NODE_WIDTH < sourceX - NODE_WIDTH / 2;
-  // Forward, level, and far enough apart that another step can sit in between.
-  const skips = !route && Math.abs(targetY - sourceY) < NODE_HEIGHT / 2 && targetX - sourceX > NODE_WIDTH;
+  const spread = data?.spread ?? 0;
   const [path, labelX, labelY] =
-    route === "elbow" && sourceX - targetX > 2 * CORNER && sourceY - targetY > 2 * CORNER
-      ? elbowPath(sourceX, sourceY, targetX, targetY)
-      : route
-        ? underPath(sourceX, sourceY, targetX, targetY, data?.lane ?? 0)
-        : back || skips
-          ? aroundPath(sourceX, sourceY, targetX, targetY, shift)
-          : curvePath(
-              getBezierPath({
-                sourceX,
-                sourceY: sourceY + shift * 0.4,
-                sourcePosition,
-                targetX,
-                targetY: targetY + shift * 0.4,
-                targetPosition,
-              }),
-              shift,
-            );
-  const tone = data?.tone ?? "success";
+    route === "under"
+      ? underPath(sourceX, sourceY, targetX + spread, targetY, data?.lane ?? 0)
+      : route === "lane"
+        ? lanePath(sourceX, sourceY, targetX, targetY + spread, data?.lane ?? 0)
+        : straightPath(sourceX, sourceY, targetX, targetY + spread, sourcePosition, targetPosition);
+  const color = data?.color ?? START_COLOR;
   return (
     <>
       <BaseEdge
@@ -260,26 +314,22 @@ const LineEdge = memo(function LineEdge({
         markerEnd={markerEnd}
         interactionWidth={24}
         style={{
-          stroke: TONE_COLOR[tone],
-          strokeWidth: selected ? 2.5 : 1.5,
+          stroke: color,
+          strokeWidth: selected ? 2.75 : data?.strong ? 2.25 : 1.75,
           strokeDasharray: data?.idle ? "4 4" : data?.live ? "6 4" : undefined,
-          opacity: data?.idle ? 0.35 : 1,
+          opacity: data?.idle ? 0.35 : data?.dim ? 0.3 : 1,
+          transition: "opacity 120ms",
           animation: data?.live ? "orbit-line-flow 0.6s linear infinite" : undefined,
         }}
       />
-      {data?.label ? (
+      {data && data.taken > 1 ? (
         <EdgeLabelRenderer>
           <span
-            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-            className={cn(
-              "nodrag nopan pointer-events-none absolute rounded-full border bg-card px-2 py-px text-[11px] font-medium leading-4 shadow-sm",
-              TONE_TEXT[tone],
-              selected && "border-primary",
-              data.idle && "opacity-50",
-            )}
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, color }}
+            className="nodrag nopan pointer-events-none absolute rounded-full border bg-card px-1.5 py-px text-[11px] font-semibold leading-4 shadow-sm"
+            title={`Followed ${data.taken} times`}
           >
-            {data.label}
-            {data.taken > 1 ? <span className="tabular ml-1 text-muted-foreground">{data.taken}×</span> : null}
+            <span className="tabular">{data.taken}×</span>
           </span>
         </EdgeLabelRenderer>
       ) : null}
@@ -287,73 +337,76 @@ const LineEdge = memo(function LineEdge({
   );
 });
 
+const CORNER = 12;
+/** How far a line runs straight out of an output before it turns. */
+const STUB = 26;
+
+function straightPath(
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  sourcePosition: Position,
+  targetPosition: Position,
+): [string, number, number] {
+  const [path, x, y] = getBezierPath({ sourceX: sx, sourceY: sy, sourcePosition, targetX: tx, targetY: ty, targetPosition });
+  return [path, x, y];
+}
+
 /**
- * A line that cannot go straight: back to an earlier step, or forward past a step that
- * sits in between on the same row. It leaves to the right, passes over the top (or
- * underneath, when the source is the lower of the two) and enters from the left, so it
- * stays clear of the steps and of the straight lines between them.
+ * Along a free lane at height `y`: out of the output, up or down to the lane, along it
+ * (forward past the steps in the way, or back when the next step is not to the right)
+ * and into the next step from the left.
  */
-function aroundPath(sx: number, sy: number, tx: number, ty: number, shift: number): [string, number, number] {
-  const clear = NODE_HEIGHT / 2 + 34 + shift;
-  const over = sy <= ty;
-  const y = over ? Math.min(sy, ty) - clear : Math.max(sy, ty) + clear;
-  const out = 26;
-  const r = 14;
-  const up = over ? -1 : 1;
-  const dir = tx - out >= sx + out ? 1 : -1;
+function lanePath(sx: number, sy: number, tx: number, ty: number, y: number): [string, number, number] {
+  const x1 = sx + STUB;
+  const x2 = tx - STUB;
+  const d1 = y >= sy ? 1 : -1;
+  const d2 = ty >= y ? 1 : -1;
+  const r1 = Math.min(CORNER, Math.abs(y - sy) / 2);
+  const r2 = Math.min(CORNER, Math.abs(ty - y) / 2);
+  const dir = x2 >= x1 ? 1 : -1;
   const path = [
     `M ${sx} ${sy}`,
-    `L ${sx + out - r} ${sy}`,
-    `Q ${sx + out} ${sy} ${sx + out} ${sy + up * r}`,
-    `L ${sx + out} ${y - up * r}`,
-    `Q ${sx + out} ${y} ${sx + out + dir * r} ${y}`,
-    `L ${tx - out - dir * r} ${y}`,
-    `Q ${tx - out} ${y} ${tx - out} ${y - up * r}`,
-    `L ${tx - out} ${ty + up * r}`,
-    `Q ${tx - out} ${ty} ${tx - out + r} ${ty}`,
+    `L ${x1 - r1} ${sy}`,
+    `Q ${x1} ${sy} ${x1} ${sy + d1 * r1}`,
+    `L ${x1} ${y - d1 * r1}`,
+    `Q ${x1} ${y} ${x1 + dir * r1} ${y}`,
+    `L ${x2 - dir * r2} ${y}`,
+    `Q ${x2} ${y} ${x2} ${y + d2 * r2}`,
+    `L ${x2} ${ty - d2 * r2}`,
+    `Q ${x2} ${ty} ${x2 + r2} ${ty}`,
     `L ${tx} ${ty}`,
   ].join(" ");
-  return [path, (sx + tx) / 2, y + shift];
+  return [path, (x1 + x2) / 2, y];
 }
 
-const CORNER = 12;
-
-const curvePath = (curve: [string, number, number, ...unknown[]], shift: number): [string, number, number] => [
-  curve[0],
-  curve[1],
-  curve[2] + shift,
-];
-
-/**
- * Back from a step that hangs below the main line: out of its left side, then straight
- * up into the step it returns to. The shortest way a loop can be drawn.
- */
-function elbowPath(sx: number, sy: number, tx: number, ty: number): [string, number, number] {
-  const path = [`M ${sx} ${sy}`, `L ${tx + CORNER} ${sy}`, `Q ${tx} ${sy} ${tx} ${sy - CORNER}`, `L ${tx} ${ty}`].join(" ");
-  return [path, (sx + tx) / 2, sy];
-}
-
-/** Back underneath: down out of the step, along a lane below the steps in between, up. */
+/** Back underneath: out of the output, down to a lane below the steps in between, and up. */
 function underPath(sx: number, sy: number, tx: number, ty: number, lane: number): [string, number, number] {
   const y = Math.max(lane, sy + 2 * CORNER, ty + 2 * CORNER);
-  const dir = tx < sx ? -1 : 1;
-  const r = Math.min(CORNER, Math.abs(tx - sx) / 2);
+  const x1 = sx + STUB;
+  const r = CORNER;
   const path = [
     `M ${sx} ${sy}`,
-    `L ${sx} ${y - r}`,
-    `Q ${sx} ${y} ${sx + dir * r} ${y}`,
-    `L ${tx - dir * r} ${y}`,
+    `L ${x1 - r} ${sy}`,
+    `Q ${x1} ${sy} ${x1} ${sy + r}`,
+    `L ${x1} ${y - r}`,
+    `Q ${x1} ${y} ${x1 - r} ${y}`,
+    `L ${tx + r} ${y}`,
     `Q ${tx} ${y} ${tx} ${y - r}`,
     `L ${tx} ${ty}`,
   ].join(" ");
-  return [path, (sx + tx) / 2, y];
+  return [path, (x1 + tx) / 2, y];
 }
 
-const MIN_ZOOM = 0.3;
+/** The whole workflow in view, however large it is: an overview rather than something to read. */
+const MIN_ZOOM = 0.12;
 /** A workflow that is only looked at is never drawn smaller than this; it pans instead. */
 const READ_ZOOM = 0.7;
-/** A step card with its row of chips. */
-const CARD_HEIGHT = NODE_HEIGHT + 12;
+/** An editor inside a page keeps its steps readable too; with the screen to itself it shows everything. */
+const EDIT_ZOOM = 0.6;
+/** Room under a view that pans, for its small map. */
+const MAP_STRIP = 104;
 /** Screen pixels along the top of a view, kept free for its buttons. */
 const CONTROLS_STRIP = 40;
 /** A canvas narrower than this is a phone. */
@@ -377,10 +430,57 @@ function useIsDark(): boolean {
   return dark;
 }
 
+type Rect = { l: number; r: number; t: number; b: number };
+
+/** A point of the curve a straight line is drawn as (the same one React Flow draws). */
+function curvePoint(sx: number, sy: number, tx: number, ty: number, at: number): [number, number] {
+  const bend = Math.max(0, tx - sx) / 2;
+  const c1 = sx + bend;
+  const c2 = tx - bend;
+  const u = 1 - at;
+  return [
+    u * u * u * sx + 3 * u * u * at * c1 + 3 * u * at * at * c2 + at * at * at * tx,
+    u * u * u * sy + 3 * u * u * at * sy + 3 * u * at * at * ty + at * at * at * ty,
+  ];
+}
+
 /**
- * The workflow as a picture: steps as cards, lines with their condition. With
- * `onChange…` callbacks it is an editor (drag to move, drag from a dot to connect,
- * Backspace to remove); without them it is a read-only view, optionally of one run.
+ * What the colours of the lines mean, for under a canvas. Lists only what the workflow
+ * uses.
+ */
+export function WorkflowLegend({ workflow, className }: { workflow: Workflow; className?: string }) {
+  const used = new Set(workflow.edges.filter((edge) => !isStartEdge(edge)).map((edge) => edge.when ?? "success"));
+  const items: Array<{ label: string; colors: string[] }> = [];
+  if (used.has("success")) items.push({ label: "when the step is done", colors: [portColor({ when: "success" })] });
+  if (used.has("outcome"))
+    items.push({
+      label: "when it reports that outcome",
+      colors: [0, 1, 2].map((index) => portColor({ when: "outcome", index })),
+    });
+  if (used.has("failure")) items.push({ label: "when the step fails", colors: [portColor({ when: "failure" })] });
+  if (used.has("always")) items.push({ label: "whatever the result", colors: [portColor({ when: "always" })] });
+  if (!items.length) return null;
+  return (
+    <ul className={cn("flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground", className)} aria-label="What the line colours mean">
+      {items.map((item) => (
+        <li key={item.label} className="flex items-center gap-1.5">
+          <span className="flex items-center gap-0.5" aria-hidden>
+            {item.colors.map((color) => (
+              <span key={color} className="h-0.5 w-3 rounded-full" style={{ background: color }} />
+            ))}
+          </span>
+          {item.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The workflow as a picture: steps as cards with their outputs, lines in the colour of
+ * the output they leave. With `onChange…` callbacks it is an editor (drag to move, drag
+ * from an output to connect, Backspace to remove); without them it is a read-only view,
+ * optionally of one run.
  */
 export function WorkflowCanvas({
   workflow,
@@ -390,6 +490,7 @@ export function WorkflowCanvas({
   onOpen,
   onMove,
   onConnect,
+  onAddFrom,
   onRemove,
   problems,
   runStates,
@@ -401,6 +502,7 @@ export function WorkflowCanvas({
   fitKey,
   autoHeight,
   showAll,
+  wheelZoom,
   onExpand,
 }: {
   workflow: Workflow;
@@ -409,8 +511,12 @@ export function WorkflowCanvas({
   onSelect?: (selection: WorkflowSelection) => void;
   /** A step was double-clicked: the user wants to edit it. */
   onOpen?: (id: string) => void;
-  onMove?: (id: string, position: { x: number; y: number }) => void;
-  onConnect?: (from: string, to: string) => void;
+  /** Steps were dragged to new places. */
+  onMove?: (moves: Array<{ id: string; position: { x: number; y: number } }>) => void;
+  /** A line was drawn from the output `port` of `from` (or from Start) to `to`. */
+  onConnect?: (from: string, to: string, port: string | null) => void;
+  /** A line was drawn from an output and let go over empty canvas: a new step goes there. */
+  onAddFrom?: (from: string, port: string | null, at: { x: number; y: number }) => void;
   onRemove?: (removed: { nodes: string[]; edges: string[] }) => void;
   /** Steps to mark as needing attention. */
   problems?: Set<string>;
@@ -429,6 +535,8 @@ export function WorkflowCanvas({
   autoHeight?: boolean;
   /** A view that always shows the whole workflow, however small that makes it. */
   showAll?: boolean;
+  /** The canvas has the screen to itself: the wheel zooms it instead of scrolling a page. */
+  wheelZoom?: boolean;
   /** Adds a button that asks for a larger view of the workflow. */
   onExpand?: () => void;
 }) {
@@ -437,6 +545,12 @@ export function WorkflowCanvas({
   const placed = useMemo(() => withPositions(workflow), [workflow]);
   const loops = useMemo(() => loopSteps(workflow), [workflow]);
   const showsRun = Boolean(runStates);
+  const selectedNode = selection?.kind === "node" ? selection.id : null;
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  // The outputs each card shows: the ones that matter. The selected step of an editor
+  // offers the rest as well (see `extra`), so a "failed" or "always" line can be drawn.
+  const shown = useMemo(() => new Map(placed.nodes.map((node) => [node.id, stepPorts(placed, node)])), [placed]);
 
   const built = useMemo<Node[]>(() => {
     const entries = placed.edges.filter(isStartEdge).map((edge) => edge.to);
@@ -448,74 +562,163 @@ export function WorkflowCanvas({
     const start: Node = {
       id: WORKFLOW_START,
       type: "start",
-      position: { x: left - 150, y: middle + NODE_HEIGHT / 2 - 18 },
+      position: { x: left - START_OFFSET, y: middle + HANDLE_Y - 18 },
       data: { readOnly },
       draggable: false,
       deletable: false,
       selectable: false,
     };
-    const steps = placed.nodes.map<Node<StepData>>((node) => ({
-      id: node.id,
-      type: "step",
-      position: node.position ?? { x: 0, y: 0 },
-      selected: selection?.kind === "node" && selection.id === node.id,
-      draggable: !readOnly,
-      deletable: !readOnly,
-      data: {
-        name: node.name,
-        agent: node.agentId ? agentName(node.agentId) : null,
-        outcomes: node.outcomes ?? [],
-        loopLimit: loops.has(node.id) ? (node.maxRuns ?? DEFAULT_MAX_RUNS) : null,
-        problem: Boolean(problems?.has(node.id)),
-        readOnly,
-        run: runStates?.get(node.id),
-        idle: showsRun && !runStates?.has(node.id),
-      },
-    }));
+    const steps = placed.nodes.map<Node<StepData>>((node) => {
+      const run = runStates?.get(node.id);
+      const leaving = new Set(placed.edges.filter((edge) => edge.from === node.id).map(portOf));
+      const ports = (shown.get(node.id) ?? []).map<PortData>((port) => ({
+        ...port,
+        color: portColor(port),
+        connected: leaving.has(port.id),
+        reported: Boolean(run?.outcome) && port.when === "outcome" && port.outcome === run?.outcome,
+      }));
+      const extra =
+        !readOnly && node.id === selectedNode
+          ? stepPorts(placed, node, true)
+              .filter((port) => !ports.some((item) => item.id === port.id))
+              .map<PortData>((port) => ({ ...port, color: portColor(port), connected: false, reported: false }))
+          : [];
+      return {
+        id: node.id,
+        type: "step",
+        position: node.position ?? { x: 0, y: 0 },
+        selected: node.id === selectedNode,
+        draggable: !readOnly,
+        deletable: !readOnly,
+        data: {
+          name: node.name,
+          agent: node.agentId ? agentName(node.agentId) : null,
+          ports,
+          rows: portRows(ports),
+          extra,
+          loopLimit: loops.has(node.id) ? (node.maxRuns ?? DEFAULT_MAX_RUNS) : null,
+          problem: Boolean(problems?.has(node.id)),
+          readOnly,
+          run,
+          idle: showsRun && !run,
+        },
+      };
+    });
     return [start, ...steps];
-  }, [placed, selection, readOnly, agentName, loops, problems, runStates, showsRun]);
+  }, [placed, shown, selectedNode, readOnly, agentName, loops, problems, runStates, showsRun]);
 
-  // How lines that point back are drawn, and the room the whole picture takes.
+  // How lines that cannot go straight are drawn, and the room the whole picture takes.
   const geometry = useMemo(() => {
-    const rects = new Map(
-      placed.nodes.map((node) => {
-        const at = node.position ?? { x: 0, y: 0 };
-        return [node.id, { l: at.x, r: at.x + NODE_WIDTH, t: at.y, b: at.y + CARD_HEIGHT }] as const;
-      }),
-    );
-    const routes = new Map<string, { route: "elbow" | "under"; lane?: number }>();
-    let top = Math.min(...built.map((node) => node.position.y)) - 24;
-    let bottom = Math.max(...built.map((node) => node.position.y + CARD_HEIGHT)) + 24;
-    let lanes = 0;
+    const rects = new Map<string, Rect>();
+    const rowsOf = new Map<string, number>();
+    for (const node of placed.nodes) {
+      const at = node.position ?? { x: 0, y: 0 };
+      const rows = portRows(shown.get(node.id) ?? []);
+      rowsOf.set(node.id, rows);
+      rects.set(node.id, { l: at.x, r: at.x + NODE_WIDTH, t: at.y, b: at.y + stepHeight(rows) });
+    }
+    const start = built[0];
+    const startY = start.position.y + 18;
+    const routes = new Map<string, { route: "under" | "lane"; lane?: number }>();
+    // Where each line arrives, to spread lines into the same step.
+    const arrivals = new Map<string, Array<{ id: string; from: number }>>();
+    const arrive = (key: string, id: string, from: number) => arrivals.set(key, [...(arrivals.get(key) ?? []), { id, from }]);
+    let top = Math.min(start.position.y, ...[...rects.values()].map((rect) => rect.t)) - 24;
+    let bottom = Math.max(start.position.y + 36, ...[...rects.values()].map((rect) => rect.b)) + 24;
+    let under = 0;
+    const lanes: number[] = [];
+    const hits = (x1: number, y1: number, x2: number, y2: number, skip: string[], pad = 8) =>
+      [...rects].filter(
+        ([id, o]) => !skip.includes(id) && x2 > o.l - pad && x1 < o.r + pad && y2 > o.t - pad && y1 < o.b + pad,
+      );
+    const startRect: Rect = { l: start.position.x, r: start.position.x + START_WIDTH, t: start.position.y, b: start.position.y + 36 };
+    let reach = -Infinity;
+    /** A lane under every step between `from` and `to`, one for each line that needs it. */
+    const below = (from: number, to: number) => {
+      const between = [...rects.values()].filter((o) => o.r > from - 8 && o.l < to + 8);
+      const lane = Math.max(...between.map((o) => o.b)) + 26 + under * 14;
+      under += 1;
+      bottom = Math.max(bottom, lane + 30);
+      return lane;
+    };
     for (const edge of placed.edges) {
-      const s = rects.get(edge.from);
       const t = rects.get(edge.to);
-      if (!s || !t) continue;
-      if (t.l >= s.l - NODE_WIDTH / 2) {
-        // A level line past a step in between goes over the top (see aroundPath).
-        if (Math.abs(t.t - s.t) < NODE_HEIGHT / 2 && t.l - s.r > NODE_WIDTH) top = Math.min(top, Math.min(s.t, t.t) - 56);
+      if (!t) continue;
+      const ty = t.t + HANDLE_Y;
+      const fromStart = isStartEdge(edge);
+      const s = fromStart ? startRect : rects.get(edge.from);
+      if (!s) continue;
+      const ports = shown.get(edge.from) ?? [];
+      const sy = fromStart
+        ? startY
+        : s.t + portY(rowsOf.get(edge.from) ?? 0, ports.findIndex((port) => port.id === portOf(edge)));
+      const skip = [edge.from, edge.to];
+      if (edge.from === edge.to) {
+        // Round to the step itself: a small loop under it.
+        const lane = s.b + 18;
+        routes.set(edge.id, { route: "under", lane });
+        arrive(`${edge.to}|bottom`, edge.id, -lane);
+        bottom = Math.max(bottom, lane + 20);
+        reach = Math.max(reach, s.r + STUB);
         continue;
       }
-      const x = (t.l + t.r) / 2;
-      const y = (s.t + s.b) / 2;
-      const blocked = (x1: number, y1: number, x2: number, y2: number) =>
-        [...rects].some(
-          ([id, o]) => id !== edge.from && id !== edge.to && x2 > o.l - 8 && x1 < o.r + 8 && y2 > o.t - 8 && y1 < o.b + 8,
-        );
-      if (y > t.b + 2 * CORNER && !blocked(x, y, s.l, y) && !blocked(x, t.b, x, y)) {
-        routes.set(edge.id, { route: "elbow" });
+      if (!fromStart && t.l < s.l - NODE_WIDTH / 2) {
+        // Back to an earlier step: underneath, and up into it. When another step sits
+        // under the one it returns to, it goes round and arrives from the left instead.
+        const x = (t.l + t.r) / 2;
+        const lane = below(Math.min(x, t.l - STUB), s.r + STUB);
+        reach = Math.max(reach, s.r + STUB);
+        if (hits(x - 6, t.b + 1, x + 6, lane, skip, 0).length) {
+          routes.set(edge.id, { route: "lane", lane });
+          arrive(`${edge.to}|left`, edge.id, lane);
+        } else {
+          routes.set(edge.id, { route: "under", lane });
+          arrive(`${edge.to}|bottom`, edge.id, -lane);
+        }
         continue;
       }
-      const between = [...rects.values()].filter((o) => o.r > x - 8 && o.l < (s.l + s.r) / 2 + 8);
-      const lane = Math.max(...between.map((o) => o.b)) + 30 + lanes * 14;
-      lanes += 1;
-      routes.set(edge.id, { route: "under", lane });
-      bottom = Math.max(bottom, lane + 24);
+      arrive(`${edge.to}|left`, edge.id, sy);
+      if (t.l - s.r < 2 * STUB) {
+        // Not clearly to the right (stacked, or dragged close together): through the gap
+        // between the two when there is one, otherwise underneath.
+        if (fromStart) continue;
+        const gap = t.t > s.b + 20 ? (s.b + t.t) / 2 : s.t > t.b + 20 ? (t.b + s.t) / 2 : null;
+        const clear = gap !== null && !hits(Math.min(t.l - STUB, s.l), gap - 6, s.r + STUB, gap + 6, [], 0).length;
+        routes.set(edge.id, { route: "lane", lane: clear ? (gap as number) : below(t.l - STUB, s.r + STUB) });
+        reach = Math.max(reach, s.r + STUB);
+        continue;
+      }
+      // Forward. A step in the way of the curve sends the line along a free lane.
+      let blocked = false;
+      for (let step = 1; step < 16 && !blocked; step += 1) {
+        const [x, y] = curvePoint(s.r, sy, t.l, ty, step / 16);
+        blocked = hits(x, y, x, y, skip, 6).length > 0;
+      }
+      if (!blocked) continue;
+      const x1 = s.r + STUB;
+      const x2 = t.l - STUB;
+      const inWay = hits(x1, -Infinity, x2, Infinity, [], 0).map(([, rect]) => rect);
+      const free = (y: number) => !inWay.some((o) => y > o.t - 14 && y < o.b + 14) && !lanes.some((used) => Math.abs(used - y) < 10);
+      const middle = (sy + ty) / 2;
+      const candidates = inWay.flatMap((o) => [o.t - 22, o.b + 22, o.t - 34, o.b + 34, o.t - 46, o.b + 46]).filter(free);
+      if (!candidates.length) continue;
+      const lane = candidates.reduce((best, y) => (Math.abs(y - middle) < Math.abs(best - middle) ? y : best));
+      lanes.push(lane);
+      routes.set(edge.id, { route: "lane", lane });
+      top = Math.min(top, lane - 20);
+      bottom = Math.max(bottom, lane + 20);
+    }
+    const spread = new Map<string, number>();
+    for (const [key, list] of arrivals) {
+      const step = key.endsWith("|left") ? Math.min(9, 36 / Math.max(1, list.length - 1)) : Math.min(16, 96 / Math.max(1, list.length - 1));
+      [...list]
+        .sort((a, b) => a.from - b.from)
+        .forEach((item, index) => spread.set(item.id, Math.round((index - (list.length - 1) / 2) * step)));
     }
     const left = Math.min(...built.map((node) => node.position.x)) - 16;
-    const right = Math.max(...built.map((node) => node.position.x + (node.type === "start" ? 80 : NODE_WIDTH))) + 16;
-    return { routes, left, right, top, bottom };
-  }, [placed, built]);
+    const right = Math.max(reach, ...built.map((node) => node.position.x + (node.type === "start" ? START_WIDTH : NODE_WIDTH))) + 16;
+    return { routes, spread, left, right, top, bottom };
+  }, [placed, shown, built]);
 
   // Dragging moves the local copy; the position is saved when the drag ends, so the
   // form around the canvas does not re-render on every pixel.
@@ -575,24 +778,27 @@ export function WorkflowCanvas({
       // on a phone: there is no room to read and pan, so the picture is an overview and
       // the steps are read as text below it.
       const narrow = size.width < NARROW;
-      const floor = readOnly && !showAll && !narrow ? READ_ZOOM : MIN_ZOOM;
+      const floor = showAll || wheelZoom || narrow ? MIN_ZOOM : readOnly ? READ_ZOOM : EDIT_ZOOM;
       let zoom = Math.min(1, size.width / wide);
       let room = size.height;
+      // The map of a view that pans sits under the steps, not on top of them.
+      let foot = 0;
       if (autoHeight) {
         zoom = Math.max(floor, zoom);
-        room = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(tall * zoom + strip)));
+        if (wide * zoom > size.width + 1 && !narrow) foot = MAP_STRIP;
+        room = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(tall * zoom + strip))) + foot;
         setHeight(room);
       } else {
         zoom = Math.max(floor, Math.min(zoom, (size.height - strip) / tall));
       }
       const tooWide = wide * zoom > size.width + 1;
-      const tooTall = tall * zoom > room - strip + 1;
+      const tooTall = tall * zoom > room - strip - foot + 1;
       setOverflows((tooWide || tooTall) && !narrow);
       void flow.setViewport(
         {
           // What does not fit starts at Start, top left; the rest is centred.
           x: tooWide ? -left * zoom : size.width / 2 - ((left + right) / 2) * zoom,
-          y: tooTall ? strip - top * zoom : strip + (room - strip) / 2 - ((top + bottom) / 2) * zoom,
+          y: tooTall ? strip - top * zoom : strip + (room - strip - foot) / 2 - ((top + bottom) / 2) * zoom,
           zoom,
         },
         // No animation in a background tab: it would not be drawn and would stall.
@@ -602,43 +808,58 @@ export function WorkflowCanvas({
       setFitted(true);
     }, first ? 0 : 80);
     return () => window.clearTimeout(timer);
-  }, [flow, stepIds, fitKey, refit, size, readOnly, autoHeight, showAll, extent]);
+  }, [flow, stepIds, fitKey, refit, size, readOnly, autoHeight, showAll, wheelZoom, extent]);
   // Before the width is known: close to the final height, so the page does not jump.
   const estimate = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round((geometry.bottom - geometry.top) * 0.85 + CONTROLS_STRIP)));
 
+  // The cards reach React Flow one render after the lines; a line waits for its output.
+  const outputs = useMemo(
+    () =>
+      new Set(
+        nodes.flatMap((node) => {
+          const data = node.data as Partial<StepData>;
+          return [...(data.ports ?? []), ...(data.extra ?? [])].map((port) => `${node.id}|${port.id}`);
+        }),
+      ),
+    [nodes],
+  );
+  // Pointing at a step makes its lines heavier; selecting one also lets the others step back.
+  const focus = hovered ?? selectedNode;
   const edges = useMemo<Edge<LineData>[]>(() => {
-    const pairs = new Map<string, number>();
-    return placed.edges.map((edge) => {
-      const pair = [edge.from, edge.to].sort().join("|");
-      const index = pairs.get(pair) ?? 0;
-      pairs.set(pair, index + 1);
-      const tone = toneOf(edge);
+    return placed.edges
+      .filter((edge) => isStartEdge(edge) || outputs.has(`${edge.from}|${portOf(edge)}`))
+      .map((edge) => {
+      const port = (shown.get(edge.from) ?? []).find((item) => item.id === portOf(edge));
+      const color = isStartEdge(edge) || !port ? START_COLOR : portColor(port);
       const count = taken?.get(edge.id) ?? 0;
       const routed = geometry.routes.get(edge.id);
+      const back = routed?.route === "under";
       return {
         id: edge.id,
         type: "line",
         source: edge.from,
         target: edge.to,
-        sourceHandle: routed ? (routed.route === "elbow" ? BACK_LEFT : BACK_BOTTOM) : undefined,
-        targetHandle: routed ? BACK_IN : undefined,
+        sourceHandle: isStartEdge(edge) ? undefined : portOf(edge),
+        targetHandle: back ? BACK_IN : undefined,
         selected: selection?.kind === "edge" && selection.id === edge.id,
         deletable: !readOnly,
         selectable: !readOnly,
-        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: TONE_COLOR[tone] },
+        zIndex: focus && (edge.from === focus || edge.to === focus) ? 1 : 0,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color },
         data: {
-          label: conditionLabel(edge),
-          tone,
-          shift: index * 22,
+          color,
           taken: count,
           idle: showsRun && !count,
           live: Boolean(live?.has(edge.id)),
+          dim: Boolean(selectedNode) && !hovered && edge.from !== selectedNode && edge.to !== selectedNode,
+          strong: Boolean(focus) && (edge.from === focus || edge.to === focus),
           route: routed?.route,
           lane: routed?.lane,
+          spread: geometry.spread.get(edge.id) ?? 0,
         },
       };
     });
-  }, [placed, selection, readOnly, taken, showsRun, live, geometry]);
+  }, [placed, shown, outputs, selection, selectedNode, hovered, readOnly, taken, showsRun, live, geometry, focus]);
 
   return (
     <div
@@ -663,23 +884,57 @@ export function WorkflowCanvas({
         onNodeDragStart={() => {
           dragging.current = true;
         }}
-        onNodeDragStop={(_, node) => {
+        onNodeDragStop={(_, node, dragged) => {
           dragging.current = false;
-          onMove?.(node.id, node.position);
+          // Every step that moved, when several were selected.
+          onMove?.(
+            (dragged.length ? dragged : [node])
+              .filter((item) => item.id !== WORKFLOW_START)
+              .map((item) => ({ id: item.id, position: item.position })),
+          );
         }}
-        onNodeClick={(_, node) => {
+        // Several steps dragged as one selection (Shift and drag draws the selection).
+        onSelectionDragStart={() => {
+          dragging.current = true;
+        }}
+        onSelectionDragStop={(_, dragged) => {
+          dragging.current = false;
+          onMove?.(
+            dragged.filter((item) => item.id !== WORKFLOW_START).map((item) => ({ id: item.id, position: item.position })),
+          );
+        }}
+        onNodeClick={(event, node) => {
+          // Cmd/Ctrl-click adds a step to the selection, to drag several at once; the
+          // panel keeps showing the step that was selected first.
+          if (event.metaKey || event.ctrlKey || event.shiftKey) return;
           if (node.id !== WORKFLOW_START) onSelect?.({ kind: "node", id: node.id });
         }}
+        onNodeMouseEnter={(_, node) => {
+          if (node.id !== WORKFLOW_START && !dragging.current) setHovered(node.id);
+        }}
+        onNodeMouseLeave={() => setHovered(null)}
         onEdgeClick={(_, edge) => {
           if (!readOnly) onSelect?.({ kind: "edge", id: edge.id });
         }}
         onPaneClick={() => onSelect?.(null)}
         onConnect={(connection: Connection) => {
-          if (connection.source && connection.target) onConnect?.(connection.source, connection.target);
+          if (connection.source && connection.target)
+            onConnect?.(connection.source, connection.target, connection.sourceHandle ?? null);
         }}
-        isValidConnection={(connection) =>
-          connection.source !== connection.target && connection.target !== WORKFLOW_START
-        }
+        onConnectEnd={(event, state) => {
+          // Let go over empty canvas: the line gets a new step to lead to.
+          if (!onAddFrom || !flow || state.isValid || !state.fromNode || state.fromHandle?.type !== "source") return;
+          const point = "changedTouches" in event ? event.changedTouches[0] : event;
+          // Where the pointer was let go; a touch reports the element it started on.
+          const target = document.elementFromPoint(point.clientX, point.clientY);
+          // Empty canvas: inside this canvas and not on a step or a button. A line that
+          // happens to run under the pointer does not count as something in the way.
+          if (!target || !box?.contains(target)) return;
+          if (target.closest(".react-flow__node, .react-flow__controls, .react-flow__minimap, .react-flow__panel")) return;
+          const at = flow.screenToFlowPosition({ x: point.clientX, y: point.clientY });
+          onAddFrom(state.fromNode.id, state.fromHandle.id ?? null, { x: Math.round(at.x), y: Math.round(at.y - HANDLE_Y) });
+        }}
+        isValidConnection={(connection) => connection.target !== WORKFLOW_START}
         // One call for everything that was selected, so nothing is lost when several
         // steps or lines are removed at once.
         onDelete={({ nodes: removedNodes, edges: removedEdges }) =>
@@ -692,13 +947,13 @@ export function WorkflowCanvas({
         onNodeDoubleClick={(_, node) => {
           if (node.id !== WORKFLOW_START) onOpen?.(node.id);
         }}
-        minZoom={MIN_ZOOM}
+        minZoom={0.1}
         maxZoom={1.5}
-        // The canvas sits inside a long page: the wheel scrolls the page, not the canvas.
-        zoomOnScroll={false}
-        preventScrolling={false}
+        // Inside a long page the wheel scrolls the page, not the canvas.
+        zoomOnScroll={Boolean(wheelZoom)}
+        preventScrolling={Boolean(wheelZoom)}
         connectionRadius={28}
-        connectionLineStyle={{ stroke: "hsl(var(--primary))", strokeWidth: 1.5 }}
+        connectionLineStyle={{ stroke: "hsl(var(--primary))", strokeWidth: 1.75 }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="hsl(var(--border-strong))" />
         {/* A view keeps its buttons in a strip of their own along the top (see the fit),
@@ -718,7 +973,7 @@ export function WorkflowCanvas({
             </ControlButton>
           ) : null}
         </Controls>
-        {overflows && readOnly ? (
+        {overflows ? (
           <MiniMap
             pannable
             position="bottom-right"

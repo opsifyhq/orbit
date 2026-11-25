@@ -8,12 +8,17 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
-### Security
+### Changed
 
-- A cloned repository can no longer add code to the harness process: after checkout the
-  worker removes OpenCode plugins, tools, agents and dependency files, Pi extensions and
-  settings, and code-loading keys of a repository `opencode.json`, before ORBIT writes its
-  own files. The removals are reported as an execution event and never committed (#428).
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+
+### Fixed
+
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
 
 ## [0.28.7] - 2026-11-24
 
