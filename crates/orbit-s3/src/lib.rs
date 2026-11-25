@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 
