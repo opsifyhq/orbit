@@ -6,8 +6,13 @@ KUBE_CONTEXT ?= microk8s
 VALUES ?= deploy/helm/orbit/values.yaml
 API_URL ?= http://localhost:8080
 
-.PHONY: help dev-infra compose-up compose-down api worker web test test-db fmt clippy \
-        typecheck build-web api-client helm-lint helm-template images push deploy smoke-k8s
+.PHONY: help dev-infra compose-up compose-down compose-logs compose-reset compose-env \
+        worker-opencode worker-docker worker-pi compose-build-opencode api worker web test \
+        test-db fmt clippy typecheck build-web api-client helm-lint helm-template images push \
+        deploy smoke-k8s
+
+# The full Compose stack needs .env (ORBIT_WORKER_TOKEN and secrets); see docs/development/local.md.
+COMPOSE := docker compose --env-file .env -f deploy/compose/compose.yaml
 
 help:
 	@echo "ORBIT targets"
@@ -34,17 +39,20 @@ help:
 dev-infra:
 	docker compose -f deploy/compose/compose.dev.yaml up -d
 
-compose-up:
-	docker compose -f deploy/compose/compose.yaml up --build
+compose-env:
+	@test -f .env || { echo "Missing .env: copy .env.example to .env and follow docs/development/local.md"; exit 1; }
 
-compose-down:
-	docker compose -f deploy/compose/compose.yaml down
+compose-up: compose-env
+	$(COMPOSE) up --build
 
-compose-logs:
-	docker compose -f deploy/compose/compose.yaml logs -f --tail=100 api worker web
+compose-down: compose-env
+	$(COMPOSE) down
 
-compose-reset:
-	docker compose -f deploy/compose/compose.yaml down -v
+compose-logs: compose-env
+	$(COMPOSE) logs -f --tail=100 api worker web
+
+compose-reset: compose-env
+	$(COMPOSE) down -v
 
 worker-opencode:
 	./scripts/dev-worker-opencode.sh

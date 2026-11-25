@@ -6,6 +6,117 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
+## [Unreleased]
+
+## [0.29.0] - 2026-11-25
+
+### Added
+
+- Audit entries for team create, update and delete, team run start (with
+  `autoApprove`) and queue enqueue, run, retry, requeue and cancel (#432).
+
+### Changed
+
+- Workflow teams: step cards show their outputs (one per outcome, plus done, failed and
+  always) and lines take the colour of the output they leave. The editor arranges the
+  steps after every change and has undo, a full-screen mode, multi-select dragging and
+  inputs and outputs for every step. See [the guide](docs/guide/agent-teams.md#workflows).
+- `PATCH /api/v1/agent-teams/{id}` is a partial update: fields left out keep their value
+  and `null` clears an optional field (before, a client that left out `autonomy`,
+  `connectionIds` or `workSource` cleared them). `expectedUpdatedAt` refuses a write over
+  someone else's change with 409; the team editor sends it (#432).
+- Manual queue enqueue stores a batch all or nothing (at most 500 items). An item whose
+  `externalKey` is already queued is returned unchanged with `created: false`, and the
+  response is 200 when nothing was new. `GET .../queue` takes `limit` and `before` to page
+  back through older items (#432).
+- Database-backed tests fail in CI (`CI=true`) when `ORBIT_TEST_DATABASE_URL` is missing,
+  instead of skipping and leaving the job green (#445).
+- An unknown path shows an ORBIT "This page does not exist" page: it names the path,
+  opens search, and links to Overview, Executions, Agents and Agent teams. A detail page
+  whose link has a malformed id says "not found" instead of a parser error and a Retry
+  that cannot help (#456).
+- Lists (agents, teams, skills, connectors, model providers, outputs, environments, team
+  runs) and execution rows lay out by their own width, not the window's, so names stay
+  readable with the sidebar open at tablet widths (#456).
+- Team-run groups in Executions show the team name, the task and the run status instead
+  of "Agent team run" and an id (#456).
+- Create and edit pages have their own browser title ("New agent", "Edit skill") (#456).
+
+### Removed
+
+- `GET /api/v1/agent-instances`: it always returned an empty list, since nothing creates
+  agent instances (#452).
+
+### Fixed
+
+- The next workflow step and the run's result get a step's answer without its
+  `OUTCOME:` line.
+- Workflow canvas accessibility: connection handles have a 32px hit area (the dot stays
+  12px); Enter or Space on a focused step opens it in the editor, Escape clears the
+  selection and an arrow-key nudge is saved like a drag; selecting announces one short
+  line instead of the whole form; replacing a workflow with an example asks in ORBIT's own
+  dialog; scrolling and the canvas viewport do not animate with reduced motion on (#448).
+- A team run no longer ends with steps still "running": every path that ends a run
+  (queue cancel, a failed start, a failed run) closes its running steps. A run whose
+  worker launch fails is ended before the error is returned, and a launch that fails for
+  a later step fails the run instead of leaving a queued execution nothing will claim
+  (#431).
+- `POST /api/v1/api-tokens` refuses an `expiresInDays` below 1 or above 3650 with 422.
+  Before, 0 or a negative value created a token that never expires, and larger values were
+  silently cut to ten years (#438).
+- A request body with a NUL character (`\u0000`) gets a 422 instead of a 500 storage
+  error; a worker token for an unknown harness kind and a trigger on an archived agent are
+  refused (#438).
+- Agent-team validation names only the fields that are wrong (a team with a name but no
+  steps no longer gets "name is required"), and points at the step that is wrong:
+  `steps[1].agentId`, or `workflow.nodes[2].agentId` for a workflow (#438).
+- A caller-supplied `X-Request-Id` is only reused when it is 1 to 128 letters, digits,
+  `.`, `_` or `-`; other values (quotes, `<`, spaces) are replaced by a generated id
+  instead of being echoed in the response header and error body (#443).
+- API log lines carry the right request id: the request span was entered across an
+  `await`, so on a busy server a line could show another request's id. Refused (4xx) and
+  failed (5xx) requests now leave one `request finished` line with status, route and
+  latency at the default level (#444).
+- A worker token's last-used time is written at most once a minute instead of on every
+  worker request, which made that row the busiest write in the database while executions
+  ran (#447).
+- A stored harness without an adapter in this build is reported as planned; a second,
+  outdated status table that called OpenCode "scaffolded" and Pi "planned" is removed. The
+  Work page no longer shows two options that could never be switched on (#452).
+- A worker started without `ORBIT_WORKER_HARNESSES` claims only harnesses with an available
+  adapter (`mock,opencode,pi`), not planned ones it can only fail (#452).
+- `make compose-up`, `compose-down`, `compose-logs` and `compose-reset` pass
+  `--env-file .env` and stop with a hint when it is missing.
+- The weekly dependency-watch issue body no longer runs the commands it mentions.
+- Docs: the execution lease is a fixed 90 seconds (`ORBIT_EXECUTION_LEASE_SECONDS` was
+  never read), the API has no OpenTelemetry export, and the tool broker has been the
+  `orbit-worker mcp-broker` subcommand since #315; the empty `services/mcp-broker`
+  directory is removed (#453).
+
+### Security
+
+- A cloned repository can no longer add code to the harness process: after checkout the
+  worker removes OpenCode plugins, tools, agents and dependency files, Pi extensions and
+  settings, and code-loading keys of a repository `opencode.json`, before ORBIT writes its
+  own files. The removals are reported as an execution event and never committed (#428).
+- Native-team runs no longer store subagent system prompts in the execution and team-step
+  input, where anyone who can view the team or the primary agent could read a private
+  agent's prompt. The worker receives the prompt when it claims the step; migration 0064
+  removes the stored copies (#429).
+- X context hydration follows tool policy: a deny or require-approval rule for
+  `posts.search` skips it, and each search is recorded as a tool call. Without a `query`
+  in the run payload or the connection config, hydration is skipped instead of sending
+  the task text to X (#430).
+- The unauthenticated `GET /api/v1/meta` returns only the licence tier, whether it is
+  valid and the available features. Customer, licence id, limits and dates stay in the
+  authenticated `GET /api/v1/license` (#449).
+- A licence's `orgSlug` claim (as written in ADR 0010) is read; it is recorded, not
+  enforced. `resource_permissions`, which the sharing endpoints require, is listed as an
+  available feature instead of triggering the "not available in this release" warning
+  (#449).
+- Worker credential and environment value types print `[redacted]` instead of the value
+  when formatted with `Debug`, so a future debug log cannot leak a secret (#451).
+
 ## [0.28.7] - 2026-11-24
 
 ### Fixed

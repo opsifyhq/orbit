@@ -50,7 +50,8 @@ function EditAgentTeamEditor({ teamId }: { teamId: string }) {
   async function handleSubmit(input: TeamInput, commitAccess: () => Promise<void>) {
     setSubmitting(true);
     try {
-      await updateAgentTeam(teamId, input);
+      // Refused with 409 if someone else saved the team after it was loaded.
+      await updateAgentTeam(teamId, { ...input, expectedUpdatedAt: team.data?.updatedAt });
       await commitAccess();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agentTeams }),

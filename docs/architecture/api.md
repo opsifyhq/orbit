@@ -103,7 +103,6 @@ validated with field-level `details` and recorded in the audit log.
 | `GET /api/v1/agents/{id}/versions` | immutable version history |
 | `GET /api/v1/agents/{id}/export` | YAML export (`orbit.io/v1`) |
 | `GET/POST /api/v1/agents/{id}/runtime`, `POST …/runtime/stop` | read / start / stop the agent's continuous runtime |
-| `GET /api/v1/agent-instances` | legacy instance list (nothing creates instances; see the domain model) |
 | **Executions and approvals** | |
 | `POST /api/v1/agents/{id}/executions` | start an execution (202); optional `placement`, `harness`, `idempotencyKey` |
 | `GET /api/v1/agents/{id}/executions` | executions of one agent |

@@ -142,7 +142,11 @@ export function RunTeamDialog({
             ) : (
               <CheckboxField
                 title="Auto-approve approvals for this run"
-                description="Only applies when the primary agent is Level 3 or higher. It never raises the agent's autonomy."
+                description={
+                  teamMode(team) === "workflow"
+                    ? "Only applies to steps whose agent is Level 3 or higher. It never raises an agent's autonomy."
+                    : "Only applies when the primary agent is Level 3 or higher. It never raises the agent's autonomy."
+                }
                 checked={autoApprove}
                 onChange={(event) => setAutoApprove(event.target.checked)}
               />

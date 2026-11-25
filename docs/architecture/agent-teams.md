@@ -119,6 +119,11 @@ the remaining agents become OpenCode subagents. ORBIT materializes their instruc
 model and description into the execution workspace. The primary is instructed to use the
 task/subagent tool.
 
+The run stores each subagent as a reference (id, name, description, model). Their system
+prompts are not stored in the execution or team-step input, because team viewers can
+read that input and a subagent may be private: the worker receives the current prompt
+when it claims the step (`GET /api/v1/worker/executions/{id}/context`).
+
 The example loop skill lives at
 `docs/examples/skills/github-issue-loop/SKILL.md`. It covers issue selection, builder
 feedback, tests, commit/push, PR creation, checks and issue labels.

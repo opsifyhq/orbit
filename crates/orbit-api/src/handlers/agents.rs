@@ -12,8 +12,7 @@ use orbit_store::Agent;
 
 use crate::audit;
 use crate::dto::{
-    AgentDetail, AgentInstancePage, AgentListQuery, AgentPage, AgentSummary, AgentVersionView,
-    UpdateAgentRequest,
+    AgentDetail, AgentListQuery, AgentPage, AgentSummary, AgentVersionView, UpdateAgentRequest,
 };
 use crate::error::ApiError;
 use crate::handlers::{limit, load_agent_detail, load_visible_agent};
@@ -459,26 +458,4 @@ pub async fn export_agent(
         yaml,
     )
         .into_response())
-}
-
-#[utoipa::path(get, path = "/api/v1/agent-instances", tag = "agents", responses((status = 200, body = AgentInstancePage)))]
-pub async fn list_agent_instances(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthContext>,
-) -> Result<Json<AgentInstancePage>, ApiError> {
-    auth.require(Permission::AgentsRead)?;
-    let access = crate::access::AccessScope::load(&state, &auth).await?;
-    let instances = state
-        .store
-        .list_agent_instances(auth.org_id, Some(&access.store_access()))
-        .await?;
-    let total = instances.len() as i64;
-    Ok(Json(AgentInstancePage {
-        items: instances
-            .into_iter()
-            .map(|instance| crate::dto::AgentInstanceView { instance })
-            .collect(),
-        next_cursor: None,
-        total,
-    }))
 }
