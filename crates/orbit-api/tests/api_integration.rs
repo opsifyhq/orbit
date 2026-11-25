@@ -5421,6 +5421,47 @@ mod output_delivery {
     }
 
     #[tokio::test]
+    async fn s3_output_credential_does_not_follow_endpoint_or_region() {
+        let Some(app) = test_app(true).await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let hook = start_s3_hook().await;
+        let output_id = create_s3_output_like_the_form(&app, &hook).await;
+        let name = app
+            .store
+            .get_output(app.org_id, output_id)
+            .await
+            .unwrap()
+            .name;
+        let path = format!("/api/v1/outputs/{output_id}");
+        for (field, value) in [
+            ("endpoint", json!("https://93.184.216.34")),
+            ("region", json!("eu-west-1")),
+        ] {
+            let mut body = s3_form_body(&name, &hook.url, Some("orbit"));
+            body.as_object_mut().unwrap().remove("s3Credential");
+            body["config"][field] = value;
+            let (status, response) = send(&app.router, patch_json(&path, body)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{field}: {response}"
+            );
+        }
+        // With the credential the change is accepted.
+        let mut body = s3_form_body(&name, &hook.url, Some("orbit"));
+        body["config"]["region"] = json!("eu-west-1");
+        let (status, response) = send(&app.router, patch_json(&path, body)).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        // A region that would change the Amazon host is refused.
+        let mut body = s3_form_body(&name, &hook.url, Some("orbit"));
+        body["config"]["region"] = json!("evil.example/x");
+        let (status, response) = send(&app.router, patch_json(&path, body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    }
+
+    #[tokio::test]
     async fn s3_access_denied_is_permanent_and_server_errors_retry() {
         let Some(app) = test_app(true).await else {
             return;
@@ -8686,6 +8727,67 @@ async fn connection_credential_does_not_follow_an_edited_endpoint() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// #389: an S3 connection's endpoint, provider and region decide where its signed
+/// requests go, so changing any of them needs the credential again; the region must be a
+/// plain name and the endpoint passes the outbound policy at save time.
+#[tokio::test]
+async fn s3_connection_credential_does_not_follow_endpoint_or_region() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let credential = json!({ "accessKeyId": "AK", "secretAccessKey": "SK" }).to_string();
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/connections",
+            json!({
+                "connectorSlug": "s3",
+                "name": "S3 endpoint edit",
+                "config": { "provider": "amazon", "region": "eu-west-1", "allowedBuckets": ["orbit"] },
+                "credential": credential
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("/api/v1/connections/{}", body["id"].as_str().unwrap());
+    let base = json!({ "provider": "amazon", "region": "eu-west-1", "allowedBuckets": ["orbit"] });
+
+    for (field, value) in [
+        ("endpoint", json!("https://93.184.216.34")),
+        ("region", json!("us-west-2")),
+        ("provider", json!("rustfs")),
+    ] {
+        let mut config = base.clone();
+        config[field] = value;
+        let (status, body) =
+            send(&app.router, patch_json(&path, json!({ "config": config }))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {body}");
+        assert!(
+            body["error"]["details"]
+                .as_array()
+                .is_some_and(|details| details.iter().any(|detail| detail["path"] == "credential")),
+            "{field}: {body}"
+        );
+    }
+
+    // Other settings may change without the credential.
+    let mut config = base.clone();
+    config["allowedBuckets"] = json!(["orbit", "reports"]);
+    let (status, body) = send(&app.router, patch_json(&path, json!({ "config": config }))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A metadata address is refused at save time, even with a credential.
+    let mut config = base.clone();
+    config["endpoint"] = json!("http://169.254.169.254");
+    let (status, body) = send(
+        &app.router,
+        patch_json(&path, json!({ "config": config, "credential": credential })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
 /// #321: the Kubernetes endpoint is checked like every other connection URL, and a test

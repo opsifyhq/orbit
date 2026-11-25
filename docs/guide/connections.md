@@ -56,8 +56,11 @@ To create one, choose **New connection**. Connection Studio shows one section at
 
 Credentials are write-only. The credential is stored encrypted and is never shown again.
 When you edit a connection, a stored credential shows as stored; leave the field empty to
-keep it or type a new one to replace it. Connections can also be imported and exported
-without credentials ([Export and import](portable-export-import.md)).
+keep it or type a new one to replace it. A stored credential never follows a changed
+destination: changing a URL field (`baseUrl`, `cloneBaseUrl`, `url`, `apiServer`, or an S3
+`endpoint`) or an S3 `provider` or `region` needs the credential in the same update.
+Connections can also be imported and exported without credentials
+([Export and import](portable-export-import.md)).
 
 ## Use a connection in an agent
 

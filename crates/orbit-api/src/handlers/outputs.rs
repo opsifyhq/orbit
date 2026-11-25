@@ -517,6 +517,7 @@ pub async fn create(
     guard_credential(kind, value).await?;
     let config = request_config(&body)?.unwrap_or_else(|| serde_json::json!({}));
     if kind == OutputKind::S3 {
+        crate::handlers::catalog::validate_connection_urls(&config).await?;
         orbit_s3::S3Config::for_output(&config, Some(value)).map_err(|message| {
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
@@ -590,6 +591,20 @@ pub async fn update(
         None => serde_json::json!({}),
     };
     if kind == OutputKind::S3 {
+        crate::handlers::catalog::validate_connection_urls(&config).await?;
+        // The stored credential never follows an edited endpoint, provider or region:
+        // pointing the output elsewhere needs the credential again (#389, as #321 for
+        // connections).
+        if credential(&body, kind).is_none() && existing.kind == kind.as_str() {
+            if let Some(field) =
+                crate::handlers::catalog::changed_url_field(&existing.config, &config)
+            {
+                return Err(ApiError::validation(vec![ValidationIssue::new(
+                    credential_field(kind),
+                    format!("re-enter the S3 credential when changing {field}"),
+                )]));
+            }
+        }
         // Checked with or without a new credential: an S3 output that cannot write to its
         // own bucket is refused instead of failing every delivery (#386).
         orbit_s3::S3Config::parse_output(&config).map_err(|message| {

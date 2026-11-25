@@ -172,6 +172,13 @@ impl S3Config {
             .filter(|value| !value.is_empty())
             .unwrap_or("us-east-1")
             .to_string();
+        // The region becomes part of the Amazon host name: only a plain region name.
+        if !region
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err("S3 region must contain only lowercase letters, digits and '-'".into());
+        }
         let endpoint = config
             .get("endpoint")
             .and_then(serde_json::Value::as_str)
@@ -824,6 +831,24 @@ mod tests {
         assert!(client.config.object_key("other/a.txt").is_err());
         assert!(client.config.object_key("orbit/../a.txt").is_err());
         assert!(client.config.object_key("/orbit//a.txt").is_err());
+    }
+
+    #[test]
+    fn regions_are_plain_names() {
+        for region in [
+            "evil.example/x",
+            "us-east-1.",
+            "a#b",
+            "user@host",
+            "EU-WEST-1",
+        ] {
+            assert!(
+                S3Config::parse(&serde_json::json!({ "region": region })).is_err(),
+                "{region}"
+            );
+        }
+        let config = S3Config::parse(&serde_json::json!({ "region": "eu-west-1" })).unwrap();
+        assert_eq!(config.endpoint, "https://s3.eu-west-1.amazonaws.com");
     }
 
     #[test]
