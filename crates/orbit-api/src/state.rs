@@ -96,12 +96,24 @@ impl AppState {
         self.license.status()
     }
 
-    /// Guard + installation-wide seat count. Keep the returned guard alive until the user
-    /// row is written so concurrent provisions cannot race past the seat limit.
-    pub async fn seat_limit_guard(&self) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
-        let guard = self.store.license_limit_guard("seats").await?;
-        self.enforce_limit("seats", self.store.count_active_users_installation().await?)?;
-        Ok(guard)
+    /// Take the installation-wide lock for one license limit, or `None` without touching
+    /// the database when the license sets no such limit. Callers that decide under the
+    /// lock whether a slot is needed (re-reading state first) count with the matching
+    /// `enforce_*` helper; the `*_limit_guard` methods do both.
+    pub async fn license_limit_lock(
+        &self,
+        limit: &str,
+    ) -> Result<Option<LicenseLimitGuard<'_>>, crate::error::ApiError> {
+        if self.license_status().limit(limit).is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.store.license_limit_guard(limit).await?))
+    }
+
+    /// Count active users installation-wide and refuse when the seat limit is reached.
+    /// Call while holding `license_limit_lock("seats")`.
+    pub async fn enforce_seat_limit(&self) -> Result<(), crate::error::ApiError> {
+        self.enforce_limit("seats", self.store.count_active_users_installation().await?)
     }
 
     /// Guard + installation-wide agent count. Hold until the agent row is written. Returns
@@ -109,12 +121,17 @@ impl AppState {
     pub async fn agent_limit_guard(
         &self,
     ) -> Result<Option<LicenseLimitGuard<'_>>, crate::error::ApiError> {
-        if self.license_status().limit("agents").is_none() {
-            return Ok(None);
+        let guard = self.license_limit_lock("agents").await?;
+        if guard.is_some() {
+            self.enforce_agent_limit().await?;
         }
-        let guard = self.store.license_limit_guard("agents").await?;
-        self.enforce_limit("agents", self.store.count_agents_installation().await?)?;
-        Ok(Some(guard))
+        Ok(guard)
+    }
+
+    /// Count agents installation-wide and refuse when the agent limit is reached. Call
+    /// while holding `license_limit_lock("agents")`.
+    pub async fn enforce_agent_limit(&self) -> Result<(), crate::error::ApiError> {
+        self.enforce_limit("agents", self.store.count_agents_installation().await?)
     }
 
     /// Guard + installation-wide rolling 24h execution count. Hold until the execution
@@ -126,47 +143,70 @@ impl AppState {
             return Ok(ExecutionLimit::Unrestricted);
         }
         let guard = self.store.license_limit_guard("executions_per_day").await?;
+        self.enforce_execution_limit().await?;
+        Ok(ExecutionLimit::Enforced(guard))
+    }
+
+    async fn enforce_execution_limit(&self) -> Result<(), crate::error::ApiError> {
         let since = Utc::now() - chrono::Duration::hours(24);
         let count = self
             .store
             .count_all_executions_since_installation(since)
             .await?;
-        self.enforce_limit("executions_per_day", count)?;
-        Ok(ExecutionLimit::Enforced(guard))
+        self.enforce_limit("executions_per_day", count)
     }
 
     /// The single insertion point for licensed executions. Every manual run, rerun, team
     /// step, scheduled trigger and runtime tick goes through here so none can skip the
     /// `executions_per_day` guard. An idempotent replay returns the existing execution
-    /// without consuming a slot or taking the lock.
+    /// without consuming a slot. The key is looked up again under the lock, so a concurrent
+    /// duplicate at the exact limit gets the execution the first request created instead
+    /// of a license error.
     pub async fn create_execution_with_limit(
         &self,
         new: NewExecution<'_>,
     ) -> Result<ExecutionRecord, crate::error::ApiError> {
-        if let Some(key) = new.idempotency_key {
-            if let Some(existing) = self
-                .store
-                .get_execution_by_idempotency_key(new.org_id, key)
-                .await?
-            {
+        if let Some(existing) = self.execution_for_key(&new).await? {
+            return Ok(existing);
+        }
+        let _limit = self.license_limit_lock("executions_per_day").await?;
+        if _limit.is_some() {
+            if let Some(existing) = self.execution_for_key(&new).await? {
                 return Ok(existing);
             }
+            self.enforce_execution_limit().await?;
         }
-        let _limit = self.execution_limit_guard().await?;
         Ok(self.store.create_execution(new).await?)
     }
 
-    /// Guard + installation-wide running-worker count. Hold until the launch is inserted.
+    async fn execution_for_key(
+        &self,
+        new: &NewExecution<'_>,
+    ) -> Result<Option<ExecutionRecord>, crate::error::ApiError> {
+        let Some(key) = new.idempotency_key else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .get_execution_by_idempotency_key(new.org_id, key)
+            .await?)
+    }
+
+    /// Guard + installation-wide running-worker count. Hold until the launch row is
+    /// inserted (a pending launch already counts) and drop it before calling the launcher.
+    /// Returns `None` without touching the database when the license has no worker limit.
     pub async fn worker_limit_guard(
         &self,
-    ) -> Result<LicenseLimitGuard<'_>, crate::error::ApiError> {
-        let guard = self.store.license_limit_guard("workers").await?;
-        self.enforce_limit(
-            "workers",
-            self.store
-                .count_active_worker_launches_installation()
-                .await?,
-        )?;
+    ) -> Result<Option<LicenseLimitGuard<'_>>, crate::error::ApiError> {
+        let guard = self.license_limit_lock("workers").await?;
+        if guard.is_some() {
+            self.enforce_limit(
+                "workers",
+                self.store
+                    .count_active_worker_launches_installation()
+                    .await?,
+            )?;
+        }
         Ok(guard)
     }
 

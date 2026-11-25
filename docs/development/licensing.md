@@ -148,12 +148,14 @@ tier stay available without a licence.
 
 Numeric `limits` in a licence are enforced too. Counts are installation-wide (all
 organizations), and the check and insert for each counted resource share a Postgres advisory
-lock so concurrent API replicas cannot race past a limit. When a limit is reached the API
+lock so concurrent API replicas cannot race past a limit. The lock is only taken when the
+licence sets that limit and is held for the count and the insert only (a worker launch drops
+it before the launcher call). When a limit is reached the API
 answers `402` with code `license_limit`:
 
 | Limit | Counted as | Checked when |
 |---|---|---|
-| `seats` | Active users in all orgs | A new user is auto-provisioned at OIDC login |
+| `seats` | Active users in all orgs | A new user is auto-provisioned at OIDC login (linking a pre-provisioned user by email uses no seat) |
 | `agents` | Non-archived agents in all orgs | An agent is created |
 | `workers` | Running worker launches in all orgs | A worker is launched (manual, team or dispatcher) |
 | `executions_per_day` | Executions in the last 24h in all orgs | An execution or team step is started |
