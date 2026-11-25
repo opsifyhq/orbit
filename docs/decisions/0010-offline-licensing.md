@@ -13,8 +13,9 @@ Status: **Accepted**. Scope: the licensing part of #15 / #25.
 ## Decisions
 
 1. **Installation-wide license.** One signed license per ORBIT installation. Limits are
-   evaluated installation-wide. An optional `orgSlug` claim may pin a license to one
-   organization, but multi-org licensing is not required for v1.
+   evaluated installation-wide. An optional `orgSlug` claim names the organization the
+   license was issued for; it is recorded and shown, not enforced (multi-org licensing is
+   not required for v1).
 2. **No installation ID by default.** The LiteLLM model: the customer receives a signed
    license file with the purchase and references it at install time. No exchange, no
    activation, no outbound request. (An optional `installationId` claim can be added later

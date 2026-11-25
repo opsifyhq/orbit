@@ -7893,7 +7893,8 @@
             "$ref": "#/components/schemas/MetaFeatures"
           },
           "license": {
-            "$ref": "#/components/schemas/LicenseStatus"
+            "$ref": "#/components/schemas/PublicLicense",
+            "description": "What an anonymous caller may know about the licence. Customer, licence id, limits\nand dates are only in the authenticated `GET /api/v1/license` (#449)."
           },
           "version": {
             "type": "string"
@@ -8683,6 +8684,32 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "PublicLicense": {
+        "type": "object",
+        "description": "The licence summary served without authentication by `GET /api/v1/meta`.",
+        "required": [
+          "tier",
+          "valid",
+          "availableFeatures"
+        ],
+        "properties": {
+          "availableFeatures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Licensed features this release ships."
+          },
+          "tier": {
+            "type": "string",
+            "description": "`community`, `enterprise`, …"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "False for community, invalid or fully expired licences."
           }
         }
       },

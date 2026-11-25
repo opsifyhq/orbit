@@ -202,6 +202,7 @@ use crate::handlers;
         handlers::account::AuditLogPage,
         MeResponse,
         MetaResponse,
+        crate::dto::PublicLicense,
         MetaFeatures,
         DashboardResponse,
         handlers::approvals::ApprovalDecisionRequest,

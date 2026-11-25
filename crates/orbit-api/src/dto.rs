@@ -570,9 +570,33 @@ pub struct MetaResponse {
     pub auth: serde_json::Value,
     pub events_driver: String,
     pub features: MetaFeatures,
-    pub license: orbit_security::LicenseStatus,
+    /// What an anonymous caller may know about the licence. Customer, licence id, limits
+    /// and dates are only in the authenticated `GET /api/v1/license` (#449).
+    pub license: PublicLicense,
     /// Route of the embedded documentation index (authenticated).
     pub docs_url: String,
+}
+
+/// The licence summary served without authentication by `GET /api/v1/meta`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLicense {
+    /// `community`, `enterprise`, …
+    pub tier: String,
+    /// False for community, invalid or fully expired licences.
+    pub valid: bool,
+    /// Licensed features this release ships.
+    pub available_features: Vec<String>,
+}
+
+impl From<&orbit_security::LicenseStatus> for PublicLicense {
+    fn from(status: &orbit_security::LicenseStatus) -> Self {
+        Self {
+            tier: status.tier.clone(),
+            valid: status.valid,
+            available_features: status.available_features.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

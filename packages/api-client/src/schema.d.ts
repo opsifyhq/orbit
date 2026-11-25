@@ -2775,7 +2775,11 @@ export interface components {
             environment: string;
             eventsDriver: string;
             features: components["schemas"]["MetaFeatures"];
-            license: components["schemas"]["LicenseStatus"];
+            /**
+             * @description What an anonymous caller may know about the licence. Customer, licence id, limits
+             *     and dates are only in the authenticated `GET /api/v1/license` (#449).
+             */
+            license: components["schemas"]["PublicLicense"];
             version: string;
         };
         /** @enum {string} */
@@ -3039,6 +3043,15 @@ export interface components {
             name: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        /** @description The licence summary served without authentication by `GET /api/v1/meta`. */
+        PublicLicense: {
+            /** @description Licensed features this release ships. */
+            availableFeatures: string[];
+            /** @description `community`, `enterprise`, … */
+            tier: string;
+            /** @description False for community, invalid or fully expired licences. */
+            valid: boolean;
         };
         QueueItemInput: {
             externalKey: string;
