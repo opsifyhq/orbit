@@ -336,7 +336,7 @@ ENTRYPOINT ["/usr/local/bin/orbit-worker"]
 |---|---|---|
 | `ORBIT_API_URL` | yes | Control plane URL (e.g. `http://orbit-api:8080`) |
 | `ORBIT_WORKER_TOKEN` | yes | Worker auth token. Platform workers get one per launch; custom workers use `POST /api/v1/worker-tokens` or a profile bootstrap manifest. |
-| `ORBIT_WORKER_HARNESSES` | no | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`). Default: all kinds; set it explicitly |
+| `ORBIT_WORKER_HARNESSES` | no | Comma-separated harness kinds this worker claims (`mock`, `opencode`, `pi`). Default: `mock,opencode,pi` (the available adapters); set it explicitly |
 | `ORBIT_WORKER_TARGET` | no | `local` (default), `docker`, or `kubernetes` (must match agent placement) |
 | `ORBIT_WORKSPACE_ROOT` | no | Writable scratch dir (default `/tmp/orbit-workspaces`) |
 | `ORBIT_WORKER_POLL_MS` | no | Poll interval in ms (default `1000`) |

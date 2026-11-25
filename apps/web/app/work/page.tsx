@@ -22,7 +22,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckboxField } from "@/components/ui/checkbox";
 import { ChoiceCard } from "@/components/ui/choice-card";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -116,8 +115,6 @@ export default function WorkPage() {
   const [name, setName] = useState("");
   const [task, setTask] = useState("");
   const [repository, setRepository] = useState("");
-  const [autoApprove, setAutoApprove] = useState(false);
-  const [longRunning, setLongRunning] = useState(false);
 
   // New schedules start in the viewer's own time zone (set after mount: the server
   // render cannot know it).
@@ -714,22 +711,10 @@ export default function WorkPage() {
 
           <FormSection id="then" active={active} go={go}>
             {sectionIssues("then")}
-            <div className="grid gap-2 sm:grid-cols-2">
-              <CheckboxField
-                checked={autoApprove}
-                onChange={(e) => setAutoApprove(e.target.checked)}
-                disabled
-                title="Auto-approve writes"
-                description="Not available from here yet. Whether writes need approval follows the agent's autonomy level."
-              />
-              <CheckboxField
-                checked={longRunning}
-                onChange={(e) => setLongRunning(e.target.checked)}
-                disabled
-                title="Keep the agent running"
-                description="Not available from here yet. Each piece of work runs once and then stops."
-              />
-            </div>
+            <p className="text-[13px] text-muted-foreground">
+              Each piece of work runs once and then stops. Whether writes need approval follows the
+              agent&apos;s autonomy level.
+            </p>
             <div className="rounded-lg border bg-card p-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium">Outputs</p>

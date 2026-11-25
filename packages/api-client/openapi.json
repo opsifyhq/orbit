@@ -7,28 +7,9 @@
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "0.28.4"
+    "version": "0.28.7"
   },
   "paths": {
-    "/api/v1/agent-instances": {
-      "get": {
-        "tags": [
-          "agents"
-        ],
-        "operationId": "list_agent_instances",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentInstancePage"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/agent-teams": {
       "get": {
         "tags": [
@@ -4727,109 +4708,6 @@
             "format": "uuid"
           }
         }
-      },
-      "AgentInstance": {
-        "type": "object",
-        "required": [
-          "id",
-          "orgId",
-          "agentId",
-          "agentVersionId",
-          "harnessId",
-          "name",
-          "deploymentTarget",
-          "state",
-          "health",
-          "config",
-          "createdAt",
-          "updatedAt"
-        ],
-        "properties": {
-          "agentId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "agentVersionId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "config": {},
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "deploymentTarget": {
-            "type": "string"
-          },
-          "harnessId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "harnessRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "health": {},
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "lastHeartbeatAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "name": {
-            "type": "string"
-          },
-          "orgId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "state": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "AgentInstancePage": {
-        "type": "object",
-        "required": [
-          "items",
-          "total"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AgentInstanceView"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "total": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "AgentInstanceView": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/AgentInstance"
-          }
-        ]
       },
       "AgentMetadata": {
         "type": "object",
