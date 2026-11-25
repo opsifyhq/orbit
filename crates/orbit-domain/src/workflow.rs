@@ -615,10 +615,35 @@ pub fn outcome_directive(outcomes: &[String]) -> Option<String> {
     ))
 }
 
+const OUTCOME_DECORATION: &[char] = &['*', '_', '`', '#', '>', ' ', '\t', '-'];
+
+/// Whether `line` is an `OUTCOME: <label>` line, however the agent decorated it.
+fn is_outcome_line(line: &str) -> bool {
+    line.trim()
+        .trim_start_matches(OUTCOME_DECORATION)
+        .get(..8)
+        .is_some_and(|head| head.eq_ignore_ascii_case("outcome:"))
+}
+
+/// The answer without the `OUTCOME:` line it ends with: what the next step receives. The
+/// line is for the platform; handed on, it would read as an instruction to the next agent,
+/// which then tends to repeat it.
+pub fn without_outcome_line(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    match lines.iter().rposition(|line| is_outcome_line(line)) {
+        Some(at) => {
+            let mut kept: Vec<&str> = lines[..at].to_vec();
+            kept.extend(lines[at + 1..].iter().copied());
+            kept.join("\n").trim_end().to_string()
+        }
+        None => text.to_string(),
+    }
+}
+
 /// Read the outcome a step reported: the last `OUTCOME: <label>` line of its answer.
 /// `None` when there is no such line or the label is not one of `declared`.
 pub fn parse_outcome(text: &str, declared: &[String]) -> Option<String> {
-    const DECORATION: &[char] = &['*', '_', '`', '#', '>', ' ', '\t', '-'];
+    const DECORATION: &[char] = OUTCOME_DECORATION;
     for line in text.lines().rev() {
         let line = line.trim().trim_start_matches(DECORATION);
         let Some(head) = line.get(..8) else { continue };
@@ -1006,6 +1031,15 @@ mod tests {
             Some("pass")
         );
         assert_eq!(parse_outcome("OUTCOME: maybe", &declared), None);
+        assert_eq!(
+            without_outcome_line("All green.\n\n**OUTCOME: pass**\n"),
+            "All green."
+        );
+        assert_eq!(
+            without_outcome_line("OUTCOME: fail\nfirst\nOutcome: pass\nafter"),
+            "OUTCOME: fail\nfirst\nafter"
+        );
+        assert_eq!(without_outcome_line("No line here."), "No line here.");
         assert_eq!(parse_outcome("The outcome: pass", &declared), None);
         assert_eq!(parse_outcome("", &declared), None);
         assert!(outcome_directive(&declared)
