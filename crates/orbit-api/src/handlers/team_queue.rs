@@ -482,6 +482,45 @@ pub async fn cancel(
     auth.require(Permission::ExecutionsCreate)?;
     let item = fetch_item(&state, &auth, team_id, item_id).await?;
     let run_id = item.team_run_id;
+    // A running item has claimed its source issue. Stop its run first, then close the
+    // item through the outcome writer so the claim label is removed (#393).
+    if let (true, Some(run_id)) = (item.status == "running", run_id) {
+        let mut cancelled = state
+            .store
+            .request_team_run_cancel(auth.org_id, run_id)
+            .await?;
+        if let Some(run) = state
+            .store
+            .finish_team_run(run_id, "cancelled", None, Some("queue item cancelled"))
+            .await?
+        {
+            // Second sweep: a step started meanwhile may have missed the first.
+            cancelled.extend(
+                state
+                    .store
+                    .request_team_run_cancel(auth.org_id, run_id)
+                    .await?,
+            );
+            crate::handlers::teams::announce_cancel(&state, auth.org_id, &cancelled).await;
+            crate::team_outcomes::close_cancelled_queue_loop(&state, &run, "cancelled by operator")
+                .await;
+            let updated = state
+                .store
+                .get_team_queue_item(auth.org_id, item_id)
+                .await?;
+            audit_item(
+                &state,
+                &auth,
+                "team_queue.cancelled",
+                &updated,
+                Some(run_id),
+            )
+            .await;
+            return Ok(Json(updated));
+        }
+        // The run had already ended; its outcome is pending. Cancel the item directly.
+        crate::handlers::teams::announce_cancel(&state, auth.org_id, &cancelled).await;
+    }
     let updated = state
         .store
         .cancel_team_queue_item(auth.org_id, item_id, Some("cancelled by operator"))

@@ -44,6 +44,18 @@ pub(crate) async fn close_queue_loop(
     close_queue_loop_inner(state, run, status, output, error, true).await
 }
 
+/// An operator cancelled the run: mirror the `cancelled` outcome to the source issue
+/// (claim label removed, `failedLabel` added) and close the queue item (#393). Errors
+/// are logged, not returned: the item then stays `running` next to a terminal run, which
+/// is what `reconcile_team_outcomes` retries.
+pub(crate) async fn close_cancelled_queue_loop(state: &AppState, run: &TeamRun, reason: &str) {
+    if let Err(error) =
+        close_queue_loop_inner(state, run, "cancelled", None, Some(reason), false).await
+    {
+        tracing::warn!(%error, run_id = %run.id, "could not apply the cancelled outcome yet; it is retried");
+    }
+}
+
 /// Close the queue item of a run ended by the platform without offering a retry: the
 /// worker lost the execution, so replaying it would duplicate unknown side effects.
 pub(crate) async fn close_queue_loop_without_retry(

@@ -5574,6 +5574,130 @@ async fn outcome_writer_never_contacts_a_foreign_repository() {
     );
 }
 
+/// #393: an operator cancel of a run or of a running queue item applies the cancelled
+/// outcome to the source issue: the claim label is removed and the failed label added.
+#[tokio::test]
+async fn operator_cancel_removes_the_claim_label_from_the_source_issue() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    // The mock GitHub listens on loopback, which the outbound guard (#142) blocks unless
+    // explicitly allowed.
+    std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
+    let writes: Arc<std::sync::Mutex<Vec<(String, Value)>>> = Arc::default();
+    let recorded = writes.clone();
+    let mock = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let recorded = recorded.clone();
+        async move {
+            let method = request.method().clone();
+            let path = request.uri().path().to_string();
+            let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                .await
+                .unwrap_or_default();
+            if method == axum::http::Method::PATCH {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((path, serde_json::from_slice(&body).unwrap_or(Value::Null)));
+            }
+            axum::Json(json!({
+                "number": 1,
+                "labels": [{ "name": "agent-in-progress" }, { "name": "keep-me" }]
+            }))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+
+    let github = app
+        .store
+        .get_connector_by_slug(app.org_id, "github")
+        .await
+        .unwrap()
+        .expect("github connector");
+    let connection = app
+        .store
+        .create_connection(
+            app.org_id,
+            github.id,
+            &format!("cancel-outcome-{}", Uuid::now_v7()),
+            &json!({ "baseUrl": format!("http://{addr}") }),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let team = make_team(
+        &app,
+        vec![app.agent_id],
+        json!({ "workSource": {
+            "provider": "github", "enabled": true, "connectionId": connection.id,
+            "repository": "acme/app", "pollSeconds": 3600
+        } }),
+    )
+    .await;
+
+    // A claimed item with a running run, cancelled through the run or through the item.
+    for (number, through_item) in [(1, false), (2, true)] {
+        let key = format!("acme/app#{number}");
+        let item = app
+            .store
+            .try_enqueue_team_item(app.org_id, team, &key, Some("acme/app"), &json!({}), 1)
+            .await
+            .unwrap()
+            .unwrap();
+        app.store
+            .claim_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let run = app
+            .store
+            .create_team_run(app.org_id, team, &json!({}), None)
+            .await
+            .unwrap();
+        assert!(app
+            .store
+            .attach_team_run_to_queue_item(app.org_id, item.id, run.id)
+            .await
+            .unwrap());
+        let path = if through_item {
+            format!("/api/v1/agent-teams/{team}/queue/{}/cancel", item.id)
+        } else {
+            format!("/api/v1/team-runs/{}/cancel", run.id)
+        };
+        let (status, body) = send(&app.router, post(&path, json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if through_item {
+            assert_eq!(body["status"], "cancelled", "{body}");
+        } else {
+            assert_eq!(body["run"]["status"], "cancelled", "{body}");
+        }
+        let stored = app
+            .store
+            .get_team_queue_item(app.org_id, item.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, "cancelled");
+        let writes = writes.lock().unwrap().clone();
+        let (_, labels) = writes
+            .iter()
+            .find(|(path, _)| path == &format!("/repos/acme/app/issues/{number}"))
+            .unwrap_or_else(|| panic!("no label update for issue {number}: {writes:?}"));
+        let labels: Vec<&str> = labels["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(!labels.contains(&"agent-in-progress"), "{labels:?}");
+        assert!(labels.contains(&"keep-me"), "{labels:?}");
+        assert!(labels.contains(&"agent-failed"), "{labels:?}");
+    }
+}
+
 #[tokio::test]
 async fn enqueue_happens_before_claim_and_claim_failure_withdraws_the_item() {
     let Some(app) = test_app(true).await else {

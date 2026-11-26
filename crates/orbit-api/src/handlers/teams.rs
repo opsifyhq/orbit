@@ -1262,7 +1262,13 @@ pub async fn delete_team(
     auth.require(Permission::SettingsWrite)?;
     require_team_manage(&state, &auth, team_id).await?;
     // Deleting the team detaches its executions (`team_run_id` is ON DELETE SET NULL),
-    // so ask live ones to stop first; nothing would stop them afterwards (#299).
+    // so ask live ones to stop first; nothing would stop them afterwards (#299). The runs
+    // are marked cancelled before the sweep, so a step starting meanwhile stops its own
+    // execution instead of slipping past the sweep (#393).
+    state
+        .store
+        .cancel_running_team_runs(auth.org_id, team_id, "team deleted")
+        .await?;
     let cancelled = state
         .store
         .request_team_cancel(auth.org_id, team_id)
@@ -1326,19 +1332,22 @@ pub async fn cancel_run(
         .finish_team_run(run_id, "cancelled", None, Some("cancelled by operator"))
         .await?
         .ok_or_else(|| ApiError::conflict("the team run already ended"))?;
+    // Sweep again now that the run is marked: a step started meanwhile may have created
+    // an execution the first sweep missed (#393).
+    let late = state
+        .store
+        .request_team_run_cancel(auth.org_id, run_id)
+        .await?;
+    announce_cancel(&state, auth.org_id, &late).await;
+    let cancelled: Vec<_> = cancelled.into_iter().chain(late).collect();
     // The run is over; its steps must not keep saying they are running.
     state
         .store
         .close_running_team_steps(run_id, "cancelled", None)
         .await?;
-    if let Some(item) = state.store.get_team_queue_item_by_run(run_id).await? {
-        if item.status == "running" {
-            state
-                .store
-                .cancel_team_queue_item(auth.org_id, item.id, Some("team run cancelled"))
-                .await?;
-        }
-    }
+    // Mirror the cancel to the source issue (claim label removed) and close the queue
+    // item; on a connector error the item stays `running` and the outcome loop retries.
+    crate::team_outcomes::close_cancelled_queue_loop(&state, &run, "team run cancelled").await;
     crate::audit::record(
         &state,
         &auth,
@@ -1610,7 +1619,8 @@ pub(crate) async fn auto_launch_step(
     step: &TeamStep,
     auth: Option<&AuthContext>,
 ) -> Result<(), ApiError> {
-    if !definition.auto_launch {
+    // A step stopped because its run ended while it started (#393) needs no worker.
+    if !definition.auto_launch || step.status != "running" {
         return Ok(());
     }
     let (Some(profile_id), Some(execution_id)) = (definition.worker_profile_id, step.execution_id)
@@ -1898,8 +1908,8 @@ pub(crate) async fn start_step_with(
             }
         }
     }
-    if let Some(step) = &workflow {
-        return Ok(state
+    let created = if let Some(step) = &workflow {
+        state
             .store
             .create_workflow_step(orbit_store::agent_teams::NewWorkflowStep {
                 run_id: run.id,
@@ -1915,23 +1925,42 @@ pub(crate) async fn start_step_with(
                 attempt: step.attempt as i32,
                 activated_by: &step.activated_by,
             })
-            .await?);
-    }
-    let created = state
+            .await?
+    } else {
+        state
+            .store
+            .create_team_step(
+                run.id,
+                run.org_id,
+                step_index as i32,
+                &agent.name,
+                agent.id,
+                version.id,
+                &definition.skills,
+                &execution.input,
+                Some(execution.id),
+            )
+            .await?
+    };
+    // The run may have been cancelled (or the team deleted) while this step was being
+    // created; the cancel's sweep can have missed the new execution, so stop it here
+    // (#393). The returned step is then `cancelled` and is not launched.
+    match state
         .store
-        .create_team_step(
-            run.id,
-            run.org_id,
-            step_index as i32,
-            &agent.name,
-            agent.id,
-            version.id,
-            &definition.skills,
-            &execution.input,
-            Some(execution.id),
-        )
-        .await?;
-    Ok(created)
+        .settle_step_of_ended_run(run.org_id, run.id, created.id, execution.id)
+        .await?
+    {
+        None => Ok(created),
+        Some(settled) => {
+            tracing::info!(run_id = %run.id, execution_id = %execution.id, "team run ended while its step started; step stopped");
+            if let Some(execution) = &settled.execution {
+                announce_cancel(state, run.org_id, std::slice::from_ref(execution)).await;
+            }
+            settled
+                .step
+                .ok_or_else(|| ApiError::conflict("the team run ended while its step started"))
+        }
+    }
 }
 
 #[utoipa::path(post, path = "/api/v1/agent-teams/{team_id}/runs", tag = "agent-teams", request_body = CreateTeamRunRequest, responses((status = 201, body = TeamRunDetail)))]
