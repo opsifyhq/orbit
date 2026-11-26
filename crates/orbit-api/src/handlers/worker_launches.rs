@@ -96,12 +96,20 @@ async fn load_managed_launch(
 pub struct WorkerLaunchesQuery {
     #[serde(default)]
     pub include_inactive: bool,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-launches", tag = "workers", params(WorkerLaunchesQuery, PageQuery), responses((status = 200, body = Page<WorkerLaunch>)))]
+impl WorkerLaunchesQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/worker-launches", tag = "workers", params(WorkerLaunchesQuery), responses((status = 200, body = Page<WorkerLaunch>)))]
 pub async fn list_launches(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -129,7 +137,7 @@ pub async fn list_launches(
     // unreachable launcher costs one timeout, not one per launch (#306).
     let refreshed =
         futures::future::join_all(launches.into_iter().map(|launch| refresh(&state, launch))).await;
-    Ok(Json(Page::from_window(refreshed, &query.page, 100)?))
+    Ok(Json(Page::from_window(refreshed, &query.page(), 100)?))
 }
 
 #[utoipa::path(get, path = "/api/v1/worker-launches/{launch_id}", tag = "workers", responses((status = 200, body = WorkerLaunch)))]

@@ -23,9 +23,17 @@ use crate::state::AppState;
 pub struct ListToolPoliciesQuery {
     #[serde(default)]
     pub agent_id: Option<Uuid>,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl ListToolPoliciesQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
@@ -145,7 +153,7 @@ async fn require_agent_manage(
     Ok(())
 }
 
-#[utoipa::path(get, path = "/api/v1/tool-policies", tag = "tool-policies", params(("agentId" = Option<Uuid>, Query, description = "Include agent rules and org defaults"), PageQuery), responses((status = 200, body = Page<ToolPolicyView>)))]
+#[utoipa::path(get, path = "/api/v1/tool-policies", tag = "tool-policies", params(("agentId" = Option<Uuid>, Query, description = "Include agent rules and org defaults")), responses((status = 200, body = Page<ToolPolicyView>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -161,7 +169,7 @@ pub async fn list(
     for row in rows {
         views.push(ToolPolicyView::try_from(row)?);
     }
-    Ok(Json(Page::from_vec(views, &query.page, 100)?))
+    Ok(Json(Page::from_vec(views, &query.page(), 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/tool-policies", tag = "tool-policies", request_body = ToolPolicyRequest, responses((status = 201, body = ToolPolicyView)))]

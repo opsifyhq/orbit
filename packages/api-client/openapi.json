@@ -1747,20 +1747,24 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
             }
           },
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -1918,7 +1922,6 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1928,7 +1931,6 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6155,25 +6157,6 @@
               "type": "string",
               "format": "uuid"
             }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -6382,20 +6365,24 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
             }
           },
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -6723,20 +6710,24 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
             }
           },
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7628,20 +7619,24 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
             }
           },
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],

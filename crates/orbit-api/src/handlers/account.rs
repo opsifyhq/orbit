@@ -153,12 +153,20 @@ pub struct ApiTokenListQuery {
     /// Include revoked tokens. Off by default so a long-lived installation's list stays
     /// useful; they remain queryable when an audit needs them.
     pub include_revoked: Option<bool>,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/api-tokens", tag = "account", params(ApiTokenListQuery, PageQuery), responses((status = 200, body = Page<ApiTokenView>)))]
+impl ApiTokenListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/api-tokens", tag = "account", params(ApiTokenListQuery), responses((status = 200, body = Page<ApiTokenView>)))]
 pub async fn list_api_tokens(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -173,7 +181,7 @@ pub async fn list_api_tokens(
         .into_iter()
         .filter(|token| query.include_revoked.unwrap_or(false) || token.revoked_at.is_none())
         .collect();
-    Ok(Json(Page::from_vec(tokens, &query.page, 100)?))
+    Ok(Json(Page::from_vec(tokens, &query.page(), 100)?))
 }
 
 /// Longest API token lifetime, in days (ten years).

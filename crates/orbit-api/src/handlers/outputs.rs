@@ -527,11 +527,23 @@ pub async fn update(
     auth.require(Permission::SettingsWrite)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let existing = load_managed_output(&state, &auth, &access, output_id).await?;
-    let merged = merge_patch(
+    // A target is either one agent (`agentId`) or several (`agentIds`). A partial patch
+    // that sets one must clear the other, or the stored target would win.
+    let patch_sets_agent_ids = patch.get("agentIds").is_some();
+    let patch_sets_agent_id = patch.get("agentId").is_some();
+    let mut merged = merge_patch(
         stored_output_request(&existing),
         patch,
         &["webhookUrl", "botToken", "s3Credential"],
     )?;
+    if let Some(object) = merged.as_object_mut() {
+        if patch_sets_agent_ids {
+            object.insert("agentId".into(), serde_json::Value::Null);
+        }
+        if patch_sets_agent_id {
+            object.insert("agentIds".into(), serde_json::json!([]));
+        }
+    }
     let body: OutputRequest = parse_patch(merged)?;
     let (name, events, kind, telegram) = validated(&body)?;
     let target_agents = if body.agent_ids.is_empty() {

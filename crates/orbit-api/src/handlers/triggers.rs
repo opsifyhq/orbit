@@ -18,12 +18,20 @@ use crate::state::AppState;
 #[serde(rename_all = "camelCase")]
 pub struct TriggerListQuery {
     pub agent_id: Option<Uuid>,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/triggers", tag = "triggers", params(TriggerListQuery, PageQuery), responses((status = 200, body = Page<Trigger>)))]
+impl TriggerListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/triggers", tag = "triggers", params(TriggerListQuery), responses((status = 200, body = Page<Trigger>)))]
 pub async fn list_triggers(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -35,7 +43,7 @@ pub async fn list_triggers(
         .store
         .list_triggers(auth.org_id, query.agent_id, Some(&access.store_access()))
         .await?;
-    Ok(Json(Page::from_vec(triggers, &query.page, 100)?))
+    Ok(Json(Page::from_vec(triggers, &query.page(), 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/triggers", tag = "triggers", request_body = CreateTriggerRequest, responses((status = 201, body = Trigger)))]

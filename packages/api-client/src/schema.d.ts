@@ -5517,13 +5517,8 @@ export interface operations {
                  *     useful; they remain queryable when an audit needs them.
                  */
                 includeRevoked?: boolean | null;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
-                limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
-                cursor?: string;
+                limit?: number | null;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -5611,12 +5606,7 @@ export interface operations {
                 status?: string;
                 /** @description Only approvals requested by this execution. */
                 executionId?: string;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
                 limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
                 cursor?: string;
             };
             header?: never;
@@ -7961,13 +7951,6 @@ export interface operations {
             query?: {
                 /** @description Include agent rules and org defaults */
                 agentId?: string;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
-                limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
-                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -8084,13 +8067,8 @@ export interface operations {
         parameters: {
             query?: {
                 agentId?: string | null;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
-                limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
-                cursor?: string;
+                limit?: number | null;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -8273,13 +8251,8 @@ export interface operations {
         parameters: {
             query?: {
                 includeInactive?: boolean;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
-                limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
-                cursor?: string;
+                limit?: number | null;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -8773,13 +8746,8 @@ export interface operations {
             query?: {
                 /** @description Include revoked tokens. Off by default; revoked tokens can be viewed when needed. */
                 includeRevoked?: boolean | null;
-                /**
-                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
-                 *     Values outside the range are rejected with 400.
-                 */
-                limit?: number;
-                /** @description Opaque cursor from the previous page's `nextCursor`. */
-                cursor?: string;
+                limit?: number | null;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;

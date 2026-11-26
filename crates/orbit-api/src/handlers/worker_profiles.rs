@@ -469,12 +469,20 @@ pub async fn create_token(
 pub struct WorkerTokenListQuery {
     /// Include revoked tokens. Off by default; revoked tokens can be viewed when needed.
     pub include_revoked: Option<bool>,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-tokens", tag = "workers", params(WorkerTokenListQuery, PageQuery), responses((status = 200, body = Page<WorkerTokenView>)))]
+impl WorkerTokenListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/worker-tokens", tag = "workers", params(WorkerTokenListQuery), responses((status = 200, body = Page<WorkerTokenView>)))]
 pub async fn list_tokens(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -511,7 +519,7 @@ pub async fn list_tokens(
             created_at: record.created_at,
         })
         .collect();
-    Ok(Json(Page::from_vec(tokens, &query.page, 100)?))
+    Ok(Json(Page::from_vec(tokens, &query.page(), 100)?))
 }
 
 #[utoipa::path(delete, path = "/api/v1/worker-tokens/{token_id}", tag = "workers", responses((status = 204)))]

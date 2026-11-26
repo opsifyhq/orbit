@@ -1672,7 +1672,7 @@ async fn private_resources_are_hidden_from_other_users() {
     ] {
         let (status, body) = send(&app.router, auth_get(path, &alice_token)).await;
         assert_eq!(status, StatusCode::OK, "{path} list");
-        let items = body
+        let items = body["items"]
             .as_array()
             .unwrap_or_else(|| panic!("{path} list is not an array"));
         assert!(
@@ -4923,7 +4923,7 @@ async fn team_queue_batches_are_atomic_and_pageable() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let (_, listed) = send(&app.router, get(&path)).await;
     assert_eq!(
-        listed.as_array().unwrap().len(),
+        listed["items"].as_array().unwrap().len(),
         0,
         "nothing stored: {listed}"
     );
@@ -6561,7 +6561,7 @@ mod output_delivery {
         let path = format!("/api/v1/outputs/{}/deliveries", output.id);
         let (status, body) = send(&app.router, get(&path)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let rows = body.as_array().unwrap();
+        let rows = body["items"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["status"], "failed");
         assert_eq!(rows[0]["attempts"], 1);
@@ -6595,7 +6595,7 @@ mod output_delivery {
         let fx = d2_fixture(&app).await;
         let (status, body) = send(&app.router, auth_get(&path, &fx.mallory_token)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let rows = body.as_array().unwrap();
+        let rows = body["items"].as_array().unwrap();
         assert_eq!(rows[0]["status"], "failed");
         assert!(rows[0]["executionId"].is_null());
         assert!(rows[0]["task"].is_null());
@@ -9146,7 +9146,7 @@ async fn patch_is_partial_on_formerly_replacing_resources() {
         json!({
             "name": format!("output-{suffix}"),
             "kind": "webhook",
-            "webhookUrl": "https://example.test/hook",
+            "webhookUrl": "https://api.github.com/hook",
         }),
     )
     .await;
@@ -11498,7 +11498,7 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let rows = body.as_array().unwrap();
+    let rows = body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{body}");
     assert_eq!(rows[0]["executionId"], queued.to_string());
 
@@ -12515,7 +12515,7 @@ async fn profile_editors_cannot_bind_another_teams_auth_secret() {
             "PATCH",
             &profile_url(&team_b_profile),
             m,
-            json!({ "name": "Team B worker", "harnessKind": "mock" }),
+            json!({ "name": "Team B worker", "harnessKind": "mock", "authSecretName": null }),
         ),
     )
     .await;
@@ -14279,7 +14279,8 @@ async fn user_list_hides_other_users_oidc_identity_from_non_privileged_callers()
         .await
         .unwrap();
     let find = |list: &Value| {
-        list.as_array()
+        list["items"]
+            .as_array()
             .unwrap()
             .iter()
             .find(|u| u["id"] == json!(linked.id))
@@ -14863,7 +14864,7 @@ async fn team_resource_overview_enforces_scope_and_isolation() {
         auth_get(&format!("{url}?type=outputs"), &member_token),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     // Team lead and org admin may change membership; API enforces it independently of UI.
     let (status, body) = send(

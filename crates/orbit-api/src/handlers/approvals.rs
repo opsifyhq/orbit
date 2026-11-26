@@ -20,9 +20,17 @@ pub struct ApprovalListQuery {
     pub status: Option<String>,
     /// Only approvals requested by this execution.
     pub execution_id: Option<Uuid>,
-    #[serde(flatten)]
-    #[param(ignore)]
-    pub page: PageQuery,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl ApprovalListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -32,7 +40,7 @@ pub struct ApprovalDecisionRequest {
     pub comment: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/approvals", tag = "approvals", params(ApprovalListQuery, PageQuery), responses((status = 200, body = Page<orbit_store::ApprovalWithExecution>)))]
+#[utoipa::path(get, path = "/api/v1/approvals", tag = "approvals", params(ApprovalListQuery), responses((status = 200, body = Page<orbit_store::ApprovalWithExecution>)))]
 pub async fn list_approvals(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -62,7 +70,7 @@ pub async fn list_approvals(
             Some(&store_access),
         )
         .await?;
-    Ok(Json(Page::from_window(approvals, &query.page, 100)?))
+    Ok(Json(Page::from_window(approvals, &query.page(), 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/approvals/{approval_id}/approve", tag = "approvals", request_body = ApprovalDecisionRequest, responses((status = 200, body = Approval)))]
