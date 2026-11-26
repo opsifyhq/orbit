@@ -10,6 +10,7 @@ import {
   groupTimelineEvents,
   matchesEventFilters,
   parseEventFilters,
+  sameTimelineGroup,
   toolLabel,
   toolOptions,
 } from "./execution-event-filters.ts";
@@ -172,4 +173,18 @@ test("datalist labels come only from identifiers, never payload values", () => {
   ]);
   assert.equal(toolLabel("pods.logs"), "Logs Pods");
   assert.ok(!JSON.stringify(toolOptions([tool])).includes("super-secret"));
+});
+
+test("a regrouped flush is the same group while its events are unchanged", () => {
+  const a = event(10, "tool_call", "bash executed", { tool: "bash" });
+  const b = event(11, "tool_call", "bash executed", { tool: "bash" });
+  const first = groupTimelineEvents([a, b], true)[0];
+  const again = groupTimelineEvents([a, b], true)[0];
+  const grown = groupTimelineEvents([a, b, event(12, "tool_call", "bash executed", { tool: "bash" })], true)[0];
+  assert.equal(first.kind, "group");
+  assert.notEqual(first, again);
+  if (first.kind !== "group" || again.kind !== "group" || grown.kind !== "group") return;
+  assert.equal(sameTimelineGroup(first, again), true);
+  assert.equal(sameTimelineGroup(first, grown), false);
+  assert.equal(sameTimelineGroup(first, { ...again, events: [a, { ...b }] }), false);
 });

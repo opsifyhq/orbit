@@ -45,8 +45,8 @@ export default function TeamRunsPage() {
   });
   const teams = useAgentTeams();
   const teamName = (id: string) => teams.data?.find((team) => team.id === id)?.name;
-  const all = runs.data?.pages.flatMap((page) => page.items) ?? [];
-  const total = runs.data?.pages[0]?.total ?? 0;
+  const all = runs.items;
+  const total = runs.total;
 
   return (
     <div className="space-y-6">
