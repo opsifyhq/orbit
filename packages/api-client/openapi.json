@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ORBIT API",
-    "description": "Open Agent Platform control plane API.\n\nAuthentication is bearer-token based: an OIDC access token, an ORBIT API key (`orbit_sk_\u2026`), or the development token depending on ORBIT_AUTH_MODE. The same API serves the web app and future native mobile clients.",
+    "description": "Open Agent Platform control plane API.\n\nAuthentication is bearer-token based: an OIDC access token, an ORBIT API key (`orbit_sk_…`), or the development token depending on ORBIT_AUTH_MODE. The same API serves the web app and future native mobile clients.",
     "license": {
       "name": "Apache-2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
@@ -2436,7 +2436,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "How many deliveries to return, newest first (1\u2013200, default 50).",
+            "description": "How many deliveries to return, newest first (1–200, default 50).",
             "required": false,
             "schema": {
               "type": [
@@ -4265,7 +4265,7 @@
           "workers"
         ],
         "summary": "Generate Docker, Compose and Kubernetes snippets for starting a worker by hand.",
-        "description": "Each call issues one new worker token for the profile and leaves the existing ones\nalone: launched and previously bootstrapped workers keep running (#306). Rotating\nevery token of a profile is the separate, explicit `POST \u2026/token`.",
+        "description": "Each call issues one new worker token for the profile and leaves the existing ones\nalone: launched and previously bootstrapped workers keep running (#306). Rotating\nevery token of a profile is the separate, explicit `POST …/token`.",
         "operationId": "bootstrap",
         "parameters": [
           {
@@ -5028,7 +5028,7 @@
           },
           "harnessConfig": {
             "type": "object",
-            "description": "Harness-specific options keyed by harness kind (`opencode`, `pi`, \u2026).",
+            "description": "Harness-specific options keyed by harness kind (`opencode`, `pi`, …).",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -6001,7 +6001,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Explicit capability allowlist (`issues.list`, `messages.send`, \u2026).\nEmpty means \"manifest default read capabilities only\" (never write)."
+            "description": "Explicit capability allowlist (`issues.list`, `messages.send`, …).\nEmpty means \"manifest default read capabilities only\" (never write)."
           },
           "connection_id": {
             "type": [
@@ -6104,7 +6104,7 @@
               "string",
               "null"
             ],
-            "description": "Raw credential (API token, bot token, \u2026). Encrypted at rest."
+            "description": "Raw credential (API token, bot token, …). Encrypted at rest."
           },
           "name": {
             "type": "string"
@@ -7889,7 +7889,7 @@
           },
           "tier": {
             "type": "string",
-            "description": "`community`, `enterprise`, \u2026 (the plan while the license is usable)."
+            "description": "`community`, `enterprise`, … (the plan while the license is usable)."
           },
           "trial": {
             "type": "boolean"
@@ -8445,7 +8445,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric Telegram user/group/channel id (for example `-100\u2026`)."
+            "description": "Numeric Telegram user/group/channel id (for example `-100…`)."
           },
           "config": {
             "description": "Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On\nupdate, absent or `null` keeps the stored settings and an object replaces them."
@@ -8876,7 +8876,7 @@
           },
           "tier": {
             "type": "string",
-            "description": "`community`, `enterprise`, \u2026"
+            "description": "`community`, `enterprise`, …"
           },
           "valid": {
             "type": "boolean",
@@ -9671,7 +9671,7 @@
           "attempt": {
             "type": "integer",
             "format": "int32",
-            "description": "Workflow runs: 1 for the first time the workflow step ran, 2 for the second\u2026"
+            "description": "Workflow runs: 1 for the first time the workflow step ran, 2 for the second…"
           },
           "createdAt": {
             "type": "string",
@@ -9820,7 +9820,7 @@
               "string",
               "null"
             ],
-            "description": "Glob against path-like arguments (`path`, `file_path`, `paths`, \u2026). Deny and\nrequire-approval rules also match when no path can be extracted (fail closed).",
+            "description": "Glob against path-like arguments (`path`, `file_path`, `paths`, …). Deny and\nrequire-approval rules also match when no path can be extracted (fail closed).",
             "default": null
           },
           "tool": {
