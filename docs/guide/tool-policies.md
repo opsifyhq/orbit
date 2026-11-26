@@ -80,11 +80,14 @@ The broker does not trust the caller's metadata. The effect is derived from the 
 (case-insensitive); `effect`, `capability` and `connection` in the request are ignored
 (a disagreement is logged as a warning). Every tool call of an OpenCode or Pi run goes
 through this check, also for agents without connectors or rules. ORBIT's own connector
-tools (`orbit_<tool>`) are allowed here and checked by the broker when they run.
+tools (`orbit_<tool>` in OpenCode, `mcp__orbit__<tool>` in Pi) are allowed here and
+checked by the broker when they run, but only when the harness hook reports that they come
+from the ORBIT MCP server. A workspace tool with the same name is checked as a native tool
+(see [runtime contract](../architecture/runtime-contract.md)).
 
 | Effect | Tools |
 |---|---|
-| `read` | `read`, `grep`, `glob`, `list`, `ls`, `find`, `task`, `subagent`, and the harness-internal `todowrite`, `todoread`, `question`, `skill`, `codemode` |
+| `read` | `read`, `grep`, `glob`, `list`, `ls`, `find`, the dispatchers `task`, `subagent` and `codemode`, and the harness-internal `todowrite`, `todoread`, `question`, `skill` |
 | `external_side_effect` | `bash`, `shell`, `webfetch`, `websearch` |
 | `write` | `edit`, `write`, `patch`, `multiedit`, `apply_patch` and **any unknown tool** |
 
@@ -95,7 +98,9 @@ approval mode, so `allow` rules cannot bypass approval at the lower autonomy lev
 `task`/`subagent` are the harness's internal dispatch tools, not external actions. They are
 classified as `read` so native Agent Teams can start subagents at Observe/Recommend. The
 subagent's own `bash`/`edit`/`write` calls are evaluated separately by the same hook and
-remain subject to autonomy, approval mode and tool policies.
+remain subject to autonomy, approval mode and tool policies. Pi's `codemode` is treated
+the same way: its script calls tools through Pi's tool pipeline, and each of those calls is
+checked on its own.
 
 **Approval binding.** Every `/policy` response carries `argumentsHash`
 (SHA-256 of the tool name plus canonical JSON arguments, keys sorted), and the approval

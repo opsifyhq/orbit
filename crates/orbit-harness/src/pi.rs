@@ -209,6 +209,21 @@ function canon(value: any): string {
   return JSON.stringify(value ?? null);
 }
 
+// MCP server a tool comes from, read from Pi's own tool registry, never from the tool
+// name: only tools registered by Pi's built-in MCP extension (`builtin:mcp`) carry a server
+// namespace (`mcp__<server>`). The broker skips native classification only for tools whose
+// origin is the ORBIT MCP server; without an origin a call is checked as a native tool.
+function originOf(pi: any, toolName: string): string | undefined {
+  try {
+    const info = (pi.getAllTools?.() ?? []).find((tool: any) => tool?.name === toolName);
+    if (info?.sourceInfo?.path !== "builtin:mcp") return undefined;
+    const namespace = typeof info.namespace === "string" ? info.namespace : info.namespace?.name;
+    return typeof namespace === "string" ? namespace.replace(/^mcp__/, "") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function (pi: any) {
   pi.on("tool_call", async (event: any) => {
     const base = process.env.ORBIT_BROKER_URL;
@@ -222,7 +237,12 @@ export default function (pi: any) {
       const response = await fetch(`${base.replace(/\/$/, "")}/policy`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ tool: event.toolName, arguments: input, argumentsHash }),
+        body: JSON.stringify({
+          tool: event.toolName,
+          arguments: input,
+          argumentsHash,
+          origin: originOf(pi, event.toolName),
+        }),
       });
       const body = await response.json().catch(() => ({}));
       if (response.ok) return;
@@ -946,6 +966,18 @@ mod tests {
             })
             .await;
         assert!(ok.issues.iter().all(|i| i.path != "sessionDir"));
+    }
+
+    /// #401: the policy extension reports a tool's MCP server from Pi's registry, so the
+    /// broker can tell ORBIT's MCP tools from workspace tools with the same name.
+    #[test]
+    fn policy_extension_reports_the_tool_origin_from_the_registry() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = write_policy_extension(workspace.path()).unwrap();
+        let source = std::fs::read_to_string(path).unwrap();
+        assert!(source.contains("pi.getAllTools?.()"));
+        assert!(source.contains(r#"info?.sourceInfo?.path !== "builtin:mcp""#));
+        assert!(source.contains("origin: originOf(pi, event.toolName)"));
     }
 
     #[test]

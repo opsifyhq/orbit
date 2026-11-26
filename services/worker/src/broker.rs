@@ -1117,6 +1117,12 @@ struct PolicyCheck {
     /// hash the approval is bound to so the hook can re-verify at execution time.
     #[serde(default)]
     arguments_hash: Option<String>,
+    /// MCP server the tool comes from, as the harness hook reads it from the harness's own
+    /// tool registry (never from the tool name the model sees). Only `"orbit"` matters:
+    /// ORBIT's broker tools skip native classification only when their origin is the ORBIT
+    /// MCP server (#401). Missing or any other value: the call is classified as native.
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 /// Effect of a native harness tool, derived from its name. The caller's declaration is
@@ -1136,29 +1142,60 @@ fn has_native_tools(harness_kind: &str) -> bool {
     !matches!(harness_kind, "mock")
 }
 
+/// MCP server name ORBIT gives its broker bridge in the harness configuration.
+const ORBIT_MCP_SERVER: &str = "orbit";
+
 /// The broker's own MCP tools reach a policy hook under the harness's MCP naming
-/// (OpenCode: `orbit_<tool>`, Claude-style `mcp__orbit__<tool>`), or bare. They are
-/// checked by the broker when they are called, so `/policy` lets them through instead of
-/// treating an unknown name as a write that needs approval.
-fn broker_tool<'a>(tools: &'a [ToolSpec], name: &str) -> Option<&'a ToolSpec> {
+/// (OpenCode: `orbit_<tool>`, Pi and Claude-style: `mcp__orbit__<tool>`). They are checked
+/// by the broker when they are called, so `/policy` lets them through instead of treating
+/// an unknown name as a write that needs approval.
+///
+/// The name alone proves nothing: a tool defined in the workspace can be called anything
+/// (#401). The shortcut therefore needs both the hook-reported origin (the ORBIT MCP
+/// server) and the MCP-qualified name of a tool granted to this execution. A bare name
+/// such as `github_issues_list`, or a call without an origin, is classified as a native
+/// tool by [`evaluate_native_call`] (unknown names are writes: fail closed).
+fn broker_tool<'a>(
+    tools: &'a [ToolSpec],
+    name: &str,
+    origin: Option<&str>,
+) -> Option<&'a ToolSpec> {
+    if origin.map(str::trim) != Some(ORBIT_MCP_SERVER) {
+        return None;
+    }
+    let name = name.trim();
+    let bare = name
+        .strip_prefix("mcp__orbit__")
+        .or_else(|| name.strip_prefix("orbit_"))?;
+    tools.iter().find(|tool| tool.name == bare)
+}
+
+/// A granted broker tool's name, under any of its MCP names or bare. Used only to warn
+/// when a call that looks like an ORBIT tool did not come from the ORBIT MCP server.
+fn named_like_broker_tool(tools: &[ToolSpec], name: &str) -> bool {
     let name = name.trim();
     let bare = name
         .strip_prefix("mcp__orbit__")
         .or_else(|| name.strip_prefix("orbit_"))
         .unwrap_or(name);
-    tools.iter().find(|tool| tool.name == bare)
+    tools.iter().any(|tool| tool.name == bare)
 }
 
 fn native_tool_effect(tool: &str) -> CapabilityEffect {
     match tool.trim().to_ascii_lowercase().as_str() {
         "read" | "grep" | "glob" | "list" | "ls" | "find" => CapabilityEffect::Read,
         // Harness-internal state with no workspace or external effect: OpenCode's todo
-        // list, clarifying questions and skill loading, and Pi's codemode, which the
-        // Pi read-only baseline already allows. Every tool now goes through this check
-        // (#303), so these must not need an approval.
-        "todowrite" | "todoread" | "question" | "skill" | "codemode" => CapabilityEffect::Read,
+        // list, clarifying questions and skill loading. Every tool now goes through this
+        // check (#303), so these must not need an approval.
+        "todowrite" | "todoread" | "question" | "skill" => CapabilityEffect::Read,
         "bash" | "shell" | "webfetch" | "websearch" => CapabilityEffect::ExternalSideEffect,
-        "task" | "subagent" => CapabilityEffect::Read,
+        // Dispatchers whose own work is done by other tools: `task`/`subagent` start an
+        // internal subagent, and Pi's `codemode` runs a model-written script in a QuickJS
+        // sandbox (no file system, process or network access of its own) that calls the
+        // agent's tools through Pi's tool pipeline. Every tool those calls reach goes
+        // through the same `tool_call` hook and this check, with its own effect (#401),
+        // so the dispatch itself is a read.
+        "task" | "subagent" | "codemode" => CapabilityEffect::Read,
         _ => CapabilityEffect::Write,
     }
 }
@@ -1243,7 +1280,7 @@ async fn policy_check(
         )
             .into_response();
     }
-    if let Some(tool) = broker_tool(&state.tools, &request.tool) {
+    if let Some(tool) = broker_tool(&state.tools, &request.tool, request.origin.as_deref()) {
         return (
             StatusCode::OK,
             Json(json!({
@@ -1253,6 +1290,19 @@ async fn policy_check(
             })),
         )
             .into_response();
+    }
+    if named_like_broker_tool(&state.tools, &request.tool) {
+        record_event(
+            &state,
+            "tool_call",
+            LogLevel::Warn,
+            &format!(
+                "{} is named like an ORBIT tool but did not come from the ORBIT MCP server; checked as a native tool",
+                request.tool.trim()
+            ),
+            json!({ "tool": request.tool, "origin": request.origin }),
+        )
+        .await;
     }
     let (call, outcome) = evaluate_native_call(
         state.autonomy,
@@ -1901,6 +1951,7 @@ mod tests {
             connection: None,
             arguments,
             arguments_hash: None,
+            origin: None,
         }
     }
 
@@ -2326,15 +2377,57 @@ mod tests {
     }
 
     async fn policy_status(handle: &BrokerHandle, tool: &str, arguments: Value) -> u16 {
+        policy_status_from(handle, tool, None, arguments).await
+    }
+
+    async fn policy_status_from(
+        handle: &BrokerHandle,
+        tool: &str,
+        origin: Option<&str>,
+        arguments: Value,
+    ) -> u16 {
+        let mut body = json!({ "tool": tool, "arguments": arguments });
+        if let Some(origin) = origin {
+            body["origin"] = json!(origin);
+        }
         reqwest::Client::new()
             .post(format!("{}/policy", handle.url))
             .bearer_auth(&handle.token)
-            .json(&json!({ "tool": tool, "arguments": arguments }))
+            .json(&body)
             .send()
             .await
             .unwrap()
             .status()
             .as_u16()
+    }
+
+    /// #401: only a qualified name whose hook-reported origin is the ORBIT MCP server
+    /// is a broker tool; bare names and other origins are native calls.
+    #[test]
+    fn broker_tools_need_the_orbit_origin_and_a_qualified_name() {
+        let tools = vec![ToolSpec {
+            capability: "issues.list".into(),
+            name: "github_issues_list".into(),
+            description: String::new(),
+            effect: CapabilityEffect::Read,
+            input_schema: json!({}),
+            binding: 0,
+        }];
+        for name in ["orbit_github_issues_list", "mcp__orbit__github_issues_list"] {
+            assert!(broker_tool(&tools, name, Some("orbit")).is_some(), "{name}");
+            assert!(
+                broker_tool(&tools, name, None).is_none(),
+                "{name} without origin"
+            );
+            assert!(
+                broker_tool(&tools, name, Some("workspace")).is_none(),
+                "{name} from another server"
+            );
+        }
+        assert!(broker_tool(&tools, "github_issues_list", Some("orbit")).is_none());
+        assert!(broker_tool(&tools, "orbit_github_issues_create", Some("orbit")).is_none());
+        assert!(named_like_broker_tool(&tools, "github_issues_list"));
+        assert!(!named_like_broker_tool(&tools, "read"));
     }
 
     /// #303: a harness with native tools gets the policy endpoint even without connector
@@ -2422,22 +2515,41 @@ mod tests {
         .await
         .unwrap()
         .expect("broker");
-        for name in [
-            "orbit_x_posts_create",
-            "mcp__orbit__x_posts_create",
-            "x_posts_create",
-        ] {
+        for name in ["orbit_x_posts_create", "mcp__orbit__x_posts_create"] {
             assert_eq!(
-                policy_status(&handle, name, json!({ "text": "hi" })).await,
+                policy_status_from(&handle, name, Some("orbit"), json!({ "text": "hi" })).await,
                 200,
                 "{name}"
             );
         }
         // A look-alike name is not a broker tool.
         assert_eq!(
-            policy_status(&handle, "orbit_x_posts_create_now", json!({})).await,
+            policy_status_from(
+                &handle,
+                "orbit_x_posts_create_now",
+                Some("orbit"),
+                json!({})
+            )
+            .await,
             403
         );
+        // #401: a tool named like a granted broker tool that does not come from the ORBIT
+        // MCP server (a workspace tool, another MCP server, or a hook that cannot tell) is
+        // classified as a native tool: an unknown name is a write, refused at level 1.
+        for (name, origin) in [
+            ("x_posts_create", Some("orbit")),
+            ("x_posts_create", None),
+            ("orbit_x_posts_create", None),
+            ("mcp__orbit__x_posts_create", None),
+            ("orbit_x_posts_create", Some("workspace")),
+            ("mcp__orbit__x_posts_create", Some("repo-tools")),
+        ] {
+            assert_eq!(
+                policy_status_from(&handle, name, origin, json!({ "text": "hi" })).await,
+                403,
+                "{name} from {origin:?}"
+            );
+        }
     }
 
     /// A connection record for `slug` with the given manifest capabilities.
