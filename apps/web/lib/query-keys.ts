@@ -18,6 +18,8 @@ export const queryKeys = {
   connections: ["connections"] as const,
   tokens: ["api-tokens"] as const,
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
+  /** Prefix of every approvals list (pending, decided, per execution). */
+  approvalLists: ["approvals"] as const,
   workers: ["workers"] as const,
   skills: ["skills"] as const,
   skill: (id: string) => ["skills", id] as const,
