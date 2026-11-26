@@ -6113,6 +6113,7 @@ mod output_delivery {
                 if in_data {
                     if line == ".\r\n" {
                         in_data = false;
+                        *recorded.lock().unwrap() = body.clone();
                         let _ = stream.write_all(b"250 queued\r\n");
                     } else {
                         body.push_str(&line);

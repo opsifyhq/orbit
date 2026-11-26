@@ -367,6 +367,7 @@ mod tests {
                 if in_data {
                     if line == ".\r\n" {
                         in_data = false;
+                        *received_for_thread.lock().unwrap() = body.clone();
                         stream.write_all(b"250 queued\r\n").unwrap();
                     } else {
                         body.push_str(&line);

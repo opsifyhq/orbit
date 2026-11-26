@@ -122,6 +122,27 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     CapabilityEffect::Read,
                     orbit_exchange::capability_input_schema("mail.attachments.get"),
                 ),
+                capability_with_input_schema(
+                    "mail.send",
+                    "Send mail",
+                    "Sends a message to recipients inside the configured allowlist.",
+                    CapabilityEffect::ExternalSideEffect,
+                    orbit_exchange::capability_input_schema("mail.send"),
+                ),
+                capability_with_input_schema(
+                    "mail.reply",
+                    "Reply to mail",
+                    "Replies to a message; recipients and subject come from the original message.",
+                    CapabilityEffect::ExternalSideEffect,
+                    orbit_exchange::capability_input_schema("mail.reply"),
+                ),
+                capability_with_input_schema(
+                    "mail.forward",
+                    "Forward mail",
+                    "Forwards a message, including attachments, to an allowlisted recipient.",
+                    CapabilityEffect::ExternalSideEffect,
+                    orbit_exchange::capability_input_schema("mail.forward"),
+                ),
             ],
             config_schema: serde_json::json!({
                 "type": "object",
@@ -134,7 +155,12 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                         "description": "Folders the agent may search; empty means inbox only"
                     },
                     "maxResults": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
-                    "maxAttachmentBytes": { "type": "integer", "minimum": 1, "default": 10485760 }
+                    "maxAttachmentBytes": { "type": "integer", "minimum": 1, "default": 10485760 },
+                    "allowedRecipients": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Exact addresses, *@domain or * (explicitly anyone). Empty denies sending."
+                    }
                 },
                 "required": ["ewsUrl", "mailbox"]
             }),
