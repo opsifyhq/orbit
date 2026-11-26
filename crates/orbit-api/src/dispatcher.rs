@@ -446,6 +446,27 @@ fn poll_due(team: &AgentTeam, source: &WorkSourceDefinition) -> bool {
 mod tests {
     use super::*;
 
+    /// Take the lock, waiting for a dropped transaction's queued rollback to reach the
+    /// server. Dropping a `Transaction` only queues the ROLLBACK; sqlx sends it when the
+    /// connection is returned to the pool by a background task, so another connection can
+    /// briefly still see the lock held. A leaked lock would never come free.
+    async fn take_team_lock_within(
+        pool: &sqlx::PgPool,
+        team_id: Uuid,
+        deadline: std::time::Duration,
+    ) -> Option<sqlx::Transaction<'static, sqlx::Postgres>> {
+        let until = tokio::time::Instant::now() + deadline;
+        loop {
+            if let Some(lock) = try_team_lock(pool, team_id).await.unwrap() {
+                return Some(lock);
+            }
+            if tokio::time::Instant::now() >= until {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// A panic while the lock is held must not leave it behind on a pooled connection.
     #[tokio::test]
     async fn team_lock_is_released_when_the_holder_panics() {
@@ -464,8 +485,9 @@ mod tests {
             try_team_lock(&pool, team_id).await.unwrap().is_none(),
             "second taker must see the lock held"
         );
-        drop(held);
-        // Holder task panics with the lock taken.
+        // An explicit rollback releases the lock before it returns.
+        held.unwrap().rollback().await.unwrap();
+        // Holder task panics with the lock taken; its transaction is only dropped.
         let task_pool = pool.clone();
         let panicked = tokio::spawn(async move {
             let _lock = try_team_lock(&task_pool, team_id).await.unwrap().unwrap();
@@ -473,10 +495,13 @@ mod tests {
         })
         .await;
         assert!(panicked.is_err());
-        // Every pooled connection must be able to take the lock again.
+        // Every pooled connection must be able to take the lock again once the dropped
+        // transaction's rollback has been sent.
         for _ in 0..3 {
-            let lock = try_team_lock(&pool, team_id).await.unwrap();
-            assert!(lock.is_some(), "lock leaked after panic");
+            let lock = take_team_lock_within(&pool, team_id, std::time::Duration::from_secs(5))
+                .await
+                .expect("lock leaked after panic");
+            lock.rollback().await.unwrap();
         }
     }
 

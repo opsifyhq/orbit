@@ -1642,16 +1642,26 @@ async fn delivery_parts_resume_and_pruning_keep_live_rows() {
         )
         .await
         .unwrap();
-    assert_eq!(store.enqueue_output_deliveries().await.unwrap(), 1);
+    // Enqueueing is global: on a shared or reused test database it also queues rows for
+    // other tests' outputs, so count only this output's rows.
+    assert!(store.enqueue_output_deliveries().await.unwrap() >= 1);
+    store.enqueue_output_deliveries().await.unwrap();
+    let queued: Vec<(uuid::Uuid, Option<uuid::Uuid>)> =
+        sqlx::query_as("SELECT id, execution_id FROM output_deliveries WHERE output_id = $1")
+            .bind(output.id)
+            .fetch_all(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        queued.len(),
+        1,
+        "one delivery for the one finished execution, also after a second enqueue"
+    );
+    assert_eq!(queued[0].1, Some(execution.id));
 
     // Claim only this output's row. The shared test database contains deliveries from
     // parallel tests, so the global claim queue cannot identify this job reliably.
-    let delivery_id: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM output_deliveries WHERE output_id = $1")
-            .bind(output.id)
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
+    let delivery_id = queued[0].0;
     let claim_token = uuid::Uuid::now_v7();
     sqlx::query(
         "UPDATE output_deliveries SET status = 'sending', attempts = 1, claim_token = $2,          lease_until = now() + interval '120 seconds' WHERE id = $1",
