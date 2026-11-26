@@ -172,6 +172,8 @@ impl ExchangeClient {
             "mail.get" => self.get(args).await.map_err(|e| e.to_string()),
             "mail.attachments.get" => self.attachment(args).await.map_err(|e| e.to_string()),
             "mail.send" => self.send(args).await.map_err(|e| e.to_string()),
+            "mail.reply" => self.reply(args).await.map_err(|e| e.to_string()),
+            "mail.forward" => self.forward(args).await.map_err(|e| e.to_string()),
             other => Err(format!("unsupported Exchange capability '{other}'")),
         }
     }
@@ -198,8 +200,16 @@ impl ExchangeClient {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ExchangeError::Config("body is required".into()))?;
+        let attachments = outgoing_attachments(args)?;
         let xml = self
-            .call(&create_message_body(&to, &cc, &bcc, subject, body))
+            .call(&create_message_body(
+                &to,
+                &cc,
+                &bcc,
+                subject,
+                body,
+                &attachments,
+            ))
             .await?;
         let id = parse_sent_item_id(&xml).ok_or_else(|| {
             let detail =
@@ -212,7 +222,92 @@ impl ExchangeClient {
             "cc": cc,
             "bcc": bcc,
             "subject": subject,
+            "attachmentCount": attachments.len(),
         }))
+    }
+
+    async fn reply(&self, args: &Value) -> Result<Value, ExchangeError> {
+        let item_id = required(args, "itemId")?;
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExchangeError::Config("body is required".into()))?;
+        let original = self.get(&json!({ "itemId": item_id })).await?;
+        let sender = original["from"]["address"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExchangeError::Config("original message has no sender".into()))?;
+        let mut to = vec![sender.to_string()];
+        if args
+            .get("replyAll")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            for address in original["to"].as_array().into_iter().flatten() {
+                if let Some(address) = address.as_str() {
+                    if !address.eq_ignore_ascii_case(sender)
+                        && !to.iter().any(|item| item.eq_ignore_ascii_case(address))
+                    {
+                        to.push(address.to_string());
+                    }
+                }
+            }
+        }
+        let subject = original["subject"].as_str().unwrap_or("").trim();
+        let subject = if subject.to_ascii_lowercase().starts_with("re:") {
+            subject.to_string()
+        } else {
+            format!("Re: {subject}")
+        };
+        self.send(&json!({ "to": to, "subject": subject, "body": body }))
+            .await
+    }
+
+    async fn forward(&self, args: &Value) -> Result<Value, ExchangeError> {
+        let item_id = required(args, "itemId")?;
+        let to = recipients(args, "to")?;
+        let original = self.get(&json!({ "itemId": item_id })).await?;
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n{}",
+                    original["from"]["address"].as_str().unwrap_or(""),
+                    original["subject"].as_str().unwrap_or(""),
+                    original["body"].as_str().unwrap_or("")
+                )
+            });
+        let mut attachments = Vec::new();
+        for attachment in original["attachments"].as_array().into_iter().flatten() {
+            let Some(id) = attachment["id"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            let downloaded = self.attachment(&json!({ "attachmentId": id })).await?;
+            attachments.push(json!({
+                "name": downloaded["name"],
+                "contentType": downloaded["contentType"],
+                "contentBase64": downloaded["contentBase64"],
+            }));
+        }
+        let subject = original["subject"].as_str().unwrap_or("").trim();
+        let subject = if subject.to_ascii_lowercase().starts_with("fwd:")
+            || subject.to_ascii_lowercase().starts_with("fw:")
+        {
+            subject.to_string()
+        } else {
+            format!("Fwd: {subject}")
+        };
+        self.send(&json!({
+            "to": to,
+            "subject": subject,
+            "body": body,
+            "attachments": attachments
+        }))
+        .await
     }
 
     async fn search(&self, args: &Value) -> Result<Value, ExchangeError> {
@@ -357,12 +452,44 @@ fn recipient_values(args: &Value, key: &str) -> Result<Vec<String>, ExchangeErro
         .collect())
 }
 
+fn outgoing_attachments(args: &Value) -> Result<Vec<Value>, ExchangeError> {
+    let Some(value) = args.get("attachments") else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| ExchangeError::Config("attachments must be an array".into()))?;
+    let mut total = 0usize;
+    for attachment in values {
+        let name = attachment
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let content = attachment
+            .get("contentBase64")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if name.is_empty() || content.is_empty() {
+            return Err(ExchangeError::Config(
+                "each attachment needs name and contentBase64".into(),
+            ));
+        }
+        total += content.len();
+    }
+    if total > 25 * 1024 * 1024 {
+        return Err(ExchangeError::Config("attachments exceed 25 MiB".into()));
+    }
+    Ok(values.clone())
+}
+
 fn create_message_body(
     to: &[String],
     cc: &[String],
     bcc: &[String],
     subject: &str,
     body: &str,
+    attachments: &[Value],
 ) -> String {
     let recipients = |values: &[String]| {
         values
@@ -385,8 +512,32 @@ fn create_message_body(
     } else {
         format!("<t:BccRecipients>{}</t:BccRecipients>", recipients(bcc))
     };
+    let attachment_xml = if attachments.is_empty() {
+        String::new()
+    } else {
+        let items = attachments
+            .iter()
+            .map(|attachment| {
+                format!(
+                    r#"<t:FileAttachment><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:Content>{}</t:Content></t:FileAttachment>"#,
+                    xml_escape(attachment.get("name").and_then(Value::as_str).unwrap_or("")),
+                    xml_escape(
+                        attachment
+                            .get("contentType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("application/octet-stream")
+                    ),
+                    attachment
+                        .get("contentBase64")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                )
+            })
+            .collect::<String>();
+        format!("<t:Attachments>{items}</t:Attachments>")
+    };
     format!(
-        r#"<m:CreateItem MessageDisposition="SendAndSaveCopy"><m:SavedItemFolderId><t:DistinguishedFolderId Id="sentitems"/></m:SavedItemFolderId><m:Items><t:Message><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:ToRecipients>{}</t:ToRecipients>{cc_xml}{bcc_xml}</t:Message></m:Items></m:CreateItem>"#,
+        r#"<m:CreateItem MessageDisposition="SendAndSaveCopy"><m:SavedItemFolderId><t:DistinguishedFolderId Id="sentitems"/></m:SavedItemFolderId><m:Items><t:Message><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:ToRecipients>{}</t:ToRecipients>{cc_xml}{bcc_xml}{attachment_xml}</t:Message></m:Items></m:CreateItem>"#,
         xml_escape(subject),
         xml_escape(body),
         recipients(to)
@@ -732,6 +883,24 @@ pub fn capability_input_schema(capability: &str) -> Value {
             "properties": { "attachmentId": { "type": "string" } },
             "required": ["attachmentId"]
         }),
+        "mail.reply" => json!({
+            "type": "object",
+            "properties": {
+                "itemId": { "type": "string" },
+                "body": { "type": "string", "minLength": 1 },
+                "replyAll": { "type": "boolean" }
+            },
+            "required": ["itemId", "body"]
+        }),
+        "mail.forward" => json!({
+            "type": "object",
+            "properties": {
+                "itemId": { "type": "string" },
+                "to": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                "body": { "type": "string" }
+            },
+            "required": ["itemId", "to"]
+        }),
         "mail.send" => json!({
             "type": "object",
             "properties": {
@@ -804,6 +973,27 @@ mod tests {
         )
         .unwrap();
         assert!(everyone.recipient_allowed("anyone@anywhere.test"));
+    }
+
+    #[test]
+    fn create_message_carries_html_safe_text_and_attachments() {
+        let xml = create_message_body(
+            &["ops@example.test".into()],
+            &[],
+            &[],
+            "A & B",
+            "body < text",
+            &[json!({
+                "name": "a.txt",
+                "contentType": "text/plain",
+                "contentBase64": "aGVsbG8="
+            })],
+        );
+        assert!(xml.contains("A &amp; B"));
+        assert!(xml.contains("body &lt; text"));
+        assert!(xml.contains("<t:Name>a.txt</t:Name>"));
+        assert!(xml.contains("<t:Content>aGVsbG8=</t:Content>"));
+        assert!(xml.contains("SendAndSaveCopy"));
     }
 
     #[test]

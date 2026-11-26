@@ -129,6 +129,20 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     CapabilityEffect::ExternalSideEffect,
                     orbit_exchange::capability_input_schema("mail.send"),
                 ),
+                capability_with_input_schema(
+                    "mail.reply",
+                    "Reply to mail",
+                    "Replies to a message; recipients and subject come from the original message.",
+                    CapabilityEffect::ExternalSideEffect,
+                    orbit_exchange::capability_input_schema("mail.reply"),
+                ),
+                capability_with_input_schema(
+                    "mail.forward",
+                    "Forward mail",
+                    "Forwards a message, including attachments, to an allowlisted recipient.",
+                    CapabilityEffect::ExternalSideEffect,
+                    orbit_exchange::capability_input_schema("mail.forward"),
+                ),
             ],
             config_schema: serde_json::json!({
                 "type": "object",

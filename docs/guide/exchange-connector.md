@@ -37,6 +37,8 @@ uses `DOMAIN\user` for EWS Basic auth.
    - `mail.get`
    - `mail.attachments.get`
    - `mail.send` (only on a send binding; see below)
+   - `mail.reply`
+   - `mail.forward`
 
 Use **Test connection** to verify DNS/TLS, authentication and EWS access.
 
@@ -48,11 +50,15 @@ Use **Test connection** to verify DNS/TLS, authentication and EWS access.
 - `mail.attachments.get` returns the attachment as base64, capped by
   `maxAttachmentBytes`.
 
-`mail.send` is an external side effect. Give it its own send connection/binding with a
-recipient allowlist; a read-only binding cannot send. The recipient list accepts exact
-addresses (`ops@example.com`), domain wildcards (`*@example.com`) and the explicit global
-wildcard `*` (any recipient). `*` still requires the normal approval/autonomy rules and is
-shown as a warning in the connection form.
+`mail.send`, `mail.reply` and `mail.forward` are external side effects. Give them their
+own send connection/binding with a recipient allowlist; a read-only binding cannot send.
+`mail.reply` reuses the original sender and subject; `mail.forward` carries the original
+attachments. `mail.send` accepts attachments as `{name, contentType, contentBase64}` up to
+25 MiB total.
+
+The recipient list accepts exact addresses (`ops@example.com`), domain wildcards
+(`*@example.com`) and the explicit global wildcard `*` (any recipient). `*` still requires
+the normal approval/autonomy rules and is shown as a warning in the connection form.
 
 All other capabilities are read-only. Bounded mailbox changes are a separate follow-up
 slice; use the SMTP output for notifications.
