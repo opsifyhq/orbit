@@ -8,6 +8,88 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-26
+
+### Changed
+
+- CI checks more before a release (#213):
+  - the workspace is type-checked on the declared minimum Rust version (1.94), and images,
+    the chart and the release wait for that job;
+  - every rendered Helm variant is validated with `kubeconform -strict` against
+    Kubernetes 1.30, and the default values without the launcher admission policies
+    against 1.27;
+  - every job that does not publish declares `contents: read`;
+  - `info.version` in `packages/api-client/openapi.json` must equal the release version:
+    `scripts/check-versions.sh` compares it and `scripts/bump-version.sh` updates it. See
+    [testing.md](docs/development/testing.md#what-ci-enforces).
+
+### Fixed
+
+- The default executions list total and the retention job's archive step no longer scan the
+  whole `executions` table: migration `0067` adds two partial indexes that hold only
+  unarchived rows, so both follow the retention window instead of all history. On a seeded
+  database with 1M executions the list total went from a parallel sequential scan (57 ms,
+  53k buffers) to an index-only scan (14 ms, 5k buffers), and the archive step from 140 ms
+  to under 2 ms. `scripts/perf/` holds the seed and EXPLAIN scripts used for the check
+  ([#209](https://github.com/opsifyhq/orbit/issues/209)).
+- Cancelling a team run or its queue item, or deleting the team, no longer leaves a step
+  that was starting at that moment running: the cancel asks the run's executions to stop
+  again after marking the run, and a step start that finds its run ended stops its own
+  execution (#393).
+- Cancelling a team run or a running queue item now applies the cancelled outcome to the
+  source issue (claim label removed, `failedLabel` added), so the issue no longer stays
+  claimed. See [Closing the loop](docs/architecture/agent-teams.md#closing-the-loop) (#393).
+- A team run whose worker was lost, restarted or terminated by the runtime is no longer
+  retried when the team-run loop or the outcome reconciler sees the failed step before the
+  platform closes the run: the "without retry" decision is now read from the stored
+  execution error, also across API restarts, and nothing runs after that step in a workflow.
+  Refreshing a terminated worker launch no longer reports a failure (event, audit entry,
+  failed team step) for an execution that another path had already ended, including one that
+  succeeded (#394).
+- A run that a worker claimed but never started is ended as `worker_did_not_start` after
+  600 seconds again (or forced 60 seconds after a cancel request), even while the worker
+  keeps listing it in its heartbeats; renewing its lease no longer counts as activity.
+  During a rolling update, late heartbeats from the old pod's boot no longer fail the new
+  pod's executions as `worker_lost`: only a newer boot counts as a restart
+  (#395).
+- An agent's `maxConcurrentExecutions` and `maxExecutionsPerHour` hold under parallel
+  requests: the count and the insert now happen under a per-agent lock, for manual runs,
+  reruns, schedules, team steps and 24/7 runtime ticks. Ten parallel requests against a
+  limit of one could start several runs (#433). A rerun over the concurrency limit now
+  answers `429`, like a manual run, instead of `409`.
+- A retried worker event post no longer stores the event twice: the worker sends one
+  `eventId` for every attempt and the API returns the stored event for a repeat (#433).
+  See [the runtime contract](docs/architecture/runtime-contract.md).
+- Deleting a provider, connection or agent that is still in use is refused with `409`
+  naming what uses it (in `details`, path `usedBy`), instead of leaving agents, agent
+  teams, environment mappings and worker profiles pointing at nothing (#434). The agent
+  delete dialog lists what is removed with the agent (executions, triggers, tool
+  policies, memory, outputs), the audit entry records it, and
+  `GET /api/v1/agents/{id}/delete-impact` returns both lists.
+- An OpenCode run whose assistant text passed 200,000 bytes no longer loses its final
+  answer: the adapter now drops the oldest text instead of the newest, so `output.text`
+  (and a workflow step's `OUTCOME:` line) is always the end of the run (#435).
+- A run whose input payload (a previous workflow step's answer, memory, connector context)
+  does not fit the 100 KiB prompt limit now starts: the OpenCode and Pi adapters shorten
+  the payload's largest strings in the middle with a visible marker, instead of failing
+  the run with `invalid_config` (#435). See
+  [the runtime contract](docs/architecture/runtime-contract.md#inputs).
+- Long runs stay responsive in the web app (#455). The execution timeline renders only
+  new rows when live events arrive (it rendered every row on each 50 ms flush, 5,000 in
+  "Everything" on a long run), formats event details only when they are opened, and lets
+  the browser skip rows outside the scroll box. While a team run is active, the team-runs
+  list polls only its newest page instead of every page loaded with "Load older runs".
+
+### Security
+
+- A workspace tool named like one of ORBIT's own MCP tools no longer skips the native tool
+  policy. `/policy` lets a broker tool through only when the harness hook reports that it
+  comes from the ORBIT MCP server (Pi reads this from its tool registry; OpenCode refuses
+  to start when the workspace defines `orbit`-prefixed custom tools); bare names and other
+  origins are classified as native tools. Pi's `codemode` stays a `read` because each tool
+  its scripts call goes through the same hook; this is now documented in the
+  [runtime contract](docs/architecture/runtime-contract.md) (#401).
+
 ## [0.30.0] - 2026-11-25
 
 ### Added
