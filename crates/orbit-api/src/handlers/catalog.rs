@@ -356,7 +356,13 @@ pub async fn probe_provider(
             .map(|value| value.expose().to_string()),
         None => None,
     };
-    let result = probe_endpoint(kind, &provider.config, credential.as_deref()).await;
+    let result = probe_endpoint(
+        kind,
+        &provider.config,
+        credential.as_deref(),
+        &state.outbound,
+    )
+    .await;
     state.metrics.provider_probe(kind.as_str(), result.ok);
 
     // Persist discovered models so agent/worker selectors can use them without a manual
@@ -406,7 +412,7 @@ pub async fn probe_unsaved(
         return Err(ApiError::validation(report.issues));
     }
     // Never persist or log the credential used for this probe.
-    let result = probe_endpoint(kind, &config, body.credential.as_deref()).await;
+    let result = probe_endpoint(kind, &config, body.credential.as_deref(), &state.outbound).await;
     state.metrics.provider_probe(kind.as_str(), result.ok);
     Ok(Json(result))
 }
@@ -415,6 +421,7 @@ async fn probe_endpoint(
     kind: ProviderKind,
     config: &serde_json::Value,
     credential: Option<&str>,
+    policy: &orbit_security::OutboundPolicy,
 ) -> ProviderProbeResponse {
     let base_url = match config.get("baseUrl").and_then(|v| v.as_str()) {
         Some(value) if !value.is_empty() => value,
@@ -442,9 +449,7 @@ async fn probe_endpoint(
         };
     }
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    if let Err(error) =
-        orbit_security::check_outbound_url(&url, &orbit_security::OutboundPolicy::from_env()).await
-    {
+    if let Err(error) = orbit_security::check_outbound_url(&url, policy).await {
         return ProviderProbeResponse {
             ok: false,
             latency_ms: 0,
@@ -452,7 +457,10 @@ async fn probe_endpoint(
             error: Some(format!("endpoint refused ({})", error.category())),
         };
     }
-    let client = orbit_security::guarded_client(std::time::Duration::from_secs(10));
+    let client = orbit_security::guarded_client_with_policy(
+        std::time::Duration::from_secs(10),
+        policy.clone(),
+    );
     let mut request = client.get(&url);
     if let Some(credential) = credential {
         request = if kind == ProviderKind::Anthropic {
@@ -546,12 +554,15 @@ fn sanitize_provider_config(config: &mut serde_json::Value) {
 const CONNECTION_URL_FIELDS: [&str; 4] = ["baseUrl", "cloneBaseUrl", "url", "apiServer"];
 
 /// Validate URL-typed connection config fields against the outbound policy
-/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`) and the Kubernetes
-/// namespace fields (`defaultNamespace`, `namespaces`), which are spliced into request
-/// paths (#391); errors are 422s on the offending field name. A kubeconfig credential's
-/// own `server` is checked when the Kubernetes client connects.
-pub(crate) async fn validate_connection_config(config: &serde_json::Value) -> Result<(), ApiError> {
-    let policy = orbit_security::OutboundPolicy::from_env();
+/// (`ORBIT_OUTBOUND_ALLOW_PRIVATE` / `ORBIT_OUTBOUND_ALLOWED_HOSTS`, read once into
+/// `AppState::outbound`) and the Kubernetes namespace fields (`defaultNamespace`,
+/// `namespaces`), which are spliced into request paths (#391); errors are 422s on the
+/// offending field name. A kubeconfig credential's own `server` is checked when the
+/// Kubernetes client connects.
+pub(crate) async fn validate_connection_config(
+    config: &serde_json::Value,
+    policy: &orbit_security::OutboundPolicy,
+) -> Result<(), ApiError> {
     let mut issues = Vec::new();
     for field in CONNECTION_URL_FIELDS {
         let Some(value) = config.get(field).and_then(|v| v.as_str()) else {
@@ -561,7 +572,7 @@ pub(crate) async fn validate_connection_config(config: &serde_json::Value) -> Re
         if value.is_empty() {
             continue;
         }
-        if let Err(error) = orbit_security::check_outbound_url(value, &policy).await {
+        if let Err(error) = orbit_security::check_outbound_url(value, policy).await {
             issues.push(orbit_domain::ValidationIssue::new(field, error.to_string()));
         }
     }
@@ -626,7 +637,7 @@ pub async fn create_connection(
         .get_connector_by_slug(auth.org_id, &body.connector_slug)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("connector '{}'", body.connector_slug)))?;
-    validate_connection_config(&body.config).await?;
+    validate_connection_config(&body.config, &state.outbound).await?;
 
     let secret_ref = if let Some(credential) = &body.credential {
         if credential.trim().is_empty() {
@@ -714,7 +725,7 @@ pub async fn update_connection(
         &existing.visibility,
     )?;
     if let Some(config) = &body.config {
-        validate_connection_config(config).await?;
+        validate_connection_config(config, &state.outbound).await?;
         // A stored credential must never follow an edited endpoint (#321), the same rule
         // providers follow: changing a URL field requires the credential for it.
         if existing.credential_ref.is_some() && body.credential.is_none() {
@@ -903,6 +914,7 @@ pub async fn test_connection(
         &row.connector_slug,
         &row.connection.config,
         credential.as_deref(),
+        &state.outbound,
     )
     .await
     else {
@@ -940,6 +952,7 @@ async fn probe_connection(
     slug: &str,
     config: &serde_json::Value,
     credential: Option<&str>,
+    policy: &orbit_security::OutboundPolicy,
 ) -> Option<(bool, Option<u16>, String)> {
     Some(match slug {
         // The mock connector talks to nothing; a stored connection is always usable.
@@ -949,13 +962,13 @@ async fn probe_connection(
             "Mock connector needs no external service".into(),
         ),
         "gitlab" | "github" | "webhook" | "kubernetes" => {
-            probe_supported_connection(slug, config, credential).await
+            probe_supported_connection(slug, config, credential, policy).await
         }
         "s3" => {
             let result = async {
                 let (config, credentials) =
                     orbit_s3::S3Config::from_connection(config, credential)?;
-                let client = orbit_s3::S3Client::new(config, credentials)?;
+                let client = orbit_s3::S3Client::with_policy(config, credentials, policy.clone())?;
                 match client.list_buckets().await {
                     Ok(buckets) => Ok(format!(
                         "S3 reachable; {} allowed bucket(s) visible",
@@ -1002,8 +1015,12 @@ async fn probe_supported_connection(
     slug: &str,
     config: &serde_json::Value,
     credential: Option<&str>,
+    policy: &orbit_security::OutboundPolicy,
 ) -> (bool, Option<u16>, String) {
-    let client = orbit_security::guarded_client(std::time::Duration::from_secs(10));
+    let client = orbit_security::guarded_client_with_policy(
+        std::time::Duration::from_secs(10),
+        policy.clone(),
+    );
     let (url, request) = match slug {
         "gitlab" | "github" => {
             let base = config
@@ -1065,9 +1082,7 @@ async fn probe_supported_connection(
             );
         }
     };
-    if let Err(error) =
-        orbit_security::check_outbound_url(&url, &orbit_security::OutboundPolicy::from_env()).await
-    {
+    if let Err(error) = orbit_security::check_outbound_url(&url, policy).await {
         return (
             false,
             None,

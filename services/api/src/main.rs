@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         output_delivery_retention_days: config.output_delivery_retention_days,
         license: LicenseHandle::load(LicenseSource::from_env()),
         shutdown: shutdown.clone(),
+        outbound: orbit_security::OutboundPolicy::from_env(),
     };
 
     // End work left behind by a previous API process before any background loop starts.

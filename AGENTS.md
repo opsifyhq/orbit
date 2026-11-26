@@ -146,7 +146,9 @@ third-party connectors; the built-in connectors are not trait objects.
    `services/worker/src/<name>.rs` using the connection config and leased credential.
 3. Check URL-typed config fields in `validate_connection_urls` and, when a probe exists,
    `probe_connection` (`crates/orbit-api/src/handlers/catalog.rs`); use
-   `orbit_security::guarded_client` for every HTTP call.
+   `orbit_security::guarded_client_with_policy` with `state.outbound` (the API's outbound
+   policy) for every HTTP call, so tests can inject a policy instead of setting environment
+   variables.
 4. Store credentials only as encrypted `secret_ref` handles.
 5. Enforce capability allowlists and autonomy in the platform (the broker), not in the client.
 6. Add mock/webhook tests in `crates/orbit-api/tests`; never commit real credentials.

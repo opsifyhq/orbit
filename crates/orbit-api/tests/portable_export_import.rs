@@ -128,6 +128,7 @@ async fn env() -> Option<Env> {
             file: None,
         }),
         shutdown: tokio_util::sync::CancellationToken::new(),
+        outbound: orbit_security::OutboundPolicy::default(),
     };
     Some(Env {
         router: build_router(state),

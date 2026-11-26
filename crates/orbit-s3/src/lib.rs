@@ -395,18 +395,34 @@ pub struct S3Client {
     config: S3Config,
     credentials: S3Credentials,
     http: reqwest::Client,
+    policy: orbit_security::OutboundPolicy,
 }
 
 impl S3Client {
+    /// A client guarded by the outbound policy from `ORBIT_OUTBOUND_*` (the worker).
     pub fn new(config: S3Config, credentials: S3Credentials) -> Result<Self, String> {
+        Self::with_policy(
+            config,
+            credentials,
+            orbit_security::OutboundPolicy::from_env(),
+        )
+    }
+
+    /// A client guarded by the given outbound policy (the API passes its own, #445).
+    pub fn with_policy(
+        config: S3Config,
+        credentials: S3Credentials,
+        policy: orbit_security::OutboundPolicy,
+    ) -> Result<Self, String> {
         let http = orbit_security::guarded_client_with_policy(
             std::time::Duration::from_secs(60),
-            orbit_security::OutboundPolicy::from_env(),
+            policy.clone(),
         );
         Ok(Self {
             config,
             credentials,
             http,
+            policy,
         })
     }
 
@@ -599,12 +615,9 @@ impl S3Client {
         extra_header: Option<(&str, String)>,
     ) -> Result<reqwest::Response, S3Error> {
         let url = build_url(&self.config, bucket, key, query).map_err(S3Error::permanent)?;
-        orbit_security::check_outbound_url(
-            url.as_str(),
-            &orbit_security::OutboundPolicy::from_env(),
-        )
-        .await
-        .map_err(|error| S3Error::outbound(&error))?;
+        orbit_security::check_outbound_url(url.as_str(), &self.policy)
+            .await
+            .map_err(|error| S3Error::outbound(&error))?;
         let payload_hash = hex::encode(Sha256::digest(body.unwrap_or_default()));
         let now = Utc::now();
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
@@ -890,6 +903,16 @@ async fn read_limited(
 mod tests {
     use super::*;
 
+    /// The mock servers listen on 127.0.0.1, which the outbound guard refuses unless the
+    /// policy exempts it; the policy is passed in rather than set in the environment.
+    fn test_client(config: S3Config, credentials: S3Credentials) -> Result<S3Client, String> {
+        S3Client::with_policy(
+            config,
+            credentials,
+            orbit_security::OutboundPolicy::new(true, "127.0.0.1"),
+        )
+    }
+
     fn connection() -> (S3Config, S3Credentials) {
         S3Config::from_connection(
             &serde_json::json!({
@@ -909,7 +932,7 @@ mod tests {
     #[test]
     fn keys_cannot_escape_the_prefix() {
         let (config, credentials) = connection();
-        let client = S3Client::new(config, credentials).unwrap();
+        let client = test_client(config, credentials).unwrap();
         assert!(client.config.object_key("orbit/runs/a.txt").is_ok());
         assert!(client.config.object_key("other/a.txt").is_err());
         assert!(client.config.object_key("orbit/../a.txt").is_err());
@@ -976,7 +999,7 @@ mod tests {
     #[test]
     fn bucket_allowlist_is_required() {
         let (config, credentials) = connection();
-        let client = S3Client::new(config, credentials).unwrap();
+        let client = test_client(config, credentials).unwrap();
         assert!(client.config.bucket(Some("orbit")).is_ok());
         assert!(client.config.bucket(Some("other")).is_err());
     }
@@ -984,7 +1007,7 @@ mod tests {
     #[test]
     fn path_style_urls_include_the_bucket() {
         let (config, credentials) = connection();
-        let client = S3Client::new(config, credentials).unwrap();
+        let client = test_client(config, credentials).unwrap();
         let url = build_url(
             &client.config,
             Some("orbit"),
@@ -1001,7 +1024,6 @@ mod tests {
     #[tokio::test]
     async fn put_object_signs_a_path_style_request() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1035,7 +1057,7 @@ mod tests {
             Some(r#"{ "accessKeyId": "AK", "secretAccessKey": "SK" }"#),
         )
         .unwrap();
-        let client = S3Client::new(config, credentials).unwrap();
+        let client = test_client(config, credentials).unwrap();
         client
             .put_object(None, "orbit/runs/one.txt", b"hello", "text/plain")
             .await
@@ -1137,7 +1159,6 @@ mod tests {
 
     async fn answer_with(status_line: &'static str, body: String) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1165,7 +1186,7 @@ mod tests {
             Some(SECRET),
         )
         .unwrap();
-        S3Client::new(config, credentials).unwrap()
+        test_client(config, credentials).unwrap()
     }
 
     #[tokio::test]
@@ -1214,7 +1235,7 @@ mod tests {
     async fn put(endpoint: String) -> Result<(), S3Error> {
         let (config, credentials) =
             S3Config::for_output(&form_config(&endpoint), Some(SECRET)).unwrap();
-        S3Client::new(config, credentials)
+        test_client(config, credentials)
             .unwrap()
             .put_object(None, "runs/one.txt", b"hello", "text/plain")
             .await
@@ -1239,7 +1260,6 @@ mod tests {
 
     #[tokio::test]
     async fn connection_errors_are_transient() {
-        std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
@@ -1254,7 +1274,7 @@ mod tests {
         assert!(!error.retryable, "{error}");
         let (config, credentials) =
             S3Config::for_output(&form_config("https://s3.example"), Some(SECRET)).unwrap();
-        let error = S3Client::new(config, credentials)
+        let error = test_client(config, credentials)
             .unwrap()
             .put_object(Some("other"), "runs/one.txt", b"hello", "text/plain")
             .await

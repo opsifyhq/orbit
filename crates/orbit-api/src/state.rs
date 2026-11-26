@@ -74,6 +74,10 @@ pub struct AppState {
     pub license: LicenseHandle,
     /// Cancelled on SIGTERM/SIGINT: stops background loops and ends SSE streams.
     pub shutdown: tokio_util::sync::CancellationToken,
+    /// Outbound network policy for every request the API sends (work sources, outputs,
+    /// provider and connection probes). Read once from `ORBIT_OUTBOUND_*` at startup so
+    /// tests can inject a policy instead of changing the process environment (#445).
+    pub outbound: orbit_security::OutboundPolicy,
 }
 
 /// Guard held while an execution is counted and inserted. `Unrestricted` is returned when
