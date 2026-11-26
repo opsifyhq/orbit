@@ -4833,3 +4833,81 @@ async fn foreign_worker_token_cannot_renew_an_execution_lease() {
         .unwrap();
     assert_eq!(renewed, vec![execution.id]);
 }
+
+#[tokio::test]
+async fn a_released_claim_is_queued_and_claimable_again() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Released Claim Agent"))
+        .await
+        .unwrap();
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({
+                "task": "x", "payload": {},
+                "provenance": { "source": "test", "trusted": true, "receivedAt": chrono::Utc::now() }
+            }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: Some("release-claim"),
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    let claim = |worker: &'static str| {
+        let store = store.clone();
+        async move {
+            store
+                .claim_next_queued(
+                    org,
+                    worker,
+                    &["mock".into()],
+                    "local",
+                    &[agent.id],
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let claimed = claim("worker-a").await.expect("claimable");
+    assert_eq!(claimed.id, execution.id);
+    assert_eq!(claimed.status, "dispatched");
+
+    // Only the claiming worker's dispatched row is released.
+    assert!(!store
+        .release_claimed_execution(execution.id, "worker-b")
+        .await
+        .unwrap());
+    assert!(store
+        .release_claimed_execution(execution.id, "worker-a")
+        .await
+        .unwrap());
+    let released = store.get_execution_by_id(execution.id).await.unwrap();
+    assert_eq!(released.status, "queued");
+    assert!(released.worker_id.is_none());
+    assert!(released.started_at.is_none());
+    // A second release is a no-op, and the next claim picks the execution up again.
+    assert!(!store
+        .release_claimed_execution(execution.id, "worker-a")
+        .await
+        .unwrap());
+    let again = claim("worker-b").await.expect("claimable again");
+    assert_eq!(again.id, execution.id);
+    assert_eq!(again.worker_id.as_deref(), Some("worker-b"));
+}

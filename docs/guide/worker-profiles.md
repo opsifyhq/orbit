@@ -65,8 +65,10 @@ plain text. Manage them under **Environments** in the Infrastructure group of th
 
 The list works like the other registries: search by name, variable or connection, a filter
 **All / In use / Unused / Needs attention** with counts, which worker profiles use each one,
-and row checkboxes for **Change access**. **Needs attention** means a variable would be
-empty because its connection was removed or has no credential.
+and row checkboxes for **Change access**. **Needs attention** means a variable cannot be
+resolved because its connection was removed or has no credential. A run whose worker uses
+such an environment fails before the harness starts, with the variable name in the error;
+it never starts without the variable.
 
 **New environment** opens Environment Studio, one section at a time: **Details** (name and
 optional description), **Variables** and **Access control**. For each variable choose **Add

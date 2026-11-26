@@ -711,6 +711,32 @@ impl Store {
         }
         Ok(query.fetch_optional(&self.pool).await?)
     }
+
+    /// Undo a claim the API could not hand to the worker because of a transient error
+    /// (#436): the execution goes back to `queued` with no worker, so the next claim picks
+    /// it up. Only a still-`dispatched` row owned by `worker_id` moves; returns whether it
+    /// did.
+    pub async fn release_claimed_execution(
+        &self,
+        execution_id: Uuid,
+        worker_id: &str,
+    ) -> StoreResult<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE executions
+            SET status = 'queued', worker_id = NULL, worker_token_id = NULL,
+                started_at = NULL, execution_lease_until = NULL,
+                last_execution_heartbeat_at = NULL, worker_boot_id = NULL,
+                worker_boot_started_at = NULL, updated_at = now()
+            WHERE id = $1 AND status = 'dispatched' AND worker_id = $2
+            "#,
+        )
+        .bind(execution_id)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
 }
 
 impl Store {
