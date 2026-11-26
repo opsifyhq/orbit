@@ -25,8 +25,9 @@ Guidelines:
 
 ## Version alignment
 
-`./scripts/bump-version.sh X.Y.Z` updates the Rust workspace, every Node package and the
-Helm chart (`version` **and** `appVersion`). `./scripts/check-versions.sh` fails CI when
+`./scripts/bump-version.sh X.Y.Z` updates the Rust workspace, every Node package, the
+Helm chart (`version` **and** `appVersion`) and `info.version` of
+`packages/api-client/openapi.json`. `./scripts/check-versions.sh` fails CI when
 they drift, and the chart's `appVersion` is the default image tag workers receive.
 
 ## 1. Prepare the version
@@ -40,8 +41,9 @@ cargo check --workspace   # refresh Cargo.lock versions
 ```
 
 The script updates `Cargo.toml` `[workspace.package]`, the four `package.json` files,
-`Chart.yaml` `version`/`appVersion` and the `ORBIT_VERSION=` line of the install example
-in `README.md`; `check-versions.sh` compares all of them. `Chart.yaml` `appVersion` is the
+`Chart.yaml` `version`/`appVersion`, `info.version` in `packages/api-client/openapi.json`
+and the `ORBIT_VERSION=` line of the install example in `README.md`; `check-versions.sh`
+compares all of them. `Chart.yaml` `appVersion` is the
 default image tag, so it must equal the version CI publishes.
 
 Update the changelog from the fragments that pull requests added to `changelog.d/`:

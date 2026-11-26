@@ -31,6 +31,11 @@ app_version = re.search(r'(?m)^appVersion:\s*"?([^"\s]+)"?', chart)
 versions["Chart.yaml version"] = version.group(1) if version else "missing"
 versions["Chart.yaml appVersion"] = app_version.group(1) if app_version else "missing"
 
+# The committed OpenAPI document carries the API version (info.version). The Rust
+# drift test ignores it so a release bump is not API drift; this keeps it in step.
+openapi = json.loads(pathlib.Path("packages/api-client/openapi.json").read_text())
+versions["packages/api-client/openapi.json info.version"] = openapi.get("info", {}).get("version", "missing")
+
 readme = re.search(r"(?m)^ORBIT_VERSION=(\S+)$", pathlib.Path("README.md").read_text())
 versions["README.md install example"] = readme.group(1) if readme else "missing"
 
