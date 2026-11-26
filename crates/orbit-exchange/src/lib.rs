@@ -24,6 +24,9 @@ pub struct Config {
     pub max_results: usize,
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
+    /// Exact addresses, `*@domain` and `*` (explicitly any recipient). Empty denies sends.
+    #[serde(default)]
+    pub allowed_recipients: Vec<String>,
 }
 
 fn default_max_results() -> usize {
@@ -132,6 +135,31 @@ impl ExchangeClient {
         }
     }
 
+    /// Whether a recipient is inside the configured send allowlist. `*` means every
+    /// recipient is allowed; an empty list denies every send.
+    pub fn recipient_allowed(&self, address: &str) -> bool {
+        let address = address.trim().to_ascii_lowercase();
+        if address.is_empty() {
+            return false;
+        }
+        let Some((local, domain)) = address.rsplit_once('@') else {
+            return false;
+        };
+        if local.is_empty() || domain.is_empty() {
+            return false;
+        }
+        self.config.allowed_recipients.iter().any(|rule| {
+            let rule = rule.trim().to_ascii_lowercase();
+            if rule == "*" {
+                return true;
+            }
+            if let Some(domain_rule) = rule.strip_prefix("*@") {
+                return domain == domain_rule;
+            }
+            rule == address
+        })
+    }
+
     pub async fn test(&self) -> Result<(), ExchangeError> {
         self.call(&find_item_body("inbox", None, 1, &self.config.mailbox))
             .await?;
@@ -143,8 +171,48 @@ impl ExchangeClient {
             "mail.search" => self.search(args).await.map_err(|e| e.to_string()),
             "mail.get" => self.get(args).await.map_err(|e| e.to_string()),
             "mail.attachments.get" => self.attachment(args).await.map_err(|e| e.to_string()),
+            "mail.send" => self.send(args).await.map_err(|e| e.to_string()),
             other => Err(format!("unsupported Exchange capability '{other}'")),
         }
+    }
+
+    async fn send(&self, args: &Value) -> Result<Value, ExchangeError> {
+        let to = recipients(args, "to")?;
+        let cc = recipients_optional(args, "cc")?;
+        let bcc = recipients_optional(args, "bcc")?;
+        for address in to.iter().chain(cc.iter()).chain(bcc.iter()) {
+            if !self.recipient_allowed(address) {
+                return Err(ExchangeError::Config(format!(
+                    "recipient '{address}' is not in allowedRecipients"
+                )));
+            }
+        }
+        let subject = args
+            .get("subject")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExchangeError::Config("subject is required".into()))?;
+        let body = args
+            .get("body")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExchangeError::Config("body is required".into()))?;
+        let xml = self
+            .call(&create_message_body(&to, &cc, &bcc, subject, body))
+            .await?;
+        let id = parse_sent_item_id(&xml).ok_or_else(|| {
+            let detail =
+                parse_ews_error(&xml).unwrap_or_else(|| "EWS did not confirm the send".into());
+            ExchangeError::Ews(detail)
+        })?;
+        Ok(json!({
+            "id": id,
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": subject,
+        }))
     }
 
     async fn search(&self, args: &Value) -> Result<Value, ExchangeError> {
@@ -245,6 +313,140 @@ fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, ExchangeError> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ExchangeError::Config(format!("{key} is required")))
+}
+
+fn recipients(args: &Value, key: &str) -> Result<Vec<String>, ExchangeError> {
+    let values = recipient_values(args, key)?;
+    if values.is_empty() {
+        return Err(ExchangeError::Config(format!(
+            "{key} requires at least one recipient"
+        )));
+    }
+    Ok(values)
+}
+
+fn recipients_optional(args: &Value, key: &str) -> Result<Vec<String>, ExchangeError> {
+    recipient_values(args, key)
+}
+
+fn recipient_values(args: &Value, key: &str) -> Result<Vec<String>, ExchangeError> {
+    let Some(value) = args.get(key) else {
+        return Ok(Vec::new());
+    };
+    let values: Vec<String> = match value {
+        Value::String(value) => vec![value.clone()],
+        Value::Array(values) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| ExchangeError::Config(format!("{key} must contain strings")))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(ExchangeError::Config(format!(
+                "{key} must be a string or array"
+            )))
+        }
+    };
+    Ok(values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect())
+}
+
+fn create_message_body(
+    to: &[String],
+    cc: &[String],
+    bcc: &[String],
+    subject: &str,
+    body: &str,
+) -> String {
+    let recipients = |values: &[String]| {
+        values
+            .iter()
+            .map(|address| {
+                format!(
+                    r#"<t:Mailbox><t:EmailAddress>{}</t:EmailAddress></t:Mailbox>"#,
+                    xml_escape(address)
+                )
+            })
+            .collect::<String>()
+    };
+    let cc_xml = if cc.is_empty() {
+        String::new()
+    } else {
+        format!("<t:CcRecipients>{}</t:CcRecipients>", recipients(cc))
+    };
+    let bcc_xml = if bcc.is_empty() {
+        String::new()
+    } else {
+        format!("<t:BccRecipients>{}</t:BccRecipients>", recipients(bcc))
+    };
+    format!(
+        r#"<m:CreateItem MessageDisposition="SendAndSaveCopy"><m:SavedItemFolderId><t:DistinguishedFolderId Id="sentitems"/></m:SavedItemFolderId><m:Items><t:Message><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:ToRecipients>{}</t:ToRecipients>{cc_xml}{bcc_xml}</t:Message></m:Items></m:CreateItem>"#,
+        xml_escape(subject),
+        xml_escape(body),
+        recipients(to)
+    )
+}
+
+fn parse_sent_item_id(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut in_message = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) => {
+                let name = local(&event);
+                if name == "Message" {
+                    in_message = true;
+                } else if in_message && name == "ItemId" {
+                    if let Some(id) = attribute(&event, "Id") {
+                        return Some(id);
+                    }
+                }
+            }
+            Ok(Event::Empty(event)) => {
+                if in_message && local(&event) == "ItemId" {
+                    if let Some(id) = attribute(&event, "Id") {
+                        return Some(id);
+                    }
+                }
+            }
+            Ok(Event::End(event)) => {
+                if local_end(&event) == "Message" {
+                    in_message = false;
+                }
+            }
+            Ok(Event::Eof) => return None,
+            _ => {}
+        }
+    }
+}
+
+fn parse_ews_error(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut in_message_text = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) => {
+                in_message_text = local(&event) == "MessageText";
+            }
+            Ok(Event::Text(text)) if in_message_text => {
+                let value = text.xml10_content().into_owned();
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+            Ok(Event::End(_)) => in_message_text = false,
+            Ok(Event::Eof) => return None,
+            _ => {}
+        }
+    }
 }
 
 fn find_item_body(folder: &str, query: Option<&str>, limit: usize, mailbox: &str) -> String {
@@ -530,6 +732,17 @@ pub fn capability_input_schema(capability: &str) -> Value {
             "properties": { "attachmentId": { "type": "string" } },
             "required": ["attachmentId"]
         }),
+        "mail.send" => json!({
+            "type": "object",
+            "properties": {
+                "to": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                "cc": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                "bcc": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+                "subject": { "type": "string", "minLength": 1 },
+                "body": { "type": "string", "minLength": 1 }
+            },
+            "required": ["to", "subject", "body"]
+        }),
         _ => json!({ "type": "object" }),
     }
 }
@@ -562,6 +775,47 @@ mod tests {
         let result = parse_attachment(xml).unwrap();
         assert_eq!(result.name, "a.txt");
         assert_eq!(result.content, b"hello");
+    }
+
+    #[test]
+    fn recipient_allowlist_supports_exact_domain_and_everyone() {
+        let client = ExchangeClient::from_connection(
+            &json!({
+                "ewsUrl": "https://exchange/EWS/Exchange.asmx",
+                "mailbox": "a@b",
+                "allowedRecipients": ["ops@example.com", "*@customer.test"]
+            }),
+            Some(r#"{"username":"u","password":"p"}"#.into()),
+        )
+        .unwrap();
+        assert!(client.recipient_allowed("ops@example.com"));
+        assert!(client.recipient_allowed("OPS@EXAMPLE.COM"));
+        assert!(client.recipient_allowed("anyone@customer.test"));
+        assert!(!client.recipient_allowed("other@example.com"));
+        assert!(!client.recipient_allowed(""));
+
+        let everyone = ExchangeClient::from_connection(
+            &json!({
+                "ewsUrl": "https://exchange/EWS/Exchange.asmx",
+                "mailbox": "a@b",
+                "allowedRecipients": ["*"]
+            }),
+            Some(r#"{"username":"u","password":"p"}"#.into()),
+        )
+        .unwrap();
+        assert!(everyone.recipient_allowed("anyone@anywhere.test"));
+    }
+
+    #[test]
+    fn parses_sent_item_id_and_ews_error() {
+        let sent = r#"<s:Envelope xmlns:s="x" xmlns:t="t" xmlns:m="m"><s:Body><m:CreateItemResponse><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:Items><t:Message><t:ItemId Id="SENT"/></t:Message></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse></s:Body></s:Envelope>"#;
+        assert_eq!(parse_sent_item_id(sent).as_deref(), Some("SENT"));
+        let error = r#"<s:Envelope xmlns:s="x" xmlns:t="t" xmlns:m="m"><s:Body><m:CreateItemResponse><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Error"><m:MessageText>Recipient rejected</m:MessageText></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse></s:Body></s:Envelope>"#;
+        assert_eq!(
+            parse_ews_error(error).as_deref(),
+            Some("Recipient rejected")
+        );
+        assert!(parse_sent_item_id(error).is_none());
     }
 
     #[test]

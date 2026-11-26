@@ -664,6 +664,14 @@ export function ConnectionForm({
                 </Callout>
               </div>
             ) : null}
+            {connectorSlug === "exchange" &&
+            Array.isArray(parsedConfig?.allowedRecipients) &&
+            (parsedConfig.allowedRecipients as unknown[]).some((value) => value === "*") ? (
+              <Callout tone="warning" title="Any recipient allowed">
+                This send binding can email any address. Sending still follows autonomy and approval
+                rules, but use <code>*</code> only when the agent genuinely needs it.
+              </Callout>
+            ) : null}
             {schemaFields.length ? (
               <div className="grid gap-4 sm:grid-cols-2">
                 {schemaFields.map(([key, property]) => (
