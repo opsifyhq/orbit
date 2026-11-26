@@ -9091,17 +9091,20 @@ async fn paged_collections_share_one_envelope_and_validate_page_queries() {
         assert_envelope(status, &body, StatusCode::BAD_REQUEST, "bad_request");
     }
 
-    // A cursor from one page fetches the next one, not the first page again.
-    let (_, first) = send(&app.router, get("/api/v1/harnesses?limit=1")).await;
-    let cursor = first["nextCursor"].as_str().expect("another harness");
+    // A cursor from one page fetches the next one, not the first page again. Add an agent
+    // so a two-item page exists in every environment.
+    let (status, created) = send(&app.router, post("/api/v1/agents", definition())).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (_, first) = send(&app.router, get("/api/v1/agents?limit=1")).await;
+    let cursor = first["nextCursor"].as_str().expect("another agent");
     let (status, second) = send(
         &app.router,
-        get(&format!("/api/v1/harnesses?limit=1&cursor={cursor}")),
+        get(&format!("/api/v1/agents?limit=1&cursor={cursor}")),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["items"].as_array().unwrap().len(), 1);
-    assert_ne!(first["items"][0]["kind"], second["items"][0]["kind"]);
+    assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
 }
 
 /// #443: PATCH merges one field onto the stored resource for every resource that used to
