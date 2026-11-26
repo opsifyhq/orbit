@@ -10,6 +10,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
 import { NAV_GROUPS } from "@/components/shell/nav";
 import { useAllAgents } from "@/lib/queries";
+import { confirmNavigation } from "@/lib/navigation-guard";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -79,7 +80,12 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
   }, [open]);
 
   const commands = React.useMemo<Command[]>(() => {
-    const go = (href: string) => () => router.push(href);
+    // Through the unsaved-changes guard, so a dirty form asks before it is left.
+    const go = (href: string) => () => {
+      void confirmNavigation(href).then((ok) => {
+        if (ok) router.push(href);
+      });
+    };
     const actions: Command[] = [
       { id: "act-work", group: "Actions", label: "Start work", keywords: "run execute task new", icon: Play, run: go("/work") },
       { id: "act-agent", group: "Actions", label: "New agent", keywords: "create add", icon: Plus, run: go("/agents/new") },

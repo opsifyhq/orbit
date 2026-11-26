@@ -335,6 +335,11 @@ licence messages instead.
 - Destructive actions (archive, delete, revoke, cancel) ask in an in-app dialog that names the
   object; none use the browser’s native confirm.
 - Deleting/archiving an agent preserves execution history by default.
+- Unsaved changes (#439): on `/skills/new` and `/agent-teams/new`, type a name, then press
+  browser Back, press Forward after going back to the form, and pick a page in the command
+  palette (Ctrl/Cmd+K). Each opens "Leave without saving?"; **Keep editing** stays on the form
+  with the draft and the URL intact, **Leave page** goes to the chosen page. A clean form
+  navigates without a prompt, and saving never prompts.
 
 ## What to record
 
