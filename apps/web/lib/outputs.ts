@@ -2,7 +2,7 @@
 
 import { request } from "./http";
 
-export type OutputKind = "slack" | "mattermost" | "webhook" | "telegram" | "s3";
+export type OutputKind = "slack" | "mattermost" | "webhook" | "telegram" | "s3" | "smtp";
 
 export interface OutputView {
   id: string;
@@ -57,6 +57,8 @@ export interface OutputInput {
   messageThreadId?: string | null;
   /** S3 credential JSON: accessKeyId/secretAccessKey/sessionToken. Write-only. */
   s3Credential?: string;
+  /** SMTP credential JSON: username/password. Write-only. */
+  smtpCredential?: string;
   /** Non-secret S3 settings. */
   config?: Record<string, unknown>;
   template?: string | null;

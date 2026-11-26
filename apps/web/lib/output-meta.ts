@@ -12,6 +12,7 @@ export const OUTPUT_KINDS: Array<{ kind: OutputKind; label: string; description:
   { kind: "telegram", label: "Telegram", description: "Send a Bot API message to a chat or channel topic." },
   { kind: "webhook", label: "Webhook", description: "POST JSON with the event, the run and its text to any URL." },
   { kind: "s3", label: "S3 object storage", description: "Upload the rendered run result to Amazon S3 or RustFS." },
+  { kind: "smtp", label: "Email (SMTP)", description: "Email the rendered run result through an SMTP server." },
 ];
 
 export function kindLabel(kind: OutputKind): string {
@@ -90,7 +91,11 @@ export function deliveryReason(delivery: Pick<OutputDelivery, "responseStatus" |
 
 /** What is missing before an output can send, or null. */
 export function outputProblem(output: Pick<OutputView, "kind" | "hasWebhook" | "events">): string | null {
-  if (!output.hasWebhook) return output.kind === "telegram" ? "No bot token" : "No webhook URL";
+  if (!output.hasWebhook) {
+    if (output.kind === "telegram") return "No bot token";
+    if (output.kind === "smtp") return "No SMTP credential";
+    return "No webhook URL";
+  }
   if (output.events.length === 0) return "No events chosen";
   return null;
 }
@@ -103,6 +108,7 @@ export function outputInput(output: OutputView, patch: Partial<OutputInput> = {}
     agentId: output.agentId ?? null,
     teamId: output.teamId ?? null,
     events: output.events,
+    config: output.config ?? {},
     ...(output.kind === "telegram"
       ? { chatId: output.chatId ?? "", messageThreadId: output.messageThreadId ?? null }
       : {}),

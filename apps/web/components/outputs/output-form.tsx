@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Bot, Cloud, Globe, Hash, MessageSquare, Send, Users, Webhook } from "lucide-react";
+import { Bot, Cloud, Globe, Hash, Mail, MessageSquare, Send, Users, Webhook } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ const KIND_ICON: Record<OutputKind, ReactNode> = {
   telegram: <Send />,
   webhook: <Webhook />,
   s3: <Cloud />,
+  smtp: <Mail />,
 };
 
 type Scope = "all" | "agent" | "team";
@@ -62,6 +63,16 @@ type Draft = {
   s3AccessKeyId: string;
   s3SecretAccessKey: string;
   s3SessionToken: string;
+  smtpHost: string;
+  smtpPort: string;
+  smtpSecurity: "starttls" | "tls" | "none";
+  smtpFrom: string;
+  smtpTo: string;
+  smtpCc: string;
+  smtpBcc: string;
+  smtpSubject: string;
+  smtpUsername: string;
+  smtpPassword: string;
   scope: Scope;
   agentIds: string[];
   teamId: string;
@@ -95,6 +106,16 @@ function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: s
     s3AccessKeyId: "",
     s3SecretAccessKey: "",
     s3SessionToken: "",
+    smtpHost: String(output?.config?.host ?? ""),
+    smtpPort: String(output?.config?.port ?? ""),
+    smtpSecurity: (output?.config?.security as Draft["smtpSecurity"]) ?? "starttls",
+    smtpFrom: String(output?.config?.from ?? ""),
+    smtpTo: Array.isArray(output?.config?.to) ? (output?.config?.to as string[]).join(", ") : String(output?.config?.to ?? ""),
+    smtpCc: Array.isArray(output?.config?.cc) ? (output?.config?.cc as string[]).join(", ") : String(output?.config?.cc ?? ""),
+    smtpBcc: Array.isArray(output?.config?.bcc) ? (output?.config?.bcc as string[]).join(", ") : String(output?.config?.bcc ?? ""),
+    smtpSubject: String(output?.config?.subject ?? ""),
+    smtpUsername: "",
+    smtpPassword: "",
     scope: teamId ? "team" : agentIds.length ? "agent" : "all",
     agentIds,
     teamId,
@@ -102,6 +123,14 @@ function draftFrom(output?: OutputView, initial?: { agentId?: string; teamId?: s
     template: output?.template ?? "",
     enabled: output?.enabled ?? true,
   };
+}
+
+
+function splitAddresses(value: string): string[] {
+  return value
+    .split(/[,;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 interface Issue {
@@ -157,6 +186,7 @@ export function OutputForm({
   const kindName = kindLabel(draft.kind);
   const isTelegram = draft.kind === "telegram";
   const isS3 = draft.kind === "s3";
+  const isSmtp = draft.kind === "smtp";
 
   // ------------------------------------------------------------------ validation
   const issues: Issue[] = [];
@@ -176,6 +206,16 @@ export function OutputForm({
     }
     if (threadId && (!/^\d+$/.test(threadId) || threadId === "0")) {
       issues.push({ section: "destination", message: "The topic id must be a positive number." });
+    }
+  } else if (isSmtp) {
+    if (!draft.smtpHost.trim()) issues.push({ section: "destination", message: "Enter the SMTP host." });
+    if (draft.smtpPort.trim() && (!/^\d+$/.test(draft.smtpPort.trim()) || Number(draft.smtpPort) < 1 || Number(draft.smtpPort) > 65535)) {
+      issues.push({ section: "destination", message: "The SMTP port must be 1–65535." });
+    }
+    if (!draft.smtpFrom.trim()) issues.push({ section: "destination", message: "Enter the from address." });
+    if (!draft.smtpTo.trim()) issues.push({ section: "destination", message: "Enter at least one recipient." });
+    if (!storedCredential && (!draft.smtpUsername.trim() || !draft.smtpPassword)) {
+      issues.push({ section: "destination", message: "Enter the SMTP username and password." });
     }
   } else if (isS3) {
     if (!draft.s3Bucket.trim()) issues.push({ section: "destination", message: "Enter the bucket name." });
@@ -278,9 +318,30 @@ export function OutputForm({
                 pathStyle: draft.s3PathStyle,
               },
             }
-          : url
-            ? { webhookUrl: url }
-            : {}),
+          : isSmtp
+            ? {
+                ...(draft.smtpUsername.trim() || draft.smtpPassword
+                  ? {
+                      smtpCredential: JSON.stringify({
+                        username: draft.smtpUsername.trim(),
+                        password: draft.smtpPassword,
+                      }),
+                    }
+                  : {}),
+                config: {
+                  host: draft.smtpHost.trim(),
+                  port: draft.smtpPort.trim() ? Number(draft.smtpPort) : undefined,
+                  security: draft.smtpSecurity,
+                  from: draft.smtpFrom.trim(),
+                  to: splitAddresses(draft.smtpTo),
+                  cc: splitAddresses(draft.smtpCc),
+                  bcc: splitAddresses(draft.smtpBcc),
+                  subject: draft.smtpSubject.trim() || undefined,
+                },
+              }
+            : url
+              ? { webhookUrl: url }
+              : {}),
       template: draft.template.trim() || null,
       enabled: draft.enabled,
     });
@@ -297,11 +358,15 @@ export function OutputForm({
     ? chatId
       ? `${chatId}${threadId ? ` · topic ${threadId}` : ""}`
       : "chat not set"
-    : url
-      ? "new URL"
-      : storedCredential
-        ? "credential stored"
-        : "no URL";
+    : isSmtp
+      ? draft.smtpHost
+        ? draft.smtpTo || "recipient not set"
+        : "server not set"
+      : url
+        ? "new URL"
+        : storedCredential
+          ? "credential stored"
+          : "no URL";
   const summary: Record<SectionId, { value: string; missing?: boolean }> = {
     destination: {
       value: draft.name.trim() ? `${kindName} · ${destinationDetail}` : "Name not set",
@@ -309,7 +374,9 @@ export function OutputForm({
         !draft.name.trim() ||
         (isTelegram
           ? !chatId || (!botToken && !storedCredential)
-          : !url && !storedCredential),
+          : isSmtp
+            ? !draft.smtpHost.trim() || !draft.smtpFrom.trim() || !draft.smtpTo.trim() || (!storedCredential && (!draft.smtpUsername.trim() || !draft.smtpPassword))
+            : !url && !storedCredential),
     },
     trigger: {
       value: `${scopeValue} · ${eventsLabel(draft.events).toLowerCase()}`,
@@ -565,6 +632,91 @@ export function OutputForm({
                         className="font-mono"
                         value={draft.s3SessionToken}
                         onChange={(event) => set("s3SessionToken", event.target.value)}
+                      />
+                    </Field>
+                  </div>
+                </>
+              ) : isSmtp ? (
+                <>
+                  <Callout tone="info" title="SMTP email">
+                    Credentials are stored encrypted and never shown again. TLS is required by default;
+                    use <code>none</code> only for an explicitly trusted local relay.
+                  </Callout>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="SMTP host" htmlFor="output-smtp-host">
+                      <Input
+                        id="output-smtp-host"
+                        value={draft.smtpHost}
+                        placeholder="mail.example.local"
+                        onChange={(event) => set("smtpHost", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Port" htmlFor="output-smtp-port" optional hint="Defaults to 587 (STARTTLS), 465 (TLS) or 25 (none).">
+                      <Input
+                        id="output-smtp-port"
+                        inputMode="numeric"
+                        value={draft.smtpPort}
+                        placeholder="587"
+                        onChange={(event) => set("smtpPort", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Security" htmlFor="output-smtp-security">
+                      <Select
+                        id="output-smtp-security"
+                        value={draft.smtpSecurity}
+                        onChange={(event) => set("smtpSecurity", event.target.value as Draft["smtpSecurity"])}
+                      >
+                        <option value="starttls">STARTTLS (required)</option>
+                        <option value="tls">TLS from the start (SMTPS)</option>
+                        <option value="none">None (trusted local relay only)</option>
+                      </Select>
+                    </Field>
+                    <Field label="From" htmlFor="output-smtp-from">
+                      <Input
+                        id="output-smtp-from"
+                        type="email"
+                        value={draft.smtpFrom}
+                        placeholder="orbit@example.local"
+                        onChange={(event) => set("smtpFrom", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="To" htmlFor="output-smtp-to" hint="Comma-separated addresses.">
+                      <Input
+                        id="output-smtp-to"
+                        value={draft.smtpTo}
+                        placeholder="ops@example.local"
+                        onChange={(event) => set("smtpTo", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Cc" htmlFor="output-smtp-cc" optional>
+                      <Input id="output-smtp-cc" value={draft.smtpCc} onChange={(event) => set("smtpCc", event.target.value)} />
+                    </Field>
+                    <Field label="Bcc" htmlFor="output-smtp-bcc" optional>
+                      <Input id="output-smtp-bcc" value={draft.smtpBcc} onChange={(event) => set("smtpBcc", event.target.value)} />
+                    </Field>
+                    <Field label="Subject" htmlFor="output-smtp-subject" optional hint="Defaults to “ORBIT notification”.">
+                      <Input id="output-smtp-subject" value={draft.smtpSubject} onChange={(event) => set("smtpSubject", event.target.value)} />
+                    </Field>
+                    <Field
+                      label="Username"
+                      htmlFor="output-smtp-username"
+                      hint={storedCredential ? "A credential is stored. Leave these empty to keep it." : undefined}
+                    >
+                      <Input
+                        id="output-smtp-username"
+                        autoComplete="username"
+                        value={draft.smtpUsername}
+                        onChange={(event) => set("smtpUsername", event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Password" htmlFor="output-smtp-password">
+                      <Input
+                        id="output-smtp-password"
+                        type="password"
+                        autoComplete="new-password"
+                        value={draft.smtpPassword}
+                        placeholder={storedCredential ? "••••••••  (stored)" : undefined}
+                        onChange={(event) => set("smtpPassword", event.target.value)}
                       />
                     </Field>
                   </div>

@@ -11834,6 +11834,13 @@
             ],
             "description": "S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`."
           },
+          "smtpCredential": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SMTP credential as JSON: `{ username, password }`. Write-only."
+          },
           "teamId": {
             "type": [
               "string",

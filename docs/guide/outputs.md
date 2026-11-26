@@ -1,4 +1,4 @@
-# Outputs (webhooks, Slack, Mattermost, Telegram)
+# Outputs (webhooks, Slack, Mattermost, Telegram, S3, email)
 
 Outputs deliver an execution result after it reaches a terminal state. Manage them under
 **Outputs** in the sidebar (or via the API below).
@@ -15,9 +15,9 @@ agent or team before the run is created.
 message was refused or gave up), **Off**, or **Cannot send** (no credential or no events),
 and how its last delivery went. **New output** opens Output Studio:
 
-- **Destination**: Slack, Mattermost, Telegram, Webhook or S3, a name, and the
-  destination credential (incoming webhook URL, Telegram bot token, or S3 access-key JSON;
-  write-only — leave it empty when editing to keep the stored one).
+- **Destination**: Slack, Mattermost, Telegram, Webhook, S3 or Email (SMTP), a name, and
+  the destination credential (incoming webhook URL, Telegram bot token, S3 access-key JSON,
+  or SMTP username/password; write-only — leave it empty when editing to keep the stored one).
 - **Trigger**: every agent, several agents, or one agent team, and which results send a
   message (succeeded, failed, cancelled). Agent and team targets are stored separately;
   selecting several agents sends one message per selected agent run.
@@ -64,6 +64,47 @@ configured prefix; keys with `.` or `..` segments, backslashes or control charac
 over 1024 bytes are refused. `objects.list` returns 100 objects per page with `truncated`
 and a `nextContinuationToken`. `maxObjectBytes` caps reads and writes.
 
+## Email (SMTP)
+
+An email output sends the rendered run text as a plain-text message. Configure the SMTP
+host, port, security mode (`starttls`, `tls` or `none`), from address, recipients, optional
+Cc/Bcc and subject.
+
+TLS is required by default: `starttls` (port 587) or `tls` (SMTPS, port 465). Choose
+`none` only for an explicitly trusted local relay. The server certificate is always
+validated; custom roots come from the same `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` or
+`NODE_EXTRA_CA_CERTS` bundle as the API's other outbound clients. There is no
+insecure-skip option.
+
+The credential is write-only JSON:
+
+```json
+{ "username": "svc-orbit", "password": "…" }
+```
+
+Example API body:
+
+```json
+{
+  "name": "ops-email",
+  "kind": "smtp",
+  "events": ["succeeded", "failed"],
+  "smtpCredential": "{\"username\":\"svc-orbit\",\"password\":\"…\"}",
+  "config": {
+    "host": "mail.example.local",
+    "port": 587,
+    "security": "starttls",
+    "from": "orbit@example.local",
+    "to": ["ops@example.local"],
+    "subject": "ORBIT run finished"
+  }
+}
+```
+
+`to`, `cc` and `bcc` accept an array or one address. The SMTP host is checked by the
+outbound policy before connecting. Authentication is required; an anonymous IP relay is
+not supported by this first slice.
+
 ## Telegram bot setup
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token (only to ORBIT —
@@ -98,7 +139,7 @@ curl -X POST "$API/api/v1/outputs" \
   }'
 ```
 
-- `kind`: `slack`, `mattermost`, `webhook` or `telegram`
+- `kind`: `slack`, `mattermost`, `webhook`, `telegram`, `s3` or `smtp`
 - `agentId` or `teamId`: set one, not both (the API returns a validation error for
   both). With neither, the output applies to every execution in the organization, and only
   an owner or admin may create or change it.
@@ -108,6 +149,7 @@ curl -X POST "$API/api/v1/outputs" \
 - `botToken`: write-only for Telegram; encrypted at rest, never returned, logged or published
   in an event. On `PATCH`, omit it to keep the stored token; changing the kind requires a new
   credential for that kind.
+- `smtpCredential`: write-only JSON `{username,password}` for SMTP; encrypted at rest.
 - `chatId` / `messageThreadId`: numeric Telegram destination. Both are returned by the API;
   only `chatId` is required.
 - `template`: an optional note added under the run summary (plain text, no placeholders)

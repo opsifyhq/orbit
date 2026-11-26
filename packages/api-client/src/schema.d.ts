@@ -2989,6 +2989,8 @@ export interface components {
             name: string;
             /** @description S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`. */
             s3Credential?: string | null;
+            /** @description SMTP credential as JSON: `{ username, password }`. Write-only. */
+            smtpCredential?: string | null;
             /** Format: uuid */
             teamId?: string | null;
             template?: string | null;
