@@ -164,10 +164,7 @@ fn launch_termination(
     if let Some(termination) = status.termination.clone() {
         return Some(termination);
     }
-    let oom = status
-        .error
-        .as_deref()
-        .is_some_and(|error| error.to_lowercase().contains("oom"));
+    let oom = status.error.as_deref().is_some_and(mentions_oom);
     if !oom {
         return None;
     }
@@ -183,9 +180,19 @@ fn launch_termination(
     ))
 }
 
+/// True when a launcher error names an OOM kill as a word ("OOM", "OOMKilled"), not as part
+/// of another word such as "room" or "zoom".
+fn mentions_oom(error: &str) -> bool {
+    error
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("oom") || word.eq_ignore_ascii_case("oomkilled"))
+}
+
 /// A worker terminated by the runtime (OOM, eviction, exit or node loss) cannot report its
 /// own execution failure. Fail every in-flight execution on that worker with the structured
-/// reason, terminate the team step/run/queue without auto-retry, and audit the cause.
+/// reason, terminate the team step/run/queue without auto-retry, and audit the cause. A
+/// container that never started (`worker_did_not_start`) only fails runs still `dispatched`
+/// to it, marked retryable, so the team poller keeps its normal queue retry.
 async fn fail_worker_executions(
     state: &AppState,
     launch: &WorkerLaunch,
@@ -205,6 +212,16 @@ async fn fail_worker_executions(
             return;
         }
     };
+    // A container that never started ran nothing: only runs still waiting for it end, and
+    // they keep their retry. A run already running on this worker id is left to the
+    // liveness reaper, since some other container must have started it.
+    let never_started = !termination.reason.ends_without_retry();
+    let executions: Vec<_> = executions
+        .into_iter()
+        .filter(|execution| {
+            !never_started || execution.status == orbit_domain::ExecutionStatus::Dispatched.as_str()
+        })
+        .collect();
     let message = launch
         .error
         .clone()
@@ -219,8 +236,9 @@ async fn fail_worker_executions(
         object.insert("workerId".into(), serde_json::json!(worker_id));
         object.insert("profileId".into(), serde_json::json!(launch.profile_id));
         object.insert("launchId".into(), serde_json::json!(launch.id));
-        // Side effects may already have happened; an operator must decide to rerun.
-        object.insert("retryable".into(), serde_json::json!(false));
+        // Side effects may already have happened; an operator must decide to rerun. A
+        // container that never started ran nothing, so its runs may be retried.
+        object.insert("retryable".into(), serde_json::json!(never_started));
     }
     for execution in executions {
         let finished = state
@@ -236,13 +254,12 @@ async fn fail_worker_executions(
             .await;
         let ended = match finished {
             Ok(Some(ended)) => ended,
-            Ok(None) => {
-                // Another path already ended it; still make sure the team run is closed.
-                let mut ended = execution.clone();
-                ended.status = orbit_domain::ExecutionStatus::Failed.as_str().into();
-                ended.error = Some(data.clone());
-                ended
-            }
+            // Another path already ended it (the worker reported its result, the reaper
+            // or a concurrent refresh of this launch failed it). Report nothing: this call
+            // did not fail it, and the execution may have succeeded. A run it belongs to
+            // is still closed without retry by the team poller, which reads the stored
+            // error code (#394).
+            Ok(None) => continue,
             Err(error) => {
                 tracing::warn!(execution_id = %execution.id, %error, "could not fail execution for terminated worker");
                 continue;
