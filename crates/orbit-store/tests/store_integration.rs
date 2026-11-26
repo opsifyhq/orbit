@@ -340,6 +340,132 @@ async fn worker_tokens_are_hashed_scoped_and_revocable() {
         .is_none());
 }
 
+/// #447: the team loops run every 2 seconds on every replica. With a long history they
+/// must visit only the few `running` rows, using the partial indexes from migration 0065.
+#[tokio::test]
+async fn team_loop_queries_use_partial_indexes() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let team = store
+        .create_agent_team(org, "Index Test", "", &serde_json::json!({}), Some(user))
+        .await
+        .unwrap();
+
+    // Terminal history that the loops must not scan through.
+    sqlx::query(
+        r#"
+        INSERT INTO team_runs (id, org_id, team_id, status)
+        SELECT gen_random_uuid(), $1, $2, 'succeeded' FROM generate_series(1, 2000)
+        "#,
+    )
+    .bind(org)
+    .bind(team.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO team_queue_items (id, org_id, team_id, external_key, status)
+        SELECT gen_random_uuid(), $1, $2, 'history-' || g, 'succeeded'
+        FROM generate_series(1, 2000) g
+        "#,
+    )
+    .bind(org)
+    .bind(team.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    // One live run with a claimed queue item, and one running claim that never got a run.
+    let running_run = orbit_domain::new_id();
+    sqlx::query(
+        "INSERT INTO team_runs (id, org_id, team_id, status) VALUES ($1, $2, $3, 'running')",
+    )
+    .bind(running_run)
+    .bind(org)
+    .bind(team.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO team_queue_items (id, org_id, team_id, external_key, status, team_run_id)
+        VALUES ($1, $2, $3, 'live', 'running', $4)
+        "#,
+    )
+    .bind(orbit_domain::new_id())
+    .bind(org)
+    .bind(team.id)
+    .bind(running_run)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO team_queue_items (id, org_id, team_id, external_key, status, updated_at)
+        VALUES ($1, $2, $3, 'stale', 'running', now() - interval '1 hour')
+        "#,
+    )
+    .bind(orbit_domain::new_id())
+    .bind(org)
+    .bind(team.id)
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE team_runs")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("ANALYZE team_queue_items")
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+    async fn explain(store: &Store, sql: &'static str) -> String {
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(store.pool())
+            .await
+            .unwrap()
+            .join("\n")
+    }
+
+    // list_running_team_runs (keyset page by id).
+    let plan = explain(
+        &store,
+        "EXPLAIN SELECT * FROM team_runs WHERE status = 'running' \
+         AND (NULL::uuid IS NULL OR id > NULL::uuid) ORDER BY id ASC LIMIT 50",
+    )
+    .await;
+    assert!(plan.contains("team_runs_running_idx"), "{plan}");
+
+    // list_team_runs_pending_outcome (running queue items joined to terminal runs).
+    let plan = explain(
+        &store,
+        "EXPLAIN SELECT r.* FROM team_runs r \
+         JOIN team_queue_items q ON q.team_run_id = r.id \
+         WHERE q.status = 'running' \
+           AND r.status IN ('succeeded', 'failed', 'cancelled') \
+         ORDER BY r.updated_at ASC LIMIT 50",
+    )
+    .await;
+    assert!(plan.contains("team_queue_items_running_run_idx"), "{plan}");
+
+    // release_stale_team_queue_claims (unlinked running items by age).
+    let plan = explain(
+        &store,
+        "EXPLAIN UPDATE team_queue_items SET status = 'pending', updated_at = now() \
+         WHERE status = 'running' AND team_run_id IS NULL \
+           AND updated_at < now() - interval '600 seconds'",
+    )
+    .await;
+    assert!(
+        plan.contains("team_queue_items_running_unlinked_idx"),
+        "{plan}"
+    );
+}
+
 #[tokio::test]
 async fn secrets_are_encrypted_and_org_scoped_entities_work() {
     let Some(store) = test_store().await else {
@@ -4783,6 +4909,13 @@ async fn in_flight_metrics_count_uses_the_partial_index() {
         return;
     };
     let pool = store.pool();
+    // The partial index is created by a migration; a freshly migrated shared test
+    // database may have no stats for it yet, and the planner then picks the full
+    // (placement, status) index instead. Refresh before asserting the plan (#447).
+    sqlx::query("ANALYZE executions")
+        .execute(pool)
+        .await
+        .unwrap();
     // Disable sequential scans for this plan only (a tiny test table favours them) to
     // prove the partial index serves the exact query /metrics runs (#398).
     let mut tx = pool.begin().await.unwrap();
