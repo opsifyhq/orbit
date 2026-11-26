@@ -4909,6 +4909,13 @@ async fn in_flight_metrics_count_uses_the_partial_index() {
         return;
     };
     let pool = store.pool();
+    // The partial index is created by a migration; a freshly migrated shared test
+    // database may have no stats for it yet, and the planner then picks the full
+    // (placement, status) index instead. Refresh before asserting the plan (#447).
+    sqlx::query("ANALYZE executions")
+        .execute(pool)
+        .await
+        .unwrap();
     // Disable sequential scans for this plan only (a tiny test table favours them) to
     // prove the partial index serves the exact query /metrics runs (#398).
     let mut tx = pool.begin().await.unwrap();
