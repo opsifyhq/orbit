@@ -30,6 +30,7 @@ fn validated(body: &EnvMappingRequest) -> Result<(String, String, serde_json::Va
     if name.is_empty() {
         issues.push(ValidationIssue::new("name", "name is required"));
     }
+    issues.extend(orbit_domain::name_length_issue("name", &name));
     let array = body.mappings.as_array().cloned().unwrap_or_default();
     if array.is_empty() {
         issues.push(ValidationIssue::new(

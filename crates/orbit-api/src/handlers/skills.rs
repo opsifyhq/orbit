@@ -197,10 +197,13 @@ pub(crate) fn validate_skill(
             "lowercase letters, digits, - or _",
         ));
     }
-    if name.trim().is_empty() || name.chars().count() > 120 {
+    if name.trim().is_empty() || name.trim().chars().count() > orbit_domain::MAX_NAME_CHARS {
         issues.push(ValidationIssue::new(
             "name",
-            "name must be 1..=120 characters",
+            format!(
+                "name must be 1..={} characters",
+                orbit_domain::MAX_NAME_CHARS
+            ),
         ));
     }
     if content.trim().is_empty() {

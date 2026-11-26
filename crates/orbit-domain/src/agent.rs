@@ -373,8 +373,11 @@ impl AgentDefinition {
             report.push("kind", format!("unsupported kind, expected {AGENT_KIND}"));
         }
         let name = self.metadata.name.trim();
-        if name.is_empty() || name.chars().count() > 120 {
-            report.push("metadata.name", "name must be 1..=120 characters");
+        if name.is_empty() || name.chars().count() > crate::MAX_NAME_CHARS {
+            report.push(
+                "metadata.name",
+                format!("name must be 1..={} characters", crate::MAX_NAME_CHARS),
+            );
         }
         if self.metadata.description.chars().count() > 2000 {
             report.push(

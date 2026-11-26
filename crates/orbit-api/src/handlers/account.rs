@@ -174,6 +174,9 @@ pub async fn create_api_token(
             orbit_domain::ValidationIssue::new("name", "token name is required"),
         ]));
     }
+    if let Some(issue) = orbit_domain::name_length_issue("name", &body.name) {
+        return Err(ApiError::validation(vec![issue]));
+    }
     let scopes = if body.scopes.is_empty() {
         auth.permissions()
     } else {

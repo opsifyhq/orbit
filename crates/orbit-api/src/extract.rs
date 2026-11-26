@@ -43,6 +43,38 @@ where
     }
 }
 
+/// Refuse a request whose path or query string contains an encoded NUL (`%00`).
+/// PostgreSQL text cannot store one, so `?q=%00` or a `%00` in a slug used to reach the
+/// store and fail with a 500 storage error (#438).
+pub async fn reject_nul_in_uri(
+    request: Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let uri = request.uri();
+    let field = if has_encoded_nul(uri.path()) {
+        Some("path")
+    } else if uri.query().is_some_and(has_encoded_nul) {
+        Some("query")
+    } else {
+        None
+    };
+    if let Some(field) = field {
+        return ApiError::validation(vec![ValidationIssue::new(
+            field,
+            "text must not contain NUL characters (%00)",
+        )])
+        .into_response();
+    }
+    next.run(request).await
+}
+
+/// `%00` is the only encoding of NUL in a URI; a literal NUL byte cannot reach a handler.
+/// `%2500` (an encoded "%" followed by "00") is not a NUL.
+fn has_encoded_nul(text: &str) -> bool {
+    text.contains("%00")
+}
+
 /// Whether a JSON text contains the escape `\u0000`. A literal NUL byte is invalid JSON
 /// anyway; `\\u0000` (an escaped backslash followed by "u0000") is not a NUL.
 fn contains_nul_escape(json: &[u8]) -> bool {
@@ -65,7 +97,15 @@ fn contains_nul_escape(json: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::contains_nul_escape;
+    use super::{contains_nul_escape, has_encoded_nul};
+
+    #[test]
+    fn finds_only_encoded_nul_in_uris() {
+        assert!(has_encoded_nul("q=%00"));
+        assert!(has_encoded_nul("/api/v1/skills/a%00b"));
+        assert!(!has_encoded_nul("q=%2500"));
+        assert!(!has_encoded_nul("q=100%25&status=queued"));
+    }
 
     #[test]
     fn finds_only_real_nul_escapes() {

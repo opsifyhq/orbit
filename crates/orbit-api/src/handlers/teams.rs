@@ -728,6 +728,7 @@ pub async fn create_team(
     if body.name.trim().is_empty() {
         required.push(ValidationIssue::new("name", "name is required"));
     }
+    required.extend(orbit_domain::name_length_issue("name", &body.name));
     if body.steps.is_empty() {
         required.push(ValidationIssue::new(
             "steps",
@@ -971,6 +972,7 @@ pub(crate) async fn replace_team(
     if body.name.trim().is_empty() {
         required.push(ValidationIssue::new("name", "name is required"));
     }
+    required.extend(orbit_domain::name_length_issue("name", &body.name));
     if body.steps.is_empty() {
         required.push(ValidationIssue::new(
             "steps",
