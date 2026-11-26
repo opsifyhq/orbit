@@ -52,7 +52,10 @@ async fn managed_agent(
     Ok((agent, spec, version))
 }
 
-#[utoipa::path(post, path = "/api/v1/agents/{agent_id}/runtime", tag = "runtime", request_body = StartRuntimeRequest, responses((status = 201, body = AgentRuntime)))]
+#[utoipa::path(post, path = "/api/v1/agents/{agent_id}/runtime", tag = "runtime", request_body = StartRuntimeRequest, responses(
+    (status = 201, body = AgentRuntime, description = "A new continuous runtime was started"),
+    (status = 200, body = AgentRuntime, description = "A continuous runtime was already running; the existing runtime is returned")
+))]
 pub async fn start(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,

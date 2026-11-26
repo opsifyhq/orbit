@@ -620,7 +620,7 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/api/v1/outputs/{output_id}/test", tag = "outputs", responses((status = 200)))]
+#[utoipa::path(post, path = "/api/v1/outputs/{output_id}/test", tag = "outputs", responses((status = 204, description = "The test notification was delivered")))]
 pub async fn test_output(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
