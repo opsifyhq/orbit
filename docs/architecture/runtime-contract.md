@@ -109,8 +109,13 @@ extends `execution_lease_until` by 90 seconds (`EXECUTION_LEASE_SECONDS` in
 intervals. A missing field is treated as an older worker: its runs stay
 on worker-level heartbeat liveness only, so mixed-version rolling upgrades are safe.
 
-When a heartbeat arrives with a new `bootId`, executions still active under the previous
+When a heartbeat arrives with a newer `bootId`, executions still active under the previous
 boot are failed with `worker_lost` and are not resumed: their side effects are unknown.
+"Newer" compares `startedAt` (or, without it, the UUID v7 timestamps): during a rolling
+update the terminating pod keeps heartbeating under the same `workerId`, and its older boot
+neither fails the new pod's executions nor replaces the recorded boot. Renewing a lease is
+not activity: a `dispatched` run the worker keeps listing but never starts is still ended
+as `worker_did_not_start` by the unstarted rule (`docs/architecture/events.md`).
 When the worker's own heartbeat stays fresh but an execution stops appearing in
 `activeExecutionIds` past its lease, the API fails it with `harness_unresponsive` after the
 same 90-second grace period. In both cases team steps, runs and queue items become terminal
