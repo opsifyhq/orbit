@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bot, Plus } from "lucide-react";
@@ -15,6 +16,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
 import { ImportOpenCodeButton } from "@/components/import-opencode-button";
 import { Segmented } from "@/components/ui/segmented";
+import { Select } from "@/components/ui/select";
 import {
   ListCard,
   ListCount,
@@ -27,6 +29,7 @@ import { AgentRow } from "@/components/agents/agent-row";
 import { useConfirmAgentDelete } from "@/components/agents/use-confirm-agent-delete";
 import { api } from "@/lib/api";
 import { queryKeys, unwrap, useAllAgents } from "@/lib/queries";
+import { listAccessTeams } from "@/lib/access-teams";
 import { errorMessage } from "@orbit/api-client";
 import { deleteFailureMessage } from "@/lib/delete-impact";
 import type { AgentSummary } from "@/lib/types";
@@ -51,9 +54,12 @@ export default function AgentsPage() {
   // freshly created agent is a draft and must be visible where its author looks.
   const [filter, setFilter] = useState<Filter>("current");
   const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const agents = useAllAgents();
+  const teams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
   const queryClient = useQueryClient();
   const confirmAgentDelete = useConfirmAgentDelete();
 
@@ -102,11 +108,14 @@ export default function AgentsPage() {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((agent) => {
       if (!inFilter(agent, filter)) return false;
+      if (teamFilter === "none" && agent.ownerTeamId) return false;
+      if (teamFilter !== "all" && teamFilter !== "none" && agent.ownerTeamId !== teamFilter) return false;
+      if (visibilityFilter !== "all" && agent.visibility !== visibilityFilter) return false;
       if (!terms.length) return true;
       const haystack = `${agent.name} ${agent.description ?? ""} ${agent.harness ?? ""}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [all, filter, search]);
+  }, [all, filter, search, teamFilter, visibilityFilter]);
 
   const truncated = agents.data ? agents.data.total > all.length : false;
 
@@ -153,6 +162,33 @@ export default function AgentsPage() {
             count: agents.data ? counts[value] : undefined,
           }))}
         />
+        <div className="flex flex-wrap gap-2">
+          <Select
+            aria-label="Filter by team"
+            value={teamFilter}
+            onChange={(event) => setTeamFilter(event.target.value)}
+            className="w-auto min-w-40"
+          >
+            <option value="all">All teams</option>
+            <option value="none">No team</option>
+            {(teams.data ?? []).map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </Select>
+          <Select
+            aria-label="Filter by visibility"
+            value={visibilityFilter}
+            onChange={(event) => setVisibilityFilter(event.target.value)}
+            className="w-auto min-w-40"
+          >
+            <option value="all">All access</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="org">Organization</option>
+          </Select>
+        </div>
       </ListToolbar>
 
       {selectedIds.length ? (
@@ -202,7 +238,10 @@ export default function AgentsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Agent", "Status", "Harness and autonomy", "Updated"]}>
+          <ListCard
+            columns={["Agent", "Status", "Harness and autonomy", "Updated"]}
+            accessColumn="Team & access"
+          >
               {visible.map((agent) => (
                 <AgentRow
                   key={agent.id}

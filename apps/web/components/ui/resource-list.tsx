@@ -26,6 +26,13 @@ import { cn } from "@/lib/utils";
 export const LIST_GRID =
   "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[1.5rem_minmax(0,1fr)_8.5rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[1.5rem_minmax(0,1fr)_9rem_13rem_6.5rem]";
 
+/** With an extra Team & access column: status/access at 40rem, details at 60rem. */
+export const LIST_GRID_ACCESS =
+  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[1.5rem_minmax(0,1fr)_8.5rem_10rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[1.5rem_minmax(0,1fr)_9rem_10rem_13rem_6.5rem]";
+
+export const LIST_GRID_PLAIN_ACCESS =
+  "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[minmax(0,1fr)_8.5rem_10rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[minmax(0,1fr)_9rem_10rem_13rem_6.5rem]";
+
 /** The same columns without the checkbox, for lists with no bulk actions (Team runs, Outputs). */
 export const LIST_GRID_PLAIN =
   "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 sm:px-5 [@container(min-width:40rem)]:grid-cols-[minmax(0,1fr)_8.5rem_6.5rem] [@container(min-width:40rem)]:gap-x-4 [@container(min-width:60rem)]:grid-cols-[minmax(0,1fr)_9rem_13rem_6.5rem]";
@@ -115,26 +122,37 @@ export function SelectionBar({
  */
 export function ListCard({
   columns,
+  accessColumn,
   selectable = true,
   children,
 }: {
   columns: [string, string, string, string];
+  /** Optional Team & access column between status and details. */
+  accessColumn?: string;
   selectable?: boolean;
   children: ReactNode;
 }) {
   const [name, status, details, updated] = columns;
+  const withAccess = Boolean(accessColumn);
   return (
     <Card className="overflow-hidden [container-type:inline-size]">
       <div
         aria-hidden
         className={cn(
-          selectable ? LIST_GRID : LIST_GRID_PLAIN,
+          selectable
+            ? withAccess
+              ? LIST_GRID_ACCESS
+              : LIST_GRID
+            : withAccess
+              ? LIST_GRID_PLAIN_ACCESS
+              : LIST_GRID_PLAIN,
           "hidden border-b bg-subtle py-2 text-xs font-medium text-muted-foreground [@container(min-width:40rem)]:grid",
         )}
       >
         {selectable ? <span /> : null}
         <span>{name}</span>
         <span>{status}</span>
+        {withAccess ? <span>{accessColumn}</span> : null}
         <span className="hidden [@container(min-width:60rem)]:block">{details}</span>
         <span className="text-right">{updated}</span>
       </div>
@@ -152,6 +170,7 @@ export function ListRow({
   checkbox,
   name,
   status,
+  access,
   details,
   updated,
   footer,
@@ -159,17 +178,37 @@ export function ListRow({
   checkbox?: ReactNode;
   name: ReactNode;
   status: ReactNode;
+  /** Optional Team & access cell; when set, use ListCard accessColumn. */
+  access?: ReactNode;
   details: ReactNode;
   updated: ReactNode;
   /** Actions under the row (outside the row link), e.g. restore an archived agent. */
   footer?: ReactNode;
 }) {
+  const withAccess = access !== undefined;
   return (
     <li className="group relative border-b last:border-b-0">
-      <div className={cn(checkbox ? LIST_GRID : LIST_GRID_PLAIN, "py-3.5 transition-colors group-hover:bg-muted/50")}>
+      <div
+        className={cn(
+          checkbox
+            ? withAccess
+              ? LIST_GRID_ACCESS
+              : LIST_GRID
+            : withAccess
+              ? LIST_GRID_PLAIN_ACCESS
+              : LIST_GRID_PLAIN,
+          "py-3.5 transition-colors group-hover:bg-muted/50",
+        )}
+      >
         {checkbox ? <div className="relative z-10 flex">{checkbox}</div> : null}
-        <div className="min-w-0">{name}</div>
+        <div className="min-w-0">
+          {name}
+          {withAccess ? <div className="mt-1.5 [@container(min-width:40rem)]:hidden">{access}</div> : null}
+        </div>
         <div className="justify-self-end [@container(min-width:40rem)]:justify-self-start">{status}</div>
+        {withAccess ? (
+          <div className="hidden min-w-0 text-[13px] [@container(min-width:40rem)]:block">{access}</div>
+        ) : null}
         <div className="hidden min-w-0 text-[13px] [@container(min-width:60rem)]:block">{details}</div>
         <p className="tabular hidden text-right text-[13px] text-muted-foreground [@container(min-width:40rem)]:block">{updated}</p>
       </div>

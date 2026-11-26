@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cable, Plus, Webhook } from "lucide-react";
 
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
@@ -27,12 +27,15 @@ import {
   toggleShown,
 } from "@/components/ui/resource-list";
 import { Section } from "@/components/ui/section";
+import { Select } from "@/components/ui/select";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Status } from "@/components/ui/status";
 import { connectionHealth, connectionStatus, type Capability } from "@/lib/connections";
 import { capabilityLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
 import { queryKeys, useConnections, useConnectors } from "@/lib/queries";
+import { listAccessTeams } from "@/lib/access-teams";
 import type { ConnectionView } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
@@ -53,9 +56,12 @@ function inFilter(connection: ConnectionView, filter: Filter) {
 export default function ConnectionsPage() {
   const connections = useConnections();
   const connectors = useConnectors();
+  const accessTeams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -81,10 +87,13 @@ export default function ConnectionsPage() {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((connection) => {
       if (!inFilter(connection, filter)) return false;
+      if (teamFilter === "none" && connection.ownerTeamId) return false;
+      if (teamFilter !== "all" && teamFilter !== "none" && connection.ownerTeamId !== teamFilter) return false;
+      if (visibilityFilter !== "all" && connection.visibility !== visibilityFilter) return false;
       const haystack = `${connection.name} ${connection.connectorName} ${connection.scopes.map(capabilityLabel).join(" ")}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [all, filter, search]);
+  }, [all, filter, search, teamFilter, visibilityFilter]);
 
   const connectedCount = useMemo(() => {
     const result = new Map<string, number>();
@@ -139,6 +148,19 @@ export default function ConnectionsPage() {
             count: connections.data ? counts[value] : undefined,
           }))}
         />
+        <div className="flex flex-wrap gap-2">
+          <Select aria-label="Filter by team" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All teams</option>
+            <option value="none">No team</option>
+            {(accessTeams.data ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+          </Select>
+          <Select aria-label="Filter by visibility" value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All access</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="org">Organization</option>
+          </Select>
+        </div>
       </ListToolbar>
 
       <SelectionBar
@@ -174,7 +196,7 @@ export default function ConnectionsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Connection", "Status", "Capabilities", "Checked"]}>
+          <ListCard columns={["Connection", "Status", "Capabilities", "Checked"]} accessColumn="Team & access">
             {visible.map((connection) => {
               const summary = scopeSummary(connection);
               return (
@@ -209,6 +231,7 @@ export default function ConnectionsPage() {
                     </>
                   }
                   status={<Status meta={connectionStatus(connection)} />}
+                  access={<ResourceAccess ownerTeamId={connection.ownerTeamId} visibility={connection.visibility} />}
                   details={
                     <>
                       <p className="truncate">{summary || "Nothing allowed"}</p>

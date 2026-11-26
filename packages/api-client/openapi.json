@@ -8436,6 +8436,7 @@
           "currentVersion",
           "labels",
           "connectorCount",
+          "visibility",
           "skills",
           "createdAt",
           "updatedAt"
@@ -8484,6 +8485,14 @@
           "name": {
             "type": "string"
           },
+          "ownerTeamId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Owning access team, when the agent is team-owned."
+          },
           "skills": {
             "type": "array",
             "items": {
@@ -8500,6 +8509,10 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`private`, `team` or `org`."
           }
         }
       },
@@ -9296,6 +9309,7 @@
           "config",
           "scopes",
           "hasCredential",
+          "visibility",
           "createdAt",
           "updatedAt"
         ],
@@ -9328,6 +9342,13 @@
           "name": {
             "type": "string"
           },
+          "ownerTeamId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "scopes": {
             "type": "array",
             "items": {
@@ -9340,6 +9361,9 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "visibility": {
+            "type": "string"
           }
         }
       },
@@ -12397,6 +12421,7 @@
                 "config",
                 "scopes",
                 "hasCredential",
+                "visibility",
                 "createdAt",
                 "updatedAt"
               ],
@@ -12429,6 +12454,13 @@
                 "name": {
                   "type": "string"
                 },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
                 "scopes": {
                   "type": "array",
                   "items": {
@@ -12441,6 +12473,9 @@
                 "updatedAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
                 }
               }
             },
@@ -13010,6 +13045,7 @@
                 "enabled",
                 "hasCredential",
                 "capabilities",
+                "visibility",
                 "createdAt",
                 "updatedAt"
               ],
@@ -13036,9 +13072,19 @@
                 "name": {
                   "type": "string"
                 },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
                 "updatedAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
                 }
               }
             },
@@ -14249,6 +14295,7 @@
           "enabled",
           "hasCredential",
           "capabilities",
+          "visibility",
           "createdAt",
           "updatedAt"
         ],
@@ -14275,9 +14322,19 @@
           "name": {
             "type": "string"
           },
+          "ownerTeamId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "visibility": {
+            "type": "string"
           }
         }
       },

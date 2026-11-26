@@ -1889,12 +1889,19 @@ export interface components {
             labels: unknown;
             model?: string | null;
             name: string;
+            /**
+             * Format: uuid
+             * @description Owning access team, when the agent is team-owned.
+             */
+            ownerTeamId?: string | null;
             /** @description Slugs of the skills in the current version, so a skill can show which agents use it. */
             skills: string[];
             slug: string;
             status: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description `private`, `team` or `org`. */
+            visibility: string;
         };
         AgentTeam: {
             /** Format: date-time */
@@ -2153,10 +2160,13 @@ export interface components {
             /** Format: date-time */
             lastCheckedAt?: string | null;
             name: string;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
             scopes: string[];
             status: string;
             /** Format: date-time */
             updatedAt: string;
+            visibility: string;
         };
         /**
          * @description A connector reference. The shorthand string form (`- gitlab`) parses to a binding
@@ -3199,10 +3209,13 @@ export interface components {
                 /** Format: date-time */
                 lastCheckedAt?: string | null;
                 name: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
                 scopes: string[];
                 status: string;
                 /** Format: date-time */
                 updatedAt: string;
+                visibility: string;
             }[];
             /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
             nextCursor?: string | null;
@@ -3436,8 +3449,11 @@ export interface components {
                 id: string;
                 kind: string;
                 name: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
                 /** Format: date-time */
                 updatedAt: string;
+                visibility: string;
             }[];
             /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
             nextCursor?: string | null;
@@ -3880,8 +3896,11 @@ export interface components {
             id: string;
             kind: string;
             name: string;
+            /** Format: uuid */
+            ownerTeamId?: string | null;
             /** Format: date-time */
             updatedAt: string;
+            visibility: string;
         };
         /** @description The licence summary served without authentication by `GET /api/v1/meta`. */
         PublicLicense: {

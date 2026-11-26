@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Boxes, Plus } from "lucide-react";
 
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
@@ -25,6 +25,8 @@ import {
   toggleShown,
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
+import { Select } from "@/components/ui/select";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { Status } from "@/components/ui/status";
 import {
   PROVIDER_STATUS,
@@ -37,6 +39,7 @@ import {
 } from "@/lib/provider-meta";
 import { useProviderTests } from "@/lib/providers";
 import { queryKeys, useProviders } from "@/lib/queries";
+import { listAccessTeams } from "@/lib/access-teams";
 import type { ProviderView } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
@@ -60,6 +63,9 @@ export default function ModelsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
+  const accessTeams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -73,6 +79,9 @@ export default function ModelsPage() {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((provider) => {
       if (filter !== "all" && provider.kind !== filter) return false;
+      if (teamFilter === "none" && provider.ownerTeamId) return false;
+      if (teamFilter !== "all" && teamFilter !== "none" && provider.ownerTeamId !== teamFilter) return false;
+      if (visibilityFilter !== "all" && provider.visibility !== visibilityFilter) return false;
       const haystack = [
         provider.name,
         kindLabel(provider.kind),
@@ -84,7 +93,7 @@ export default function ModelsPage() {
         .toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [all, filter, search]);
+  }, [all, filter, search, teamFilter, visibilityFilter]);
 
   return (
     <div className="space-y-6">
@@ -115,6 +124,19 @@ export default function ModelsPage() {
             count: providers.data ? counts[value] : undefined,
           }))}
         />
+        <div className="flex flex-wrap gap-2">
+          <Select aria-label="Filter by team" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All teams</option>
+            <option value="none">No team</option>
+            {(accessTeams.data ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+          </Select>
+          <Select aria-label="Filter by visibility" value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All access</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="org">Organization</option>
+          </Select>
+        </div>
       </ListToolbar>
 
       <SelectionBar
@@ -148,7 +170,7 @@ export default function ModelsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Provider", "Status", "Models", "Updated"]}>
+          <ListCard columns={["Provider", "Status", "Models", "Updated"]} accessColumn="Team & access">
             {visible.map((provider) => {
               const isEndpoint = provider.kind !== "harness_managed";
               const model = modelOf(provider);
@@ -197,6 +219,7 @@ export default function ModelsPage() {
                     </>
                   }
                   status={<Status meta={PROVIDER_STATUS[providerState(provider, test)]} />}
+                  access={<ResourceAccess ownerTeamId={provider.ownerTeamId} visibility={provider.visibility} />}
                   details={
                     <>
                       <p className={model ? "truncate font-mono text-xs" : "truncate"} title={model || undefined}>
