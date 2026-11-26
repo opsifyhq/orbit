@@ -20,6 +20,7 @@ Practical, task-oriented documentation. For design rationale see
 | Outputs (webhooks, Slack, Mattermost, Telegram) | [outputs.md](outputs.md) |
 | Connectors and connections | [connections.md](connections.md) |
 | Kubernetes connector (read-only) | [kubernetes-connector.md](kubernetes-connector.md) |
+| Exchange on-premises connector (EWS, read-only) | [exchange-connector.md](exchange-connector.md) |
 | CLI tools (glab/gh escape hatch) | [cli-tools.md](cli-tools.md) |
 | Providers and models | [providers.md](providers.md) |
 | Portable export/import (YAML, SKILL.md, bundles) | [portable-export-import.md](portable-export-import.md) |

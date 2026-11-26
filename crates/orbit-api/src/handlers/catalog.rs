@@ -968,6 +968,22 @@ async fn probe_connection(
         "gitlab" | "github" | "webhook" | "kubernetes" => {
             probe_supported_connection(slug, config, credential, policy).await
         }
+        "exchange" => {
+            let result = async {
+                let client = orbit_exchange::ExchangeClient::from_connection_with_policy(
+                    config,
+                    credential.map(str::to_string),
+                    policy.clone(),
+                )?;
+                client.test().await.map_err(|error| error.to_string())?;
+                Ok::<String, String>("EWS reachable and the mailbox accepted the credential".into())
+            }
+            .await;
+            match result {
+                Ok(message) => (true, Some(200), message),
+                Err(message) => (false, None, message),
+            }
+        }
         "s3" => {
             let result = async {
                 let (config, credentials) =
