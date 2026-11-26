@@ -3,6 +3,7 @@ import { Cable, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ListRow, ROW_LINK } from "@/components/ui/resource-list";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { AgentStatusBadge } from "@/components/ui/status-badge";
 import { relativeTime } from "@/lib/utils";
 import { brandName, autonomyName } from "@/lib/presentation";
@@ -57,6 +58,7 @@ export function AgentRow({
         </>
       }
       status={<AgentStatusBadge status={agent.status} />}
+      access={<ResourceAccess ownerTeamId={agent.ownerTeamId} visibility={agent.visibility} />}
       details={
         <>
           <p className="truncate">{agent.harness ? brandName(agent.harness) : "Harness per run"}</p>

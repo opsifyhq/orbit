@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { History, Plus, Users } from "lucide-react";
 
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
@@ -29,8 +29,11 @@ import {
   toggleShown,
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
+import { Select } from "@/components/ui/select";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { Status, type StatusMeta } from "@/components/ui/status";
 import { queryKeys, useAllAgents, useAgentTeams } from "@/lib/queries";
+import { listAccessTeams } from "@/lib/access-teams";
 import type { AgentTeam } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { errorMessage } from "@orbit/api-client";
@@ -78,8 +81,11 @@ export default function AgentTeamsPage() {
   const queryClient = useQueryClient();
   const teams = useAgentTeams();
   const agents = useAllAgents();
+  const accessTeams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -106,12 +112,15 @@ export default function AgentTeamsPage() {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
     return all.filter((team) => {
       if (!inFilter(team, filter)) return false;
+      if (teamFilter === "none" && team.ownerTeamId) return false;
+      if (teamFilter !== "all" && teamFilter !== "none" && team.ownerTeamId !== teamFilter) return false;
+      if (visibilityFilter !== "all" && team.visibility !== visibilityFilter) return false;
       if (!terms.length) return true;
       const names = (team.definition.steps ?? []).map((step) => agent(step.agentId).name).join(" ");
       const haystack = `${team.name} ${team.description} ${team.definition.repository ?? ""} ${names}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [all, filter, search, agent]);
+  }, [all, filter, search, agent, teamFilter, visibilityFilter]);
 
   // Bulk actions only ever touch rows that are on screen.
   const selectedIds = useMemo(
@@ -158,6 +167,21 @@ export default function AgentTeamsPage() {
             count: teams.data ? counts[value] : undefined,
           }))}
         />
+        <div className="flex flex-wrap gap-2">
+          <Select aria-label="Filter by team" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All teams</option>
+            <option value="none">No team</option>
+            {(accessTeams.data ?? []).map((team) => (
+              <option key={team.id} value={team.id}>{team.name}</option>
+            ))}
+          </Select>
+          <Select aria-label="Filter by visibility" value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All access</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="org">Organization</option>
+          </Select>
+        </div>
       </ListToolbar>
 
       <SelectionBar
@@ -191,7 +215,7 @@ export default function AgentTeamsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Team", "Status", "Agents", "Updated"]}>
+          <ListCard columns={["Team", "Status", "Agents", "Updated"]} accessColumn="Team & access">
             {visible.map((team) => {
               const mode = teamMode(team);
               return (
@@ -225,6 +249,7 @@ export default function AgentTeamsPage() {
                     </>
                   }
                   status={<Status meta={teamStatus(team)} />}
+                  access={<ResourceAccess ownerTeamId={team.ownerTeamId} visibility={team.visibility} />}
                   details={
                     <>
                       <LineupText team={team} agentName={agentName} />

@@ -177,6 +177,10 @@ pub struct AgentSummary {
     pub autonomy_level: Option<u8>,
     pub model: Option<String>,
     pub connector_count: usize,
+    /// Owning access team, when the agent is team-owned.
+    pub owner_team_id: Option<Uuid>,
+    /// `private`, `team` or `org`.
+    pub visibility: String,
     /// Slugs of the skills in the current version, so a skill can show which agents use it.
     pub skills: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -197,6 +201,8 @@ impl AgentSummary {
             autonomy_level: spec.map(|s| s.autonomy.level),
             model: spec.and_then(|s| s.model.model.clone().or_else(|| s.model.provider.clone())),
             connector_count: spec.map(|s| s.connectors.len()).unwrap_or(0),
+            owner_team_id: agent.owner_team_id,
+            visibility: agent.visibility.clone(),
             skills: spec.map(|s| s.skills.clone()).unwrap_or_default(),
             created_at: agent.created_at,
             updated_at: agent.updated_at,
@@ -378,6 +384,8 @@ pub struct ProviderView {
     pub enabled: bool,
     pub has_credential: bool,
     pub capabilities: serde_json::Value,
+    pub owner_team_id: Option<Uuid>,
+    pub visibility: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -397,6 +405,8 @@ impl ProviderView {
             enabled: provider.enabled,
             has_credential: provider.secret_ref.is_some(),
             capabilities,
+            owner_team_id: provider.owner_team_id,
+            visibility: provider.visibility,
             created_at: provider.created_at,
             updated_at: provider.updated_at,
         }
@@ -496,6 +506,8 @@ pub struct ConnectionView {
     pub scopes: Vec<String>,
     pub has_credential: bool,
     pub last_checked_at: Option<DateTime<Utc>>,
+    pub owner_team_id: Option<Uuid>,
+    pub visibility: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -512,6 +524,8 @@ impl From<ConnectionWithConnector> for ConnectionView {
             scopes: row.connection.scopes,
             has_credential: row.connection.credential_ref.is_some(),
             last_checked_at: row.connection.last_checked_at,
+            owner_team_id: row.connection.owner_team_id,
+            visibility: row.connection.visibility,
             created_at: row.connection.created_at,
             updated_at: row.connection.updated_at,
         }
