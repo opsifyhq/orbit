@@ -450,6 +450,16 @@ pub struct TeamRun {
     pub advance_claimed_at: Option<DateTime<Utc>>,
 }
 
+/// One incoming workflow edge that activated a team step. `step` is `null` for an
+/// entry edge, which has no source step.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStepActivation {
+    pub edge: String,
+    #[serde(default)]
+    pub step: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamStep {
@@ -479,7 +489,7 @@ pub struct TeamStep {
     pub outcome: Option<String>,
     /// Workflow runs: the lines that started this step, as
     /// `[{ "edge": lineId, "step": sourceStepIndex | null }]`.
-    #[schema(value_type = Object)]
+    #[schema(value_type = Vec<TeamStepActivation>)]
     pub activated_by: serde_json::Value,
 }
 

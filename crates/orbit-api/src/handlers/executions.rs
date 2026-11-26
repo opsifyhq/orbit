@@ -215,7 +215,11 @@ pub async fn list_agent_executions(
 }
 
 /// Manually start an execution. Returns 202 with the queued execution.
-#[utoipa::path(post, path = "/api/v1/agents/{agent_id}/executions", tag = "executions", request_body = CreateExecutionRequest, responses((status = 202, body = ExecutionRecord), (status = 429, description = "Concurrency or rate limit reached")))]
+#[utoipa::path(post, path = "/api/v1/agents/{agent_id}/executions", tag = "executions",
+    params(("Idempotency-Key" = Option<String>, Header, description = "Client-generated key for this execution. Takes precedence over the `idempotencyKey` body field. A repeated key replays the execution created by the first request; reusing it for a different agent is a 409. Keys starting with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved and return 422.")),
+    request_body = CreateExecutionRequest,
+    responses((status = 202, body = ExecutionRecord, description = "The execution was queued, or an execution with this idempotency key already exists and is replayed"), (status = 429, description = "Concurrency or rate limit reached"))
+)]
 pub async fn execute_agent(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
