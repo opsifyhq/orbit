@@ -8,6 +8,111 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-25
+
+### Added
+
+- **Stop run** on a running team run's page: it asks first, then cancels the run and its
+  live step executions. Ended worker launches can be archived or deleted from
+  **Workers → Launches**, which gains an "Archived" view (#440).
+
+### Changed
+
+- Kubernetes `pods.delete` without `gracePeriodSeconds` now uses the pod's own grace period,
+  as `kubectl delete pod` does, instead of force-deleting; pass `0` to force (#391).
+- Helm: with `networkPolicy.enabled=true` the chart refuses to serve `/metrics` without a token on the API port, which worker pods can reach. Set `monitoring.port` (as `values-prod.example.yaml` now does) or `monitoring.token`, or set `monitoring.allowWorkersOnApiPort=true` to accept the exposure ([#398](https://github.com/opsifyhq/orbit/issues/398)).
+- The API reads the outbound network policy (`ORBIT_OUTBOUND_*`) once at startup and keeps
+  it in its state, and the integration tests inject a policy and a licence instead of
+  changing process environment variables, so a test that allows loopback can no longer
+  loosen the outbound guard for other tests (#445).
+
+### Fixed
+
+- Worker launches no longer hold the installation-wide licence lock across the launcher
+  call, and take no lock when the licence sets no worker limit, so one slow launcher no
+  longer serialises every launch or makes other replicas answer `409 license limit is busy`
+  (#396). The in-process wait for the lock now counts toward the same 10-second deadline.
+  Under a limit, re-activating an agent reads its status under the lock, a duplicate
+  request with the same idempotency key at the exact execution limit gets the first
+  request's execution instead of `402`, and a first OIDC login that links a pre-provisioned
+  user no longer needs a free seat. See [Licensing](docs/guide/licensing.md).
+- Web forms no longer report a refused access (sharing) change as a full save (#397).
+  Edit pages stay on the form with the access edit intact and say that the resource
+  was saved but access was not; create pages open the new resource's edit page to set
+  access again.
+- A Kubernetes connection's `allowedResources` follows capability changes made in the
+  web form: adding `pods.logs` adds `pods/log`, and removing capabilities shrinks the
+  list. A deliberate override in Advanced config is kept, and the form shows the list
+  that will be saved (#397). See [the Kubernetes connector guide](docs/guide/kubernetes-connector.md).
+- Metrics: the HTTP request families no longer reach their series cap in normal use (it is now sized for every route template, method and status class), and the in-flight execution count uses a new partial index instead of reading every execution, so scrapes stay cheap as history grows ([#398](https://github.com/opsifyhq/orbit/issues/398)).
+- A launched worker whose container never ran (image pull or container config errors such as
+  `ImagePullBackOff`, `ErrImagePull` or `CreateContainerConfigError` with no earlier
+  termination) now ends as `worker_did_not_start`: only runs still `dispatched` to it fail,
+  marked retryable, and team queue items keep their retry. Previously these ended as
+  `worker_exited` with no retry although nothing ran. A Deployment whose evicted pod is still
+  listed next to a live replacement now follows the replacement instead of failing the
+  launch, and the OOM fallback for older launchers no longer matches words such as "room"
+  (#399).
+- Web editors keep their state straight (#400). Switching a Kubernetes connection between
+  service account and kubeconfig clears what was entered for the other mode, and an edit that
+  changes the mode asks for a new credential instead of keeping the old one under the wrong
+  mode. The connection and worker-profile editors warn before leaving with any unsaved field,
+  not only an unsaved access change, and the worker editor does so when creating a profile
+  too. Changing a resource's access refreshes its lists (teams, worker profiles and
+  environment mappings were not refreshed), and providers for different harnesses that share
+  a provider name resolve to the one for the worker's harness.
+- A short database outage no longer turns into permanent failures (#436). A storage error
+  while a worker claims an execution puts the execution back in the queue instead of
+  failing it as `invalid_config`; a 24/7 runtime is only stopped when its agent is really
+  gone, and other lookup errors are retried on the next tick; `GET /api/v1/worker/env`
+  answers with an error instead of a shorter list, so a run whose environment mapping
+  points at a removed connection or secret fails with the variable name instead of
+  starting without it. See [Worker profiles](docs/guide/worker-profiles.md).
+- Every resource now uses the same 120-character name limit (#438). Providers,
+  connections, outputs, env mappings, agent teams, access teams, API tokens, worker
+  profiles and worker tokens used to accept names of any length; a portable import is
+  checked the same way, and renaming a provider to an empty name is refused instead of
+  stored. An encoded NUL (`%00`) in a path or query string returns 422 instead of a 500
+  storage error.
+- A form with unsaved changes now also asks "Leave without saving?" on browser Back and
+  Forward and when a command-palette entry leaves the page; before, only links and closing
+  the tab asked and the draft was lost (#439).
+- The audit log in Settings pages back past the newest 25 entries (**Load older
+  activity**), can be limited to one kind of activity, and names the changed item in each
+  row, with the target id, request id and metadata under **Details**. The Approvals page
+  loads **Recent decisions** apart from the queue, so more than 100 waiting requests no
+  longer leave it empty (#441). `GET /api/v1/audit-logs` accepts `area` and
+  `GET /api/v1/approvals` accepts `status=decided`. See
+  [Settings](docs/guide/settings.md#audit-log).
+- The workflow editor no longer adds an Undo step for "Add an input" or "Add an output"
+  when there is nothing to add: the button is disabled and says why. Steps whose agent is
+  archived read "Archived agent: <name>", and a list that is still loading or failed to
+  load no longer calls every agent unavailable. The editor now also checks the server's
+  120-line limit, outcomes on lines that do not follow one, instruction length and step
+  and line ids, and both sides are tested against one shared fixture (#442).
+- The team background loops (every 2 seconds on every API replica) no longer scan all team
+  run and queue history: migration `0065_team_loop_indexes` adds partial indexes that hold
+  only running rows. The worker cancel poll (every second per running execution) is one
+  query instead of four for executions bound to the polling token at claim
+  ([#447](https://github.com/opsifyhq/orbit/issues/447)).
+
+### Security
+
+- Changing whom ORBIT trusts for sign-in through `PUT /api/v1/settings/oidc` (issuer,
+  JWKS URL, audience, client id, redirect URI, identity and role claims, provisioning,
+  role sync, verified-email and mapped-group rules, team mappings) now needs every
+  permission (an Owner). A delegated `settings:write` role could previously point sign-in
+  at an identity provider it controls (#387). See
+  [the OIDC guide](docs/development/oidc.md#configure-from-the-ui).
+- Kubernetes connector: object names and namespaces must be Kubernetes names, so `.`, `..`
+  and empty values can no longer turn `pods.get` into an unredacted list or `pods.delete`
+  into a collection delete. `pods.delete` returns `{deleted, namespace, name}` instead of
+  the deleted Pod with its environment values, and pod and deployment results are redacted
+  whatever their shape. The connection test no longer echoes a non-Kubernetes response
+  body, and `defaultNamespace` and `namespaces` are validated when a connection is saved
+  (#391).
+- Approval requests no longer hide the end of a long tool call. The worker now sends arguments up to 64 KiB whole (they were cut at 4000 bytes), and longer ones keep both the start and the end with the number of bytes left out. The approval view shows an "Arguments truncated" warning with the full size, and long summary values say they are cut. Shortened arguments in execution events now end with `[truncated: N bytes in total]`. See [Approvals](docs/guide/approvals.md) ([#392](https://github.com/opsifyhq/orbit/issues/392)).
+
 ## [0.29.1] - 2026-11-25
 
 ### Changed
