@@ -1799,6 +1799,7 @@ dependencies = [
  "orbit-contracts",
  "orbit-domain",
  "orbit-events",
+ "orbit-exchange",
  "orbit-harness",
  "orbit-kubernetes",
  "orbit-s3",
@@ -1891,6 +1892,19 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "orbit-exchange"
+version = "0.30.2"
+dependencies = [
+ "base64 0.23.1",
+ "orbit-security",
+ "quick-xml",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2028,6 +2042,7 @@ dependencies = [
  "orbit-api",
  "orbit-contracts",
  "orbit-domain",
+ "orbit-exchange",
  "orbit-harness",
  "orbit-kubernetes",
  "orbit-s3",

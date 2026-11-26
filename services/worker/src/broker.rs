@@ -84,6 +84,7 @@ enum ConnectorClient {
     Kubernetes(KubernetesClientConfig),
     X(XClientConfig),
     S3(crate::s3::S3Connector),
+    Exchange(orbit_exchange::ExchangeClient),
 }
 
 impl BrokerState {
@@ -503,6 +504,35 @@ fn x_tool_specs(
         .collect()
 }
 
+fn exchange_tool_specs(
+    capabilities: &[String],
+    effects: &std::collections::BTreeMap<String, CapabilityEffect>,
+) -> Vec<ToolSpec> {
+    capabilities
+        .iter()
+        .map(|capability| {
+            let effect = effects
+                .get(capability)
+                .copied()
+                .unwrap_or(CapabilityEffect::Read);
+            ToolSpec {
+                capability: capability.clone(),
+                name: format!("exchange_{}", capability.replace('.', "_")),
+                description: match capability.as_str() {
+                    "mail.search" => "Search messages in an allowed Exchange folder.",
+                    "mail.get" => "Read one Exchange message and its attachment metadata.",
+                    "mail.attachments.get" => "Download one Exchange attachment as base64.",
+                    _ => "Exchange mail tool.",
+                }
+                .into(),
+                effect,
+                input_schema: orbit_exchange::capability_input_schema(capability),
+                binding: 0,
+            }
+        })
+        .collect()
+}
+
 fn gitlab_tool_specs(
     capabilities: &[String],
     effects: &std::collections::BTreeMap<String, CapabilityEffect>,
@@ -786,6 +816,7 @@ async fn start_with_http(
             "kubernetes" => kubernetes_tool_specs(&allowed, &effects),
             "x" => x_tool_specs(&allowed, &effects),
             "s3" => s3_tool_specs(&allowed, &effects),
+            "exchange" => exchange_tool_specs(&allowed, &effects),
             _ => github_tool_specs(&allowed, &effects),
         };
         if binding_tools.is_empty() {
@@ -807,6 +838,10 @@ async fn start_with_http(
             "x" => ConnectorClient::X(XClientConfig::from_connection(&conn.config, credential)),
             "s3" => ConnectorClient::S3(
                 crate::s3::S3Connector::from_connection(&conn.config, credential)
+                    .map_err(anyhow::Error::msg)?,
+            ),
+            "exchange" => ConnectorClient::Exchange(
+                orbit_exchange::ExchangeClient::from_connection(&conn.config, credential)
                     .map_err(anyhow::Error::msg)?,
             ),
             _ => ConnectorClient::Github(GitHubClientConfig::from_connection(
@@ -1053,6 +1088,9 @@ async fn call_tool(
                 x::invoke(&state.http, config, &tool.capability, &call.arguments).await
             }
             ConnectorClient::S3(config) => config.invoke(&tool.capability, &call.arguments).await,
+            ConnectorClient::Exchange(config) => {
+                config.invoke(&tool.capability, &call.arguments).await
+            }
         }
     };
 

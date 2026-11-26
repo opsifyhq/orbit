@@ -13,6 +13,7 @@ orbit-contracts.workspace = true
 orbit-store.workspace = true
 orbit-security.workspace = true
 orbit-s3.workspace = true
+orbit-exchange.workspace = true
 lettre.workspace = true
 orbit-events.workspace = true
 orbit-harness.workspace = true

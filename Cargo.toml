@@ -9,6 +9,7 @@ members = [
   "crates/orbit-harness",
   "crates/orbit-kubernetes",
   "crates/orbit-s3",
+  "crates/orbit-exchange",
   "crates/orbit-api",
   "services/api",
   "services/worker",
@@ -32,6 +33,7 @@ orbit-security = { path = "crates/orbit-security" }
 orbit-harness = { path = "crates/orbit-harness" }
 orbit-kubernetes = { path = "crates/orbit-kubernetes" }
 orbit-s3 = { path = "crates/orbit-s3" }
+orbit-exchange = { path = "crates/orbit-exchange" }
 orbit-api = { path = "crates/orbit-api" }
 
 anyhow = "1"

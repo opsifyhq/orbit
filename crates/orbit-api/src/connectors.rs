@@ -94,6 +94,54 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
             builtin: true,
         },
         ConnectorManifest {
+            slug: "exchange".into(),
+            name: "Exchange on-premises".into(),
+            version: "0.1.0".into(),
+            description: "Read and search mail on an on-premises Exchange server through EWS.".into(),
+            auth: vec![AuthMethod::Basic],
+            webhooks: false,
+            capabilities: vec![
+                capability_with_input_schema(
+                    "mail.search",
+                    "Search mail",
+                    "Searches an allowed mailbox folder by subject; returns message metadata.",
+                    CapabilityEffect::Read,
+                    orbit_exchange::capability_input_schema("mail.search"),
+                ),
+                capability_with_input_schema(
+                    "mail.get",
+                    "Get mail",
+                    "Reads one message body, recipients and attachment metadata.",
+                    CapabilityEffect::Read,
+                    orbit_exchange::capability_input_schema("mail.get"),
+                ),
+                capability_with_input_schema(
+                    "mail.attachments.get",
+                    "Get attachment",
+                    "Downloads one attachment as base64, within the configured size limit.",
+                    CapabilityEffect::Read,
+                    orbit_exchange::capability_input_schema("mail.attachments.get"),
+                ),
+            ],
+            config_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ewsUrl": { "type": "string", "description": "HTTPS EWS endpoint, usually /EWS/Exchange.asmx" },
+                    "mailbox": { "type": "string", "description": "Mailbox email address the service account reads" },
+                    "allowedFolders": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Folders the agent may search; empty means inbox only"
+                    },
+                    "maxResults": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
+                    "maxAttachmentBytes": { "type": "integer", "minimum": 1, "default": 10485760 }
+                },
+                "required": ["ewsUrl", "mailbox"]
+            }),
+            docs_url: Some("https://learn.microsoft.com/exchange/client-developer/exchange-web-services/".into()),
+            builtin: true,
+        },
+        ConnectorManifest {
             slug: "github".into(),
             name: "GitHub".into(),
             version: "0.1.0".into(),
