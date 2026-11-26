@@ -583,10 +583,7 @@ async fn build_context(
         let mut sub_spec: AgentSpec = serde_json::from_value(version.spec).map_err(|error| {
             ApiError::internal(format!("subagent '{name}' spec is invalid: {error}"))
         })?;
-        subagent_instructions.insert(
-            agent_id,
-            crate::handlers::teams::subagent_instructions(&sub_spec),
-        );
+        subagent_instructions.insert(agent_id, crate::team_runs::subagent_instructions(&sub_spec));
         if let Some(override_model) = &subagent_override {
             override_model.apply(&mut sub_spec.model);
         }
@@ -693,11 +690,7 @@ fn with_subagent_instructions(
     execution
 }
 
-type SubagentRef = (
-    Uuid,
-    String,
-    Option<crate::handlers::teams::TeamModelOverride>,
-);
+type SubagentRef = (Uuid, String, Option<crate::team_runs::TeamModelOverride>);
 
 fn team_subagents(execution: &ExecutionRecord) -> Vec<SubagentRef> {
     execution
@@ -723,9 +716,7 @@ fn team_subagents(execution: &ExecutionRecord) -> Vec<SubagentRef> {
 }
 
 /// The team or step model override the API recorded with a team execution (#305).
-fn model_override_in(
-    value: &serde_json::Value,
-) -> Option<crate::handlers::teams::TeamModelOverride> {
+fn model_override_in(value: &serde_json::Value) -> Option<crate::team_runs::TeamModelOverride> {
     value
         .get("modelOverride")
         .filter(|value| !value.is_null())

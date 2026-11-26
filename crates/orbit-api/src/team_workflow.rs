@@ -6,7 +6,7 @@
 //! plan asks for and finishes the run. It never looks at the work itself; the only thing
 //! it reads from a step's answer is the `OUTCOME:` line the step was told to end with.
 //!
-//! Everything here runs under the per-run advance lease (see `handlers::teams::advance`),
+//! Everything here runs under the per-run advance lease (see `team_runs::advance`),
 //! and every write is conditional or idempotent, so a tick that dies half-way is simply
 //! repeated: the plan is recomputed from the steps that exist.
 
@@ -19,13 +19,13 @@ use orbit_domain::{
 use orbit_store::{TeamRun, TeamStep};
 
 use crate::error::ApiError;
-use crate::handlers::teams::{
+use crate::state::AppState;
+use crate::team_runs::{
     announce_cancel, auto_launch_step, execution_error_message, fail_run_after_launch_error,
     finalize_run, is_temporary_limit, start_step_with, FirstSteps, StepStart, TeamDefinition,
     TeamModelOverride, WorkflowStepStart, ADVANCE_LEASE_SECS, LIMITED_STEP_RETRY_WINDOW_SECS,
     START_STEP_RETRY_WINDOW_SECS,
 };
-use crate::state::AppState;
 
 /// The configured context for one workflow step: the team goal, what this step is for
 /// and, when the step has outcomes, how to report one.

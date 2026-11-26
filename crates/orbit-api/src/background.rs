@@ -43,7 +43,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         loop {
             ticker.tick().await;
             let tick = Tick::start(&output_state, "outputs");
-            crate::handlers::outputs::deliver_pending(&output_state).await;
+            crate::output_delivery::deliver_pending(&output_state).await;
             tick.done(true);
         }
     }));
@@ -90,7 +90,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
         loop {
             ticker.tick().await;
             let tick = Tick::start(&launch_state, "launches");
-            let ok = crate::handlers::worker_launches::refresh_active_launches(&launch_state).await;
+            let ok = crate::launches::refresh_active_launches(&launch_state).await;
             tick.done(ok);
         }
     }));
@@ -111,7 +111,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
                     Ok(runs) => {
                         after = runs.last().map(|run| run.id);
                         for run in runs {
-                            match crate::handlers::teams::advance(&team_state, run).await {
+                            match crate::team_runs::advance(&team_state, run).await {
                                 Ok(_) => team_state.metrics.team_run_advanced(),
                                 Err(error) => {
                                     ok = false;
@@ -127,7 +127,7 @@ pub fn spawn(state: AppState) -> Vec<JoinHandle<()>> {
                     }
                 }
             }
-            if let Err(error) = crate::handlers::teams::reconcile_team_outcomes(&team_state).await {
+            if let Err(error) = crate::team_runs::reconcile_team_outcomes(&team_state).await {
                 ok = false;
                 tracing::warn!(%error, "team outcome reconciliation failed");
             }
@@ -518,15 +518,20 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
     // error and counts towards the trigger's consecutive-failure auto-disable. Harness
     // unavailability and the hourly quota skip this tick instead of failing the trigger.
     let identity_user = trigger.owner_user_id.or(agent.owner_user_id);
-    let identity = crate::preflight::background_access(
+    let verdict = crate::preflight::evaluate_background(&crate::preflight::BackgroundPreflight {
         state,
-        trigger.org_id,
-        &[trigger.owner_user_id, agent.owner_user_id],
-    )
+        org_id: trigger.org_id,
+        owners: &[trigger.owner_user_id, agent.owner_user_id],
+        agent: &agent,
+        spec: &spec,
+        harness: harness_kind,
+        extra_connection_ids: &[],
+        team: None,
+    })
     .await;
-    let access = match identity {
-        Ok(access) => access,
-        Err(error) => {
+    match verdict {
+        crate::preflight::BackgroundVerdict::Allowed => {}
+        crate::preflight::BackgroundVerdict::Denied(error) => {
             crate::preflight::audit_denied_run(
                 state,
                 trigger.org_id,
@@ -539,42 +544,20 @@ async fn fire_trigger_inner(state: &AppState, trigger: Trigger) -> anyhow::Resul
             .await;
             anyhow::bail!("scheduled run refused: {}", error.message);
         }
-    };
-    if let Some(access) = &access {
-        let preflight = crate::preflight::Preflight {
-            state,
-            org_id: trigger.org_id,
-            access,
-            agent: &agent,
-            spec: &spec,
-            harness: harness_kind,
-            extra_connection_ids: &[],
-        };
-        if let Err(error) = preflight.authorize_access().await {
-            crate::preflight::audit_denied_run(
-                state,
-                trigger.org_id,
-                "trigger.fire_denied",
-                "trigger",
-                trigger.id,
-                &error,
-                identity_user,
-            )
-            .await;
-            anyhow::bail!("scheduled run refused: {}", error.message);
+        crate::preflight::BackgroundVerdict::Delayed(
+            crate::preflight::DelayReason::HarnessUnavailable,
+            error,
+        ) => {
+            tracing::warn!(trigger_id = %trigger.id, error = %error.message, "scheduled trigger skipped: harness unavailable");
+            return Ok(());
         }
-    }
-    if let Err(error) =
-        crate::preflight::require_harness_available(state, trigger.org_id, harness_kind).await
-    {
-        tracing::warn!(trigger_id = %trigger.id, error = %error.message, "scheduled trigger skipped: harness unavailable");
-        return Ok(());
-    }
-    if let Err(error) =
-        crate::preflight::require_hourly_quota(state, trigger.org_id, agent.id, &spec).await
-    {
-        tracing::info!(trigger_id = %trigger.id, error = %error.message, "scheduled trigger skipped: hourly quota reached");
-        return Ok(());
+        crate::preflight::BackgroundVerdict::Delayed(
+            crate::preflight::DelayReason::HourlyQuota,
+            error,
+        ) => {
+            tracing::info!(trigger_id = %trigger.id, error = %error.message, "scheduled trigger skipped: hourly quota reached");
+            return Ok(());
+        }
     }
     let idempotency_key = format!("trigger:{}:{}", trigger.id, fired_at.timestamp_millis());
     // The checks above fail fast; this one holds the agent's lock across the insert (#433).
@@ -894,9 +877,7 @@ pub(crate) async fn report_ended_execution(
         .and_then(orbit_contracts::WorkerTerminationReason::parse)
         .is_some_and(orbit_contracts::WorkerTerminationReason::ends_without_retry);
     if worker_terminated || matches!(code, Some("harness_unresponsive")) {
-        if let Err(error) =
-            crate::handlers::teams::fail_team_run_for_execution(state, execution).await
-        {
+        if let Err(error) = crate::team_runs::fail_team_run_for_execution(state, execution).await {
             tracing::warn!(%error, execution_id = %execution.id, "failed to fail team run for ended execution");
         }
     }
@@ -958,19 +939,14 @@ async fn reconcile_worker_tags(state: &AppState) -> anyhow::Result<()> {
                 }
             }
             let old_image = launch.image.clone();
-            match crate::handlers::worker_launches::stop_launch_internal(state, &auth, launch).await
-            {
+            match crate::launches::stop_launch_internal(state, &auth, launch).await {
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(profile = %profile.name, %error, "could not stop old worker");
                     continue;
                 }
             }
-            match crate::handlers::worker_launches::launch_profile_internal(
-                state, &auth, profile.id, None,
-            )
-            .await
-            {
+            match crate::launches::launch_profile_internal(state, &auth, profile.id, None).await {
                 Ok(new_launch) => {
                     tracing::info!(
                         profile = %profile.name,
@@ -1250,70 +1226,38 @@ async fn advance_runtime(
     // Shared execution preflight (#140) for the runtime creator (falling back to the
     // agent owner). Lost access stops the runtime with a recorded error; an unavailable
     // harness or exhausted hourly quota delays the next tick.
-    let access = crate::preflight::background_access(
+    let verdict = crate::preflight::evaluate_background(&crate::preflight::BackgroundPreflight {
         state,
-        runtime.org_id,
-        &[runtime.created_by, agent.owner_user_id],
-    )
+        org_id: runtime.org_id,
+        owners: &[runtime.created_by, agent.owner_user_id],
+        agent: &agent,
+        spec: &spec,
+        harness: harness_kind,
+        extra_connection_ids: &[],
+        team: None,
+    })
     .await;
-    let denied = match &access {
-        Err(error) => Some(error.clone()),
-        Ok(Some(access)) => crate::preflight::Preflight {
-            state,
-            org_id: runtime.org_id,
-            access,
-            agent: &agent,
-            spec: &spec,
-            harness: harness_kind,
-            extra_connection_ids: &[],
-        }
-        .authorize_access()
-        .await
-        .err(),
-        Ok(None) => None,
-    };
-    // A storage failure while checking access is not a refusal: retry it (#436).
-    if let Some(error) = denied.as_ref().filter(|error| error.is_transient()) {
-        return Err(RuntimeTickError::Transient(error.clone().into()));
-    }
-    if let Some(error) = denied {
-        crate::preflight::audit_denied_run(
-            state,
-            runtime.org_id,
-            "runtime.run_denied",
-            "agent",
-            agent.id,
-            &error,
-            runtime.created_by.or(agent.owner_user_id),
-        )
-        .await;
-        logged(
-            runtime.id,
-            "halt",
-            state
+    match verdict {
+        crate::preflight::BackgroundVerdict::Allowed => {}
+        crate::preflight::BackgroundVerdict::Denied(error) => {
+            crate::preflight::audit_denied_run(
+                state,
+                runtime.org_id,
+                "runtime.run_denied",
+                "agent",
+                agent.id,
+                &error,
+                runtime.created_by.or(agent.owner_user_id),
+            )
+            .await;
+            let _ = state
                 .store
                 .halt_agent_runtime(runtime.id, &format!("run refused: {}", error.message))
-                .await,
-        );
-        return Ok(());
-    }
-    let delayed = match crate::preflight::require_harness_available(
-        state,
-        runtime.org_id,
-        harness_kind,
-    )
-    .await
-    {
-        Ok(()) => {
-            crate::preflight::require_hourly_quota(state, runtime.org_id, agent.id, &spec).await
+                .await;
+            return Ok(());
         }
-        Err(error) => Err(error),
-    };
-    if let Err(error) = delayed {
-        logged(
-            runtime.id,
-            "delay",
-            state
+        crate::preflight::BackgroundVerdict::Delayed(_, error) => {
+            let _ = state
                 .store
                 .advance_agent_runtime(
                     runtime.id,
@@ -1321,9 +1265,9 @@ async fn advance_runtime(
                     chrono::Utc::now()
                         + chrono::Duration::seconds(runtime.interval_seconds.max(30) as i64),
                 )
-                .await,
-        );
-        return Ok(());
+                .await;
+            return Ok(());
+        }
     }
     let input = serde_json::json!({
         "task": runtime.task,

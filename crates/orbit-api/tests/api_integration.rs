@@ -4595,7 +4595,7 @@ async fn advance_concurrently(
         let state = state.clone();
         let run = run.clone();
         tasks.push(tokio::spawn(async move {
-            orbit_api::handlers::teams::advance(&state, run).await
+            orbit_api::team_runs::advance(&state, run).await
         }));
     }
     let mut out = Vec::new();
@@ -4657,7 +4657,7 @@ async fn advance_resumes_after_step_finished_without_next_step() {
         .unwrap()
         .is_none());
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run)
+    orbit_api::team_runs::advance(&app.state, run)
         .await
         .unwrap();
     assert_eq!(app.store.list_team_steps(run_id).await.unwrap().len(), 2);
@@ -4687,7 +4687,7 @@ async fn a_temporary_limit_at_a_later_step_does_not_fail_the_run() {
     let run_id = start_run(&app, team).await;
     succeed_current_step(&app, run_id).await;
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run.clone())
+    orbit_api::team_runs::advance(&app.state, run.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -4708,7 +4708,7 @@ async fn a_temporary_limit_at_a_later_step_does_not_fail_the_run() {
         .execute(&raw_pool().await)
         .await
         .unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run)
+    orbit_api::team_runs::advance(&app.state, run)
         .await
         .unwrap();
     assert_eq!(
@@ -4731,7 +4731,7 @@ async fn advancing_a_busy_run_takes_no_lease() {
     let team = make_team(&app, vec![app.agent_id], json!({})).await;
     let run_id = start_run(&app, team).await;
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run)
+    orbit_api::team_runs::advance(&app.state, run)
         .await
         .unwrap();
     let claimed: Option<chrono::DateTime<chrono::Utc>> =
@@ -4765,7 +4765,7 @@ async fn failed_next_step_start_is_retried_then_fails_the_run() {
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
 
     // Within the retry window: error, run stays running, step stays succeeded (retryable).
-    assert!(orbit_api::handlers::teams::advance(&app.state, run.clone())
+    assert!(orbit_api::team_runs::advance(&app.state, run.clone())
         .await
         .is_err());
     let run_now = app.store.get_team_run(app.org_id, run_id).await.unwrap();
@@ -4773,7 +4773,7 @@ async fn failed_next_step_start_is_retried_then_fails_the_run() {
     let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
     assert_eq!(step.status, "succeeded");
     // The lease was released, so the next tick retries.
-    assert!(orbit_api::handlers::teams::advance(&app.state, run.clone())
+    assert!(orbit_api::team_runs::advance(&app.state, run.clone())
         .await
         .is_err());
 
@@ -4783,7 +4783,7 @@ async fn failed_next_step_start_is_retried_then_fails_the_run() {
         .execute(&raw_pool().await)
         .await
         .unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run)
+    orbit_api::team_runs::advance(&app.state, run)
         .await
         .unwrap();
     let run_now = app.store.get_team_run(app.org_id, run_id).await.unwrap();
@@ -5426,7 +5426,7 @@ async fn terminal_run_with_unclosed_queue_item_is_reconciled() {
             .status,
         "running"
     );
-    orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+    orbit_api::team_runs::reconcile_team_outcomes(&app.state)
         .await
         .unwrap();
     let stored = app
@@ -5641,7 +5641,7 @@ async fn outcome_writer_never_contacts_a_foreign_repository() {
             .await
             .unwrap()
             .unwrap();
-        orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+        orbit_api::team_runs::reconcile_team_outcomes(&app.state)
             .await
             .unwrap();
         let stored = app
@@ -5859,7 +5859,7 @@ mod output_delivery {
     use axum::extract::State;
     use axum::http::HeaderMap;
     use axum::routing::{post as route_post, put as route_put};
-    use orbit_api::handlers::outputs::deliver_pending;
+    use orbit_api::output_delivery::deliver_pending;
     use orbit_security::SecretValue;
     use orbit_store::Output;
     use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
@@ -7886,7 +7886,7 @@ async fn termination_poller_ends_dispatched_work_without_the_workers_page() {
     state.launcher_url = Some(url);
     state.launcher_token = Some("launcher-token".into());
 
-    assert!(orbit_api::handlers::worker_launches::refresh_active_launches(&state).await);
+    assert!(orbit_api::launches::refresh_active_launches(&state).await);
 
     let execution = app
         .store
@@ -7938,7 +7938,7 @@ async fn a_clean_stop_does_not_fail_the_workers_executions() {
     let mut state = app.state.clone();
     state.launcher_url = Some(url);
     state.launcher_token = Some("launcher-token".into());
-    assert!(orbit_api::handlers::worker_launches::refresh_active_launches(&state).await);
+    assert!(orbit_api::launches::refresh_active_launches(&state).await);
 
     let execution = app
         .store
@@ -13377,9 +13377,7 @@ async fn later_auto_launch_uses_the_team_owner_when_the_requester_is_gone() {
         .unwrap();
     succeed_current_step(&app, run_id).await;
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-    orbit_api::handlers::teams::advance(&state, run)
-        .await
-        .unwrap();
+    orbit_api::team_runs::advance(&state, run).await.unwrap();
 
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
     assert_eq!(run.status, "running", "{:?}", run.error);
@@ -15719,7 +15717,7 @@ async fn finish_workflow_step(
         .await
         .unwrap();
     let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-    orbit_api::handlers::teams::advance(&app.state, run)
+    orbit_api::team_runs::advance(&app.state, run)
         .await
         .unwrap();
 }
@@ -16050,7 +16048,7 @@ async fn a_workflow_run_is_started_once_by_whoever_gets_there_first() {
     assert!(results.iter().all(|result| result.is_ok()), "{results:?}");
     assert_eq!(workflow_trace(&app, run.id).await, ["a#1", "b#1"]);
     // Planning again changes nothing while both steps work.
-    orbit_api::handlers::teams::advance(&app.state, run.clone())
+    orbit_api::team_runs::advance(&app.state, run.clone())
         .await
         .unwrap();
     assert_eq!(app.store.list_team_steps(run.id).await.unwrap().len(), 2);

@@ -329,7 +329,7 @@ pub(crate) async fn build_document(
         }
         PortableKind::AgentTeam => {
             let team = store.get_agent_team(org_id, id).await?;
-            let definition = super::teams::parse_definition(&team)?;
+            let definition = crate::team_runs::parse_definition(&team)?;
             let worker_profile = match definition.worker_profile_id {
                 Some(profile_id) => names
                     .worker_profile(profile_id)

@@ -12,6 +12,7 @@ use orbit_store::WorkerProfile;
 use crate::audit;
 use crate::error::ApiError;
 use crate::state::AppState;
+use crate::worker_tokens::{issue_profile_token, IssuedWorkerToken};
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -353,16 +354,6 @@ pub struct CreateWorkerTokenRequest {
 
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct IssuedWorkerToken {
-    pub token: String,
-    pub token_id: Uuid,
-    pub profile_id: Option<Uuid>,
-    pub harnesses: Vec<String>,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkerTokenView {
     pub id: Uuid,
     pub name: String,
@@ -372,39 +363,6 @@ pub struct WorkerTokenView {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-pub(crate) async fn issue_profile_token(
-    state: &AppState,
-    org_id: Uuid,
-    profile: &WorkerProfile,
-    rotate: bool,
-) -> Result<IssuedWorkerToken, ApiError> {
-    if rotate {
-        state
-            .store
-            .revoke_profile_worker_tokens(org_id, profile.id)
-            .await?;
-    }
-    let issued = issue_worker_token();
-    let record = state
-        .store
-        .create_worker_token(
-            org_id,
-            Some(profile.id),
-            &format!("profile:{}", profile.name),
-            &issued.prefix,
-            &issued.hash,
-            std::slice::from_ref(&profile.harness_kind),
-        )
-        .await?;
-    Ok(IssuedWorkerToken {
-        token: issued.token,
-        token_id: record.id,
-        profile_id: record.profile_id,
-        harnesses: record.harnesses,
-        name: record.name,
-    })
 }
 
 #[utoipa::path(post, path = "/api/v1/worker-profiles/{profile_id}/token", tag = "workers", responses((status = 200, body = IssuedWorkerToken)))]
