@@ -29,7 +29,9 @@ import type {
   AgentTeam,
   TeamRun,
   TeamRunDetail,
+  AuditLogPage,
 } from "./types";
+import { AUDIT_PAGE_SIZE, auditNextCursor } from "./audit";
 import {
   getAgentTeam,
   getTeamRun,
@@ -76,6 +78,8 @@ export const queryKeys = {
   connections: ["connections"] as const,
   tokens: ["api-tokens"] as const,
   approvals: (status?: string) => ["approvals", status ?? "all"] as const,
+  /** Prefix of every approvals list (pending, decided, per execution). */
+  approvalLists: ["approvals"] as const,
   workers: ["workers"] as const,
   skills: ["skills"] as const,
   skill: (id: string) => ["skills", id] as const,
@@ -541,11 +545,20 @@ export function useWorkerLaunches(includeInactive = false) {
   });
 }
 
+/** The most approvals one request returns (the API clamps `limit` to this). */
+export const APPROVALS_PAGE_LIMIT = 200;
+
 export function useApprovals(
   status?: string,
-  options: { refetchInterval?: number | false; enabled?: boolean; executionId?: string } = {},
+  options: {
+    refetchInterval?: number | false;
+    enabled?: boolean;
+    executionId?: string;
+    limit?: number;
+  } = {},
 ) {
   const { executionId } = options;
+  const limit = options.limit ?? 100;
   return useQuery<ApprovalWithExecution[]>({
     // Under the same prefix as the plain list, so a decision refreshes both.
     queryKey: executionId
@@ -555,29 +568,25 @@ export function useApprovals(
     queryFn: async () =>
       unwrap(
         await api.GET("/api/v1/approvals", {
-          params: { query: { status, executionId, limit: 100 } },
+          params: { query: { status, executionId, limit } },
         }),
       ),
     refetchInterval: options.refetchInterval ?? 5_000,
   });
 }
 
-export function useAuditLogs() {
-  return useQuery<{
-    items: Array<{
-      id: number;
-      action: string;
-      actorType: string;
-      actorEmail?: string | null;
-      targetType?: string | null;
-      targetId?: string | null;
-      createdAt: string;
-      metadata?: unknown;
-    }>;
-    nextCursor?: string | null;
-  }>({
-    queryKey: ["audit-logs"] as const,
-    queryFn: async () =>
-      unwrap(await api.GET("/api/v1/audit-logs", { params: { query: { limit: 25 } } })),
+/** Audit log pages, newest first; `fetchNextPage` loads older entries. */
+export function useAuditLogs(filter: { area?: string } = {}) {
+  const area = filter.area || undefined;
+  return useInfiniteQuery({
+    queryKey: ["audit-logs", area ?? "all"] as const,
+    initialPageParam: undefined as number | undefined,
+    queryFn: async ({ pageParam }): Promise<AuditLogPage> =>
+      unwrap(
+        await api.GET("/api/v1/audit-logs", {
+          params: { query: { limit: AUDIT_PAGE_SIZE, before_id: pageParam, area } },
+        }),
+      ),
+    getNextPageParam: (last) => auditNextCursor(last),
   });
 }

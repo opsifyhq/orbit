@@ -152,8 +152,12 @@ pub struct EventListQuery {
 #[into_params(parameter_in = Query)]
 pub struct AuditListQuery {
     pub limit: Option<u32>,
+    /// Cursor: only rows older than this id (the previous page's `nextCursor`).
     pub before_id: Option<i64>,
+    /// Exact action, for example `agent.deleted`.
     pub action: Option<String>,
+    /// Action family: the part before the first dot, for example `agent` or `team_run`.
+    pub area: Option<String>,
 }
 
 // ------------------------------------------------------------------- agents

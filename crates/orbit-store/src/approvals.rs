@@ -39,7 +39,8 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound("approval".into()))
     }
 
-    /// Pending approvals for the current org, newest first.
+    /// Approvals for the current org, newest first. `status` is one stored status, or
+    /// `decided` for every status but `pending` (newest decision first).
     pub async fn list_approvals(
         &self,
         org_id: Uuid,
@@ -56,14 +57,16 @@ impl Store {
             JOIN executions e ON e.id = ap.execution_id
             JOIN agents a ON a.id = e.agent_id
             WHERE ap.org_id = $1
-              AND ($2::text IS NULL OR ap.status = $2)
+              AND ($2::text IS NULL OR ap.status = $2
+                   OR ($2 = 'decided' AND ap.status <> 'pending'))
               AND ($8::uuid IS NULL OR ap.execution_id = $8)
               AND ($4::bool OR a.owner_user_id = $5
                    OR CASE WHEN $7::bool AND a.owner_team_id IS NOT NULL
                         THEN a.owner_team_id = ANY($6)
                         ELSE a.visibility = 'org'
                              OR (a.visibility = 'team' AND a.owner_team_id = ANY($6)) END)
-            ORDER BY ap.created_at DESC, ap.id DESC
+            ORDER BY CASE WHEN $2 = 'decided' THEN ap.decided_at END DESC NULLS LAST,
+                     ap.created_at DESC, ap.id DESC
             LIMIT $3
             "#,
         )

@@ -1124,6 +1124,7 @@
           {
             "name": "status",
             "in": "query",
+            "description": "`pending`, `approved`, `rejected`, `expired`, or `decided` (every status but `pending`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1266,6 +1267,7 @@
           {
             "name": "before_id",
             "in": "query",
+            "description": "Cursor: only rows older than this id (the previous page's `nextCursor`).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1275,6 +1277,16 @@
           {
             "name": "action",
             "in": "query",
+            "description": "Exact action, for example `agent.deleted`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "area",
+            "in": "query",
+            "description": "Action family: the part before the first dot, for example `agent` or `team_run`.",
             "required": false,
             "schema": {
               "type": "string"

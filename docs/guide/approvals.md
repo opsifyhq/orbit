@@ -42,10 +42,13 @@ To decide, open **Approvals** in the sidebar. **Waiting for a decision** lists e
 with the agent, the call (for example "Comment on issue #12"), its arguments and when it
 expires. The arguments are shown in full up to 64 KiB. A longer call shows only its
 start and its end, with an "Arguments truncated" warning that gives the full size; approving
-it allows the whole call, so reject it if you need to see the rest. Choose **Approve** or **Reject**. If a request has expired, the card says "Expired
-...; the action was refused" and both buttons are disabled. **Recent decisions** shows the
-status (Approved, Rejected or Expired), the agent, the time, the comment if there is one,
-and a link to the execution.
+it allows the whole call, so reject it if you need to see the rest. Choose **Approve** or
+**Reject**. If a request has expired, the card says "Expired ...; the action was refused"
+and both buttons are disabled. The page shows up to 200 waiting requests, newest first;
+with more, a notice says so and older ones appear as these are decided. **Recent
+decisions** shows the 30 latest decisions, loaded apart from the queue, with the status
+(Approved, Rejected or Expired), the agent, the time, the comment if there is one, and a
+link to the execution.
 
 You can also decide on the execution page, in the "Paused: waiting for approval" notice
 ([Executions](executions.md)).
@@ -86,7 +89,8 @@ at level 3 or 4; it never raises the level. See [Agent teams](agent-teams.md#aut
 
 ## API
 
-- `GET /api/v1/approvals`: query `status` (`pending`, `approved`, `rejected` or
-  `expired`), `executionId` and `limit` (50 by default, at most 200).
+- `GET /api/v1/approvals`: query `status` (`pending`, `approved`, `rejected`, `expired`,
+  or `decided` for every status but `pending`, newest decision first), `executionId` and
+  `limit` (50 by default, at most 200).
 - `POST /api/v1/approvals/{id}/approve` and `.../reject`: optional body `{"comment": "..."}`.
 - `GET/PUT /api/v1/settings/approvals`: the four-eyes setting.

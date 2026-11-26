@@ -15585,3 +15585,122 @@ async fn a_workflow_run_is_started_once_by_whoever_gets_there_first() {
             .unwrap();
     assert_eq!(executions, 2);
 }
+
+// ---------------------------------------------------------------------------
+// #441: audit log paging and area filter; decided approvals listed on their own
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn audit_log_pages_and_filters_by_area() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    for index in 0..4 {
+        for action in ["agent.updated", "agent_x.updated", "team_run.started"] {
+            app.store
+                .append_audit_log(
+                    app.org_id,
+                    "user",
+                    None,
+                    Some("audit@test.local"),
+                    action,
+                    Some("agent"),
+                    Some(Uuid::new_v4()),
+                    json!({ "name": format!("item {index}") }),
+                    Some("req-441"),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    // Area matches the family before the first dot only: not `agent_x`, not `team_run`.
+    let (status, body) = send(&app.router, get("/api/v1/audit-logs?area=agent&limit=3")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let first = body["items"].as_array().unwrap();
+    assert_eq!(first.len(), 3);
+    assert!(first.iter().all(|item| item["action"] == "agent.updated"));
+    let cursor = body["nextCursor"]
+        .as_str()
+        .expect("a next page")
+        .to_string();
+
+    let (status, body) = send(
+        &app.router,
+        get(&format!(
+            "/api/v1/audit-logs?area=agent&limit=3&before_id={cursor}"
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second = body["items"].as_array().unwrap();
+    assert_eq!(second.len(), 1, "{body}");
+    assert_eq!(second[0]["action"], "agent.updated");
+    assert!(body["nextCursor"].is_null(), "{body}");
+    assert!(second[0]["id"].as_i64().unwrap() < cursor.parse::<i64>().unwrap());
+
+    let (status, body) = send(&app.router, get("/api/v1/audit-logs?area=team_run")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 4);
+
+    let (status, body) = send(&app.router, get("/api/v1/audit-logs?area=agent.%25")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn decided_approvals_are_listed_apart_from_pending_ones() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user = app
+        .store
+        .ensure_user(app.org_id, "decided@test.local", "Decider", UserRole::Owner)
+        .await
+        .unwrap();
+    let agent = create_demo_agent(&app.store, app.org_id, user.id).await;
+    let mut decided = Vec::new();
+    for decision in ["approved", "rejected"] {
+        let execution = seed_execution(&app.store, app.org_id, agent).await;
+        let approval = app
+            .store
+            .create_approval(app.org_id, execution, json!({ "action": "d" }), None)
+            .await
+            .unwrap();
+        app.store
+            .decide_approval(app.org_id, approval.id, decision, user.id, None)
+            .await
+            .unwrap();
+        decided.push(approval.id);
+    }
+    // Newer pending approvals than the limit must not crowd the decisions out.
+    for _ in 0..5 {
+        let execution = seed_execution(&app.store, app.org_id, agent).await;
+        app.store
+            .create_approval(app.org_id, execution, json!({ "action": "p" }), None)
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = send(&app.router, get("/api/v1/approvals?status=decided&limit=2")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body.as_array().unwrap();
+    let ids: Vec<&str> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
+    // Newest decision first.
+    assert_eq!(
+        ids,
+        vec![
+            decided[1].to_string().as_str(),
+            decided[0].to_string().as_str()
+        ]
+    );
+    assert!(rows.iter().all(|row| row["status"] != "pending"));
+
+    let (status, body) = send(
+        &app.router,
+        get("/api/v1/approvals?status=pending&limit=200"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().unwrap().len(), 5);
+}

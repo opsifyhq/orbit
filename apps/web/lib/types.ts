@@ -74,3 +74,5 @@ export type TeamStep = Omit<components["schemas"]["TeamStep"], "input"> & {
 export type TeamRunDetail = { run: TeamRun; steps: TeamStep[] };
 
 export type WorkerLaunch = components["schemas"]["WorkerLaunch"];
+export type AuditLogRecord = components["schemas"]["AuditLogRecord"];
+export type AuditLogPage = components["schemas"]["AuditLogPage"];

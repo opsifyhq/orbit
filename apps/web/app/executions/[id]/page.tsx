@@ -182,8 +182,7 @@ function ExecutionDetail() {
       ),
     onSuccess: (_, variables) => {
       toast.success(variables.decision === "approved" ? "Approved" : "Rejected");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals("pending") });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(undefined) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvalLists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.execution(executionId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
     },

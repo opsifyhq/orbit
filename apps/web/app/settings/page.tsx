@@ -47,6 +47,8 @@ import {
 import { errorMessage, type components } from "@orbit/api-client";
 import { formatDate, formatDateTime, relativeTime, titleCase } from "@/lib/utils";
 import { humanizeIdentifier } from "@/lib/presentation";
+import { AUDIT_AREAS, auditMetadataText, auditTargetLabel } from "@/lib/audit";
+import type { AuditLogRecord } from "@/lib/types";
 
 /* ----------------------------------------------------------------------------
  * Shared helpers
@@ -1247,47 +1249,129 @@ function DefaultHarnessSection() {
  * ------------------------------------------------------------------------- */
 
 function AuditTab() {
-  const audit = useAuditLogs();
+  const [area, setArea] = useState("");
+  const audit = useAuditLogs({ area });
+  const entries = audit.data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
     <Section
       title="Recent activity"
       description="Who changed what in this organization, newest first."
     >
+      <div className="mb-3">
+        <Field label="Show" htmlFor="audit-area">
+          <Select
+            id="audit-area"
+            className="sm:max-w-xs"
+            value={area}
+            onChange={(event) => setArea(event.target.value)}
+          >
+            <option value="">All activity</option>
+            {AUDIT_AREAS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
       {audit.isLoading ? (
         <ListSkeleton rows={5} />
-      ) : audit.isError ? (
+      ) : audit.isError && !entries.length ? (
         <Callout tone="danger" title="Could not load the audit log">
           {errorMessage(audit.error)}
         </Callout>
-      ) : audit.data?.items.length ? (
-        <Card className="overflow-hidden">
-          {audit.data.items.map((entry) => (
-            <div
-              key={entry.id}
-              className="flex flex-col gap-0.5 border-b px-4 py-3 last:border-b-0 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4 sm:px-5"
-            >
-              <div className="min-w-0">
-                <p className="break-words text-sm font-medium" title={entry.action}>
-                  {humanize(entry.action)}
-                </p>
-                <p className="break-words text-[13px] text-muted-foreground">
-                  By {entry.actorEmail ?? titleCase(entry.actorType)}
-                  {entry.targetType ? `, on ${titleCase(entry.targetType).toLowerCase()}` : ""}
-                </p>
-              </div>
-              <time
-                dateTime={entry.createdAt}
-                className="shrink-0 text-[13px] text-muted-foreground"
+      ) : entries.length ? (
+        <>
+          <Card className="overflow-hidden">
+            {entries.map((entry) => (
+              <AuditRow key={entry.id} entry={entry} />
+            ))}
+          </Card>
+          {audit.hasNextPage ? (
+            <div className="mt-3 flex justify-center">
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                loading={audit.isFetchingNextPage}
+                onClick={() => void audit.fetchNextPage()}
               >
-                {formatDateTime(entry.createdAt)}
-              </time>
+                Load older activity
+              </Button>
             </div>
-          ))}
-        </Card>
+          ) : null}
+          {audit.isFetchNextPageError ? (
+            <Callout tone="danger" title="Could not load older activity" className="mt-3">
+              {errorMessage(audit.error)}
+            </Callout>
+          ) : null}
+        </>
       ) : (
-        <EmptyState title="No activity yet" description="Changes to agents, connections, roles and tokens appear here." />
+        <EmptyState
+          title={area ? "No activity of this kind" : "No activity yet"}
+          description={
+            area
+              ? "Choose another kind of activity, or All activity."
+              : "Changes to agents, connections, roles and tokens appear here."
+          }
+        />
       )}
     </Section>
+  );
+}
+
+function AuditRow({ entry }: { entry: AuditLogRecord }) {
+  const target = auditTargetLabel(entry);
+  const metadata = auditMetadataText(entry.metadata);
+  return (
+    <div className="border-b px-4 py-3 last:border-b-0 sm:px-5">
+      <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <p className="break-words text-sm font-medium" title={entry.action}>
+            {humanize(entry.action)}
+            {target ? <span className="font-normal text-muted-foreground">: {target}</span> : null}
+          </p>
+          <p className="break-words text-[13px] text-muted-foreground">
+            By {entry.actorEmail ?? titleCase(entry.actorType)}
+            {entry.targetType ? `, on ${titleCase(entry.targetType).toLowerCase()}` : ""}
+          </p>
+        </div>
+        <time dateTime={entry.createdAt} className="shrink-0 text-[13px] text-muted-foreground">
+          {formatDateTime(entry.createdAt)}
+        </time>
+      </div>
+      <details className="mt-1 text-[13px]">
+        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+          Details
+        </summary>
+        <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+          <dt className="text-muted-foreground">Action</dt>
+          <dd className="break-all font-mono">{entry.action}</dd>
+          {entry.targetId ? (
+            <>
+              <dt className="text-muted-foreground">Target id</dt>
+              <dd className="break-all font-mono">{entry.targetId}</dd>
+            </>
+          ) : null}
+          {entry.requestId ? (
+            <>
+              <dt className="text-muted-foreground">Request id</dt>
+              <dd className="break-all font-mono">{entry.requestId}</dd>
+            </>
+          ) : null}
+          {entry.ipAddress ? (
+            <>
+              <dt className="text-muted-foreground">IP address</dt>
+              <dd className="break-all font-mono">{entry.ipAddress}</dd>
+            </>
+          ) : null}
+        </dl>
+        {metadata ? (
+          <pre className="mt-2 max-h-60 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
+            {metadata}
+          </pre>
+        ) : null}
+      </details>
+    </div>
   );
 }
