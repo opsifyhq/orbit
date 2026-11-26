@@ -124,7 +124,7 @@ cause instead. `GET /launches/{id}` returns a `termination` object
 
 | Field | Meaning |
 |---|---|
-| `reason` | `worker_oom`, `worker_evicted`, `worker_exited` or `worker_lost` |
+| `reason` | `worker_oom`, `worker_evicted`, `worker_exited`, `worker_lost` or `worker_did_not_start` |
 | `workerName` | pod name (Kubernetes) or container name (Docker) |
 | `restartCount` | container restart count, when the runtime reports it |
 | `terminatedAt` | RFC 3339 finish time reported by the runtime |
@@ -140,7 +140,10 @@ flight on that worker (`dispatched`, `running`, `awaiting_approval`) with the re
 `error.code`, appends an `error` execution event, writes an audit entry
 (`worker.oom_killed`, `worker.evicted`, `worker.exited`, `execution.worker_lost`) and ends
 the team step, run and queue item without an automatic rerun: side effects may already have
-happened, so a person decides whether to run it again.
+happened, so a person decides whether to run it again. `worker_did_not_start` (an image pull
+or container config error before the container ever ran) is the exception: it fails only the
+executions still `dispatched` to that worker, marked `retryable: true`, audits
+`worker.did_not_start`, and leaves the team poller's normal queue retry in place.
 
 ## Inputs
 

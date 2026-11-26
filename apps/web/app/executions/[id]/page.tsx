@@ -56,7 +56,7 @@ const WORKER_TERMINATION_CODES = ["worker_oom", "worker_evicted", "worker_exited
 const PLATFORM_ERROR_TEXT = new Map<string, string>([
   [
     "worker_did_not_start",
-    "A worker took this run but never started it, so ORBIT ended it. This usually means the worker could not read the run, for example because it is older than the platform. Its logs in Workers say more.",
+    "A worker took this run but never started it, so ORBIT ended it. This usually means the worker could not read the run, for example because it is older than the platform, or that its container never started, for example because its image could not be pulled. Nothing ran, so the run can be retried. Its logs and launches in Workers say more.",
   ],
   [
     "worker_oom",

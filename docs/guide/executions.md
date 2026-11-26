@@ -89,7 +89,9 @@ ended is expired and cannot be decided (409).
 - `worker_did_not_start` (a `failed` run): a worker took the run but never started it.
   ORBIT ends it after 10 minutes without activity, or one minute after you cancel it. The
   worker's logs on the Workers page usually say why, for example a worker older than the
-  platform.
+  platform. A launched worker whose container never started (its image could not be pulled,
+  or its container config is invalid) ends the runs waiting for it the same way straight
+  away. Nothing ran, so a team queue item is retried as usual.
 
 When the runtime reports them, a run ended by `worker_oom`, `worker_evicted`, `worker_exited`
 or `worker_lost` also shows the worker/pod name, exit code, restart count and termination

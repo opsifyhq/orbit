@@ -117,7 +117,9 @@ a launch comes back `failed` with a structured `termination` (see
 on that worker becomes `failed` with `worker_oom`, `worker_evicted`, `worker_exited` or
 `worker_lost`, carrying the pod/container name, restart count, exit code and termination
 time. Each gets an `error` event, an `orbit.execution.updated` message and an audit entry;
-the team step, run and queue item become terminal with no automatic rerun.
+the team step, run and queue item become terminal with no automatic rerun. A container that
+never started (`worker_did_not_start`) only fails the executions still `dispatched` to it,
+marked retryable, and the team poller keeps its normal queue retry.
 
 ## Scheduling and dispatch
 
