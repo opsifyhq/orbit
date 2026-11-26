@@ -4,6 +4,11 @@ use crate::dto::*;
 use crate::error::{ErrorBody, ErrorEnvelope};
 use crate::handlers;
 
+/// Status codes for which the shared `ErrorResponse` component is declared on every
+/// documented operation. Auth, rate limiting and validation are enforced centrally, so
+/// any handler can return one of them.
+const ERROR_STATUS_CODES: [&str; 7] = ["400", "401", "403", "404", "409", "422", "429"];
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -273,6 +278,7 @@ use crate::handlers;
         orbit_store::AgentTeam,
         orbit_store::TeamRun,
         orbit_store::TeamStep,
+        orbit_store::TeamStepActivation,
         orbit_store::team_queue::TeamQueueItem,
         orbit_store::WorkerLaunch,
         orbit_domain::AgentDefinition,
@@ -344,7 +350,7 @@ use crate::handlers;
         crate::paging::Page::<orbit_store::TeamMember>,
         crate::paging::Page::<orbit_store::AgentTeam>,
         crate::paging::Page::<AgentVersionView>,
-    )),
+    ), responses(crate::error::ErrorResponse)),
     tags(
         (name = "system", description = "Health, readiness, metadata and OpenAPI"),
         (name = "auth", description = "Browser sign-in helpers (OIDC discovery and code exchange); unauthenticated"),
@@ -359,4 +365,43 @@ use crate::handlers;
         (name = "docs", description = "Embedded documentation (authenticated)"),
     )
 )]
+struct BaseApiDoc;
+
+/// The document served by the API and used to generate the TypeScript client.
+///
+/// The derive above describes each handler. This wrapper adds the shared error response
+/// to every operation so a new handler cannot silently omit the standard error envelope.
 pub struct ApiDoc;
+
+impl OpenApi for ApiDoc {
+    fn openapi() -> utoipa::openapi::OpenApi {
+        let mut doc = BaseApiDoc::openapi();
+        for path in doc.paths.paths.values_mut() {
+            for operation in [
+                &mut path.get,
+                &mut path.put,
+                &mut path.post,
+                &mut path.delete,
+                &mut path.options,
+                &mut path.head,
+                &mut path.patch,
+                &mut path.trace,
+                &mut path.query,
+            ]
+            .into_iter()
+            .flatten()
+            .chain(path.additional_operations.values_mut())
+            {
+                for status in ERROR_STATUS_CODES {
+                    operation.responses.responses.insert(
+                        status.to_string(),
+                        utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_response_name(
+                            "ErrorResponse",
+                        )),
+                    );
+                }
+            }
+        }
+        doc
+    }
+}

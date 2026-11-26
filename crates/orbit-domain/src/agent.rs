@@ -148,6 +148,10 @@ pub struct Instructions {
 #[serde(from = "ConnectorBindingRepr", into = "ConnectorBindingRepr")]
 pub struct ConnectorBinding {
     pub connector: String,
+    /// Identifier of the connection whose credentials and access scope this binding uses.
+    /// The wire name is `connectionId`; a snake_case key is ignored by the serde
+    /// representation below (contract: docs/architecture/api.md).
+    #[schema(rename = "connectionId")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<Uuid>,
     /// Explicit capability allowlist (`issues.list`, `messages.send`, …).

@@ -14,11 +14,16 @@ an overview.
 ## Conventions
 
 - JSON only (`application/json`), camelCase field and query parameter names, UTC RFC 3339
-  timestamps, UUIDv7 identifiers.
+  timestamps, UUIDv7 identifiers. Connector bindings use `connectionId` (a `connection_id`
+  key is ignored); a team step's `activatedBy` is an array of `{ "edge", "step" }` objects.
 - Authentication: `Authorization: Bearer <access_token | api_key>`. Native clients use
   OIDC access tokens; automation uses `orbit_sk_…` API tokens, workers use `orbit_wk_…`
   worker tokens.
 - Every response carries `X-Request-Id`; errors include it as `requestId`.
+- Every documented operation declares the shared `ErrorResponse` component for `400`, `401`,
+  `403`, `404`, `409`, `422` and `429`. It wraps the error envelope below; specific status
+  codes are enforced by auth, validation and autonomy checks in the platform. Worker-protocol
+  routes are intentionally absent from the OpenAPI document altogether (see Worker API below).
 - Unauthenticated/public routes (health, metrics, meta, OIDC helpers, OpenAPI/Swagger)
   are limited per client to `ORBIT_ANON_RATE_LIMIT_PER_MINUTE` requests per 60-second
   window (default 120). Excess requests return `429 rate_limited` in the standard

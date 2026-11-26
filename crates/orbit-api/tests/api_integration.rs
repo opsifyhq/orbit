@@ -6897,6 +6897,80 @@ async fn worker_cannot_act_on_execution_claimed_by_another_worker() {
     assert_eq!(body["updated"], true);
 }
 
+/// #447: every worker request authenticates against the token row, but `last_used_at`
+/// must be written at most once a minute. `xmin` changes only when that row is updated,
+/// so it detects any extra write after the first one.
+#[tokio::test]
+async fn worker_requests_touch_token_row_at_most_once_a_minute() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let issued = orbit_security::issue_worker_token();
+    let token = app
+        .store
+        .create_worker_token(
+            app.org_id,
+            None,
+            "throttle-test",
+            &issued.prefix,
+            &issued.hash,
+            &["mock".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(token.last_used_at.is_none());
+
+    async fn row_version(store: &Store, id: Uuid) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT xmin::text::bigint FROM worker_tokens WHERE id = $1")
+            .bind(id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+    }
+
+    let (status, body) = send(
+        &app.router,
+        worker_request("GET", "/api/v1/worker/session", &issued.token, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The touch is spawned, so wait until it is visible before taking the baseline.
+    let mut touched = false;
+    for _ in 0..40 {
+        touched = app
+            .store
+            .find_worker_token_by_hash(&issued.hash)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_used_at
+            .is_some();
+        if touched {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(touched, "worker token was never touched");
+    let baseline = row_version(&app.store, token.id).await;
+
+    for _ in 0..49 {
+        let (status, body) = send(
+            &app.router,
+            worker_request("GET", "/api/v1/worker/session", &issued.token, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    // Any touches spawned by stale reads before the first commit have settled by now;
+    // a losing conditional UPDATE does not create a new row version.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let after = row_version(&app.store, token.id).await;
+    assert_eq!(
+        after, baseline,
+        "worker requests rewrote last_used_at in the same minute"
+    );
+}
+
 #[tokio::test]
 async fn illegal_status_transitions_are_rejected() {
     let Some(app) = test_app(true).await else {

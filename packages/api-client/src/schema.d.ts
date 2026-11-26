@@ -4143,7 +4143,7 @@ export interface components {
              * @description Workflow runs: the lines that started this step, as
              *     `[{ "edge": lineId, "step": sourceStepIndex | null }]`.
              */
-            activatedBy: Record<string, never>;
+            activatedBy: components["schemas"]["TeamStepActivation"][];
             /** Format: uuid */
             agentId: string;
             /** Format: uuid */
@@ -4184,6 +4184,15 @@ export interface components {
             stepIndex: number;
             /** Format: date-time */
             updatedAt: string;
+        };
+        /**
+         * @description One incoming workflow edge that activated a team step. `step` is `null` for an
+         *     entry edge, which has no source step.
+         */
+        TeamStepActivation: {
+            edge: string;
+            /** Format: int32 */
+            step?: number | null;
         };
         TeamStepInput: {
             /** Format: uuid */
@@ -4563,7 +4572,21 @@ export interface components {
          */
         WorkflowWhen: "always" | "success" | "failure" | "outcome";
     };
-    responses: never;
+    responses: {
+        /**
+         * @description Shared OpenAPI response for the error envelope returned by failed requests. `details`
+         *     carries field-level validation issues and, for conflicts, the dependants that must be
+         *     removed first.
+         */
+        ErrorResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+    };
     parameters: never;
     requestBodies: never;
     headers: never;
@@ -4596,6 +4619,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_AgentTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_team: {
@@ -4619,6 +4649,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_team: {
@@ -4640,6 +4677,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_team: {
@@ -4659,6 +4703,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_team: {
@@ -4684,13 +4735,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentTeam"];
                 };
             };
-            /** @description the team changed after `expectedUpdatedAt` */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -4721,6 +4772,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_TeamQueueItem"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     enqueue: {
@@ -4756,6 +4814,13 @@ export interface operations {
                     "application/json": components["schemas"]["EnqueuedItem"][];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     cancel: {
@@ -4778,6 +4843,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamQueueItem"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     requeue: {
@@ -4800,6 +4872,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamQueueItem"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     retry: {
@@ -4822,6 +4901,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamQueueItem"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     run_item: {
@@ -4844,6 +4930,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamRunDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_run: {
@@ -4869,6 +4962,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamRunDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_agents: {
@@ -4897,6 +4997,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_agent: {
@@ -4920,6 +5027,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     bulk_archive_agents: {
@@ -4943,6 +5057,13 @@ export interface operations {
                     "application/json": components["schemas"]["BulkLifecycleResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     bulk_delete_agents: {
@@ -4966,6 +5087,13 @@ export interface operations {
                     "application/json": components["schemas"]["BulkLifecycleResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_agent: {
@@ -4987,6 +5115,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_agent: {
@@ -5017,15 +5152,13 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A permanent delete is refused while agent teams or worker profiles use the agent; `details` lists them (path `usedBy`) */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_agent: {
@@ -5051,6 +5184,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     activate_agent: {
@@ -5072,6 +5212,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     agent_delete_impact: {
@@ -5093,6 +5240,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDeleteImpact"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_agent_executions: {
@@ -5121,12 +5275,22 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     execute_agent: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Client-generated key for this execution. Takes precedence over the `idempotencyKey` body field. A repeated key replays the execution created by the first request; reusing it for a different agent is a 409. Keys starting with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved and return 422. */
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 agent_id: string;
             };
@@ -5138,6 +5302,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The execution was queued, or an execution with this idempotency key already exists and is replayed */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -5146,13 +5311,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionRecord"];
                 };
             };
-            /** @description Concurrency or rate limit reached */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     export_agent: {
@@ -5173,6 +5338,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     pause_agent: {
@@ -5194,6 +5366,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get: {
@@ -5215,6 +5394,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentRuntime"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     start: {
@@ -5232,6 +5418,16 @@ export interface operations {
             };
         };
         responses: {
+            /** @description A continuous runtime was already running; the existing runtime is returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRuntime"];
+                };
+            };
+            /** @description A new continuous runtime was started */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -5240,6 +5436,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentRuntime"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     stop: {
@@ -5261,6 +5464,13 @@ export interface operations {
                     "application/json": components["schemas"]["AgentRuntime"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_versions: {
@@ -5290,6 +5500,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_AgentVersionView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_api_tokens: {
@@ -5322,6 +5539,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ApiTokenView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_api_token: {
@@ -5345,6 +5569,13 @@ export interface operations {
                     "application/json": components["schemas"]["CreatedApiToken"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     revoke_api_token: {
@@ -5364,6 +5595,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_approvals: {
@@ -5395,6 +5633,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ApprovalWithExecution"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     approve: {
@@ -5420,6 +5665,13 @@ export interface operations {
                     "application/json": components["schemas"]["Approval"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     reject: {
@@ -5445,6 +5697,13 @@ export interface operations {
                     "application/json": components["schemas"]["Approval"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_audit_logs: {
@@ -5472,6 +5731,13 @@ export interface operations {
                     "application/json": components["schemas"]["AuditLogPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     config: {
@@ -5491,13 +5757,13 @@ export interface operations {
                     "application/json": components["schemas"]["OidcWebConfig"];
                 };
             };
-            /** @description OIDC is not enabled */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
             /** @description The identity provider's discovery document could not be read */
             502: {
                 headers: {
@@ -5528,13 +5794,13 @@ export interface operations {
                     "application/json": components["schemas"]["OidcTokenResponse"];
                 };
             };
-            /** @description Missing code or verifier */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
             /** @description The identity provider rejected or failed the exchange */
             502: {
                 headers: {
@@ -5569,6 +5835,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ConnectionView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_connection: {
@@ -5592,6 +5865,13 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_connection: {
@@ -5611,15 +5891,13 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Refused while agents, agent teams, environment mappings or worker profiles use the connection; `details` lists them (path `usedBy`) */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_connection: {
@@ -5645,6 +5923,13 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     test_connection: {
@@ -5666,6 +5951,13 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionTestResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_connectors: {
@@ -5693,6 +5985,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ConnectorView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     dashboard_summary: {
@@ -5712,6 +6011,13 @@ export interface operations {
                     "application/json": components["schemas"]["DashboardResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     index: {
@@ -5735,13 +6041,13 @@ export interface operations {
                     "application/json": components["schemas"]["DocIndex"];
                 };
             };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_doc: {
@@ -5768,20 +6074,13 @@ export interface operations {
                     "application/json": components["schemas"]["DocPageView"];
                 };
             };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Unknown page or asset */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -5809,6 +6108,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_EnvMapping"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create: {
@@ -5832,6 +6138,13 @@ export interface operations {
                     "application/json": components["schemas"]["EnvMapping"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete: {
@@ -5851,6 +6164,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update: {
@@ -5876,6 +6196,13 @@ export interface operations {
                     "application/json": components["schemas"]["EnvMapping"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_executions: {
@@ -5902,6 +6229,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_execution: {
@@ -5923,6 +6257,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionRecord"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     cancel_execution: {
@@ -5944,6 +6285,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionRecord"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_execution_events: {
@@ -5974,6 +6322,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionEventPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     stream_execution_events: {
@@ -5994,6 +6349,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     rerun_execution: {
@@ -6015,6 +6377,13 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionRecord"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     export_resource: {
@@ -6040,6 +6409,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_harnesses: {
@@ -6067,6 +6443,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_HarnessView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     import_portable: {
@@ -6106,20 +6489,13 @@ export interface operations {
                     "application/json": components["schemas"]["ImportReport"];
                 };
             };
-            /** @description Name conflict in create mode */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation errors or unresolved references */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     import_markdown: {
@@ -6143,6 +6519,13 @@ export interface operations {
                     "application/json": components["schemas"]["ImportResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     overview: {
@@ -6162,6 +6545,13 @@ export interface operations {
                     "application/json": components["schemas"]["LicenseOverview"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     me: {
@@ -6181,6 +6571,13 @@ export interface operations {
                     "application/json": components["schemas"]["MeResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     meta: {
@@ -6200,6 +6597,13 @@ export interface operations {
                     "application/json": components["schemas"]["MetaResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     current_organization: {
@@ -6219,6 +6623,13 @@ export interface operations {
                     "application/json": components["schemas"]["Organization"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -6246,6 +6657,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_OutputView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create: {
@@ -6269,6 +6687,13 @@ export interface operations {
                     "application/json": components["schemas"]["OutputView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete: {
@@ -6288,6 +6713,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update: {
@@ -6313,6 +6745,13 @@ export interface operations {
                     "application/json": components["schemas"]["OutputView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     deliveries: {
@@ -6342,12 +6781,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_OutputDeliveryView"];
                 };
             };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     test_output: {
@@ -6361,12 +6801,20 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            /** @description The test notification was delivered */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_providers: {
@@ -6394,6 +6842,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ProviderView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_provider: {
@@ -6417,6 +6872,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     probe_unsaved: {
@@ -6440,6 +6902,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderProbeResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_provider: {
@@ -6459,15 +6928,13 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Refused while agents, agent teams or worker profiles use the provider; `details` lists them (path `usedBy`) */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_provider: {
@@ -6493,6 +6960,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     probe_provider: {
@@ -6514,6 +6988,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderProbeResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -6541,6 +7022,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_CustomRole"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create: {
@@ -6564,6 +7052,13 @@ export interface operations {
                     "application/json": components["schemas"]["CustomRole"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete: {
@@ -6583,6 +7078,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update: {
@@ -6608,6 +7110,13 @@ export interface operations {
                     "application/json": components["schemas"]["CustomRole"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_access: {
@@ -6627,6 +7136,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccessSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_access: {
@@ -6650,6 +7166,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccessSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_approvals: {
@@ -6669,6 +7192,13 @@ export interface operations {
                     "application/json": components["schemas"]["ApprovalsSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_approvals: {
@@ -6692,6 +7222,13 @@ export interface operations {
                     "application/json": components["schemas"]["ApprovalsSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_harness: {
@@ -6711,6 +7248,13 @@ export interface operations {
                     "application/json": components["schemas"]["HarnessSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_harness: {
@@ -6734,6 +7278,13 @@ export interface operations {
                     "application/json": components["schemas"]["HarnessSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_oidc: {
@@ -6753,6 +7304,13 @@ export interface operations {
                     "application/json": components["schemas"]["OidcSettings"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_oidc: {
@@ -6776,14 +7334,13 @@ export interface operations {
                     "application/json": components["schemas"]["OidcSettings"];
                 };
             };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     bulk_share: {
@@ -6809,6 +7366,13 @@ export interface operations {
                     "application/json": components["schemas"]["BulkShareResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get: {
@@ -6831,6 +7395,13 @@ export interface operations {
                     "application/json": components["schemas"]["ShareRequest"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     share: {
@@ -6855,6 +7426,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_skills: {
@@ -6882,6 +7460,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_Skill"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_skill: {
@@ -6905,6 +7490,13 @@ export interface operations {
                     "application/json": components["schemas"]["Skill"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     bulk_delete_skills: {
@@ -6928,6 +7520,13 @@ export interface operations {
                     "application/json": components["schemas"]["BulkLifecycleResponse"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_skill: {
@@ -6949,6 +7548,13 @@ export interface operations {
                     "application/json": components["schemas"]["Skill"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_skill: {
@@ -6968,6 +7574,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_skill: {
@@ -6993,6 +7606,13 @@ export interface operations {
                     "application/json": components["schemas"]["Skill"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_runs: {
@@ -7022,6 +7642,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamRunPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_run: {
@@ -7043,6 +7670,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamRunDetail"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     cancel_run: {
@@ -7064,13 +7698,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamRunDetail"];
                 };
             };
-            /** @description the run already ended */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -7098,6 +7732,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_AccessTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create: {
@@ -7121,6 +7762,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccessTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete: {
@@ -7140,6 +7788,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update: {
@@ -7165,6 +7820,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccessTeam"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_members: {
@@ -7194,6 +7856,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_TeamMember"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     add_member: {
@@ -7219,6 +7888,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamMember"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     remove_member: {
@@ -7239,6 +7915,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     resources: {
@@ -7264,6 +7947,13 @@ export interface operations {
                     "application/json": components["schemas"]["TeamResourcesPage"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list: {
@@ -7293,6 +7983,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_ToolPolicyView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create: {
@@ -7316,6 +8013,13 @@ export interface operations {
                     "application/json": components["schemas"]["ToolPolicyView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete: {
@@ -7335,6 +8039,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update: {
@@ -7360,6 +8071,13 @@ export interface operations {
                     "application/json": components["schemas"]["ToolPolicyView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_triggers: {
@@ -7388,6 +8106,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_Trigger"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_trigger: {
@@ -7411,6 +8136,13 @@ export interface operations {
                     "application/json": components["schemas"]["Trigger"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_trigger: {
@@ -7430,6 +8162,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_trigger: {
@@ -7455,6 +8194,13 @@ export interface operations {
                     "application/json": components["schemas"]["Trigger"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_users: {
@@ -7482,6 +8228,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_User"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_user_role: {
@@ -7507,6 +8260,13 @@ export interface operations {
                     "application/json": components["schemas"]["User"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_launches: {
@@ -7535,6 +8295,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_WorkerLaunch"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_launch: {
@@ -7556,6 +8323,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerLaunch"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_launch: {
@@ -7575,6 +8349,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     archive_launch: {
@@ -7596,6 +8377,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerLaunch"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     launch_logs: {
@@ -7617,6 +8405,13 @@ export interface operations {
                     "application/json": components["schemas"]["LaunchLogs"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     stop_launch: {
@@ -7638,6 +8433,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerLaunch"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_profiles: {
@@ -7665,6 +8467,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_profile: {
@@ -7688,6 +8497,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     get_profile: {
@@ -7709,6 +8525,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     delete_profile: {
@@ -7728,12 +8551,13 @@ export interface operations {
                 };
                 content?: never;
             };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     update_profile: {
@@ -7759,6 +8583,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     bootstrap: {
@@ -7780,6 +8611,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerBootstrap"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     disable_profile: {
@@ -7801,6 +8639,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     enable_profile: {
@@ -7822,6 +8667,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerProfile"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     profile_mappings: {
@@ -7851,6 +8703,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_EnvMapping"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     launch_profile: {
@@ -7872,6 +8731,13 @@ export interface operations {
                     "application/json": components["schemas"]["WorkerLaunch"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     rotate_token: {
@@ -7893,6 +8759,13 @@ export interface operations {
                     "application/json": components["schemas"]["IssuedWorkerToken"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_tokens: {
@@ -7922,6 +8795,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_WorkerTokenView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     create_token: {
@@ -7945,6 +8825,13 @@ export interface operations {
                     "application/json": components["schemas"]["IssuedWorkerToken"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     revoke_token: {
@@ -7964,6 +8851,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     list_workers: {
@@ -7991,6 +8885,13 @@ export interface operations {
                     "application/json": components["schemas"]["Page_WorkerView"];
                 };
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     healthz: {
@@ -8009,6 +8910,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     metrics: {
@@ -8029,13 +8937,13 @@ export interface operations {
                     "text/plain": unknown;
                 };
             };
-            /** @description A metrics token is configured and the request did not present it */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
         };
     };
     readyz: {
@@ -8054,6 +8962,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ErrorResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
             /** @description A dependency is unavailable */
             503: {
                 headers: {

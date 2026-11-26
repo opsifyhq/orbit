@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{ToResponse, ToSchema};
 
 use orbit_domain::{DomainError, ValidationIssue};
 use orbit_security::SecurityError;
@@ -24,6 +24,12 @@ pub struct ErrorBody {
 pub struct ErrorEnvelope {
     pub error: ErrorBody,
 }
+
+/// Shared OpenAPI response for the error envelope returned by failed requests. `details`
+/// carries field-level validation issues and, for conflicts, the dependants that must be
+/// removed first.
+#[derive(ToResponse)]
+pub struct ErrorResponse(pub ErrorEnvelope);
 
 #[derive(Debug, Clone)]
 pub struct ApiError {
