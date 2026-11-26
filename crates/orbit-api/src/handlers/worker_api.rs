@@ -163,6 +163,10 @@ pub struct EventRequest {
     pub message: String,
     #[serde(default)]
     pub data: serde_json::Value,
+    /// Per-event id from the worker. A retried post with the same id returns the stored
+    /// event instead of adding it twice (#433). Older workers omit it.
+    #[serde(default)]
+    pub event_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,18 +982,22 @@ pub async fn event(
             format!("unknown event kind '{}'", body.kind),
         )])
     })?;
-    let event = state
+    let (event, inserted) = state
         .store
-        .append_execution_event(
+        .append_execution_event_once(
             execution.org_id,
             execution.id,
+            body.event_id,
             kind.as_str(),
             level,
             &body.message,
             &body.data,
         )
         .await?;
-    publish_event(&state, &execution, &event).await;
+    // A repeat was already published when it was first stored.
+    if inserted {
+        publish_event(&state, &execution, &event).await;
+    }
     Ok(Json(serde_json::to_value(event).unwrap_or_default()))
 }
 

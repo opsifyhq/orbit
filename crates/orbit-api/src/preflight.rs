@@ -11,6 +11,10 @@
 //! 3. the harness is enabled and `available`,
 //! 4. the agent's `autonomy.maxExecutionsPerHour` quota has headroom.
 //!
+//! The quota (and, for manual runs, reruns and triggers, `maxConcurrentExecutions`) is
+//! checked again under a per-agent lock when the execution is inserted, see
+//! [`create_execution_within_agent_limits`]; the earlier checks only fail fast.
+//!
 //! Callers with an HTTP request build the [`AccessScope`] from the request identity.
 //! Background callers have no request, so they resolve a stored identity with
 //! [`background_access`] (trigger owner, runtime creator, team-run requester) and load
@@ -222,6 +226,84 @@ pub async fn require_hourly_quota(
         }
     }
     Ok(())
+}
+
+/// Which per-agent limits [`create_execution_within_agent_limits`] enforces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentLimits {
+    /// `resources.maxConcurrentExecutions` and `autonomy.maxExecutionsPerHour`: manual
+    /// runs, reruns and scheduled triggers.
+    ConcurrencyAndQuota,
+    /// Only the hourly quota: team steps and runtime ticks, which have never counted
+    /// against the agent's concurrency limit.
+    QuotaOnly,
+}
+
+/// Create an execution while holding the agent's execution lock, so the active count and
+/// the hourly quota are checked against what is stored when the row is inserted (#433).
+/// Without the lock, parallel requests all read the same count and all insert.
+///
+/// A request whose idempotency key already names an execution of this agent returns that
+/// execution without counting against the limits; a key used for another agent is a
+/// `409`. Breaching a limit, or waiting too long for the lock, is a `429`
+/// (`rate_limited`). The lock is the licence-limit advisory lock under a per-agent key,
+/// taken before (and released after) the installation-wide execution licence lock.
+pub async fn create_execution_within_agent_limits(
+    state: &AppState,
+    new: orbit_store::executions::NewExecution<'_>,
+    spec: &AgentSpec,
+    limits: AgentLimits,
+) -> Result<orbit_store::ExecutionRecord, ApiError> {
+    if let Some(existing) = replay(state, &new).await? {
+        return Ok(existing);
+    }
+    let _agent_lock = state
+        .store
+        .license_limit_guard(&format!("agent-executions:{}", new.agent_id))
+        .await
+        .map_err(|error| match error {
+            orbit_store::StoreError::Conflict(_) => ApiError::rate_limited(
+                "the agent is busy starting another execution; retry shortly",
+            ),
+            other => other.into(),
+        })?;
+    // A concurrent request with the same key may have created it while this one waited.
+    if let Some(existing) = replay(state, &new).await? {
+        return Ok(existing);
+    }
+    if limits == AgentLimits::ConcurrencyAndQuota {
+        let active = state
+            .store
+            .count_active_executions_for_agent(new.org_id, new.agent_id)
+            .await?;
+        let maximum = spec.resources.max_concurrent_executions;
+        if active >= maximum as i64 {
+            return Err(ApiError::rate_limited(format!(
+                "agent already has {active} active execution(s); maxConcurrentExecutions is {maximum}"
+            )));
+        }
+    }
+    require_hourly_quota(state, new.org_id, new.agent_id, spec).await?;
+    state.create_execution_with_limit(new).await
+}
+
+async fn replay(
+    state: &AppState,
+    new: &orbit_store::executions::NewExecution<'_>,
+) -> Result<Option<orbit_store::ExecutionRecord>, ApiError> {
+    let Some(key) = new.idempotency_key else {
+        return Ok(None);
+    };
+    match state
+        .store
+        .get_execution_by_idempotency_key(new.org_id, key)
+        .await?
+    {
+        Some(existing) if existing.agent_id != new.agent_id => Err(ApiError::conflict(
+            "this idempotency key was already used for another execution",
+        )),
+        other => Ok(other),
+    }
 }
 
 /// The single execution preflight. Build it with the agent, the spec that will actually

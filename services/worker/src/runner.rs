@@ -1155,10 +1155,14 @@ async fn post_event(
     execution_id: Uuid,
     request: &crate::client::EventRequest<'_>,
 ) -> anyhow::Result<()> {
+    // One id for every attempt: a retry after a lost response is recognised, not stored again.
+    let event_id = Uuid::now_v7();
     state
         .retry
         .for_events()
-        .run("post event", || state.client.event(execution_id, request))
+        .run("post event", || {
+            state.client.event_once(execution_id, request, event_id)
+        })
         .await
 }
 
@@ -1793,6 +1797,8 @@ mod lifecycle_tests {
         cancel_requested: Arc<AtomicBool>,
         hang_connection: bool,
         context: Arc<Mutex<Option<Value>>>,
+        /// `eventId` of every `/events` call, failed attempts included.
+        event_ids: Arc<Mutex<Vec<Value>>>,
     }
 
     impl Api {
@@ -1825,6 +1831,7 @@ mod lifecycle_tests {
         if api.event_delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(api.event_delay_ms)).await;
         }
+        api.event_ids.lock().unwrap().push(body["eventId"].clone());
         let remaining = api.event_failures.load(Ordering::SeqCst);
         if remaining > 0 {
             api.event_failures.store(remaining - 1, Ordering::SeqCst);
@@ -2171,6 +2178,38 @@ mod lifecycle_tests {
             .map(|event| event["message"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(messages, ["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn retried_event_posts_reuse_one_event_id() {
+        // #433: the API recognises a retried post by its id, so every attempt of one event
+        // must carry the same id and the next event a new one.
+        let (api, state) = serve(Api {
+            event_failures: Arc::new(AtomicUsize::new(2)),
+            ..Default::default()
+        })
+        .await;
+        let id = Uuid::now_v7();
+        for message in ["one", "two"] {
+            post_event(
+                &state,
+                id,
+                &crate::client::EventRequest {
+                    kind: "log",
+                    level: "info",
+                    message,
+                    data: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let ids = api.event_ids.lock().unwrap().clone();
+        assert_eq!(ids.len(), 4, "two failed attempts, then one post per event");
+        assert!(ids.iter().all(|id| id.as_str().is_some()), "{ids:?}");
+        assert_eq!(ids[0], ids[1]);
+        assert_eq!(ids[1], ids[2]);
+        assert_ne!(ids[2], ids[3]);
     }
 
     #[tokio::test]

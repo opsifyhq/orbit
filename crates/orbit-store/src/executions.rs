@@ -460,6 +460,26 @@ impl Store {
         message: &str,
         data: &Value,
     ) -> StoreResult<ExecutionEventRecord> {
+        let (record, _) = self
+            .append_execution_event_once(org_id, execution_id, None, kind, level, message, data)
+            .await?;
+        Ok(record)
+    }
+
+    /// Append an event, recognising a repeat of the same `event_key` (#433). A worker
+    /// retries a post whose response was lost; with a key, the repeat returns the stored
+    /// row and `false` instead of adding the event again. Without a key every call appends.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_execution_event_once(
+        &self,
+        org_id: Uuid,
+        execution_id: Uuid,
+        event_key: Option<Uuid>,
+        kind: &str,
+        level: LogLevel,
+        message: &str,
+        data: &Value,
+    ) -> StoreResult<(ExecutionEventRecord, bool)> {
         // seq is MAX+1 per execution. Under READ COMMITTED concurrent appends would read the
         // same MAX and collide on UNIQUE (execution_id, seq), so serialize allocation per
         // execution with a transaction-scoped advisory lock. An advisory lock (rather than
@@ -472,6 +492,21 @@ impl Store {
         .bind(execution_id)
         .execute(&mut *tx)
         .await?;
+        // Under the per-execution lock a repeat cannot race the first insert; the partial
+        // unique index on (execution_id, event_key) is the backstop.
+        if let Some(key) = event_key {
+            let existing = sqlx::query_as::<_, ExecutionEventRecord>(
+                "SELECT * FROM execution_events WHERE execution_id = $1 AND event_key = $2",
+            )
+            .bind(execution_id)
+            .bind(key)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(record) = existing {
+                tx.commit().await?;
+                return Ok((record, false));
+            }
+        }
         let record = sqlx::query_as::<_, ExecutionEventRecord>(
             r#"
             WITH next_seq AS (
@@ -479,8 +514,9 @@ impl Store {
                 FROM execution_events
                 WHERE execution_id = $1
             )
-            INSERT INTO execution_events (org_id, execution_id, seq, kind, level, message, data)
-            SELECT $2, $1, next_seq.seq, $3, $4, $5, $6 FROM next_seq
+            INSERT INTO execution_events
+                (org_id, execution_id, seq, kind, level, message, data, event_key)
+            SELECT $2, $1, next_seq.seq, $3, $4, $5, $6, $7 FROM next_seq
             RETURNING *
             "#,
         )
@@ -490,10 +526,11 @@ impl Store {
         .bind(level.as_str())
         .bind(message)
         .bind(data)
+        .bind(event_key)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(record)
+        Ok((record, true))
     }
 
     pub async fn list_execution_events(

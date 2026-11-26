@@ -2188,6 +2188,92 @@ async fn concurrent_event_appends_get_dense_unique_seq() {
     assert_eq!(seqs, (1..=N).collect::<Vec<_>>());
 }
 
+/// #433: a worker retries an event post whose response was lost. A repeat with the same
+/// key returns the stored row; a new key or no key appends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replayed_event_keys_do_not_add_rows() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let (agent, version) = store
+        .create_agent(org, Some(user), &definition("Replayed Events Agent"))
+        .await
+        .unwrap();
+    let execution = store
+        .create_execution(NewExecution {
+            org_id: org,
+            agent_id: agent.id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: HarnessKind::Mock,
+            trigger_source: TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: serde_json::json!({ "task": "replay" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: Some(user),
+            idempotency_key: None,
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
+    let key = uuid::Uuid::now_v7();
+    let append = |key: Option<uuid::Uuid>, message: &'static str| {
+        let store = store.clone();
+        let execution_id = execution.id;
+        async move {
+            store
+                .append_execution_event_once(
+                    org,
+                    execution_id,
+                    key,
+                    "log",
+                    LogLevel::Info,
+                    message,
+                    &serde_json::json!({}),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    let (first, inserted) = append(Some(key), "tool call").await;
+    assert!(inserted);
+    let (again, inserted) = append(Some(key), "tool call").await;
+    assert!(!inserted, "a repeat with the same key is not stored again");
+    assert_eq!(again.id, first.id);
+    assert_eq!(again.seq, first.seq);
+
+    // Parallel repeats of one key still store one row.
+    let other = uuid::Uuid::now_v7();
+    let tasks: Vec<_> = (0..10)
+        .map(|_| tokio::spawn(append(Some(other), "parallel")))
+        .collect();
+    let mut repeats = Vec::new();
+    for task in tasks {
+        repeats.push(task.await.unwrap());
+    }
+    assert_eq!(repeats.iter().filter(|(_, inserted)| *inserted).count(), 1);
+    assert!(repeats.iter().all(|(event, _)| event.id == repeats[0].0.id));
+
+    // No key (older workers, platform events) always appends.
+    append(None, "keyless").await;
+    append(None, "keyless").await;
+
+    let stored = store
+        .list_execution_events(org, execution.id, 0, 100)
+        .await
+        .unwrap();
+    let messages: Vec<&str> = stored.iter().map(|event| event.message.as_str()).collect();
+    assert_eq!(messages, ["tool call", "parallel", "keyless", "keyless"]);
+    let seqs: Vec<i64> = stored.iter().map(|event| event.seq).collect();
+    assert_eq!(seqs, [1, 2, 3, 4]);
+}
+
 #[tokio::test]
 async fn single_execution_launch_tokens_are_revoked_when_execution_is_terminal() {
     let Some(store) = test_store().await else {
