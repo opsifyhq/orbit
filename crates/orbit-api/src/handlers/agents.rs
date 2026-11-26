@@ -311,7 +311,7 @@ pub struct DeleteAgentQuery {
     pub hard: Option<bool>,
 }
 
-#[utoipa::path(delete, path = "/api/v1/agents/{agent_id}", tag = "agents", params(DeleteAgentQuery), responses((status = 200, body = AgentDetail), (status = 204)))]
+#[utoipa::path(delete, path = "/api/v1/agents/{agent_id}", tag = "agents", params(DeleteAgentQuery), responses((status = 200, body = AgentDetail), (status = 204), (status = 409, description = "A permanent delete is refused while agent teams or worker profiles use the agent; `details` lists them (path `usedBy`)", body = crate::error::ErrorEnvelope)))]
 pub async fn delete_agent(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -321,14 +321,15 @@ pub async fn delete_agent(
     auth.require(Permission::AgentsWrite)?;
     require_agent_manage(&state, &auth, agent_id).await?;
     if query.hard.unwrap_or(false) {
-        state.store.delete_agent(auth.org_id, agent_id).await?;
+        let agent = state.store.get_agent(auth.org_id, agent_id).await?;
+        let removed = state.store.delete_agent(auth.org_id, agent_id).await?;
         audit::record(
             &state,
             &auth,
             "agent.deleted",
             Some("agent"),
             Some(agent_id),
-            serde_json::json!({ "hard": true }),
+            serde_json::json!({ "hard": true, "name": agent.name, "removed": removed }),
         )
         .await;
         return Ok(StatusCode::NO_CONTENT.into_response());
@@ -347,6 +348,24 @@ pub async fn delete_agent(
     )
     .await;
     Ok(Json(load_agent_detail(&state, &auth, agent_id).await?).into_response())
+}
+
+/// What a permanent delete of the agent would be refused for (`usedBy`) and what it would
+/// remove with it (`removes`), for the confirmation dialog (#434).
+#[utoipa::path(get, path = "/api/v1/agents/{agent_id}/delete-impact", tag = "agents", responses((status = 200, body = orbit_store::in_use::AgentDeleteImpact)))]
+pub async fn agent_delete_impact(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<orbit_store::in_use::AgentDeleteImpact>, ApiError> {
+    auth.require(Permission::AgentsWrite)?;
+    require_agent_manage(&state, &auth, agent_id).await?;
+    Ok(Json(
+        state
+            .store
+            .agent_delete_impact(auth.org_id, agent_id)
+            .await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/agents/{agent_id}/activate", tag = "agents", responses((status = 200, body = AgentDetail)))]

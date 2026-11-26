@@ -63,6 +63,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::agents::activate_agent),
         )
         .route(
+            "/api/v1/agents/{agent_id}/delete-impact",
+            get(handlers::agents::agent_delete_impact),
+        )
+        .route(
             "/api/v1/agents/{agent_id}/pause",
             post(handlers::agents::pause_agent),
         )

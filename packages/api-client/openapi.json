@@ -670,7 +670,17 @@
               }
             }
           },
-          "204": {}
+          "204": {},
+          "409": {
+            "description": "A permanent delete is refused while agent teams or worker profiles use the agent; `details` lists them (path `usedBy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
         }
       },
       "patch": {
@@ -735,6 +745,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{agent_id}/delete-impact": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "What a permanent delete of the agent would be refused for (`usedBy`) and what it would\nremove with it (`removes`), for the confirmation dialog (#434).",
+        "operationId": "agent_delete_impact",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleteImpact"
                 }
               }
             }
@@ -1441,7 +1482,17 @@
           }
         ],
         "responses": {
-          "204": {}
+          "204": {},
+          "409": {
+            "description": "Refused while agents, agent teams, environment mappings or worker profiles use the connection; `details` lists them (path `usedBy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
         }
       },
       "patch": {
@@ -2532,7 +2583,17 @@
           }
         ],
         "responses": {
-          "204": {}
+          "204": {},
+          "409": {
+            "description": "Refused while agents, agent teams or worker profiles use the provider; `details` lists them (path `usedBy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
         }
       },
       "patch": {
@@ -4688,6 +4749,30 @@
           }
         },
         "additionalProperties": false
+      },
+      "AgentDeleteImpact": {
+        "type": "object",
+        "description": "What permanently deleting an agent would do: what blocks it, and what goes with it.",
+        "required": [
+          "usedBy",
+          "removes"
+        ],
+        "properties": {
+          "removes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Records the delete removes or changes with the agent, such as \"3 executions\" or\n\"output Slack alerts (deleted)\"."
+          },
+          "usedBy": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Records that still use the agent. While any are listed, the delete is refused."
+          }
+        }
       },
       "AgentDetail": {
         "type": "object",

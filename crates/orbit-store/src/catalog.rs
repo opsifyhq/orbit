@@ -202,15 +202,28 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("provider".into()))
     }
 
+    /// Delete a provider. Refused with [`StoreError::InUse`] while an agent, agent team or
+    /// worker profile still names it (#434).
     pub async fn delete_provider(&self, org_id: Uuid, provider_id: Uuid) -> StoreResult<()> {
-        let result = sqlx::query("DELETE FROM providers WHERE org_id = $1 AND id = $2")
-            .bind(org_id)
-            .bind(provider_id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() == 0 {
+        let mut tx = self.begin().await?;
+        // Lock the row first so a concurrent save that starts using it waits or fails.
+        let found: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM providers WHERE org_id = $1 AND id = $2 FOR UPDATE")
+                .bind(org_id)
+                .bind(provider_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if found.is_none() {
             return Err(StoreError::NotFound("provider".into()));
         }
+        let used_by = crate::in_use::provider_used_by(&mut tx, org_id, provider_id).await?;
+        StoreError::refuse_in_use("provider", used_by)?;
+        sqlx::query("DELETE FROM providers WHERE org_id = $1 AND id = $2")
+            .bind(org_id)
+            .bind(provider_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -422,15 +435,28 @@ impl Store {
         .ok_or_else(|| StoreError::NotFound("connection".into()))
     }
 
+    /// Delete a connection. Refused with [`StoreError::InUse`] while an agent binding, agent
+    /// team, environment mapping or worker profile still points at it (#434).
     pub async fn delete_connection(&self, org_id: Uuid, connection_id: Uuid) -> StoreResult<()> {
-        let result = sqlx::query("DELETE FROM connections WHERE org_id = $1 AND id = $2")
-            .bind(org_id)
-            .bind(connection_id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() == 0 {
+        let mut tx = self.begin().await?;
+        let found: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(org_id)
+        .bind(connection_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if found.is_none() {
             return Err(StoreError::NotFound("connection".into()));
         }
+        let used_by = crate::in_use::connection_used_by(&mut tx, org_id, connection_id).await?;
+        StoreError::refuse_in_use("connection", used_by)?;
+        sqlx::query("DELETE FROM connections WHERE org_id = $1 AND id = $2")
+            .bind(org_id)
+            .bind(connection_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 }

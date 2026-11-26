@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { BulkActionsBar } from "@/components/bulk-actions-bar";
 import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { Callout } from "@/components/ui/callout";
-import { useConfirm } from "@/components/ui/confirm";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { ImportPortableButton } from "@/components/import-portable-dialog";
@@ -25,9 +24,11 @@ import {
   toggleId,
 } from "@/components/ui/resource-list";
 import { AgentRow } from "@/components/agents/agent-row";
+import { useConfirmAgentDelete } from "@/components/agents/use-confirm-agent-delete";
 import { api } from "@/lib/api";
 import { queryKeys, unwrap, useAllAgents } from "@/lib/queries";
 import { errorMessage } from "@orbit/api-client";
+import { deleteFailureMessage } from "@/lib/delete-impact";
 import type { AgentSummary } from "@/lib/types";
 
 type Filter = "current" | "active" | "draft" | "paused" | "archived";
@@ -54,7 +55,7 @@ export default function AgentsPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const agents = useAllAgents();
   const queryClient = useQueryClient();
-  const confirm = useConfirm();
+  const confirmAgentDelete = useConfirmAgentDelete();
 
   const invalidateAgents = () => queryClient.invalidateQueries({ queryKey: queryKeys.agents() });
 
@@ -69,7 +70,7 @@ export default function AgentsPage() {
       toast.success("Agent deleted");
       void invalidateAgents();
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error) => toast.error(deleteFailureMessage("agent", error, errorMessage(error))),
   });
 
   const restore = useMutation({
@@ -210,14 +211,7 @@ export default function AgentsPage() {
                   onSelect={(checked) => setSelected((current) => toggleId(current, agent.id, checked))}
                   onRestore={(target) => restore.mutate(target.id)}
                   onDelete={async (target) => {
-                    const confirmed = await confirm({
-                      title: `Delete ${target.name} permanently?`,
-                      description:
-                        "This removes the agent and its whole execution history. It cannot be undone.",
-                      confirmLabel: "Delete agent",
-                      destructive: true,
-                    });
-                    if (confirmed) hardDelete.mutate(target.id);
+                    if (await confirmAgentDelete(target)) hardDelete.mutate(target.id);
                   }}
                 />
               ))}

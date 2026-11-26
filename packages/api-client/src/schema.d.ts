@@ -217,6 +217,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent_id}/delete-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a permanent delete of the agent would be refused for (`usedBy`) and what it would
+         *     remove with it (`removes`), for the confirmation dialog (#434).
+         */
+        get: operations["agent_delete_impact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/executions": {
         parameters: {
             query?: never;
@@ -1746,6 +1766,16 @@ export interface components {
             kind: string;
             metadata: components["schemas"]["AgentMetadata"];
             spec: components["schemas"]["AgentSpec"];
+        };
+        /** @description What permanently deleting an agent would do: what blocks it, and what goes with it. */
+        AgentDeleteImpact: {
+            /**
+             * @description Records the delete removes or changes with the agent, such as "3 executions" or
+             *     "output Slack alerts (deleted)".
+             */
+            removes: string[];
+            /** @description Records that still use the agent. While any are listed, the delete is refused. */
+            usedBy: string[];
         };
         AgentDetail: {
             /** Format: date-time */
@@ -4197,6 +4227,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description A permanent delete is refused while agent teams or worker profiles use the agent; `details` lists them (path `usedBy`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     update_agent: {
@@ -4241,6 +4280,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentDetail"];
+                };
+            };
+        };
+    };
+    agent_delete_impact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeleteImpact"];
                 };
             };
         };
@@ -4725,6 +4785,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Refused while agents, agent teams, environment mappings or worker profiles use the connection; `details` lists them (path `usedBy`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
@@ -5519,6 +5588,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Refused while agents, agent teams or worker profiles use the provider; `details` lists them (path `usedBy`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

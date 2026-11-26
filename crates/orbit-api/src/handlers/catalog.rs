@@ -287,7 +287,7 @@ pub async fn update_provider(
     Ok(Json(ProviderView::from_record(provider)))
 }
 
-#[utoipa::path(delete, path = "/api/v1/providers/{provider_id}", tag = "providers", responses((status = 204)))]
+#[utoipa::path(delete, path = "/api/v1/providers/{provider_id}", tag = "providers", responses((status = 204), (status = 409, description = "Refused while agents, agent teams or worker profiles use the provider; `details` lists them (path `usedBy`)", body = crate::error::ErrorEnvelope)))]
 pub async fn delete_provider(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -818,7 +818,7 @@ fn changed_url_field(
         .find(|field| normalized(before, field) != normalized(after, field))
 }
 
-#[utoipa::path(delete, path = "/api/v1/connections/{connection_id}", tag = "connectors", responses((status = 204)))]
+#[utoipa::path(delete, path = "/api/v1/connections/{connection_id}", tag = "connectors", responses((status = 204), (status = 409, description = "Refused while agents, agent teams, environment mappings or worker profiles use the connection; `details` lists them (path `usedBy`)", body = crate::error::ErrorEnvelope)))]
 pub async fn delete_connection(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,

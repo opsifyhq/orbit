@@ -42,6 +42,7 @@ pub mod dashboard;
 pub mod env_mappings;
 pub mod executions;
 pub mod identity;
+pub mod in_use;
 pub mod metrics;
 pub mod models;
 pub mod observe;
@@ -67,6 +68,13 @@ pub enum StoreError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A delete was refused because other records still use the item. `used_by` names
+    /// them ("agent Triage", "worker profile ci"), at most [`IN_USE_LIMIT`] entries.
+    #[error("conflict: {} is still used by {}; remove it there first", .resource, .used_by.join(", "))]
+    InUse {
+        resource: String,
+        used_by: Vec<String>,
+    },
     #[error("invalid: {0}")]
     Invalid(String),
     #[error("database error: {0}")]
@@ -134,6 +142,30 @@ fn is_transient_sqlstate(code: &str) -> bool {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+/// How many dependants an [`StoreError::InUse`] names at most.
+pub const IN_USE_LIMIT: i64 = 20;
+
+impl StoreError {
+    /// `Err(InUse)` when `used_by` is not empty.
+    pub fn refuse_in_use(resource: &str, used_by: Vec<String>) -> StoreResult<()> {
+        if used_by.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::InUse {
+            resource: resource.to_string(),
+            used_by,
+        })
+    }
+
+    /// The human message of an [`StoreError::InUse`] without the `conflict:` prefix.
+    pub fn in_use_message(resource: &str, used_by: &[String]) -> String {
+        format!(
+            "{resource} is still used by {}; remove it there first",
+            used_by.join(", ")
+        )
+    }
+}
 
 const LICENSE_LOCK_RETRY_BASE: Duration = Duration::from_millis(2);
 const LICENSE_LOCK_RETRY_MAX: Duration = Duration::from_millis(25);

@@ -405,19 +405,16 @@ impl Store {
     }
 
     /// Permanently delete an agent together with its versions, executions and other
-    /// agent-owned history. Refused with a `Conflict` while team run steps still reference
-    /// the agent: that history belongs to the team, not to the agent.
-    pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
-        let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
-            .bind(org_id)
-            .bind(agent_id)
-            .execute(&self.pool)
-            .await
-            .map_err(agent_delete_error)?;
-        if result.rows_affected() == 0 {
-            return Err(StoreError::NotFound("agent".into()));
-        }
-        Ok(())
+    /// agent-owned history, and return what went with it (for the audit entry).
+    ///
+    /// Refused with [`StoreError::InUse`] while an agent team or worker profile still lists
+    /// the agent (#434), and with a `Conflict` while team run steps reference it: that
+    /// history belongs to the team, not to the agent.
+    pub async fn delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<Vec<String>> {
+        let mut tx = self.begin().await?;
+        let removes = Self::delete_agent_in(&mut tx, org_id, agent_id).await?;
+        tx.commit().await?;
+        Ok(removes)
     }
 
     /// Check delete eligibility using the same SQL (and therefore the same FK rules) as
@@ -425,17 +422,35 @@ impl Store {
     /// deleted" reflects the real database constraints, not a hand-maintained copy.
     pub async fn check_delete_agent(&self, org_id: Uuid, agent_id: Uuid) -> StoreResult<()> {
         let mut tx = self.begin().await?;
-        let result = sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
-            .bind(org_id)
-            .bind(agent_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(agent_delete_error)?;
-        if result.rows_affected() == 0 {
-            return Err(StoreError::NotFound("agent".into()));
-        }
+        Self::delete_agent_in(&mut tx, org_id, agent_id).await?;
         tx.rollback().await?;
         Ok(())
+    }
+
+    async fn delete_agent_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        org_id: Uuid,
+        agent_id: Uuid,
+    ) -> StoreResult<Vec<String>> {
+        let found: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM agents WHERE org_id = $1 AND id = $2 FOR UPDATE")
+                .bind(org_id)
+                .bind(agent_id)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if found.is_none() {
+            return Err(StoreError::NotFound("agent".into()));
+        }
+        let used_by = crate::in_use::agent_used_by(tx, org_id, agent_id).await?;
+        StoreError::refuse_in_use("agent", used_by)?;
+        let removes = Self::agent_cascade_in(tx, org_id, agent_id).await?;
+        sqlx::query("DELETE FROM agents WHERE org_id = $1 AND id = $2")
+            .bind(org_id)
+            .bind(agent_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(agent_delete_error)?;
+        Ok(removes)
     }
 
     /// Validation report combining domain rules with store-level checks (provider and

@@ -70,7 +70,9 @@ Agent teams can also attach connections for all their steps
 ## Test a connection
 
 A connection page (`/connections/<id>`) has **Test**, **Edit**, **Export as YAML** and
-**Remove connection**. **Test** contacts the service with the stored credential:
+**Remove connection**. A connection that an agent, agent team, environment mapping or worker
+profile still uses cannot be removed: the page names them (the API answers `409` with them in
+`details`, path `usedBy`). **Test** contacts the service with the stored credential:
 
 - GitHub and GitLab: a request to `<baseUrl>/user`.
 - Generic webhook: a `HEAD` request to the URL.
