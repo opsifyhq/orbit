@@ -40,12 +40,20 @@ export function providerOptionValue(provider: WorkerProviderLike): string {
   return provider.kind === "harness_managed" ? String(config.provider ?? provider.name) : provider.name;
 }
 
-/** The provider row matching a profile's provider, and the models it offers. */
+/**
+ * The provider row matching a profile's provider, and the models it offers. A profile stores
+ * a harness-managed provider by the harness's provider name, which two providers for
+ * different harnesses can share (e.g. `anthropic` under OpenCode and under Pi); pass the
+ * worker's harness so the row for that harness wins.
+ */
 export function resolveProvider<T extends WorkerProviderLike>(
   providers: T[],
   provider: string,
+  harness?: string,
 ): { selectedProvider: T | undefined; providerModels: string[] } {
-  const selectedProvider = providers.find((candidate) => providerOptionValue(candidate) === provider);
+  const matches = providers.filter((candidate) => providerOptionValue(candidate) === provider);
+  const selectedProvider =
+    (harness ? matches.find((candidate) => providerHarness(candidate) === harness) : undefined) ?? matches[0];
   const settings = asRecord(asRecord(selectedProvider?.config).settings);
   const providerModels = Array.isArray(settings.models)
     ? settings.models.filter((item): item is string => typeof item === "string")
@@ -77,7 +85,7 @@ export function harnessMismatch(
   provider: string,
   providers: WorkerProviderLike[],
 ): HarnessMismatch | null {
-  const selected = resolveProvider(providers, provider).selectedProvider;
+  const selected = resolveProvider(providers, provider, workerHarness).selectedProvider;
   const modelHarness = providerHarness(selected);
   if (!workerHarness || !modelHarness || modelHarness === workerHarness) return null;
 

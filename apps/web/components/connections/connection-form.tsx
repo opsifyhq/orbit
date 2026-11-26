@@ -44,6 +44,7 @@ import {
 import { effectLabel, effectTone, humanizeIdentifier } from "@/lib/presentation";
 import type { ConnectionView } from "@/lib/types";
 import { useUnsavedChanges } from "@/lib/use-unsaved-changes";
+import { kubernetesAuthMode as authModeOf, kubernetesCredentialIssue } from "@/lib/kubernetes-credential";
 import { cn } from "@/lib/utils";
 
 const KUBERNETES_CONFIG_KEYS = new Set([
@@ -174,7 +175,13 @@ export function ConnectionForm({
   const startConfig = connection ? ((connection.config ?? {}) as Record<string, unknown>) : defaultConfig(firstSlug);
 
   const [connectorSlug, setConnectorSlug] = useState(firstSlug);
-  const [name, setName] = useState(connection?.name ?? "");
+  // A new connection starts with a sensible name for its service (set here, not in an
+  // effect, so the unsaved-changes guard does not count it as an edit).
+  const [name, setName] = useState(() => {
+    if (connection) return connection.name;
+    const first = connectors.find((item) => item.slug === firstSlug);
+    return first ? `${first.name} connection` : "";
+  });
   const [credential, setCredential] = useState("");
   const [kubeconfigName, setKubeconfigName] = useState("");
   const [scopes, setScopes] = useState<string[]>(connection?.scopes ?? []);
@@ -183,7 +190,6 @@ export function ConnectionForm({
   const [url, setUrl] = useState(urlFromConfig(firstSlug, startConfig));
   // Access is stored separately; keep pending access edits in the unsaved state too.
   const [accessDirty, setAccessDirty] = useState(false);
-  useUnsavedChanges({ accessDirty });
   const accessRef = useRef<ResourceAccessHandle>(null);
 
   const connector = connectors.find((item) => item.slug === connectorSlug);
@@ -223,6 +229,21 @@ export function ConnectionForm({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectorSlug, connection?.id]);
+
+  useUnsavedChanges({ connectorSlug, name, credential, scopes, configText, url, namespaceText, accessDirty });
+
+  // The credential field holds a token or a kubeconfig depending on the mode. Switching mode
+  // (in the select or in Advanced config) drops what was entered for the other one.
+  const previousAuthMode = useRef(kubernetesAuthMode);
+  useEffect(() => {
+    // Half-typed Advanced JSON does not parse; that is not a mode change.
+    if (isKubernetes && !parsedConfig) return;
+    if (previousAuthMode.current === kubernetesAuthMode) return;
+    previousAuthMode.current = kubernetesAuthMode;
+    setCredential("");
+    setKubeconfigName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kubernetesAuthMode, parsedConfig === null]);
 
   function setKubernetesConfig(patch: Record<string, unknown>) {
     if (!parsedConfig) return;
@@ -278,6 +299,18 @@ export function ConnectionForm({
     }
   }
   if (!parsedConfig) issues.push({ section: "advanced", message: "The configuration must be a JSON object." });
+  const storedAuthMode = authModeOf(connection?.config as Record<string, unknown> | undefined);
+  const credentialIssue = kubernetesAuthMode
+    ? kubernetesCredentialIssue({
+        editing: editing && Boolean(connection?.hasCredential),
+        storedMode: storedAuthMode,
+        mode: authModeOf(parsedConfig),
+        credential,
+      })
+    : null;
+  // Whether the stored credential still applies (a Kubernetes one only in its own mode).
+  const storedCredential = editing && Boolean(connection?.hasCredential) && (!isKubernetes || storedAuthMode === authModeOf(parsedConfig));
+  if (credentialIssue) issues.push({ section: "account", message: credentialIssue });
   if (configError) issues.push({ section: "account", message: configError });
   const [showIssues, setShowIssues] = useState(false);
   const issueCount = (id: SectionId) => (showIssues ? issues.filter((issue) => issue.section === id).length : 0);
@@ -495,7 +528,7 @@ export function ConnectionForm({
                   label="Or paste kubeconfig"
                   htmlFor="connection-credential"
                   hint={
-                    editing && connection?.hasCredential && !credential
+                    storedCredential && !credential
                       ? "A kubeconfig is stored. Leave this empty to keep it, or paste a new one to replace it."
                       : "Paste a kubeconfig with a static token or client certificate. exec auth is refused."
                   }
@@ -505,7 +538,7 @@ export function ConnectionForm({
                     className="min-h-28 font-mono text-base md:text-xs"
                     value={credential}
                     spellCheck={false}
-                    placeholder={editing && connection?.hasCredential ? "••••••••  (stored)" : undefined}
+                    placeholder={storedCredential ? "••••••••  (stored)" : undefined}
                     onChange={(event) => setCredential(event.target.value)}
                   />
                 </Field>
@@ -531,7 +564,7 @@ export function ConnectionForm({
                   type="password"
                   value={credential}
                   autoComplete="new-password"
-                  placeholder={editing && connection?.hasCredential ? "••••••••  (stored)" : undefined}
+                  placeholder={storedCredential ? "••••••••  (stored)" : undefined}
                   onChange={(event) => setCredential(event.target.value)}
                 />
               </Field>

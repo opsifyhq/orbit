@@ -24,7 +24,7 @@ export { providerOptionValue, resolveProvider };
 export function ModelFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
   const { values, set } = form;
   const { provider, model } = values;
-  const { selectedProvider, providerModels } = resolveProvider(providers, provider);
+  const { selectedProvider, providerModels } = resolveProvider(providers, provider, values.harness);
   const mismatch = harnessMismatch(values.harness, provider, providers);
 
   return (
@@ -45,7 +45,7 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
                     set({ provider: "", model: "" });
                     return;
                   }
-                  const next = providers.find((candidate) => providerOptionValue(candidate) === event.target.value);
+                  const next = resolveProvider(providers, event.target.value, values.harness).selectedProvider;
                   const config = (next?.config ?? {}) as Record<string, unknown>;
                   const settings = config.settings as Record<string, unknown> | undefined;
                   const catalog = Array.isArray(settings?.models)
@@ -61,6 +61,13 @@ export function ModelFields({ form, providers }: { form: WorkerFormApi; provider
                   <optgroup label="Harness-authenticated (worker handles auth)">
                     {providers
                       .filter((candidate) => candidate.kind === "harness_managed")
+                      // One option per stored value: providers for different harnesses can
+                      // share a provider name, and the profile stores only that name.
+                      .filter(
+                        (candidate) =>
+                          resolveProvider(providers, providerOptionValue(candidate), values.harness).selectedProvider ===
+                          candidate,
+                      )
                       .map((candidate) => {
                         const config = (candidate.config ?? {}) as Record<string, unknown>;
                         const optionName = providerOptionValue(candidate);
