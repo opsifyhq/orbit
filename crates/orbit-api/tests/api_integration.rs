@@ -5666,12 +5666,9 @@ async fn outcome_writer_never_contacts_a_foreign_repository() {
 /// outcome to the source issue: the claim label is removed and the failed label added.
 #[tokio::test]
 async fn operator_cancel_removes_the_claim_label_from_the_source_issue() {
-    let Some(app) = test_app(true).await else {
+    let Some(app) = test_app_allowing_loopback().await else {
         return;
     };
-    // The mock GitHub listens on loopback, which the outbound guard (#142) blocks unless
-    // explicitly allowed.
-    std::env::set_var("ORBIT_OUTBOUND_ALLOWED_HOSTS", "127.0.0.1");
     let writes: Arc<std::sync::Mutex<Vec<(String, Value)>>> = Arc::default();
     let recorded = writes.clone();
     let mock = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -15060,9 +15057,10 @@ async fn concurrent_idempotent_execution_at_the_limit_returns_the_first_executio
             ))
             .unwrap()
     };
-    // The "first" request inserts through an unlimited router; the duplicate runs at a
-    // zero limit, so only the lookup under the lock can save it from a 402 (#396).
-    let unlimited = build_router(app.state.clone());
+    // A duplicate runs at a zero limit, so only the lookup under the lock can save it
+    // from a 402 (#396). It takes the per-agent lock before the licence lock, so insert
+    // the first row directly while the duplicate waits: sending the first request through
+    // a second router would deadlock on that per-agent lock (#433).
     app.state.license = LicenseHandle::from_status(licensed(&[], json!({ "executionsPerDay": 0 })));
     let limited = build_router(app.state.clone());
 
@@ -15079,13 +15077,39 @@ async fn concurrent_idempotent_execution_at_the_limit_returns_the_first_executio
     };
     // Let the duplicate miss the fast-path lookup and queue on the lock.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let (status, first) = send(&unlimited, request(&key)).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    let agent = app.store.get_agent(app.org_id, app.agent_id).await.unwrap();
+    let version = app
+        .store
+        .get_current_version(app.org_id, &agent)
+        .await
+        .unwrap();
+    let first = app
+        .store
+        .create_execution(orbit_store::executions::NewExecution {
+            org_id: app.org_id,
+            agent_id: app.agent_id,
+            agent_version_id: version.id,
+            agent_name: &agent.name,
+            harness_kind: orbit_domain::HarnessKind::Mock,
+            trigger_source: orbit_domain::TriggerSource::Manual,
+            placement: "auto",
+            trigger_id: None,
+            input: json!({ "task": "idempotent at the limit" }),
+            session_ref: None,
+            skills: &[],
+            timeout_seconds: 30,
+            requested_by: None,
+            idempotency_key: Some(&key),
+            team_run_id: None,
+            team_step_index: None,
+        })
+        .await
+        .unwrap();
     drop(held);
 
     let (status, body) = duplicate.await.unwrap();
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["id"], first["id"]);
+    assert_eq!(body["id"], first.id.to_string());
 }
 
 #[tokio::test]
