@@ -172,8 +172,17 @@ executions still `dispatched` to that worker, marked `retryable: true`, audits
   run cleanup does not delete a session a continuous runtime needs. A configured
   `sessionDir` remains workspace-confined for agent-authored paths.
 - `task` size: the API rejects a task over 96 KiB before creating the execution. The
-  harness receives the prompt through argv, and its hard prompt limit is 100 KiB; the
-  remaining headroom covers headings, memory and connector context.
+  OpenCode and Pi adapters pass the prompt through argv, with a hard prompt limit of
+  100 KiB. The input payload (a previous workflow step's answer, memory, connector
+  context) gets the room the task and headings leave: when it does not fit, its largest
+  strings are shortened in the middle, keeping their start and end, with a
+  `… [N bytes truncated to fit the prompt limit] …` marker, and the run emits a `warn`
+  log. The run starts instead of failing with `invalid_config`.
+- Result text: OpenCode's `output.text` is the assistant text after the last tool call.
+  The adapter keeps at most 200,000 bytes of assistant text and drops the oldest first,
+  so the final answer and a workflow step's `OUTCOME:` line are always kept; a result
+  whose own start was dropped begins with `… [earlier assistant text truncated]`, and the
+  run emits a `warn` log.
 - `workspace`: per-execution scratch directory contract (`WorkspaceSpec`)
 - `events`, `cancel`, `pause` (the `PauseClock` described above)
 

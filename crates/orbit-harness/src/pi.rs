@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChild};
 use crate::process_env::child_environment;
+use crate::prompt::build_run_prompt;
 use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
@@ -347,24 +348,6 @@ fn default_session_dir(workspace: &Path, agent_id: uuid::Uuid) -> Result<PathBuf
     Ok(dir)
 }
 
-fn build_prompt(request: &ExecutionRequest) -> String {
-    let payload = if request.input.payload.is_null() {
-        Value::Null
-    } else {
-        request.input.payload.clone()
-    };
-    format!(
-        "# Run instruction\n\n{}\n\n# Input data (untrusted)\n\nSource: {}\nTrusted: {}\n\n```json\n{}\n```\n",
-        request.input.task.trim(),
-        request.input.provenance.source,
-        request.input.provenance.trusted,
-        truncate(
-            &serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "null".into()),
-            120_000
-        )
-    )
-}
-
 fn validate_prompt_arg(prompt: &str) -> Result<(), HarnessError> {
     if prompt.len() > MAX_PROMPT_ARG_BYTES {
         return Err(HarnessError::new(
@@ -622,8 +605,19 @@ impl PiHarnessAdapter {
             Some(orbit_contracts::ModelSelection::Platform { .. })
         );
         let system_append = build_system_append(&request);
-        let prompt = build_prompt(&request);
-        validate_prompt_arg(&prompt)?;
+        let prompt = build_run_prompt(&request);
+        validate_prompt_arg(&prompt.text)?;
+        if let Some((kept, original)) = prompt.payload_shortened {
+            emit(
+                &request.events,
+                HarnessEvent::log(
+                    LogLevel::Warn,
+                    format!("input data shortened to fit the prompt limit ({kept} of {original} bytes kept)"),
+                ),
+            )
+            .await;
+        }
+        let prompt = prompt.text;
         let mut args = settings.cli_args(
             &prompt,
             request.autonomy,
@@ -1054,6 +1048,42 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_payload_is_shortened_and_the_prompt_is_accepted() {
+        use orbit_contracts::{ExecutionInput, InputProvenance, InstructionsBlock, SessionRequest};
+        let request = ExecutionRequest {
+            execution_id: uuid::Uuid::now_v7(),
+            agent_id: uuid::Uuid::now_v7(),
+            agent_version_id: uuid::Uuid::now_v7(),
+            agent_name: "x".into(),
+            instructions: InstructionsBlock {
+                system: String::new(),
+                constraints: vec![],
+            },
+            input: ExecutionInput {
+                task: "Review the previous step.".into(),
+                payload: json!({"previous": format!("{} OUTCOME: pass", "z".repeat(110_000))}),
+                provenance: InputProvenance::manual("test@example.com"),
+            },
+            model: None,
+            subagent_models: Vec::new(),
+            grants: vec![],
+            autonomy: AutonomyLevel::OBSERVE,
+            resources: orbit_domain::ResourceLimits::default(),
+            harness_config: Value::Null,
+            extra_env: Default::default(),
+            session: SessionRequest::default(),
+            workspace: Default::default(),
+            events: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            pause: Default::default(),
+        };
+        let prompt = build_run_prompt(&request);
+        assert!(prompt.payload_shortened.is_some());
+        validate_prompt_arg(&prompt.text).expect("prompt fits the argument limit");
+        assert!(prompt.text.contains("OUTCOME: pass"));
+    }
+
+    #[test]
     fn prompt_has_one_run_instruction_and_no_configured_instructions() {
         use orbit_contracts::{ExecutionInput, InputProvenance, InstructionsBlock, SessionRequest};
         let task = "AURORA-259-UNIQUE-RUN-INSTRUCTION";
@@ -1085,7 +1115,7 @@ mod tests {
             cancel: tokio_util::sync::CancellationToken::new(),
             pause: Default::default(),
         };
-        let prompt = build_prompt(&request);
+        let prompt = build_run_prompt(&request).text;
         assert!(prompt.starts_with(&format!("# Run instruction\n\n{task}\n")));
         assert_eq!(prompt.matches(task).count(), 1);
         assert!(!prompt.contains(system));

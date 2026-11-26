@@ -11,6 +11,7 @@ pub mod pi;
 pub mod planned;
 mod process;
 mod process_env;
+mod prompt;
 pub mod registry;
 mod stream;
 pub mod testing;

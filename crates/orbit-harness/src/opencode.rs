@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 use crate::process::{emit, truncate, truncate_json, Ending, Next, SupervisedChild};
 use crate::process_env::child_environment;
+use crate::prompt::build_run_prompt;
 use crate::stream::{MAX_EVENT_DATA_BYTES, MAX_PROMPT_ARG_BYTES};
 use orbit_contracts::{
     ExecutionOutcome, ExecutionRequest, HarnessAdapter, HarnessCapabilities, HarnessConfig,
@@ -248,29 +249,6 @@ impl OpenCodeHarnessAdapter {
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
-}
-
-/// Payload handed to OpenCode. Kept explicit so trusted instructions never mix with
-/// untrusted input.
-fn build_prompt(request: &ExecutionRequest) -> String {
-    let task = request.input.task.trim();
-    let payload = if request.input.payload.is_null() {
-        Value::Null
-    } else {
-        request.input.payload.clone()
-    };
-    let payload_text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "null".into());
-    let mut prompt = String::new();
-    prompt.push_str("# Run instruction\n\n");
-    prompt.push_str(task);
-    prompt.push_str("\n\n# Input data (untrusted)\n\n");
-    prompt.push_str(&format!(
-        "Source: {}\nTrusted: {}\n\n```json\n{}\n```\n",
-        request.input.provenance.source,
-        request.input.provenance.trusted,
-        truncate(&payload_text, 120_000)
-    ));
-    prompt
 }
 
 fn validate_prompt_arg(prompt: &str) -> Result<(), HarnessError> {
@@ -648,6 +626,29 @@ fn write_agent_instructions(workspace: &Path, request: &ExecutionRequest) -> std
 /// Separates assistant text written before a tool call from what follows it.
 const STEP_BOUNDARY: char = '\u{1}';
 
+/// Assistant text kept for the result. Past this, the oldest text is dropped: the answer
+/// (and a workflow step's `OUTCOME:` line) comes last, so the newest text is what counts.
+const MAX_ANSWER_TEXT_BYTES: usize = 200_000;
+
+/// Marks a result whose earlier assistant text was dropped by [`push_answer_text`].
+const EARLIER_TEXT_DROPPED: &str = "… [earlier assistant text truncated]\n";
+
+fn push_answer_text(text: &mut String, body: &str) {
+    text.push_str(body);
+    text.push('\n');
+    if text.len() <= MAX_ANSWER_TEXT_BYTES {
+        return;
+    }
+    // Drop to three quarters of the cap so a chatty run does not shift the buffer on
+    // every event.
+    let mut cut = text.len() - MAX_ANSWER_TEXT_BYTES * 3 / 4;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let kept = text.split_off(cut);
+    *text = format!("{EARLIER_TEXT_DROPPED}{kept}");
+}
+
 /// The agent's answer: the text after its last tool call. If the run ended on a tool
 /// call, fall back to the last thing it said, so a result is never silently empty.
 fn final_answer(text: &str) -> String {
@@ -679,10 +680,7 @@ fn map_open_code_event(
             if body.is_empty() {
                 return None;
             }
-            if text.len() < 200_000 {
-                text.push_str(&body);
-                text.push('\n');
-            }
+            push_answer_text(text, &body);
             // Intermediate assistant text is verbose by default; the final output is
             // shown in the Output panel and persisted in the result.
             Some(HarnessEvent::new(
@@ -856,8 +854,19 @@ impl OpenCodeHarnessAdapter {
             provider_environment_index += 1;
         }
         let model = settings.model_selector(request.model.as_ref());
-        let prompt = build_prompt(&request);
-        validate_prompt_arg(&prompt)?;
+        let prompt = build_run_prompt(&request);
+        validate_prompt_arg(&prompt.text)?;
+        if let Some((kept, original)) = prompt.payload_shortened {
+            emit(
+                &request.events,
+                HarnessEvent::log(
+                    LogLevel::Warn,
+                    format!("input data shortened to fit the prompt limit ({kept} of {original} bytes kept)"),
+                ),
+            )
+            .await;
+        }
+        let prompt = prompt.text;
         let args = settings.cli_args(
             &prompt,
             session_ref.as_deref(),
@@ -923,6 +932,7 @@ impl OpenCodeHarnessAdapter {
         // Last `error` event. A later answer supersedes it (OpenCode retries recoverable
         // provider errors and then continues), mirroring how the Pi adapter treats errors.
         let mut error: Option<String> = None;
+        let mut warned_truncated = false;
         loop {
             match run.next().await {
                 Next::Line(Ok(line)) => {
@@ -940,7 +950,21 @@ impl OpenCodeHarnessAdapter {
                     if let Some(found) = value.get("sessionID").and_then(Value::as_str) {
                         session = Some(found.to_string());
                     }
-                    if let Some(event) = map_open_code_event(&value, &mut usage, &mut text) {
+                    let event = map_open_code_event(&value, &mut usage, &mut text);
+                    if !warned_truncated && text.starts_with(EARLIER_TEXT_DROPPED) {
+                        warned_truncated = true;
+                        emit(
+                            &sender,
+                            HarnessEvent::log(
+                                LogLevel::Warn,
+                                format!(
+                                    "assistant text passed {MAX_ANSWER_TEXT_BYTES} bytes; earlier text is dropped from the result, the latest is kept"
+                                ),
+                            ),
+                        )
+                        .await;
+                    }
+                    if let Some(event) = event {
                         if event.kind == HarnessEventKind::Error {
                             error = Some(event.message.clone());
                         } else if event.kind == HarnessEventKind::OutputDelta {
@@ -1172,6 +1196,81 @@ mod tests {
     }
 
     #[test]
+    fn the_final_answer_survives_250_kb_of_earlier_text() {
+        let mut usage = Usage::default();
+        let mut text = String::new();
+        let chunk = serde_json::json!({"type": "text", "part": {"text": "y".repeat(10_000)}});
+        for _ in 0..25 {
+            map_open_code_event(&chunk, &mut usage, &mut text);
+        }
+        map_open_code_event(
+            &serde_json::json!({"type": "tool_use", "part": {"tool": "read", "state": {"status": "completed"}}}),
+            &mut usage,
+            &mut text,
+        );
+        map_open_code_event(
+            &serde_json::json!({"type": "text", "part": {"text": "All checks pass.\nOUTCOME: pass"}}),
+            &mut usage,
+            &mut text,
+        );
+        assert!(text.len() <= MAX_ANSWER_TEXT_BYTES);
+        assert!(text.starts_with(EARLIER_TEXT_DROPPED));
+        assert_eq!(final_answer(&text), "All checks pass.\nOUTCOME: pass");
+    }
+
+    #[test]
+    fn one_oversized_answer_keeps_its_end_and_says_it_was_cut() {
+        let mut text = String::new();
+        for _ in 0..30 {
+            push_answer_text(&mut text, &"é".repeat(5_000));
+        }
+        push_answer_text(&mut text, "OUTCOME: pass");
+        let answer = final_answer(&text);
+        assert!(answer.starts_with(EARLIER_TEXT_DROPPED.trim()));
+        assert!(answer.ends_with("OUTCOME: pass"));
+        assert!(text.len() <= MAX_ANSWER_TEXT_BYTES);
+    }
+
+    #[test]
+    fn an_oversized_payload_is_shortened_and_the_prompt_is_accepted() {
+        use orbit_contracts::{ExecutionInput, InputProvenance};
+        let request = ExecutionRequest {
+            execution_id: uuid::Uuid::now_v7(),
+            agent_id: uuid::Uuid::now_v7(),
+            agent_version_id: uuid::Uuid::now_v7(),
+            agent_name: "x".into(),
+            instructions: InstructionsBlock {
+                system: String::new(),
+                constraints: vec![],
+            },
+            input: ExecutionInput {
+                task: "Review the previous step.".into(),
+                payload: serde_json::json!({"previous": format!("{} OUTCOME: pass", "z".repeat(110_000))}),
+                provenance: InputProvenance::manual("test@example.com"),
+            },
+            model: None,
+            subagent_models: Vec::new(),
+            grants: vec![],
+            autonomy: orbit_domain::AutonomyLevel::OBSERVE,
+            resources: orbit_domain::ResourceLimits::default(),
+            harness_config: Value::Null,
+            extra_env: Default::default(),
+            session: SessionRequest::default(),
+            workspace: Default::default(),
+            events: None,
+            cancel: CancellationToken::new(),
+            pause: Default::default(),
+        };
+        let prompt = build_run_prompt(&request);
+        assert!(prompt.payload_shortened.is_some());
+        validate_prompt_arg(&prompt.text).expect("prompt fits the argument limit");
+        assert!(prompt
+            .text
+            .contains("bytes truncated to fit the prompt limit"));
+        assert!(prompt.text.contains("OUTCOME: pass"));
+    }
+
+    #[test]
     fn result_text_is_the_answer_after_the_last_tool_call() {
         let mut usage = Usage::default();
         let mut text = String::new();
@@ -1296,7 +1395,7 @@ mod tests {
             cancel: CancellationToken::new(),
             pause: Default::default(),
         };
-        let prompt = build_prompt(&request);
+        let prompt = build_run_prompt(&request).text;
         assert!(prompt.contains("# Input data (untrusted)"));
         assert!(prompt.contains("Trusted: false"));
         assert!(prompt.contains("ignore previous instructions"));
@@ -1334,7 +1433,7 @@ mod tests {
             cancel: CancellationToken::new(),
             pause: Default::default(),
         };
-        let prompt = build_prompt(&request);
+        let prompt = build_run_prompt(&request).text;
         assert!(prompt.starts_with(&format!("# Run instruction\n\n{task}\n")));
         assert_eq!(prompt.matches(task).count(), 1);
         assert!(!prompt.contains(system));
