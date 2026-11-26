@@ -214,7 +214,7 @@ jobs:
             -f deploy/helm/orbit/values-prod.example.yaml > /dev/null
           helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
             --set auth.acknowledgeInsecureDev=true \
-            --set networkPolicy.enabled=true \
+            --set networkPolicy.enabled=true --set monitoring.port=9090 \
             --set worker.enabled=true --set worker.token=render-check-only > /dev/null
           helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
             --set auth.acknowledgeInsecureDev=true \
@@ -222,6 +222,21 @@ jobs:
             --set monitoring.serviceMonitor.enabled=true \
             --set monitoring.port=9090 \
             --set monitoring.token.existingSecret=render-check-only > /dev/null
+
+      # Worker pods (agent code) must not reach an unauthenticated /metrics (#398).
+      - name: helm template (metrics are not reachable from workers)
+        run: |
+          if helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values.yaml \
+              --set auth.acknowledgeInsecureDev=true --set networkPolicy.enabled=true > /dev/null 2>&1; then
+            echo "::error::networkPolicy without monitoring.port or token must be refused"; exit 1
+          fi
+          out="$(helm template orbit deploy/helm/orbit -n orbit -f deploy/helm/orbit/values-prod.example.yaml)"
+          grep -q 'value: "0.0.0.0:9090"' <<<"$out"
+          workers="$(awk '/^kind: NetworkPolicy/{p=0} /name: orbit-workers$/{p=1} p' <<<"$out")"
+          grep -q 'port: 8080' <<<"$workers"
+          if grep -q 'port: 9090' <<<"$workers"; then
+            echo "::error::worker NetworkPolicy allows the metrics port"; exit 1
+          fi
 
   # ---------------------------------------------------------------- migrations
   # AGENTS.md rule 7: migrations are append-only. A migration that already exists on the

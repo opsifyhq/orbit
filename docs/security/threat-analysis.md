@@ -223,7 +223,10 @@ Container images are **not** scanned for vulnerabilities in CI; see "Residual ri
   restrict it further, set `ORBIT_METRICS_TOKEN` (bearer token, compared as SHA-256
   digests; 401 without it) and/or `ORBIT_METRICS_ADDR` (dedicated listener that serves only
   `/metrics` and `/healthz`; the API port then returns 404 for `/metrics`), and limit the
-  port with `networkPolicy.enabled` and `monitoring.allowFrom`. The API logs a warning at
+  port with `networkPolicy.enabled` and `monitoring.allowFrom`. Worker pods (agent code)
+  may reach the API port, so with `networkPolicy.enabled` the chart refuses an
+  unauthenticated `/metrics` on that port unless `monitoring.allowWorkersOnApiPort=true`;
+  the dedicated port is outside worker egress. The API logs a warning at
   start when it runs in production with neither set. The dedicated listener has no rate
   limit, so do not publish it. See
   [Observability](../development/observability.md).

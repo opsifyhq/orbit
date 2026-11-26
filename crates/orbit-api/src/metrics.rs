@@ -29,6 +29,11 @@ use orbit_store::ExecutionRecord;
 
 /// Upper bound on distinct label sets per metric family.
 const MAX_SERIES_PER_FAMILY: usize = 200;
+/// Cap for the HTTP families, whose label sets grow with the route table: every route
+/// template times every method label (8, including `other`) times every status class
+/// (5) must fit, so normal traffic (405s and CORS preflights included) never drops a
+/// series. `routes_fit_the_http_series_cap` keeps this in step with `routes.rs`.
+const MAX_HTTP_SERIES: usize = 8192;
 /// How long a database snapshot is reused, so scraping cannot load the database.
 const SNAPSHOT_TTL: Duration = Duration::from_secs(10);
 
@@ -320,7 +325,7 @@ impl Metrics {
         let labels = owned(labels);
         let mut registry = self.lock();
         let series = registry.counters.entry(name).or_default();
-        if !series.contains_key(&labels) && series.len() >= MAX_SERIES_PER_FAMILY {
+        if !series.contains_key(&labels) && series.len() >= series_cap(name) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -340,7 +345,7 @@ impl Metrics {
         let labels = owned(labels);
         let mut registry = self.lock();
         let series = registry.histograms.entry(name).or_default();
-        if !series.contains_key(&labels) && series.len() >= MAX_SERIES_PER_FAMILY {
+        if !series.contains_key(&labels) && series.len() >= series_cap(name) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -696,6 +701,14 @@ impl EventBus for MeteredBus {
     }
 }
 
+/// Series cap for one family: the HTTP families are keyed by route template.
+fn series_cap(name: &str) -> usize {
+    match name {
+        "orbit_http_requests_total" | "orbit_http_request_duration_seconds" => MAX_HTTP_SERIES,
+        _ => MAX_SERIES_PER_FAMILY,
+    }
+}
+
 fn family(name: &str) -> Option<&'static Family> {
     FAMILIES.iter().find(|family| family.name == name)
 }
@@ -953,6 +966,61 @@ mod tests {
         assert!(metrics
             .render(&[])
             .contains("orbit_provider_probes_total{kind=\"kind-0\",result=\"ok\"} 2\n"));
+    }
+
+    /// Route templates registered in `routes.rs` (the first string after each `.route(`).
+    fn route_templates() -> Vec<String> {
+        let source = include_str!("routes.rs");
+        let mut templates: Vec<String> = source
+            .split(".route(")
+            .skip(1)
+            .filter_map(|rest| {
+                let start = rest.find('"')? + 1;
+                let end = start + rest[start..].find('"')?;
+                Some(rest[start..end].to_string())
+            })
+            // routes.rs also mentions `.route(` in code; templates start with "/".
+            .filter(|template| template.starts_with('/'))
+            .collect();
+        // Swagger UI and the 404 fallback add a few labels of their own.
+        templates
+            .extend(["/docs", "/docs/", "/docs/{*rest}", "/api/v1/openapi.json"].map(String::from));
+        templates.push("unmatched".to_string());
+        templates.sort();
+        templates.dedup();
+        templates
+    }
+
+    #[test]
+    fn routes_fit_the_http_series_cap() {
+        let templates = route_templates();
+        assert!(templates.len() > 100, "parsed {} routes", templates.len());
+        let methods = [
+            "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "TRACE",
+        ];
+        let statuses = [101, 200, 304, 404, 503];
+        assert!(
+            templates.len() * methods.len() * statuses.len() <= MAX_HTTP_SERIES,
+            "{} routes need a larger MAX_HTTP_SERIES",
+            templates.len()
+        );
+        // Every route with every method and status class: nothing is dropped.
+        let metrics = Metrics::new();
+        for template in &templates {
+            for method in methods {
+                for status in statuses {
+                    metrics.http_started();
+                    metrics.http_finished(method, template, status, Duration::from_millis(3));
+                }
+            }
+        }
+        let text = metrics.render(&[]);
+        assert!(text.contains("orbit_metrics_dropped_series_total 0\n"));
+        let series = text
+            .lines()
+            .filter(|line| line.starts_with("orbit_http_requests_total{"))
+            .count();
+        assert_eq!(series, templates.len() * methods.len() * statuses.len());
     }
 
     fn execution(status: &str) -> ExecutionRecord {
