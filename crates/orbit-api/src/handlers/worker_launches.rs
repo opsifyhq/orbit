@@ -265,13 +265,12 @@ async fn fail_worker_executions(
             .await;
         let ended = match finished {
             Ok(Some(ended)) => ended,
-            Ok(None) => {
-                // Another path already ended it; still make sure the team run is closed.
-                let mut ended = execution.clone();
-                ended.status = orbit_domain::ExecutionStatus::Failed.as_str().into();
-                ended.error = Some(data.clone());
-                ended
-            }
+            // Another path already ended it (the worker reported its result, the reaper
+            // or a concurrent refresh of this launch failed it). Report nothing: this call
+            // did not fail it, and the execution may have succeeded. A run it belongs to
+            // is still closed without retry by the team poller, which reads the stored
+            // error code (#394).
+            Ok(None) => continue,
             Err(error) => {
                 tracing::warn!(execution_id = %execution.id, %error, "could not fail execution for terminated worker");
                 continue;

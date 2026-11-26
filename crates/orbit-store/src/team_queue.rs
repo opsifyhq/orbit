@@ -330,6 +330,31 @@ impl Store {
         Ok(result.rows_affected() == 1)
     }
 
+    /// The earliest failed execution of `run_id` whose error code is one of `codes`.
+    ///
+    /// The API passes the codes of executions the platform ended because their worker went
+    /// away (#343): their side effects are unknown, so the run must be neither continued
+    /// nor retried. Reading this from the execution rows, not from whichever code path saw
+    /// the failure first, keeps that decision across races and API restarts (#394).
+    pub async fn team_run_execution_failed_with(
+        &self,
+        run_id: Uuid,
+        codes: &[&str],
+    ) -> StoreResult<Option<crate::ExecutionRecord>> {
+        Ok(sqlx::query_as::<_, crate::ExecutionRecord>(
+            r#"
+            SELECT * FROM executions
+            WHERE team_run_id = $1 AND status = 'failed' AND error->>'code' = ANY($2)
+            ORDER BY finished_at ASC NULLS LAST, created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(run_id)
+        .bind(codes)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     /// Terminal runs whose queue item is still `running`: the outcome was never
     /// (fully) applied and must be retried.
     pub async fn list_team_runs_pending_outcome(

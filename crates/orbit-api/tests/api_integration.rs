@@ -7632,6 +7632,239 @@ async fn launcher_termination_fails_work_and_never_retries_it() {
     }
 }
 
+/// Queue item status, attempts and attached run, for retry assertions.
+async fn queue_state(app: &TestApp, item: Uuid) -> (String, i32, Option<Uuid>) {
+    let queue = app
+        .store
+        .get_team_queue_item(app.org_id, item)
+        .await
+        .unwrap();
+    (queue.status, queue.attempts, queue.team_run_id)
+}
+
+/// #394: the platform failed a team step's execution because its worker went away, and
+/// the team poller sees the failed execution before `report_ended_execution` closes the run
+/// without retry (or the API restarted in between, so that never happens). The queue item
+/// must still end terminal without a retry; an ordinary failure keeps its retry.
+#[tokio::test]
+async fn a_lost_worker_run_is_not_retried_when_the_team_poller_sees_it_first() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "poller-first").await;
+    for (code, error, retried) in [
+        (
+            "worker_lost",
+            orbit_store::workers::worker_lost_error(),
+            false,
+        ),
+        (
+            "harness_unresponsive",
+            orbit_store::workers::harness_unresponsive_error(),
+            false,
+        ),
+        (
+            "worker_oom",
+            json!({ "code": "worker_oom", "message": "OOMKilled", "retryable": false }),
+            false,
+        ),
+        // Control: a run whose step failed in the harness keeps its queue retry.
+        (
+            "harness_error",
+            json!({ "code": "harness_error", "message": "the agent failed" }),
+            true,
+        ),
+    ] {
+        let worker_id = format!("poller-first-{}", Uuid::now_v7());
+        let (item, run_id, execution_id) = team_work_on_worker(&app, &token, &worker_id).await;
+        app.store
+            .mark_execution_running(execution_id, None)
+            .await
+            .unwrap();
+        // Only the store transaction of the reaper or launch poller ran.
+        app.store
+            .finish_execution(
+                execution_id,
+                orbit_domain::ExecutionStatus::Failed,
+                None,
+                Some(&error),
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+        orbit_api::handlers::teams::advance(&app.state, run)
+            .await
+            .unwrap();
+
+        let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+        assert_eq!(run.status, "failed", "{code}");
+        let step = app.store.current_team_step(run_id).await.unwrap().unwrap();
+        assert_eq!(step.status, "failed", "{code}");
+        let (status, attempts, attached) = queue_state(&app, item).await;
+        if retried {
+            // A retry puts the item back to `pending`, counts the attempt and detaches it.
+            assert_eq!(
+                (status.as_str(), attempts, attached),
+                ("pending", 1, None),
+                "{code}"
+            );
+        } else {
+            assert_eq!(
+                (status.as_str(), attempts, attached),
+                ("failed", 0, Some(run_id)),
+                "{code}"
+            );
+        }
+    }
+}
+
+/// #394: the run was already failed but the API stopped before closing its queue item, so
+/// the outcome reconciler closes it later. That path must not retry a lost worker's run.
+#[tokio::test]
+async fn the_outcome_reconciler_does_not_retry_a_lost_worker_run() {
+    let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await else {
+        return;
+    };
+    let token = worker_token(&app.store, app.org_id, "reconciler").await;
+    let worker_id = format!("reconciler-{}", Uuid::now_v7());
+    let (item, run_id, execution_id) = team_work_on_worker(&app, &token, &worker_id).await;
+    app.store
+        .finish_execution(
+            execution_id,
+            orbit_domain::ExecutionStatus::Failed,
+            None,
+            Some(&orbit_store::workers::worker_restarted_error()),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    app.store
+        .finish_team_run(run_id, "failed", None, Some("worker restarted"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue_state(&app, item).await.0, "running");
+
+    orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+        .await
+        .unwrap();
+    assert_eq!(
+        queue_state(&app, item).await,
+        ("failed".to_string(), 0, Some(run_id))
+    );
+}
+
+/// #394: refreshes of a terminated launch run from the termination poller on every replica
+/// and from the Workers page, so two can overlap, and the worker's own `succeeded` report
+/// can land between a refresh listing the execution and failing it. Only the call that
+/// failed the execution reports it: an execution that succeeded gets no termination event,
+/// audit entry or failed team run, and a failed one gets exactly one of each.
+#[tokio::test]
+async fn overlapping_launch_refreshes_report_only_the_failure_they_caused() {
+    let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
+    for round in 0..8 {
+        // One app per round: the launch helper creates a uniquely named worker profile.
+        let Some(app) = test_app_with_license(true, Some(licensed(&["teams"], json!({})))).await
+        else {
+            return;
+        };
+        let token = worker_token(&app.store, app.org_id, "overlapping").await;
+        let worker_id = format!("overlapping-{}", Uuid::now_v7());
+        let (item, run_id, execution_id) = team_work_on_worker(&app, &token, &worker_id).await;
+        app.store
+            .mark_execution_running(execution_id, None)
+            .await
+            .unwrap();
+        let launch = live_launch_for_worker(&app, &worker_id, "kubernetes").await;
+        let url = mock_launcher_status(json!({
+            "status": "failed",
+            "runtimeId": "orbit-worker-abc123",
+            "workerId": worker_id,
+            "error": "worker pod was terminated (OOMKilled)",
+            "termination": {
+                "reason": "worker_oom",
+                "workerName": "orbit-worker-abc123",
+                "detail": "OOMKilled",
+            },
+        }))
+        .await;
+        let mut state = app.state.clone();
+        state.launcher_url = Some(url);
+        state.launcher_token = Some("launcher-token".into());
+        let router = build_router(state);
+        let path = format!("/api/v1/worker-launches/{}", launch.id);
+        let complete = async {
+            // Vary where the worker's report lands relative to the two refreshes.
+            tokio::time::sleep(std::time::Duration::from_millis(round * 3)).await;
+            app.store
+                .finish_execution(
+                    execution_id,
+                    orbit_domain::ExecutionStatus::Succeeded,
+                    Some(&json!({ "text": "done" })),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+        };
+        let (first, second, _) = tokio::join!(
+            send(&router, get(&path)),
+            send(&router, get(&path)),
+            complete
+        );
+        assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+        assert_eq!(second.0, StatusCode::OK, "{}", second.1);
+
+        let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+        orbit_api::handlers::teams::advance(&app.state, run)
+            .await
+            .unwrap();
+
+        let execution = app
+            .store
+            .get_execution(app.org_id, execution_id)
+            .await
+            .unwrap();
+        let reported = execution_events(&app, &execution_id.to_string(), "&kind=error")
+            .await
+            .into_iter()
+            .filter(|event| event["data"]["code"] == "worker_oom")
+            .count();
+        let (rows, _) = app
+            .store
+            .list_audit_logs(app.org_id, 100, None, Some("worker.oom_killed"))
+            .await
+            .unwrap();
+        let audited = rows
+            .iter()
+            .filter(|row| row.target_id == Some(execution_id))
+            .count();
+        let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
+        let (queue, attempts, _) = queue_state(&app, item).await;
+        match execution.status.as_str() {
+            "succeeded" => {
+                assert_eq!((reported, audited), (0, 0), "round {round}");
+                assert_eq!(run.status, "succeeded", "round {round}");
+                assert_eq!(queue, "succeeded", "round {round}");
+            }
+            "failed" => {
+                assert_eq!((reported, audited), (1, 1), "round {round}");
+                assert_eq!(run.status, "failed", "round {round}");
+                assert_eq!((queue.as_str(), attempts), ("failed", 0), "round {round}");
+            }
+            other => panic!("round {round}: execution is {other}"),
+        }
+        *outcomes.entry(execution.status).or_default() += 1;
+    }
+    eprintln!("overlapping refresh outcomes: {outcomes:?}");
+}
+
 #[tokio::test]
 async fn termination_poller_ends_dispatched_work_without_the_workers_page() {
     let Some(app) = test_app(true).await else {
