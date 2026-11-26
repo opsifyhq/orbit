@@ -5,7 +5,10 @@ import { LoadFailure } from "@/components/load-failure";
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Square } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { errorMessage } from "@orbit/api-client";
 
 import { StepNumber, agentLookup, teamMode } from "@/components/teams/team-parts";
 import { WorkflowView } from "@/components/teams/workflow/workflow-view";
@@ -18,7 +21,10 @@ import { DescriptionList } from "@/components/ui/description-list";
 import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExecutionStatusBadge } from "@/components/ui/status-badge";
-import { useAgentTeam, useAllAgents, useTeamRun } from "@/lib/queries";
+import { useConfirm } from "@/components/ui/confirm";
+import { queryKeys, useAgentTeam, useAllAgents, useMe, useTeamRun } from "@/lib/queries";
+import { canStopTeamRun } from "@/lib/run-controls";
+import { cancelTeamRun } from "@/lib/teams";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
 const DONE_STEP = new Set(["succeeded", "completed"]);
@@ -40,6 +46,21 @@ export default function TeamRunPage() {
   const run = useTeamRun(params.runId);
   const team = useAgentTeam(run.data?.run.teamId ?? "");
   const agents = useAllAgents();
+  const me = useMe();
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
+  const stop = useMutation({
+    mutationFn: () => cancelTeamRun(params.runId),
+    onSuccess: (detail) => {
+      queryClient.setQueryData(queryKeys.teamRun(params.runId), detail);
+      toast.success("Run stopped");
+    },
+    onError: (error) => toast.error(`The run could not be stopped: ${errorMessage(error)}`),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.teamRuns });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executions() });
+    },
+  });
   const agentName = useMemo(() => agentLookup(agents.data?.items ?? []), [agents.data]);
   const workflowAgentName = useMemo(() => (id: string) => agentName(id).name, [agentName]);
   // Selecting a step on the graph points at its latest row in the list.
@@ -84,11 +105,31 @@ export default function TeamRunPage() {
   const totalSteps = steps.length + upcoming.length;
   const teamName = team.data?.name ?? "Agent team";
   const total = duration(detail.createdAt, detail.finishedAt);
+  const live = steps.filter((step) => !step.finishedAt && step.executionId).length;
+
+  async function confirmStop() {
+    const confirmed = await confirm({
+      title: "Stop this run?",
+      description: `The run ends as cancelled${
+        live ? ` and ${live === 1 ? "its running step execution is" : `its ${live} running step executions are`} cancelled` : ""
+      }. Steps that have not started will not run. This cannot be undone.`,
+      confirmLabel: "Stop run",
+      destructive: true,
+    });
+    if (confirmed) stop.mutate();
+  }
 
   return (
     <div className="space-y-6">
       <PageHeader
         back={{ href: "/agent-teams/runs", label: "Team runs" }}
+        actions={
+          canStopTeamRun(detail.status, me.data?.permissions) ? (
+            <Button variant="destructive" loading={stop.isPending} onClick={() => void confirmStop()}>
+              <Square /> Stop run
+            </Button>
+          ) : undefined
+        }
         title={<span className="line-clamp-3">{task}</span>}
         meta={
           <>

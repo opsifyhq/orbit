@@ -97,17 +97,20 @@ may be interrupted). API: `GET/POST /api/v1/env-mappings`,
   Permissions, Environment, Resources and Access control, and asks before you leave with
   unsaved changes.
 - **Launches**: worker instances started from a profile by the launcher, with an
-  "Active" / "History" switch. Each launch shows its status and, when it failed, the
-  error. **Stop** ends a running launch, **Launch again** starts a fresh one, and **Logs**
-  shows its container log. A launch marked "Relaunch required" runs an older version of
-  its profile.
+  "Active" / "History" / "Archived" switch. Each launch shows its status and, when it
+  failed, the error. **Stop** ends a running launch, **Launch again** starts a fresh one,
+  and **Logs** shows its container log. A launch marked "Relaunch required" runs an older
+  version of its profile. An ended (stopped or failed) launch also has **Archive**, which
+  moves it from History to Archived, and **Delete**, which removes the launch record after
+  you confirm.
 - **Live workers**: workers that have reported a heartbeat, marked Live or Stale. A
   worker is stale when its heartbeat stops.
 
 Launches that are old enough are archived automatically (see
-[Executions](executions.md#statuses-and-retention)); the UI has no archive button, but
-`POST /api/v1/worker-launches/{id}/archive` exists. Creating, changing, launching and
-stopping profiles needs `settings:write`.
+[Executions](executions.md#statuses-and-retention)). Creating, changing, launching and
+stopping profiles, and archiving or deleting launches, needs `settings:write`. The API is
+`POST /api/v1/worker-launches/{id}/archive` and `DELETE /api/v1/worker-launches/{id}`;
+both refuse a launch that has not ended (409).
 
 ## Launch lifecycle
 
