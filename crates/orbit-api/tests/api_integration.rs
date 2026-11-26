@@ -15923,6 +15923,8 @@ async fn decided_approvals_are_listed_apart_from_pending_ones() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body.as_array().unwrap().len(), 5);
+}
+
 fn delete_req(path: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")

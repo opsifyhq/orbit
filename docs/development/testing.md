@@ -36,6 +36,22 @@ The API tests apply the migrations themselves and create a fresh organization pe
 so they can share the development database. CI runs the same command against a PostgreSQL 17
 service.
 
+### Query plans at execution scale
+
+The test databases are tiny, so plan tests only prove that an index *can* serve a query
+(they turn sequential scans off for one plan). To check real plans, seed a scratch
+database with every migration applied (never a real one) and run the EXPLAIN script:
+
+```bash
+psql "$SCRATCH_URL" -v ON_ERROR_STOP=1 -f scripts/perf/execution-history-seed.sql
+psql "$SCRATCH_URL" -f scripts/perf/execution-history-explain.sql
+```
+
+The seed writes 1M executions over a year, 200k approvals and 60 runs in flight, then
+archives everything older than 30 days as the retention job does. The EXPLAIN script covers
+the reapers, deleting a trigger, the active-run count, the dashboard counts, the default
+executions list total and the retention job's archive step.
+
 ## Opt-in suites
 
 Some tests are marked `#[ignore]` because they need something that CI does not have.
