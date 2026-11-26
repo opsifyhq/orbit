@@ -18,6 +18,8 @@ use crate::dto::{
     TeamResourceQuery, TeamResourcesPage, TeamRoleCounts,
 };
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -90,11 +92,12 @@ fn validated(body: &TeamRequest) -> Result<(String, String), ApiError> {
     Ok((name, slug))
 }
 
-#[utoipa::path(get, path = "/api/v1/teams", tag = "teams", responses((status = 200, body = [AccessTeam])))]
+#[utoipa::path(get, path = "/api/v1/teams", tag = "teams", params(PageQuery), responses((status = 200, body = Page<AccessTeam>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<AccessTeam>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<AccessTeam>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let teams = state
@@ -106,7 +109,7 @@ pub async fn list(
             access.can_view(None, Some(team.id), "org") || access.teams.contains_key(&team.id)
         })
         .collect();
-    Ok(Json(teams))
+    Ok(Json(Page::from_vec(teams, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/teams", tag = "teams", request_body = TeamRequest, responses((status = 201, body = AccessTeam)))]
@@ -166,12 +169,18 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(team_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<TeamRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<AccessTeam>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::FEATURE_TEAMS)?;
     let existing = state.store.get_access_team(auth.org_id, team_id).await?;
     require_team_admin(&state, &auth, team_id).await?;
+    let merged = merge_patch(
+        serde_json::json!({ "name": existing.name, "slug": existing.slug }),
+        patch,
+        &[],
+    )?;
+    let body: TeamRequest = parse_patch(merged)?;
     let (name, slug) = validated(&body)?;
     // The Default team is recognised by its slug; renaming it away would also lift the
     // delete guard below (#324).
@@ -222,15 +231,17 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(get, path = "/api/v1/teams/{team_id}/members", tag = "teams", responses((status = 200, body = [TeamMember])))]
+#[utoipa::path(get, path = "/api/v1/teams/{team_id}/members", tag = "teams", params(PageQuery), responses((status = 200, body = Page<TeamMember>)))]
 pub async fn list_members(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(team_id): Path<Uuid>,
-) -> Result<Json<Vec<TeamMember>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<TeamMember>>, ApiError> {
     auth.require(Permission::MembersRead)?;
     load_visible_team(&state, &auth, team_id).await?;
-    Ok(Json(state.store.list_team_members(team_id).await?))
+    let members = state.store.list_team_members(team_id).await?;
+    Ok(Json(Page::from_vec(members, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/teams/{team_id}/members", tag = "teams", request_body = TeamMemberRequest, responses((status = 200, body = TeamMember)))]
@@ -304,15 +315,15 @@ pub async fn resources(
     auth.require(Permission::MembersRead)?;
     if let Some(kind) = &query.resource_type {
         if !orbit_store::sharing::SHAREABLE_RESOURCES.contains(&kind.as_str()) {
-            return Err(ApiError::validation(vec![ValidationIssue::new(
-                "type",
-                format!("unknown resource type '{kind}'"),
-            )]));
+            // A bad query value is a bad request; 422 is reserved for a bad JSON body.
+            return Err(ApiError::bad_request(format!(
+                "unknown resource type '{kind}'"
+            )));
         }
     }
     let (_, access) = load_visible_team(&state, &auth, team_id).await?;
     let store_access = access.store_access();
-    let limit = crate::handlers::limit(query.limit);
+    let limit = crate::handlers::limit(query.limit)?;
     let (rows, next_cursor, total) = state
         .store
         .list_team_resources(

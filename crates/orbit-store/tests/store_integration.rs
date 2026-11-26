@@ -3528,7 +3528,7 @@ async fn archived_agent_can_be_restored() {
         store
             .set_agent_status(org, agent.id, AgentStatus::Paused)
             .await,
-        Err(orbit_store::StoreError::Invalid(_))
+        Err(orbit_store::StoreError::Conflict(_))
     ));
 }
 

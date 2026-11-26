@@ -89,6 +89,14 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
     }
 
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", message)
+    }
+
+    pub fn uri_too_long(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::URI_TOO_LONG, "uri_too_long", message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message)
     }
@@ -213,14 +221,41 @@ impl From<serde_json::Error> for ApiError {
 impl From<axum::extract::rejection::JsonRejection> for ApiError {
     fn from(err: axum::extract::rejection::JsonRejection) -> Self {
         // Malformed JSON is 400; structurally valid JSON that fails typed
-        // deserialization is a validation error (422).
+        // deserialization is a validation error (422). Framework text such as
+        // "Failed to deserialize the JSON body into the target type" is not useful to a
+        // client, so it is replaced with a stable message (#443).
         let code = if err.status() == StatusCode::UNPROCESSABLE_ENTITY {
             "validation_error"
         } else {
             "bad_request"
         };
-        ApiError::new(err.status(), code, err.body_text())
+        let message = if err.status() == StatusCode::UNPROCESSABLE_ENTITY {
+            "the request body has invalid fields".to_string()
+        } else {
+            sanitize_rejection_text(&err.body_text())
+        };
+        ApiError::new(err.status(), code, message)
     }
+}
+
+/// Framework rejection text leaks implementation details (`expected u32`,
+/// `UUID parsing failed`, serde paths). Keep readable client text in the envelope.
+pub(crate) fn sanitize_rejection_text(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    const FRAMEWORK_MARKERS: [&str; 5] = [
+        "failed to deserialize",
+        "invalid query string parameter",
+        "invalid path",
+        "uuid parsing failed",
+        "expected u32",
+    ];
+    if FRAMEWORK_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "invalid request parameter".to_string();
+    }
+    text.chars().take(512).filter(|c| !c.is_control()).collect()
 }
 
 /// Maximum number of bytes of a foreign plain-text error body copied into the envelope.
@@ -294,7 +329,7 @@ pub async fn envelope_rejections(
             .unwrap_or("request failed")
             .to_string()
     } else {
-        text
+        sanitize_rejection_text(&text)
     };
 
     let mut rewritten = ApiError::new(status, code_for_status(status), message).into_response();
@@ -305,6 +340,52 @@ pub async fn envelope_rejections(
         rewritten.headers_mut().append(name.clone(), value.clone());
     }
     rewritten
+}
+
+/// Longest query string/path the API serves. Longer requests are rejected as 414 with
+/// the normal error envelope before they reach a handler (#443).
+pub const MAX_URI_BYTES: usize = 8192;
+
+/// Reject an obviously oversized body from its `Content-Length` before it is read.
+/// Streamed bodies without the header are still bounded by `DefaultBodyLimit` (#443).
+pub async fn limit_body_length(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let oversized = request
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > state.max_body_bytes);
+    if oversized {
+        return ApiError::payload_too_large(format!(
+            "request body must be at most {} bytes",
+            state.max_body_bytes
+        ))
+        .into_response();
+    }
+    next.run(request).await
+}
+
+/// Reject oversized request targets with an enveloped 414. Runs inside `instrument` and
+/// `envelope_rejections`, so even a rejection carries a request id.
+pub async fn limit_uri_length(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let too_long = request
+        .uri()
+        .path_and_query()
+        .is_some_and(|value| value.as_str().len() > MAX_URI_BYTES);
+    if too_long {
+        return ApiError::uri_too_long(format!(
+            "request target must be at most {MAX_URI_BYTES} bytes"
+        ))
+        .into_response();
+    }
+    next.run(request).await
 }
 
 /// Router fallback for unmatched routes.

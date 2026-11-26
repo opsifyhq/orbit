@@ -31,15 +31,36 @@ an overview.
   that was already created, but only for the same agent (otherwise 409). Keys starting
   with `team:`, `trigger:`, `runtime:` or `rerun:` are reserved for executions ORBIT
   creates itself and are rejected (422).
-- Keyset pagination on agents, executions, execution events, agent instances and audit
-  logs: `?limit=25&cursor=<opaque>` returns `{ "items": [...], "nextCursor": null }`
-  (agents also return `total`). Other lists return a plain array.
+- Every growing collection uses the same envelope: `?limit=100&cursor=<opaque>` returns
+  `{ "items": [...], "nextCursor": null, "total": 42 }`. `limit` must be 1–500; an
+  out-of-range value or malformed cursor is 400. `nextCursor` is passed back as `cursor`
+  to fetch the next page. Execution events keep their replay-specific `afterSeq` cursor,
+  but validate `limit` the same way; revocable token lists hide revoked tokens unless
+  `includeRevoked=true`.
 - Filtering, where documented: `?status=…&agentId=…&q=…`. Executions accept several
   statuses separated by commas (`status=failed,timed_out`); agents accept
   `status=current` for everything that is not archived.
-- Optimistic concurrency: `PATCH /api/v1/agents/{id}` accepts `expectedVersion`, the
-  version the edit started from. When the agent has a newer version the request is
-  refused with 409 instead of overwriting it.
+- `PATCH` is always partial: fields left out keep their stored value. Full replacement
+  is a separate operation, not a PATCH. Optimistic concurrency: `PATCH /api/v1/agents/{id}`
+  accepts `expectedVersion`, the version the edit started from; a stale write is 409.
+- `X-Request-Id` is only echoed when it is 1–128 characters of letters, digits, `.`, `_`
+  or `-`; anything else is replaced by a generated UUID. Request targets over 8192 bytes
+  are 414 and bodies over the configured limit are 413, both in the normal envelope.
+
+### Status codes for common conditions
+
+| Condition | Status | Code |
+|---|---|---|
+| Malformed JSON or invalid query value (including `limit`, `cursor`, `type`) | 400 | `bad_request` |
+| Well-formed JSON body with invalid fields | 422 | `validation_error` |
+| Target does not exist or is not visible to the caller | 404 | `not_found` |
+| Requested state transition is not allowed from the current state | 409 | `conflict` |
+| Optimistic-concurrency check failed (`expectedVersion`, `expectedUpdatedAt`) | 409 | `conflict` |
+| Request target too long / body too large | 414 / 413 | `uri_too_long` / `payload_too_large` |
+
+A terminal state is a conflict, never a malformed request: activating an active agent,
+pausing a paused agent and cancelling a finished execution all return 409. A bad *query*
+value is 400; 422 is reserved for a bad JSON *body*.
 
 ### Error envelope
 

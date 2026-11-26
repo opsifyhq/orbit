@@ -21,6 +21,8 @@ pub mod launches;
 pub mod metrics;
 pub mod openapi;
 pub mod output_delivery;
+pub mod paging;
+pub mod patch;
 pub mod preflight;
 pub mod rate_limit;
 pub mod request_id;

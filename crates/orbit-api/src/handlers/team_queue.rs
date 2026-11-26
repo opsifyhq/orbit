@@ -12,6 +12,7 @@ use orbit_security::{AuthContext, Permission};
 use orbit_store::team_queue::TeamQueueItem;
 
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 use crate::team_runs::{effective_payload, start_queue_item};
 
@@ -131,38 +132,27 @@ pub async fn enqueue(
     ))
 }
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueListQuery {
-    /// Items per page, 1 to 500 (default 500).
-    pub limit: Option<i64>,
-    /// Return the items created before this item: pass the first (oldest) id of the
-    /// previous page to page back.
-    pub before: Option<Uuid>,
-}
-
-#[utoipa::path(get, path = "/api/v1/agent-teams/{team_id}/queue", tag = "agent-teams", params(QueueListQuery), responses((status = 200, description = "the newest items, oldest first", body = [orbit_store::team_queue::TeamQueueItem])))]
+#[utoipa::path(get, path = "/api/v1/agent-teams/{team_id}/queue", tag = "agent-teams", params(PageQuery), responses((status = 200, description = "the newest items, oldest first", body = Page<orbit_store::team_queue::TeamQueueItem>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(team_id): Path<Uuid>,
-    axum::extract::Query(query): axum::extract::Query<QueueListQuery>,
-) -> Result<Json<Vec<TeamQueueItem>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<PageQuery>,
+) -> Result<Json<Page<TeamQueueItem>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     crate::handlers::teams::require_team_view(&state, &auth, team_id).await?;
-    let limit = query.limit.unwrap_or(500);
-    if !(1..=500).contains(&limit) {
-        return Err(ApiError::validation(vec![ValidationIssue::new(
-            "limit",
-            "limit must be 1 to 500",
-        )]));
-    }
-    Ok(Json(
-        state
-            .store
-            .list_team_queue(auth.org_id, team_id, limit, query.before)
-            .await?,
-    ))
+    // The store keeps a bounded window of recent items. Paging that window with the
+    // shared cursor keeps the response shape identical to every other list (#443).
+    let mut items = state
+        .store
+        .list_team_queue(auth.org_id, team_id, crate::paging::MAX_PAGE_LIMIT, None)
+        .await?;
+    // Store order is oldest-first. Page over newest-first so the first page is the
+    // latest items, then restore chronological order inside the page.
+    items.reverse();
+    let mut page = Page::from_window(items, &query, 100)?;
+    page.items.reverse();
+    Ok(Json(page))
 }
 
 #[utoipa::path(post, path = "/api/v1/agent-teams/{team_id}/queue/{item_id}/run", tag = "agent-teams", responses((status = 201, body = crate::team_runs::TeamRunDetail)))]

@@ -11,28 +11,31 @@ use orbit_store::Trigger;
 use crate::audit;
 use crate::dto::{CreateTriggerRequest, UpdateTriggerRequest};
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct TriggerListQuery {
     pub agent_id: Option<Uuid>,
+    #[serde(flatten)]
+    #[param(ignore)]
+    pub page: PageQuery,
 }
 
-#[utoipa::path(get, path = "/api/v1/triggers", tag = "triggers", params(TriggerListQuery), responses((status = 200, body = [Trigger])))]
+#[utoipa::path(get, path = "/api/v1/triggers", tag = "triggers", params(TriggerListQuery, PageQuery), responses((status = 200, body = Page<Trigger>)))]
 pub async fn list_triggers(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Query(query): Query<TriggerListQuery>,
-) -> Result<Json<Vec<Trigger>>, ApiError> {
+) -> Result<Json<Page<Trigger>>, ApiError> {
     auth.require(Permission::AgentsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_triggers(auth.org_id, query.agent_id, Some(&access.store_access()))
-            .await?,
-    ))
+    let triggers = state
+        .store
+        .list_triggers(auth.org_id, query.agent_id, Some(&access.store_access()))
+        .await?;
+    Ok(Json(Page::from_vec(triggers, &query.page, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/triggers", tag = "triggers", request_body = CreateTriggerRequest, responses((status = 201, body = Trigger)))]

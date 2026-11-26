@@ -26,7 +26,9 @@ export type TeamAutonomy = {
 };
 
 export function listAgentTeams(): Promise<AgentTeam[]> {
-  return request<AgentTeam[]>("/api/v1/agent-teams");
+  return request<{ items: AgentTeam[] }>("/api/v1/agent-teams?limit=500").then(
+    (page) => page.items,
+  );
 }
 
 export function getAgentTeam(teamId: string): Promise<AgentTeam> {
@@ -132,7 +134,9 @@ export function cancelTeamRun(runId: string): Promise<TeamRunDetail> {
 export type TeamQueueItem = components["schemas"]["TeamQueueItem"];
 
 export function listTeamQueue(teamId: string): Promise<TeamQueueItem[]> {
-  return request<TeamQueueItem[]>(`/api/v1/agent-teams/${teamId}/queue`);
+  return request<{ items: TeamQueueItem[] }>(`/api/v1/agent-teams/${teamId}/queue?limit=500`).then(
+    (page) => page.items,
+  );
 }
 
 export function enqueueTeamItems(

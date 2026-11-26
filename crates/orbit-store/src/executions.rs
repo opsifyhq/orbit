@@ -422,7 +422,9 @@ impl Store {
         if existing.status == "cancelled" {
             Ok(existing)
         } else {
-            Err(StoreError::Invalid(format!(
+            // A terminal state is a conflict with the requested transition, not a
+            // malformed request (#443).
+            Err(StoreError::Conflict(format!(
                 "execution in status '{}' cannot be cancelled",
                 existing.status
             )))

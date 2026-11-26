@@ -1316,8 +1316,12 @@ async fn apply_item(
             }
             request.auth_secret_name = current.auth_secret_name.clone();
             request.env_mappings = current.env_mappings.clone();
+            // Import replaces the document's fields; the PATCH handler now accepts a JSON
+            // overlay, so send the complete request as that overlay (#443).
+            let patch = serde_json::to_value(request)
+                .map_err(|error| ApiError::internal(format!("invalid worker profile: {error}")))?;
             let _ =
-                crate::handlers::worker_profiles::update_profile(s, a, Path(id), ApiJson(request))
+                crate::handlers::worker_profiles::update_profile(s, a, Path(id), ApiJson(patch))
                     .await?;
             id
         }
@@ -1354,8 +1358,9 @@ async fn apply_item(
             policy.id
         }
         (Translated::ToolPolicy(request), Some(id)) => {
-            let _ =
-                crate::handlers::tool_policies::update(s, a, Path(id), ApiJson(request)).await?;
+            let patch = serde_json::to_value(request)
+                .map_err(|error| ApiError::internal(format!("invalid tool policy: {error}")))?;
+            let _ = crate::handlers::tool_policies::update(s, a, Path(id), ApiJson(patch)).await?;
             id
         }
     };

@@ -16,6 +16,7 @@ use crate::dto::{
 };
 use crate::error::ApiError;
 use crate::handlers::{limit, load_agent_detail, load_visible_agent};
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 async fn require_agent_manage(
@@ -53,7 +54,7 @@ pub async fn list_agents(
         .store
         .list_agents(
             auth.org_id,
-            limit(query.limit),
+            limit(query.limit)?,
             query.cursor.as_deref(),
             query.status.as_deref(),
             query.q.as_deref(),
@@ -428,19 +429,21 @@ pub async fn pause_agent(
     Ok(Json(load_agent_detail(&state, &auth, agent_id).await?))
 }
 
-#[utoipa::path(get, path = "/api/v1/agents/{agent_id}/versions", tag = "agents", responses((status = 200, body = [AgentVersionView])))]
+#[utoipa::path(get, path = "/api/v1/agents/{agent_id}/versions", tag = "agents", params(PageQuery), responses((status = 200, body = Page<AgentVersionView>)))]
 pub async fn list_versions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(agent_id): Path<Uuid>,
-) -> Result<Json<Vec<AgentVersionView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<AgentVersionView>>, ApiError> {
     auth.require(Permission::AgentsRead)?;
     load_visible_agent(&state, &auth, agent_id).await?;
     let versions = state
         .store
         .list_agent_versions(auth.org_id, agent_id)
         .await?;
-    Ok(Json(versions.into_iter().map(Into::into).collect()))
+    let versions: Vec<AgentVersionView> = versions.into_iter().map(Into::into).collect();
+    Ok(Json(Page::from_vec(versions, &query, 100)?))
 }
 
 #[utoipa::path(get, path = "/api/v1/agents/{agent_id}/export", tag = "agents", responses((status = 200, description = "Agent definition YAML")))]

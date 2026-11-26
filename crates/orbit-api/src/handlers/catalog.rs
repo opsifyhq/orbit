@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -16,15 +16,17 @@ use crate::dto::{
     ProviderProbeResponse, ProviderView, UpdateConnectionRequest, UpdateProviderRequest,
 };
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 // ------------------------------------------------------------------- harnesses
 
-#[utoipa::path(get, path = "/api/v1/harnesses", tag = "harnesses", responses((status = 200, body = [HarnessView])))]
+#[utoipa::path(get, path = "/api/v1/harnesses", tag = "harnesses", params(PageQuery), responses((status = 200, body = Page<HarnessView>)))]
 pub async fn list_harnesses(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<HarnessView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<HarnessView>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let rows = state.store.list_harnesses(auth.org_id).await?;
     let items = rows
@@ -62,7 +64,7 @@ pub async fn list_harnesses(
             }
         })
         .collect();
-    Ok(Json(items))
+    Ok(Json(Page::from_vec(items, &query, 100)?))
 }
 
 /// A stored harness row with no adapter in this build's registry. Without an adapter it
@@ -82,11 +84,12 @@ fn fallback_descriptor(kind: HarnessKind, name: &str, description: &str) -> Harn
 
 // ------------------------------------------------------------------- providers
 
-#[utoipa::path(get, path = "/api/v1/providers", tag = "providers", responses((status = 200, body = [ProviderView])))]
+#[utoipa::path(get, path = "/api/v1/providers", tag = "providers", params(PageQuery), responses((status = 200, body = Page<ProviderView>)))]
 pub async fn list_providers(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<ProviderView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<ProviderView>>, ApiError> {
     auth.require(Permission::ProvidersRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let providers = state
@@ -96,7 +99,7 @@ pub async fn list_providers(
         .into_iter()
         .map(ProviderView::from_record)
         .collect();
-    Ok(Json(providers))
+    Ok(Json(Page::from_vec(providers, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/providers", tag = "providers", request_body = CreateProviderRequest, responses((status = 201, body = ProviderView)))]
@@ -588,23 +591,24 @@ pub(crate) async fn validate_connection_config(
 
 // ------------------------------------------------------------------ connectors
 
-#[utoipa::path(get, path = "/api/v1/connectors", tag = "connectors", responses((status = 200, body = [ConnectorView])))]
+#[utoipa::path(get, path = "/api/v1/connectors", tag = "connectors", params(PageQuery), responses((status = 200, body = Page<ConnectorView>)))]
 pub async fn list_connectors(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<ConnectorView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<ConnectorView>>, ApiError> {
     auth.require(Permission::ConnectionsRead)?;
     let connectors = state.store.list_connectors(auth.org_id).await?;
-    Ok(Json(
-        connectors.into_iter().map(ConnectorView::from).collect(),
-    ))
+    let items: Vec<ConnectorView> = connectors.into_iter().map(ConnectorView::from).collect();
+    Ok(Json(Page::from_vec(items, &query, 100)?))
 }
 
-#[utoipa::path(get, path = "/api/v1/connections", tag = "connectors", responses((status = 200, body = [ConnectionView])))]
+#[utoipa::path(get, path = "/api/v1/connections", tag = "connectors", params(PageQuery), responses((status = 200, body = Page<ConnectionView>)))]
 pub async fn list_connections(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<ConnectionView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<ConnectionView>>, ApiError> {
     auth.require(Permission::ConnectionsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let rows = state
@@ -614,7 +618,7 @@ pub async fn list_connections(
         .into_iter()
         .map(ConnectionView::from)
         .collect();
-    Ok(Json(rows))
+    Ok(Json(Page::from_vec(rows, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/connections", tag = "connectors", request_body = CreateConnectionRequest, responses((status = 201, body = ConnectionView)))]
@@ -1113,27 +1117,27 @@ async fn probe_supported_connection(
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/workers", tag = "harnesses", responses((status = 200, body = [WorkerView])))]
+#[utoipa::path(get, path = "/api/v1/workers", tag = "harnesses", params(PageQuery), responses((status = 200, body = Page<WorkerView>)))]
 pub async fn list_workers(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<WorkerView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<WorkerView>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let now = chrono::Utc::now();
     let mut workers = state.store.list_worker_heartbeats(auth.org_id).await?;
     workers.sort_by_key(|worker| std::cmp::Reverse(worker.last_heartbeat_at));
-    Ok(Json(
-        workers
-            .into_iter()
-            .map(|worker| WorkerView {
-                live: (now - worker.last_heartbeat_at).num_seconds() < 60,
-                worker_id: worker.worker_id,
-                harnesses: worker.harnesses,
-                target: worker.target,
-                hostname: worker.hostname,
-                started_at: worker.started_at,
-                last_heartbeat_at: worker.last_heartbeat_at,
-            })
-            .collect(),
-    ))
+    let items: Vec<WorkerView> = workers
+        .into_iter()
+        .map(|worker| WorkerView {
+            live: (now - worker.last_heartbeat_at).num_seconds() < 60,
+            worker_id: worker.worker_id,
+            harnesses: worker.harnesses,
+            target: worker.target,
+            hostname: worker.hostname,
+            started_at: worker.started_at,
+            last_heartbeat_at: worker.last_heartbeat_at,
+        })
+        .collect();
+    Ok(Json(Page::from_vec(items, &query, 100)?))
 }

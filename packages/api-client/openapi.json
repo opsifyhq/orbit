@@ -16,15 +16,33 @@
           "agent-teams"
         ],
         "operationId": "list_teams",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AgentTeam"
-                  }
+                  "$ref": "#/components/schemas/Page_AgentTeam"
                 }
               }
             }
@@ -161,27 +179,20 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Items per page, 1 to 500 (default 500).",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
-            "name": "before",
+            "name": "cursor",
             "in": "query",
-            "description": "Return the items created before this item: pass the first (oldest) id of the\nprevious page to page back.",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "format": "uuid"
+              "type": "string"
             }
           },
           {
@@ -200,10 +211,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TeamQueueItem"
-                  }
+                  "$ref": "#/components/schemas/Page_TeamQueueItem"
                 }
               }
             }
@@ -1059,6 +1067,25 @@
         "operationId": "list_versions",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "agent_id",
             "in": "path",
             "required": true,
@@ -1073,10 +1100,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AgentVersionView"
-                  }
+                  "$ref": "#/components/schemas/Page_AgentVersionView"
                 }
               }
             }
@@ -1090,15 +1114,45 @@
           "account"
         ],
         "operationId": "list_api_tokens",
+        "parameters": [
+          {
+            "name": "includeRevoked",
+            "in": "query",
+            "description": "Include revoked tokens. Off by default so a long-lived installation's list stays\nuseful; they remain queryable when an audit needs them.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ApiTokenView"
-                  }
+                  "$ref": "#/components/schemas/Page_ApiTokenView"
                 }
               }
             }
@@ -1184,11 +1238,20 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
               "type": "integer",
-              "format": "int32",
-              "minimum": 0
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1197,10 +1260,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ApprovalWithExecution"
-                  }
+                  "$ref": "#/components/schemas/Page_ApprovalWithExecution"
                 }
               }
             }
@@ -1421,15 +1481,33 @@
           "connectors"
         ],
         "operationId": "list_connections",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ConnectionView"
-                  }
+                  "$ref": "#/components/schemas/Page_ConnectionView"
                 }
               }
             }
@@ -1570,15 +1648,33 @@
           "connectors"
         ],
         "operationId": "list_connectors",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ConnectorView"
-                  }
+                  "$ref": "#/components/schemas/Page_ConnectorView"
                 }
               }
             }
@@ -1700,15 +1796,33 @@
           "env-mappings"
         ],
         "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/EnvMapping"
-                  }
+                  "$ref": "#/components/schemas/Page_EnvMapping"
                 }
               }
             }
@@ -2110,15 +2224,33 @@
           "harnesses"
         ],
         "operationId": "list_harnesses",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/HarnessView"
-                  }
+                  "$ref": "#/components/schemas/Page_HarnessView"
                 }
               }
             }
@@ -2314,15 +2446,33 @@
           "outputs"
         ],
         "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/OutputView"
-                  }
+                  "$ref": "#/components/schemas/Page_OutputView"
                 }
               }
             }
@@ -2436,14 +2586,20 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "How many deliveries to return, newest first (1–200, default 50).",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -2452,10 +2608,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/OutputDeliveryView"
-                  }
+                  "$ref": "#/components/schemas/Page_OutputDeliveryView"
                 }
               }
             }
@@ -2492,15 +2645,33 @@
           "providers"
         ],
         "operationId": "list_providers",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ProviderView"
-                  }
+                  "$ref": "#/components/schemas/Page_ProviderView"
                 }
               }
             }
@@ -2672,15 +2843,33 @@
           "roles"
         ],
         "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CustomRole"
-                  }
+                  "$ref": "#/components/schemas/Page_CustomRole"
                 }
               }
             }
@@ -3093,15 +3282,33 @@
           "skills"
         ],
         "operationId": "list_skills",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Skill"
-                  }
+                  "$ref": "#/components/schemas/Page_Skill"
                 }
               }
             }
@@ -3391,15 +3598,33 @@
           "teams"
         ],
         "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AccessTeam"
-                  }
+                  "$ref": "#/components/schemas/Page_AccessTeam"
                 }
               }
             }
@@ -3502,6 +3727,25 @@
         "operationId": "list_members",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "team_id",
             "in": "path",
             "required": true,
@@ -3516,10 +3760,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TeamMember"
-                  }
+                  "$ref": "#/components/schemas/Page_TeamMember"
                 }
               }
             }
@@ -3669,6 +3910,25 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3676,10 +3936,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ToolPolicyView"
-                  }
+                  "$ref": "#/components/schemas/Page_ToolPolicyView"
                 }
               }
             }
@@ -3792,6 +4049,25 @@
               ],
               "format": "uuid"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3799,10 +4075,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Trigger"
-                  }
+                  "$ref": "#/components/schemas/Page_Trigger"
                 }
               }
             }
@@ -3903,15 +4176,33 @@
           "account"
         ],
         "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/User"
-                  }
+                  "$ref": "#/components/schemas/Page_User"
                 }
               }
             }
@@ -3965,15 +4256,41 @@
           "workers"
         ],
         "operationId": "list_launches",
+        "parameters": [
+          {
+            "name": "includeInactive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WorkerLaunch"
-                  }
+                  "$ref": "#/components/schemas/Page_WorkerLaunch"
                 }
               }
             }
@@ -4127,15 +4444,33 @@
           "workers"
         ],
         "operationId": "list_profiles",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WorkerProfile"
-                  }
+                  "$ref": "#/components/schemas/Page_WorkerProfile"
                 }
               }
             }
@@ -4359,6 +4694,25 @@
         "operationId": "profile_mappings",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "profile_id",
             "in": "path",
             "required": true,
@@ -4373,10 +4727,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/EnvMapping"
-                  }
+                  "$ref": "#/components/schemas/Page_EnvMapping"
                 }
               }
             }
@@ -4450,15 +4801,45 @@
           "workers"
         ],
         "operationId": "list_tokens",
+        "parameters": [
+          {
+            "name": "includeRevoked",
+            "in": "query",
+            "description": "Include revoked tokens. Off by default; revoked tokens can be viewed when needed.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WorkerTokenView"
-                  }
+                  "$ref": "#/components/schemas/Page_WorkerTokenView"
                 }
               }
             }
@@ -4521,15 +4902,33 @@
           "harnesses"
         ],
         "operationId": "list_workers",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items per page. Must be 1 to 500; each endpoint documents its default.\nValues outside the range are rejected with 400.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WorkerView"
-                  }
+                  "$ref": "#/components/schemas/Page_WorkerView"
                 }
               }
             }
@@ -5534,7 +5933,8 @@
       "AuditLogPage": {
         "type": "object",
         "required": [
-          "items"
+          "items",
+          "total"
         ],
         "properties": {
           "items": {
@@ -5548,6 +5948,10 @@
               "string",
               "null"
             ]
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -6003,12 +6407,13 @@
             },
             "description": "Explicit capability allowlist (`issues.list`, `messages.send`, …).\nEmpty means \"manifest default read capabilities only\" (never write)."
           },
-          "connection_id": {
+          "connectionId": {
             "type": [
               "string",
               "null"
             ],
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Identifier of the connection whose credentials and access scope this binding uses.\nThe wire name is `connectionId`; a snake_case key is ignored by the serde\nrepresentation below (contract: docs/architecture/api.md)."
           },
           "connector": {
             "type": "string"
@@ -8599,6 +9004,2067 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "Page_AccessTeam": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "name",
+                "slug",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "createdBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_AgentTeam": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "visibility",
+                "name",
+                "description",
+                "definition",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "createdBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "definition": {},
+                "description": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lastPollAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "lastPollError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "ownerUserId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_AgentVersionView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "version",
+                "checksum",
+                "spec",
+                "createdAt"
+              ],
+              "properties": {
+                "checksum": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "spec": {},
+                "version": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ApiTokenView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "tokenPrefix",
+                "scopes",
+                "createdAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expiresAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lastUsedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "revokedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tokenPrefix": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ApprovalWithExecution": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "orgId",
+                    "executionId",
+                    "status",
+                    "requestedAction",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "comment": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "decidedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "decidedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "executionId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "orgId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "requestedAction": {},
+                    "status": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "agentName",
+                    "agentId",
+                    "executionStatus"
+                  ],
+                  "properties": {
+                    "agentId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "agentName": {
+                      "type": "string"
+                    },
+                    "executionStatus": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ConnectionView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "status",
+                "connectorSlug",
+                "connectorName",
+                "config",
+                "scopes",
+                "hasCredential",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "config": {},
+                "connectorName": {
+                  "type": "string"
+                },
+                "connectorSlug": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "hasCredential": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lastCheckedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "status": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ConnectorView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "slug",
+                "name",
+                "version",
+                "description",
+                "auth",
+                "capabilities",
+                "configSchema",
+                "webhooks",
+                "builtin"
+              ],
+              "properties": {
+                "auth": {},
+                "builtin": {
+                  "type": "boolean"
+                },
+                "capabilities": {},
+                "configSchema": {},
+                "description": {
+                  "type": "string"
+                },
+                "docsUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "webhooks": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_CustomRole": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "name",
+                "permissions",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "permissions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_EnvMapping": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "name",
+                "description",
+                "mappings",
+                "visibility",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "mappings": {},
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "ownerUserId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_HarnessView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind",
+                "name",
+                "description",
+                "enabled",
+                "implementationStatus",
+                "capabilities",
+                "descriptor",
+                "config",
+                "health",
+                "updatedAt"
+              ],
+              "properties": {
+                "capabilities": {},
+                "config": {},
+                "description": {
+                  "type": "string"
+                },
+                "descriptor": {
+                  "$ref": "#/components/schemas/HarnessDescriptor"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "health": {
+                  "$ref": "#/components/schemas/HarnessHealthView"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "implementationStatus": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_OutputDeliveryView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One delivery of an output: whether the message arrived, and why not.",
+              "required": [
+                "id",
+                "status",
+                "attempts",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "agentName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "attempts": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the last attempt failed. Never contains the webhook URL."
+                },
+                "executionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "The run it reports on, only when the caller may see it."
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "nextAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When a pending delivery is tried next."
+                },
+                "responseStatus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "HTTP status of the last attempt, when the destination answered."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending` (waiting, or retrying after an error), `sending`, `succeeded`, `failed`\n(refused, not retried), `dead` (retries used up) or `skipped` (output off or deleted)."
+                },
+                "task": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "teamRunId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_OutputView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "agentIds",
+                "events",
+                "enabled",
+                "hasWebhook",
+                "config",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "agentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "chatId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "config": {
+                  "description": "Non-secret configuration for S3 (empty for other kinds)."
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "hasWebhook": {
+                  "type": "boolean",
+                  "description": "True when a webhook URL or Telegram bot token is stored. The value itself is never\nreturned."
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "lastDelivery": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OutputDeliveryView",
+                      "description": "The newest delivery, without run details. Only in list responses, and only once the\noutput has delivered (or tried to)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "messageThreadId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "template": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ProviderView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "config",
+                "enabled",
+                "hasCredential",
+                "capabilities",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "capabilities": {},
+                "config": {},
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "hasCredential": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_Skill": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "visibility",
+                "slug",
+                "name",
+                "description",
+                "content",
+                "files",
+                "version",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "files": {},
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "ownerUserId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_TeamMember": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "teamId",
+                "userId",
+                "role",
+                "createdAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "userId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_TeamQueueItem": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "teamId",
+                "externalKey",
+                "payload",
+                "status",
+                "createdAt",
+                "updatedAt",
+                "attempts",
+                "maxAttempts"
+              ],
+              "properties": {
+                "attempts": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "externalKey": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "maxAttempts": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "payload": {},
+                "repository": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "teamRunId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_ToolPolicyView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "name",
+                "priority",
+                "enabled",
+                "action",
+                "matcher",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "agentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "impact": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "matcher": {
+                  "$ref": "#/components/schemas/ToolPolicyMatcher"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_Trigger": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "visibility",
+                "agentId",
+                "kind",
+                "enabled",
+                "config",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "config": {},
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "harnessKind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "lastFiredAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "nextRunAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "ownerUserId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_User": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "email",
+                "displayName",
+                "role",
+                "status",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "oidcIssuer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "oidcSubject": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_WorkerLaunch": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "profileId",
+                "name",
+                "target",
+                "status",
+                "image",
+                "relaunchRequired",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "archivedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "createdBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "image": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "profileId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "relaunchRequired": {
+                  "type": "boolean"
+                },
+                "runtimeId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "startedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "stoppedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "workerId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "workerTokenId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_WorkerProfile": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "orgId",
+                "visibility",
+                "name",
+                "harnessKind",
+                "target",
+                "executionDriver",
+                "image",
+                "imageTag",
+                "agentScope",
+                "agentIds",
+                "skillSlugs",
+                "resources",
+                "allowWebSearch",
+                "allowWebFetch",
+                "allowGlab",
+                "allowGh",
+                "nativeToolPermissions",
+                "enabled",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "agentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "agentScope": {
+                  "type": "string"
+                },
+                "allowGh": {
+                  "type": "boolean"
+                },
+                "allowGlab": {
+                  "type": "boolean"
+                },
+                "allowWebFetch": {
+                  "type": "boolean"
+                },
+                "allowWebSearch": {
+                  "type": "boolean"
+                },
+                "authSecretName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "env": {
+                  "type": "object",
+                  "description": "Stored variable values. Never serialized: responses carry only names and a\n`hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher\npayload and for update merging.",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/EnvVarState"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "executionDriver": {
+                  "type": "string"
+                },
+                "harnessKind": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "image": {
+                  "type": "string"
+                },
+                "imageTag": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "nativeToolPermissions": {},
+                "orgId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "ownerTeamId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "ownerUserId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "resources": {},
+                "skillSlugs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "target": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "visibility": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_WorkerTokenView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "harnesses",
+                "tokenPrefix",
+                "createdAt"
+              ],
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "harnesses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lastUsedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "profileId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "revokedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "tokenPrefix": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
+          }
+        }
+      },
+      "Page_WorkerView": {
+        "type": "object",
+        "description": "The shared list envelope. `total` counts the items available to this request after\naccess filtering; sources that cap their query report the size of that window.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "workerId",
+                "harnesses",
+                "target",
+                "startedAt",
+                "lastHeartbeatAt",
+                "live"
+              ],
+              "properties": {
+                "harnesses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "hostname": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastHeartbeatAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "workerId": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Items on this page, in the endpoint's documented order."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` to fetch the next page; `null` at the end of the list."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of items available to this request after filtering."
           }
         }
       },

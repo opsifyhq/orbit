@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -11,6 +11,7 @@ use orbit_store::Skill;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -38,19 +39,19 @@ pub struct UpdateSkillRequest {
     pub files: Option<serde_json::Value>,
 }
 
-#[utoipa::path(get, path = "/api/v1/skills", tag = "skills", responses((status = 200, body = [Skill])))]
+#[utoipa::path(get, path = "/api/v1/skills", tag = "skills", params(PageQuery), responses((status = 200, body = Page<Skill>)))]
 pub async fn list_skills(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<Skill>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<Skill>>, ApiError> {
     auth.require(Permission::AgentsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_skills(auth.org_id, Some(&access.store_access()))
-            .await?,
-    ))
+    let skills = state
+        .store
+        .list_skills(auth.org_id, Some(&access.store_access()))
+        .await?;
+    Ok(Json(Page::from_vec(skills, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/skills", tag = "skills", request_body = CreateSkillRequest, responses((status = 201, body = Skill)))]

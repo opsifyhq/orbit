@@ -23,11 +23,15 @@ export interface EnvMappingRecord {
 }
 
 export function listEnvMappings(): Promise<EnvMappingRecord[]> {
-  return request<EnvMappingRecord[]>("/api/v1/env-mappings");
+  return request<{ items: EnvMappingRecord[] }>("/api/v1/env-mappings?limit=500").then(
+    (page) => page.items,
+  );
 }
 
 export function workerProfileEnvMappings(profileId: string): Promise<EnvMappingRecord[]> {
-  return request<EnvMappingRecord[]>(`/api/v1/worker-profiles/${profileId}/env-mappings`);
+  return request<{ items: EnvMappingRecord[] }>(
+    `/api/v1/worker-profiles/${profileId}/env-mappings?limit=500`,
+  ).then((page) => page.items);
 }
 
 export function createEnvMapping(body: {
