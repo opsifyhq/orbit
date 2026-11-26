@@ -8,6 +8,14 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-11-26
+
+### Fixed
+
+- Running an agent whose spec still points at a removed connection now names that missing
+  connection in the error, instead of the bare message "connection"; choose another
+  connection on the agent.
+
 ## [0.30.1] - 2026-11-26
 
 ### Changed
