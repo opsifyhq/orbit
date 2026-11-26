@@ -8,6 +8,35 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-26
+
+### Added
+
+- Exchange on-premises connector (EWS): read-only mail search, message reading and
+  attachment download through the tool broker, with HTTPS/Basic auth, mailbox/folder
+  allowlists and attachment size limits.
+- Email (SMTP) outputs: send the rendered run text through an authenticated SMTP server
+  with STARTTLS, SMTPS or a trusted plaintext relay. The non-secret destination and
+  message settings live in the output config; the username/password stay write-only.
+
+### Changed
+
+- All growing list endpoints return the shared `{items,nextCursor,total}` envelope with
+  validated `limit`/`cursor` paging; PATCH is partial everywhere, invalid state changes
+  return 409, and oversized requests, bad query values and rejected framework errors use
+  the normal error envelope (#443).
+- Skills, environments and worker profiles now show their owning team and access scope too.
+  Skills and environments can be filtered by team and visibility; worker profile cards show
+  the access label next to their scope badges.
+- Resource lists for agents, agent teams, connections and model providers show the owning
+  team and access scope, with team/visibility filters. The shared list component keeps the
+  information visible in the mobile row layout.
+
+### Fixed
+
+- OpenAPI now matches the wire format: team step `activatedBy` is an array, connector bindings use `connectionId`, output tests return 204, an existing agent runtime can return 200, `/import` documents its body, and execution creation documents `Idempotency-Key`.
+- Every documented operation declares the shared `ErrorResponse` component for 400/401/403/404/409/422/429, and contract tests check team-run and connector-binding payloads against the generated types.
+
 ## [0.30.2] - 2026-11-26
 
 ### Fixed
