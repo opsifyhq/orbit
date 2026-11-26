@@ -114,7 +114,8 @@ pub async fn send(
             message,
             retryable: false,
         })?;
-        let client = orbit_s3::S3Client::new(config, credentials).map_err(|message| SendError {
+        let client = orbit_s3::S3Client::with_policy(config, credentials, state.outbound.clone())
+            .map_err(|message| SendError {
             status: None,
             message,
             retryable: false,
@@ -154,7 +155,7 @@ pub async fn send(
         )
         .await;
     }
-    guard_webhook_url(&secret)
+    guard_webhook_url(&secret, &state.outbound)
         .await
         .map_err(|error| SendError {
             status: None,
@@ -536,15 +537,19 @@ fn summary(execution: &ExecutionRecord) -> String {
 
 /// Refuse webhook targets in loopback, link-local/metadata or other blocked ranges
 /// (see `ORBIT_OUTBOUND_*`). Private ranges are allowed by default.
-pub(crate) async fn guard_webhook_url(url: &str) -> Result<(), ApiError> {
-    orbit_security::check_outbound_url(url, &orbit_security::OutboundPolicy::from_env())
+pub(crate) async fn guard_webhook_url(url: &str, policy: &OutboundPolicy) -> Result<(), ApiError> {
+    orbit_security::check_outbound_url(url, policy)
         .await
         .map_err(|error| {
             ApiError::validation(vec![ValidationIssue::new("webhookUrl", error.to_string())])
         })
 }
 
-pub(crate) async fn guard_credential(kind: OutputKind, value: &str) -> Result<(), ApiError> {
+pub(crate) async fn guard_credential(
+    kind: OutputKind,
+    value: &str,
+    policy: &OutboundPolicy,
+) -> Result<(), ApiError> {
     match kind {
         OutputKind::Telegram => {
             // Telegram tokens are `<numeric id>:<secret>`; rejecting URL metacharacters here
@@ -573,7 +578,7 @@ pub(crate) async fn guard_credential(kind: OutputKind, value: &str) -> Result<()
             })?;
             Ok(())
         }
-        _ => guard_webhook_url(value).await,
+        _ => guard_webhook_url(value, policy).await,
     }
 }
 
@@ -624,9 +629,13 @@ mod tests {
 
     #[tokio::test]
     async fn telegram_tokens_cannot_alter_the_request_path() {
-        assert!(guard_credential(OutputKind::Telegram, "123456:ABC_def-1")
-            .await
-            .is_ok());
+        assert!(guard_credential(
+            OutputKind::Telegram,
+            "123456:ABC_def-1",
+            &OutboundPolicy::default()
+        )
+        .await
+        .is_ok());
         for token in [
             "123:abc/../../evil",
             "123:abc?x=1",
@@ -635,7 +644,9 @@ mod tests {
             ":secret",
         ] {
             assert!(
-                guard_credential(OutputKind::Telegram, token).await.is_err(),
+                guard_credential(OutputKind::Telegram, token, &OutboundPolicy::default())
+                    .await
+                    .is_err(),
                 "{token} must be rejected"
             );
         }

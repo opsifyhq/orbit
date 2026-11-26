@@ -305,7 +305,7 @@ pub async fn cancel(
                     .request_team_run_cancel(auth.org_id, run_id)
                     .await?,
             );
-            crate::handlers::teams::announce_cancel(&state, auth.org_id, &cancelled).await;
+            crate::team_runs::announce_cancel(&state, auth.org_id, &cancelled).await;
             crate::team_outcomes::close_cancelled_queue_loop(&state, &run, "cancelled by operator")
                 .await;
             let updated = state
@@ -323,7 +323,7 @@ pub async fn cancel(
             return Ok(Json(updated));
         }
         // The run had already ended; its outcome is pending. Cancel the item directly.
-        crate::handlers::teams::announce_cancel(&state, auth.org_id, &cancelled).await;
+        crate::team_runs::announce_cancel(&state, auth.org_id, &cancelled).await;
     }
     let updated = state
         .store

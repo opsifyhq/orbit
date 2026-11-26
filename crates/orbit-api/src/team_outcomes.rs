@@ -124,10 +124,7 @@ async fn close_queue_loop_inner(
     if retry
         && state
             .store
-            .team_run_execution_failed_with(
-                run.id,
-                &crate::handlers::teams::ended_without_retry_codes(),
-            )
+            .team_run_execution_failed_with(run.id, &crate::team_runs::ended_without_retry_codes())
             .await?
             .is_some()
     {

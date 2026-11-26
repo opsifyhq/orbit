@@ -7692,7 +7692,7 @@ async fn a_lost_worker_run_is_not_retried_when_the_team_poller_sees_it_first() {
             .unwrap()
             .unwrap();
         let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-        orbit_api::handlers::teams::advance(&app.state, run)
+        orbit_api::team_runs::advance(&app.state, run)
             .await
             .unwrap();
 
@@ -7747,7 +7747,7 @@ async fn the_outcome_reconciler_does_not_retry_a_lost_worker_run() {
         .unwrap();
     assert_eq!(queue_state(&app, item).await.0, "running");
 
-    orbit_api::handlers::teams::reconcile_team_outcomes(&app.state)
+    orbit_api::team_runs::reconcile_team_outcomes(&app.state)
         .await
         .unwrap();
     assert_eq!(
@@ -7819,7 +7819,7 @@ async fn overlapping_launch_refreshes_report_only_the_failure_they_caused() {
         assert_eq!(second.0, StatusCode::OK, "{}", second.1);
 
         let run = app.store.get_team_run(app.org_id, run_id).await.unwrap();
-        orbit_api::handlers::teams::advance(&app.state, run)
+        orbit_api::team_runs::advance(&app.state, run)
             .await
             .unwrap();
 

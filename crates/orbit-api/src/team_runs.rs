@@ -1418,6 +1418,20 @@ pub(crate) fn approval_mode_label(mode: orbit_domain::ApprovalMode) -> &'static 
     }
 }
 
+/// Error codes of executions the platform ended because their worker went away: a lost
+/// worker or boot (`worker_lost`), a runtime termination (`worker_oom`, `worker_evicted`,
+/// `worker_exited`) or a harness that stopped reporting (`harness_unresponsive`). Their
+/// outcome is unknown, so their team run is neither continued nor retried (#343, #394).
+/// `worker_did_not_start` is not one of them: nothing ran, so the queue may retry it.
+pub(crate) fn ended_without_retry_codes() -> Vec<&'static str> {
+    orbit_contracts::WorkerTerminationReason::ALL
+        .iter()
+        .copied()
+        .filter(|code| *code != "worker_did_not_start")
+        .chain(["harness_unresponsive"])
+        .collect()
+}
+
 #[cfg(test)]
 mod prompt_separation_tests {
     use super::{configured_goal, run_instruction};
