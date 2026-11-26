@@ -6640,7 +6640,15 @@ async fn worker_cannot_act_on_execution_claimed_by_another_worker() {
     assert_eq!(untouched.status, "dispatched");
     assert!(untouched.output.is_none());
 
-    // The claiming worker still drives its execution end to end.
+    // The claiming worker still drives its execution end to end, starting with the
+    // one-query cancel poll (#447).
+    let (status, body) = send(
+        &app.router,
+        worker_request("GET", &format!("{base}/cancel"), &token_a, None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cancelRequested"], json!(false));
     let (status, _) = send(
         &app.router,
         worker_request(
