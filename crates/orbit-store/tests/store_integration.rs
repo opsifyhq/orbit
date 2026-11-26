@@ -423,7 +423,7 @@ async fn team_loop_queries_use_partial_indexes() {
         .await
         .unwrap();
 
-    async fn explain(store: &Store, sql: &str) -> String {
+    async fn explain(store: &Store, sql: &'static str) -> String {
         sqlx::query_scalar::<_, String>(sql)
             .fetch_all(store.pool())
             .await
