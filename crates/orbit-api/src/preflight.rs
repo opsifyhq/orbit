@@ -29,7 +29,7 @@
 use uuid::Uuid;
 
 use orbit_domain::{AgentSpec, HarnessKind, ValidationIssue};
-use orbit_store::Agent;
+use orbit_store::{Agent, StoreError};
 
 use crate::access::AccessScope;
 use crate::error::ApiError;
@@ -50,11 +50,18 @@ pub async fn require_connection_use(
     connection_id: Uuid,
     path: &str,
 ) -> Result<(), ApiError> {
-    let connection = state
-        .store
-        .get_connection(org_id, connection_id)
-        .await
-        .map_err(|error| with_field(error.into(), path))?;
+    let connection = match state.store.get_connection(org_id, connection_id).await {
+        Ok(connection) => connection,
+        Err(StoreError::NotFound(_)) => {
+            return Err(with_field(
+                ApiError::not_found(format!(
+                    "connection {connection_id} was not found or is no longer accessible; choose another connection"
+                )),
+                path,
+            ));
+        }
+        Err(error) => return Err(with_field(error.into(), path)),
+    };
     access
         .require_use(
             "connection",
