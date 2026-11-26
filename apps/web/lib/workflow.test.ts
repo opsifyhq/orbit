@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   WORKFLOW_EXAMPLES,
   WORKFLOW_START,
   addStep,
+  agentLabel,
   apart,
   cleanWorkflow,
   conditionOfPort,
@@ -16,6 +18,8 @@ import {
   limitReached,
   liveEdges,
   loopSteps,
+  nextInput,
+  nextOutput,
   nodeRunStates,
   nodeHeight,
   patchStep,
@@ -348,4 +352,53 @@ test("a run that ran out of tries points at the step that was due again", () => 
 test("names become ids", () => {
   assert.equal(slugify("Run the tests!"), "run-the-tests");
   assert.equal(slugify("  "), "");
+});
+
+test("the editor agrees with the server on the shared validation cases", () => {
+  // The same file is asserted by `validate` in crates/orbit-domain/src/workflow.rs.
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../../crates/orbit-domain/tests/fixtures/workflow-validation.json", import.meta.url), "utf8"),
+  ) as { cases: { name: string; valid: boolean; workflow: Workflow }[] };
+  assert.ok(fixture.cases.length > 20);
+  for (const { name, valid, workflow } of fixture.cases) {
+    const issues = workflowIssues(workflow);
+    if (valid) assert.deepEqual(issues, [], name);
+    else assert.ok(issues.length > 0, `${name}: the editor accepts what the server refuses`);
+  }
+});
+
+test("adding an input or output never returns the same workflow", () => {
+  const two: Workflow = {
+    nodes: [
+      { id: "a", name: "A", agentId: "x" },
+      { id: "b", name: "B", agentId: "x" },
+    ],
+    edges: [{ id: "s", from: WORKFLOW_START, to: "a", when: "always" }],
+  };
+  const withLine = nextOutput(two, "a");
+  assert.ok(withLine);
+  assert.deepEqual(withLine.edges.at(-1), { id: withLine.edges.at(-1)?.id, from: "a", to: "b", when: "success", outcome: null });
+  // The suggested line now exists: nothing is left to add, in either direction.
+  assert.equal(nextOutput(withLine, "a"), null);
+  assert.equal(nextInput(withLine, "b"), null);
+  // b can still feed a.
+  assert.equal(nextInput(withLine, "a")?.edges.at(-1)?.from, "b");
+  // A step on its own can repeat itself once.
+  const single: Workflow = { nodes: [{ id: "a", name: "A", agentId: "x" }], edges: [] };
+  const loop = nextOutput(single, "a");
+  assert.equal(loop?.edges[0].to, "a");
+  assert.equal(nextOutput(loop!, "a"), null);
+  assert.equal(nextInput(single, "a"), null);
+});
+
+test("steps name archived agents and do not call a loading list unavailable", () => {
+  const agents = [
+    { id: "1", name: "Builder" },
+    { id: "2", name: "Old reviewer", archived: true },
+  ];
+  assert.equal(agentLabel("1", agents), "Builder");
+  assert.equal(agentLabel("2", agents), "Archived agent: Old reviewer");
+  assert.equal(agentLabel("3", agents), "Unavailable agent");
+  assert.equal(agentLabel("3", [], "loading"), "Loading agents…");
+  assert.equal(agentLabel("3", [], "error"), "Agents could not be loaded");
 });

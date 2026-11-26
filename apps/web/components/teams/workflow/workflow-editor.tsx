@@ -28,6 +28,7 @@ import {
   WORKFLOW_EXAMPLES,
   WORKFLOW_START,
   addStep,
+  agentLabel,
   apart,
   conditionOfPort,
   conditionPhrase,
@@ -39,6 +40,8 @@ import {
   isStartEdge,
   lastStep,
   loopSteps,
+  nextInput,
+  nextOutput,
   portOf,
   patchEdge,
   patchStep,
@@ -51,6 +54,7 @@ import {
   suggestCondition,
   tidy,
   withPositions,
+  type AgentListState,
   type Workflow,
   type WorkflowEdge,
   type WorkflowIssue,
@@ -64,6 +68,8 @@ export interface AgentOption {
   id: string;
   name: string;
   harness?: string | null;
+  /** Archived agents are passed too, so a step that still names one can say so; they are not offered. */
+  archived?: boolean;
 }
 
 /** "success" | "failure" | "always" | "outcome:<label>" for one select. */
@@ -214,6 +220,7 @@ function StepFields({
   workflow,
   node,
   agents,
+  agentsState,
   onChange,
   onSelect,
   inLoop,
@@ -221,6 +228,7 @@ function StepFields({
   workflow: Workflow;
   node: WorkflowNode;
   agents: AgentOption[];
+  agentsState: AgentListState;
   onChange: (next: Workflow) => void;
   onSelect: (selection: WorkflowSelection) => void;
   inLoop: boolean;
@@ -231,7 +239,10 @@ function StepFields({
   const starts = startsRun(workflow, node.id);
   const others = workflow.nodes.filter((item) => item.id !== node.id);
   const outcomes = node.outcomes ?? [];
-  const known = agents.some((agent) => agent.id === node.agentId);
+  const offered = agents.filter((agent) => !agent.archived);
+  const known = offered.some((agent) => agent.id === node.agentId);
+  const addInput = nextInput(workflow, node.id);
+  const addOutput = nextOutput(workflow, node.id);
   const unused = outcomes.filter((outcome) => !lines.some((edge) => edge.when === "outcome" && edge.outcome === outcome));
   const key = `step-${node.id}`;
   const ports = stepPorts(workflow, node, true);
@@ -251,13 +262,15 @@ function StepFields({
         <Field label="Agent" htmlFor={`${key}-agent`}>
           <Select id={`${key}-agent`} value={node.agentId} onChange={(event) => patch({ agentId: event.target.value })}>
             <option value="">Choose an agent…</option>
-            {agents.map((agent) => (
+            {offered.map((agent) => (
               <option key={agent.id} value={agent.id}>
                 {agent.name}
                 {agent.harness ? ` (${brandName(agent.harness)})` : ""}
               </option>
             ))}
-            {node.agentId && !known ? <option value={node.agentId}>Unavailable agent</option> : null}
+            {node.agentId && !known ? (
+              <option value={node.agentId}>{agentLabel(node.agentId, agents, agentsState)}</option>
+            ) : null}
           </Select>
         </Field>
       </div>
@@ -354,15 +367,16 @@ function StepFields({
           type="button"
           size="sm"
           variant="outline"
-          disabled={!others.length}
-          onClick={() => {
-            const source = others.find((item) => !incoming.some((edge) => edge.from === item.id)) ?? others[0];
-            const suggestion = suggestCondition(workflow, source.id);
-            onChange(connect(workflow, source.id, node.id, suggestion.when, suggestion.outcome).workflow);
-          }}
+          disabled={!addInput}
+          onClick={() => addInput && onChange(addInput)}
         >
           <Plus /> Add an input
         </Button>
+        {!addInput && others.length ? (
+          <p className="text-[13px] text-muted-foreground">
+            Every other step already leads here. Change a line&apos;s condition, or draw one on the canvas.
+          </p>
+        ) : null}
       </section>
 
       <section className="space-y-3 rounded-lg border bg-subtle/60 p-3" aria-label="Outputs">
@@ -433,16 +447,17 @@ function StepFields({
           type="button"
           size="sm"
           variant="outline"
-          onClick={() => {
-            const suggestion = suggestCondition(workflow, node.id);
-            // With no other step to go to, the step can still repeat itself.
-            const target = others.find((item) => !lines.some((edge) => edge.to === item.id)) ?? others[0] ?? node;
-            const result = connect(workflow, node.id, target.id, suggestion.when, suggestion.outcome);
-            onChange(result.workflow);
-          }}
+          disabled={!addOutput}
+          // With no other step to go to, the step can still repeat itself.
+          onClick={() => addOutput && onChange(addOutput)}
         >
           <Plus /> Add an output
         </Button>
+        {!addOutput ? (
+          <p className="text-[13px] text-muted-foreground">
+            This output already leads to every step. Change a line&apos;s condition, or add an outcome first.
+          </p>
+        ) : null}
       </section>
 
       {inLoop ? (
@@ -605,12 +620,15 @@ export function WorkflowEditor({
   value,
   onChange,
   agents,
+  agentsState = "ready",
   issues,
   revealProblem,
 }: {
   value: Workflow;
   onChange: (next: Workflow) => void;
   agents: AgentOption[];
+  /** While the agent list loads (or if it failed), steps do not call their agents unavailable. */
+  agentsState?: AgentListState;
   issues: WorkflowIssue[];
   /** Changes when a save was refused: open the first step or line that has a problem. */
   revealProblem?: number;
@@ -631,6 +649,8 @@ export function WorkflowEditor({
   const [, redraw] = useState(0);
   const change = useCallback(
     (next: Workflow) => {
+      // A change that changes nothing ("Add an output" when the line exists) is no Undo step.
+      if (next === current.current) return;
       const log = history.current;
       const now = Date.now();
       if (now - log.at > 700) {
@@ -671,8 +691,7 @@ export function WorkflowEditor({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [step]);
 
-  const names = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
-  const agentName = useCallback((id: string) => names.get(id) ?? "Unavailable agent", [names]);
+  const agentName = useCallback((id: string) => agentLabel(id, agents, agentsState), [agents, agentsState]);
   const loops = useMemo(() => loopSteps(value), [value]);
   const problems = useMemo(
     () => new Set(issues.flatMap((issue) => (issue.nodeId ? [issue.nodeId] : []))),
@@ -855,6 +874,7 @@ export function WorkflowEditor({
                 workflow={value}
                 node={node}
                 agents={agents}
+                agentsState={agentsState}
                 onChange={change}
                 onSelect={setSelection}
                 inLoop={loops.has(node.id)}
@@ -951,6 +971,7 @@ export function WorkflowEditor({
             workflow={value}
             node={selectedNode}
             agents={agents}
+            agentsState={agentsState}
             onChange={change}
             onSelect={setSelection}
             inLoop={loops.has(selectedNode.id)}

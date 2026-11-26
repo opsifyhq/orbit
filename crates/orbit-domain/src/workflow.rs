@@ -1028,6 +1028,32 @@ mod tests {
         assert!(messages(&unknown)[0].contains("unknown step 'ghost'"));
     }
 
+    /// The cases the web editor's `workflowIssues` is tested against too
+    /// (`apps/web/lib/workflow.test.ts`), so the two checks cannot drift apart.
+    #[test]
+    fn shared_validation_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/workflow-validation.json"))
+                .expect("fixture is JSON");
+        let cases = fixture["cases"].as_array().expect("cases");
+        assert!(cases.len() > 20);
+        for case in cases {
+            let name = case["name"].as_str().expect("name");
+            let workflow: WorkflowDefinition =
+                serde_json::from_value(case["workflow"].clone()).expect(name);
+            let issues = workflow.validate();
+            if case["valid"].as_bool().expect("valid") {
+                assert!(issues.is_empty(), "{name}: {issues:?}");
+            } else {
+                let path = case["path"].as_str().expect("invalid cases name a path");
+                assert!(
+                    issues.iter().any(|issue| issue.path == path),
+                    "{name}: expected an issue at {path}, got {issues:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn agents_are_listed_once() {
         let mut second = node("b");

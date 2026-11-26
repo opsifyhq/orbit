@@ -1,0 +1,2328 @@
+{
+ "_comment": "Workflow validation cases shared by crates/orbit-domain/src/workflow.rs (validate) and apps/web/lib/workflow.test.ts (workflowIssues). valid=false cases name the path of the server's first matching issue.",
+ "cases": [
+  {
+   "name": "a line of two steps",
+   "valid": true,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "build",
+      "name": "Build",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "test",
+      "name": "Test",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "build",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "build",
+      "to": "test",
+      "when": "success"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a review loop with outcomes and a run limit",
+   "valid": true,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "build",
+      "name": "Build",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "review",
+      "name": "Review",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "approved",
+       "changes"
+      ],
+      "maxRuns": 5
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "build",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "build",
+      "to": "review",
+      "when": "success"
+     },
+     {
+      "id": "e2",
+      "from": "review",
+      "to": "build",
+      "when": "outcome",
+      "outcome": "changes"
+     },
+     {
+      "id": "e3",
+      "from": "review",
+      "to": "build",
+      "when": "failure"
+     }
+    ]
+   }
+  },
+  {
+   "name": "two starting steps and a join",
+   "valid": true,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "c",
+      "name": "C",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s1",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "s2",
+      "from": "start",
+      "to": "b",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "c",
+      "when": "success"
+     },
+     {
+      "id": "e2",
+      "from": "b",
+      "to": "c",
+      "when": "always"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a start line may carry a leftover outcome",
+   "valid": true,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always",
+      "outcome": "x"
+     }
+    ]
+   }
+  },
+  {
+   "name": "no steps",
+   "valid": false,
+   "workflow": {
+    "nodes": [],
+    "edges": []
+   },
+   "path": "workflow.nodes"
+  },
+  {
+   "name": "no starting step",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": []
+   },
+   "path": "workflow.edges"
+  },
+  {
+   "name": "a step nothing leads to",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[1]"
+  },
+  {
+   "name": "an outcome line without an outcome",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "pass"
+      ]
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "outcome"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].outcome"
+  },
+  {
+   "name": "an outcome line for an outcome the step does not have",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "outcome",
+      "outcome": "pass"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].outcome"
+  },
+  {
+   "name": "a success line that names an outcome",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "pass"
+      ]
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "success",
+      "outcome": "pass"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].outcome"
+  },
+  {
+   "name": "a failure line that names an outcome",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "failure",
+      "outcome": "oops"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].outcome"
+  },
+  {
+   "name": "two steps with the same name",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "Build",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "build",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "success"
+     }
+    ]
+   },
+   "path": "workflow.nodes[1].name"
+  },
+  {
+   "name": "a step without a name",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "  ",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].name"
+  },
+  {
+   "name": "a name longer than 60 characters",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].name"
+  },
+  {
+   "name": "instructions longer than 4000 characters",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "instructions": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].instructions"
+  },
+  {
+   "name": "more than 8 outcomes",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "o0",
+       "o1",
+       "o2",
+       "o3",
+       "o4",
+       "o5",
+       "o6",
+       "o7",
+       "o8"
+      ]
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].outcomes"
+  },
+  {
+   "name": "an outcome that is not a slug",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "Pass"
+      ]
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].outcomes"
+  },
+  {
+   "name": "an outcome listed twice",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "outcomes": [
+       "pass",
+       "pass"
+      ]
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].outcomes"
+  },
+  {
+   "name": "a run limit of 0",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "maxRuns": 0
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].maxRuns"
+  },
+  {
+   "name": "a run limit of 11",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001",
+      "maxRuns": 11
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].maxRuns"
+  },
+  {
+   "name": "a step called start",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "start",
+      "name": "Begin",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "start",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].id"
+  },
+  {
+   "name": "a step id that is not a slug",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "Build Step",
+      "name": "Build",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "Build Step",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[0].id"
+  },
+  {
+   "name": "two steps with one id",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "One",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "a",
+      "name": "Two",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     }
+    ]
+   },
+   "path": "workflow.nodes[1].id"
+  },
+  {
+   "name": "two lines with one id",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "x",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "x",
+      "from": "a",
+      "to": "b",
+      "when": "success"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].id"
+  },
+  {
+   "name": "the same line twice",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "b",
+      "name": "B",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "b",
+      "when": "success"
+     },
+     {
+      "id": "e2",
+      "from": "a",
+      "to": "b",
+      "when": "success"
+     }
+    ]
+   },
+   "path": "workflow.edges[2].to"
+  },
+  {
+   "name": "a line to a step that does not exist",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "a",
+      "name": "A",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "s",
+      "from": "start",
+      "to": "a",
+      "when": "always"
+     },
+     {
+      "id": "e1",
+      "from": "a",
+      "to": "ghost",
+      "when": "success"
+     }
+    ]
+   },
+   "path": "workflow.edges[1].to"
+  },
+  {
+   "name": "more than 120 lines",
+   "valid": false,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "s0",
+      "name": "S0",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s1",
+      "name": "S1",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s2",
+      "name": "S2",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s3",
+      "name": "S3",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s4",
+      "name": "S4",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s5",
+      "name": "S5",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s6",
+      "name": "S6",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s7",
+      "name": "S7",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s8",
+      "name": "S8",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s9",
+      "name": "S9",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s10",
+      "name": "S10",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "sts0",
+      "from": "start",
+      "to": "s0",
+      "when": "always"
+     },
+     {
+      "id": "sts1",
+      "from": "start",
+      "to": "s1",
+      "when": "always"
+     },
+     {
+      "id": "sts2",
+      "from": "start",
+      "to": "s2",
+      "when": "always"
+     },
+     {
+      "id": "sts3",
+      "from": "start",
+      "to": "s3",
+      "when": "always"
+     },
+     {
+      "id": "sts4",
+      "from": "start",
+      "to": "s4",
+      "when": "always"
+     },
+     {
+      "id": "sts5",
+      "from": "start",
+      "to": "s5",
+      "when": "always"
+     },
+     {
+      "id": "sts6",
+      "from": "start",
+      "to": "s6",
+      "when": "always"
+     },
+     {
+      "id": "sts7",
+      "from": "start",
+      "to": "s7",
+      "when": "always"
+     },
+     {
+      "id": "sts8",
+      "from": "start",
+      "to": "s8",
+      "when": "always"
+     },
+     {
+      "id": "sts9",
+      "from": "start",
+      "to": "s9",
+      "when": "always"
+     },
+     {
+      "id": "sts10",
+      "from": "start",
+      "to": "s10",
+      "when": "always"
+     },
+     {
+      "id": "l0",
+      "from": "s0",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l1",
+      "from": "s0",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l2",
+      "from": "s0",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l3",
+      "from": "s0",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l4",
+      "from": "s0",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l5",
+      "from": "s0",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l6",
+      "from": "s0",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l7",
+      "from": "s0",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l8",
+      "from": "s0",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l9",
+      "from": "s0",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l10",
+      "from": "s1",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l11",
+      "from": "s1",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l12",
+      "from": "s1",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l13",
+      "from": "s1",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l14",
+      "from": "s1",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l15",
+      "from": "s1",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l16",
+      "from": "s1",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l17",
+      "from": "s1",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l18",
+      "from": "s1",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l19",
+      "from": "s1",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l20",
+      "from": "s2",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l21",
+      "from": "s2",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l22",
+      "from": "s2",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l23",
+      "from": "s2",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l24",
+      "from": "s2",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l25",
+      "from": "s2",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l26",
+      "from": "s2",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l27",
+      "from": "s2",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l28",
+      "from": "s2",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l29",
+      "from": "s2",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l30",
+      "from": "s3",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l31",
+      "from": "s3",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l32",
+      "from": "s3",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l33",
+      "from": "s3",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l34",
+      "from": "s3",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l35",
+      "from": "s3",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l36",
+      "from": "s3",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l37",
+      "from": "s3",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l38",
+      "from": "s3",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l39",
+      "from": "s3",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l40",
+      "from": "s4",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l41",
+      "from": "s4",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l42",
+      "from": "s4",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l43",
+      "from": "s4",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l44",
+      "from": "s4",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l45",
+      "from": "s4",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l46",
+      "from": "s4",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l47",
+      "from": "s4",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l48",
+      "from": "s4",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l49",
+      "from": "s4",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l50",
+      "from": "s5",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l51",
+      "from": "s5",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l52",
+      "from": "s5",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l53",
+      "from": "s5",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l54",
+      "from": "s5",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l55",
+      "from": "s5",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l56",
+      "from": "s5",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l57",
+      "from": "s5",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l58",
+      "from": "s5",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l59",
+      "from": "s5",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l60",
+      "from": "s6",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l61",
+      "from": "s6",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l62",
+      "from": "s6",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l63",
+      "from": "s6",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l64",
+      "from": "s6",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l65",
+      "from": "s6",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l66",
+      "from": "s6",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l67",
+      "from": "s6",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l68",
+      "from": "s6",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l69",
+      "from": "s6",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l70",
+      "from": "s7",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l71",
+      "from": "s7",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l72",
+      "from": "s7",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l73",
+      "from": "s7",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l74",
+      "from": "s7",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l75",
+      "from": "s7",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l76",
+      "from": "s7",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l77",
+      "from": "s7",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l78",
+      "from": "s7",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l79",
+      "from": "s7",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l80",
+      "from": "s8",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l81",
+      "from": "s8",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l82",
+      "from": "s8",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l83",
+      "from": "s8",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l84",
+      "from": "s8",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l85",
+      "from": "s8",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l86",
+      "from": "s8",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l87",
+      "from": "s8",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l88",
+      "from": "s8",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l89",
+      "from": "s8",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l90",
+      "from": "s9",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l91",
+      "from": "s9",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l92",
+      "from": "s9",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l93",
+      "from": "s9",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l94",
+      "from": "s9",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l95",
+      "from": "s9",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l96",
+      "from": "s9",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l97",
+      "from": "s9",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l98",
+      "from": "s9",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l99",
+      "from": "s9",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l100",
+      "from": "s10",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l101",
+      "from": "s10",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l102",
+      "from": "s10",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l103",
+      "from": "s10",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l104",
+      "from": "s10",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l105",
+      "from": "s10",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l106",
+      "from": "s10",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l107",
+      "from": "s10",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l108",
+      "from": "s10",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l109",
+      "from": "s10",
+      "to": "s9",
+      "when": "success"
+     }
+    ]
+   },
+   "path": "workflow.edges"
+  },
+  {
+   "name": "exactly 120 lines",
+   "valid": true,
+   "workflow": {
+    "nodes": [
+     {
+      "id": "s0",
+      "name": "S0",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s1",
+      "name": "S1",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s2",
+      "name": "S2",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s3",
+      "name": "S3",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s4",
+      "name": "S4",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s5",
+      "name": "S5",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s6",
+      "name": "S6",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s7",
+      "name": "S7",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s8",
+      "name": "S8",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s9",
+      "name": "S9",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     },
+     {
+      "id": "s10",
+      "name": "S10",
+      "agentId": "00000000-0000-4000-8000-000000000001"
+     }
+    ],
+    "edges": [
+     {
+      "id": "sts0",
+      "from": "start",
+      "to": "s0",
+      "when": "always"
+     },
+     {
+      "id": "sts1",
+      "from": "start",
+      "to": "s1",
+      "when": "always"
+     },
+     {
+      "id": "sts2",
+      "from": "start",
+      "to": "s2",
+      "when": "always"
+     },
+     {
+      "id": "sts3",
+      "from": "start",
+      "to": "s3",
+      "when": "always"
+     },
+     {
+      "id": "sts4",
+      "from": "start",
+      "to": "s4",
+      "when": "always"
+     },
+     {
+      "id": "sts5",
+      "from": "start",
+      "to": "s5",
+      "when": "always"
+     },
+     {
+      "id": "sts6",
+      "from": "start",
+      "to": "s6",
+      "when": "always"
+     },
+     {
+      "id": "sts7",
+      "from": "start",
+      "to": "s7",
+      "when": "always"
+     },
+     {
+      "id": "sts8",
+      "from": "start",
+      "to": "s8",
+      "when": "always"
+     },
+     {
+      "id": "sts9",
+      "from": "start",
+      "to": "s9",
+      "when": "always"
+     },
+     {
+      "id": "sts10",
+      "from": "start",
+      "to": "s10",
+      "when": "always"
+     },
+     {
+      "id": "l0",
+      "from": "s0",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l1",
+      "from": "s0",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l2",
+      "from": "s0",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l3",
+      "from": "s0",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l4",
+      "from": "s0",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l5",
+      "from": "s0",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l6",
+      "from": "s0",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l7",
+      "from": "s0",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l8",
+      "from": "s0",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l9",
+      "from": "s0",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l10",
+      "from": "s1",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l11",
+      "from": "s1",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l12",
+      "from": "s1",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l13",
+      "from": "s1",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l14",
+      "from": "s1",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l15",
+      "from": "s1",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l16",
+      "from": "s1",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l17",
+      "from": "s1",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l18",
+      "from": "s1",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l19",
+      "from": "s1",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l20",
+      "from": "s2",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l21",
+      "from": "s2",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l22",
+      "from": "s2",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l23",
+      "from": "s2",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l24",
+      "from": "s2",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l25",
+      "from": "s2",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l26",
+      "from": "s2",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l27",
+      "from": "s2",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l28",
+      "from": "s2",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l29",
+      "from": "s2",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l30",
+      "from": "s3",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l31",
+      "from": "s3",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l32",
+      "from": "s3",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l33",
+      "from": "s3",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l34",
+      "from": "s3",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l35",
+      "from": "s3",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l36",
+      "from": "s3",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l37",
+      "from": "s3",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l38",
+      "from": "s3",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l39",
+      "from": "s3",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l40",
+      "from": "s4",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l41",
+      "from": "s4",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l42",
+      "from": "s4",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l43",
+      "from": "s4",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l44",
+      "from": "s4",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l45",
+      "from": "s4",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l46",
+      "from": "s4",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l47",
+      "from": "s4",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l48",
+      "from": "s4",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l49",
+      "from": "s4",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l50",
+      "from": "s5",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l51",
+      "from": "s5",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l52",
+      "from": "s5",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l53",
+      "from": "s5",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l54",
+      "from": "s5",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l55",
+      "from": "s5",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l56",
+      "from": "s5",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l57",
+      "from": "s5",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l58",
+      "from": "s5",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l59",
+      "from": "s5",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l60",
+      "from": "s6",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l61",
+      "from": "s6",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l62",
+      "from": "s6",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l63",
+      "from": "s6",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l64",
+      "from": "s6",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l65",
+      "from": "s6",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l66",
+      "from": "s6",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l67",
+      "from": "s6",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l68",
+      "from": "s6",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l69",
+      "from": "s6",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l70",
+      "from": "s7",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l71",
+      "from": "s7",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l72",
+      "from": "s7",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l73",
+      "from": "s7",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l74",
+      "from": "s7",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l75",
+      "from": "s7",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l76",
+      "from": "s7",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l77",
+      "from": "s7",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l78",
+      "from": "s7",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l79",
+      "from": "s7",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l80",
+      "from": "s8",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l81",
+      "from": "s8",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l82",
+      "from": "s8",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l83",
+      "from": "s8",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l84",
+      "from": "s8",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l85",
+      "from": "s8",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l86",
+      "from": "s8",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l87",
+      "from": "s8",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l88",
+      "from": "s8",
+      "to": "s9",
+      "when": "success"
+     },
+     {
+      "id": "l89",
+      "from": "s8",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l90",
+      "from": "s9",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l91",
+      "from": "s9",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l92",
+      "from": "s9",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l93",
+      "from": "s9",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l94",
+      "from": "s9",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l95",
+      "from": "s9",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l96",
+      "from": "s9",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l97",
+      "from": "s9",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l98",
+      "from": "s9",
+      "to": "s8",
+      "when": "success"
+     },
+     {
+      "id": "l99",
+      "from": "s9",
+      "to": "s10",
+      "when": "success"
+     },
+     {
+      "id": "l100",
+      "from": "s10",
+      "to": "s0",
+      "when": "success"
+     },
+     {
+      "id": "l101",
+      "from": "s10",
+      "to": "s1",
+      "when": "success"
+     },
+     {
+      "id": "l102",
+      "from": "s10",
+      "to": "s2",
+      "when": "success"
+     },
+     {
+      "id": "l103",
+      "from": "s10",
+      "to": "s3",
+      "when": "success"
+     },
+     {
+      "id": "l104",
+      "from": "s10",
+      "to": "s4",
+      "when": "success"
+     },
+     {
+      "id": "l105",
+      "from": "s10",
+      "to": "s5",
+      "when": "success"
+     },
+     {
+      "id": "l106",
+      "from": "s10",
+      "to": "s6",
+      "when": "success"
+     },
+     {
+      "id": "l107",
+      "from": "s10",
+      "to": "s7",
+      "when": "success"
+     },
+     {
+      "id": "l108",
+      "from": "s10",
+      "to": "s8",
+      "when": "success"
+     }
+    ]
+   }
+  }
+ ]
+}
