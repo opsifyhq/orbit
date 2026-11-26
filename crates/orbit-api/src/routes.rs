@@ -479,13 +479,20 @@ pub fn build_router(state: AppState) -> Router {
         .merge(protected)
         .fallback(crate::error::not_found_fallback)
         .layer(middleware::from_fn(crate::extract::reject_nul_in_uri))
+        // Limit checks run inside `instrument` and `envelope_rejections`: a 413/414 is
+        // then an ordinary ORBIT error with a request id (#443).
+        .layer(DefaultBodyLimit::max(state.max_body_bytes))
+        .layer(middleware::from_fn(crate::error::limit_uri_length))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::error::limit_body_length,
+        ))
         // Inside `instrument` so the request id is available to the envelope.
         .layer(middleware::from_fn(crate::error::envelope_rejections))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::request_id::instrument,
         ))
-        .layer(DefaultBodyLimit::max(state.max_body_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)

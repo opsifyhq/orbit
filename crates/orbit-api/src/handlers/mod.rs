@@ -45,8 +45,29 @@ pub(crate) fn parse_spec(version: &AgentVersion) -> Result<AgentSpec, ApiError> 
     })
 }
 
-pub(crate) fn limit(value: Option<u32>) -> i64 {
-    orbit_domain::clamp_limit(value)
+/// Existing keyed-list endpoints use the same limit range as `PageQuery`: an
+/// out-of-range `limit` is a bad request, never silently clamped (#443).
+pub(crate) fn limit(value: Option<u32>) -> Result<i64, ApiError> {
+    let limit = value.unwrap_or(25);
+    if !(1..=crate::paging::MAX_PAGE_LIMIT as u32).contains(&limit) {
+        return Err(ApiError::bad_request(format!(
+            "limit must be 1 to {}",
+            crate::paging::MAX_PAGE_LIMIT
+        )));
+    }
+    Ok(limit as i64)
+}
+
+/// Validate an existing `i64` limit without clamping it.
+pub(crate) fn limit_i64(value: Option<i64>, default: i64) -> Result<i64, ApiError> {
+    let limit = value.unwrap_or(default);
+    if !(1..=crate::paging::MAX_PAGE_LIMIT).contains(&limit) {
+        return Err(ApiError::bad_request(format!(
+            "limit must be 1 to {}",
+            crate::paging::MAX_PAGE_LIMIT
+        )));
+    }
+    Ok(limit)
 }
 
 /// Load an agent the caller may view; invisible agents are indistinguishable from missing (404).

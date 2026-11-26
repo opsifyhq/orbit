@@ -556,7 +556,7 @@ async fn round_trip_all_kinds_into_a_fresh_org() {
         .as_str()
         .unwrap();
     let view = call(&env, get(&target, "/api/v1/connections")).await.json();
-    let imported = view
+    let imported = view["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1338,7 +1338,7 @@ async fn a_workflow_team_round_trips_with_its_graph() {
     .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.text);
     let teams = call(&env, get(&target, "/api/v1/agent-teams")).await.json();
-    let imported = teams
+    let imported = teams["items"]
         .as_array()
         .unwrap()
         .iter()

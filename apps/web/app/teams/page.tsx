@@ -71,7 +71,8 @@ export default function TeamsPage() {
   const teams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams });
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: async () => unwrap(await api.GET("/api/v1/users")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/users", { params: { query: { limit: 500 } } }))).items,
   });
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");

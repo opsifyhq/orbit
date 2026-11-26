@@ -2019,6 +2019,8 @@ export interface components {
         AuditLogPage: {
             items: components["schemas"]["AuditLogRecord"][];
             nextCursor?: string | null;
+            /** Format: int64 */
+            total: number;
         };
         AuditLogRecord: {
             action: string;
@@ -3022,6 +3024,781 @@ export interface components {
             updatedAt: string;
         };
         /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_AccessTeam: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: uuid */
+                createdBy?: string | null;
+                /** Format: uuid */
+                id: string;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                slug: string;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_AgentTeam: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: uuid */
+                createdBy?: string | null;
+                definition: unknown;
+                description: string;
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                lastPollAt?: string | null;
+                lastPollError?: string | null;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
+                /** Format: uuid */
+                ownerUserId?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+                visibility: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_AgentVersionView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                checksum: string;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: uuid */
+                id: string;
+                spec: unknown;
+                /** Format: int32 */
+                version: number;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ApiTokenView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                expiresAt?: string | null;
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                lastUsedAt?: string | null;
+                name: string;
+                /** Format: date-time */
+                revokedAt?: string | null;
+                scopes: string[];
+                tokenPrefix: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ApprovalWithExecution: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: ({
+                comment?: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                decidedAt?: string | null;
+                /** Format: uuid */
+                decidedBy?: string | null;
+                /** Format: uuid */
+                executionId: string;
+                /** Format: date-time */
+                expiresAt?: string | null;
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                orgId: string;
+                requestedAction: unknown;
+                status: string;
+            } & {
+                /** Format: uuid */
+                agentId: string;
+                agentName: string;
+                executionStatus: string;
+            })[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ConnectionView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                config: unknown;
+                connectorName: string;
+                connectorSlug: string;
+                /** Format: date-time */
+                createdAt: string;
+                hasCredential: boolean;
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                lastCheckedAt?: string | null;
+                name: string;
+                scopes: string[];
+                status: string;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ConnectorView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                auth: unknown;
+                builtin: boolean;
+                capabilities: unknown;
+                configSchema: unknown;
+                description: string;
+                docsUrl?: string | null;
+                /** Format: uuid */
+                id: string;
+                name: string;
+                slug: string;
+                version: string;
+                webhooks: boolean;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_CustomRole: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: uuid */
+                id: string;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                permissions: string[];
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_EnvMapping: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                description: string;
+                /** Format: uuid */
+                id: string;
+                mappings: unknown;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
+                /** Format: uuid */
+                ownerUserId?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+                visibility: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_HarnessView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                capabilities: unknown;
+                config: unknown;
+                description: string;
+                descriptor: components["schemas"]["HarnessDescriptor"];
+                enabled: boolean;
+                health: components["schemas"]["HarnessHealthView"];
+                /** Format: uuid */
+                id: string;
+                implementationStatus: string;
+                kind: string;
+                name: string;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_OutputDeliveryView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                agentName?: string | null;
+                /** Format: int32 */
+                attempts: number;
+                /** Format: date-time */
+                createdAt: string;
+                /** @description Why the last attempt failed. Never contains the webhook URL. */
+                error?: string | null;
+                /**
+                 * Format: uuid
+                 * @description The run it reports on, only when the caller may see it.
+                 */
+                executionId?: string | null;
+                /** Format: uuid */
+                id: string;
+                /**
+                 * Format: date-time
+                 * @description When a pending delivery is tried next.
+                 */
+                nextAttemptAt?: string | null;
+                /**
+                 * Format: int32
+                 * @description HTTP status of the last attempt, when the destination answered.
+                 */
+                responseStatus?: number | null;
+                /**
+                 * @description `pending` (waiting, or retrying after an error), `sending`, `succeeded`, `failed`
+                 *     (refused, not retried), `dead` (retries used up) or `skipped` (output off or deleted).
+                 */
+                status: string;
+                task?: string | null;
+                /** Format: uuid */
+                teamRunId?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_OutputView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: uuid */
+                agentId?: string | null;
+                agentIds: string[];
+                chatId?: string | null;
+                /** @description Non-secret configuration for S3 (empty for other kinds). */
+                config: unknown;
+                /** Format: date-time */
+                createdAt: string;
+                enabled: boolean;
+                events: string[];
+                /**
+                 * @description True when a webhook URL or Telegram bot token is stored. The value itself is never
+                 *     returned.
+                 */
+                hasWebhook: boolean;
+                /** Format: uuid */
+                id: string;
+                kind: string;
+                lastDelivery?: components["schemas"]["OutputDeliveryView"] | null;
+                messageThreadId?: string | null;
+                name: string;
+                /** Format: uuid */
+                teamId?: string | null;
+                template?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ProviderView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                capabilities: unknown;
+                config: unknown;
+                /** Format: date-time */
+                createdAt: string;
+                enabled: boolean;
+                hasCredential: boolean;
+                /** Format: uuid */
+                id: string;
+                kind: string;
+                name: string;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_Skill: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                content: string;
+                /** Format: date-time */
+                createdAt: string;
+                description: string;
+                files: unknown;
+                /** Format: uuid */
+                id: string;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
+                /** Format: uuid */
+                ownerUserId?: string | null;
+                slug: string;
+                /** Format: date-time */
+                updatedAt: string;
+                /** Format: int32 */
+                version: number;
+                visibility: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_TeamMember: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                role: string;
+                /** Format: uuid */
+                teamId: string;
+                /** Format: uuid */
+                userId: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_TeamQueueItem: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: int32 */
+                attempts: number;
+                /** Format: date-time */
+                createdAt: string;
+                error?: string | null;
+                externalKey: string;
+                /** Format: uuid */
+                id: string;
+                /** Format: int32 */
+                maxAttempts: number;
+                /** Format: uuid */
+                orgId: string;
+                payload: unknown;
+                repository?: string | null;
+                status: string;
+                /** Format: uuid */
+                teamId: string;
+                /** Format: uuid */
+                teamRunId?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_ToolPolicyView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                action: string;
+                /** Format: uuid */
+                agentId?: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                enabled: boolean;
+                /** Format: uuid */
+                id: string;
+                impact?: string | null;
+                matcher: components["schemas"]["ToolPolicyMatcher"];
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: int32 */
+                priority: number;
+                reason?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_Trigger: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: uuid */
+                agentId: string;
+                config: unknown;
+                /** Format: date-time */
+                createdAt: string;
+                enabled: boolean;
+                harnessKind?: string | null;
+                /** Format: uuid */
+                id: string;
+                kind: string;
+                /** Format: date-time */
+                lastFiredAt?: string | null;
+                /** Format: date-time */
+                nextRunAt?: string | null;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
+                /** Format: uuid */
+                ownerUserId?: string | null;
+                /** Format: date-time */
+                updatedAt: string;
+                visibility: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_User: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                displayName: string;
+                email: string;
+                /** Format: uuid */
+                id: string;
+                oidcIssuer?: string | null;
+                oidcSubject?: string | null;
+                /** Format: uuid */
+                orgId: string;
+                role: string;
+                status: string;
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_WorkerLaunch: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                archivedAt?: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: uuid */
+                createdBy?: string | null;
+                error?: string | null;
+                /** Format: uuid */
+                id: string;
+                image: string;
+                name: string;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                profileId: string;
+                relaunchRequired: boolean;
+                runtimeId?: string | null;
+                /** Format: date-time */
+                startedAt?: string | null;
+                status: string;
+                /** Format: date-time */
+                stoppedAt?: string | null;
+                target: string;
+                /** Format: date-time */
+                updatedAt: string;
+                workerId?: string | null;
+                /** Format: uuid */
+                workerTokenId?: string | null;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_WorkerProfile: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                agentIds: string[];
+                agentScope: string;
+                allowGh: boolean;
+                allowGlab: boolean;
+                allowWebFetch: boolean;
+                allowWebSearch: boolean;
+                authSecretName?: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                enabled: boolean;
+                /**
+                 * @description Stored variable values. Never serialized: responses carry only names and a
+                 *     `hasValue` flag (AGENTS.md rule 4). Read the field directly for the launcher
+                 *     payload and for update merging.
+                 */
+                env?: {
+                    [key: string]: components["schemas"]["EnvVarState"];
+                };
+                executionDriver: string;
+                harnessKind: string;
+                /** Format: uuid */
+                id: string;
+                image: string;
+                imageTag: string;
+                model?: string | null;
+                name: string;
+                nativeToolPermissions: unknown;
+                /** Format: uuid */
+                orgId: string;
+                /** Format: uuid */
+                ownerTeamId?: string | null;
+                /** Format: uuid */
+                ownerUserId?: string | null;
+                provider?: string | null;
+                resources: unknown;
+                skillSlugs: string[];
+                target: string;
+                /** Format: date-time */
+                updatedAt: string;
+                visibility: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_WorkerTokenView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                /** Format: date-time */
+                createdAt: string;
+                harnesses: string[];
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                lastUsedAt?: string | null;
+                name: string;
+                /** Format: uuid */
+                profileId?: string | null;
+                /** Format: date-time */
+                revokedAt?: string | null;
+                tokenPrefix: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
+         * @description The shared list envelope. `total` counts the items available to this request after
+         *     access filtering; sources that cap their query report the size of that window.
+         */
+        Page_WorkerView: {
+            /** @description Items on this page, in the endpoint's documented order. */
+            items: {
+                harnesses: string[];
+                hostname?: string | null;
+                /** Format: date-time */
+                lastHeartbeatAt: string;
+                live: boolean;
+                /** Format: date-time */
+                startedAt: string;
+                target: string;
+                workerId: string;
+            }[];
+            /** @description Pass back as `cursor` to fetch the next page; `null` at the end of the list. */
+            nextCursor?: string | null;
+            /**
+             * Format: int64
+             * @description Number of items available to this request after filtering.
+             */
+            total: number;
+        };
+        /**
          * @description Where an agent is allowed to execute. This is a routing constraint, not a guarantee
          *     of process isolation; isolation depends on the worker's execution driver.
          * @enum {string}
@@ -3819,7 +4596,15 @@ export type $defs = Record<string, never>;
 export interface operations {
     list_teams: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3831,7 +4616,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentTeam"][];
+                    "application/json": components["schemas"]["Page_AgentTeam"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -3962,13 +4747,13 @@ export interface operations {
     list: {
         parameters: {
             query?: {
-                /** @description Items per page, 1 to 500 (default 500). */
-                limit?: number | null;
                 /**
-                 * @description Return the items created before this item: pass the first (oldest) id of the
-                 *     previous page to page back.
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
                  */
-                before?: string | null;
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -3984,7 +4769,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TeamQueueItem"][];
+                    "application/json": components["schemas"]["Page_TeamQueueItem"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -4690,7 +5475,15 @@ export interface operations {
     };
     list_versions: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -4704,7 +5497,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentVersionView"][];
+                    "application/json": components["schemas"]["Page_AgentVersionView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -4718,7 +5511,15 @@ export interface operations {
     };
     list_api_tokens: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Include revoked tokens. Off by default so a long-lived installation's list stays
+                 *     useful; they remain queryable when an audit needs them.
+                 */
+                includeRevoked?: boolean | null;
+                limit?: number | null;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4730,7 +5531,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiTokenView"][];
+                    "application/json": components["schemas"]["Page_ApiTokenView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -4806,6 +5607,7 @@ export interface operations {
                 /** @description Only approvals requested by this execution. */
                 executionId?: string;
                 limit?: number;
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -4818,7 +5620,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalWithExecution"][];
+                    "application/json": components["schemas"]["Page_ApprovalWithExecution"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5000,7 +5802,15 @@ export interface operations {
     };
     list_connections: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5012,7 +5822,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConnectionView"][];
+                    "application/json": components["schemas"]["Page_ConnectionView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5142,7 +5952,15 @@ export interface operations {
     };
     list_connectors: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5154,7 +5972,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConnectorView"][];
+                    "application/json": components["schemas"]["Page_ConnectorView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5257,7 +6075,15 @@ export interface operations {
     };
     list: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5269,7 +6095,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EnvMapping"][];
+                    "application/json": components["schemas"]["Page_EnvMapping"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5584,7 +6410,15 @@ export interface operations {
     };
     list_harnesses: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5596,7 +6430,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HarnessView"][];
+                    "application/json": components["schemas"]["Page_HarnessView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5790,7 +6624,15 @@ export interface operations {
     };
     list: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5802,7 +6644,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OutputView"][];
+                    "application/json": components["schemas"]["Page_OutputView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5905,8 +6747,13 @@ export interface operations {
     deliveries: {
         parameters: {
             query?: {
-                /** @description How many deliveries to return, newest first (1–200, default 50). */
-                limit?: number | null;
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -5921,7 +6768,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OutputDeliveryView"][];
+                    "application/json": components["schemas"]["Page_OutputDeliveryView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -5962,7 +6809,15 @@ export interface operations {
     };
     list_providers: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5974,7 +6829,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderView"][];
+                    "application/json": components["schemas"]["Page_ProviderView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -6134,7 +6989,15 @@ export interface operations {
     };
     list: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6146,7 +7009,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CustomRole"][];
+                    "application/json": components["schemas"]["Page_CustomRole"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -6564,7 +7427,15 @@ export interface operations {
     };
     list_skills: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6576,7 +7447,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Skill"][];
+                    "application/json": components["schemas"]["Page_Skill"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -6828,7 +7699,15 @@ export interface operations {
     };
     list: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6840,7 +7719,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AccessTeam"][];
+                    "application/json": components["schemas"]["Page_AccessTeam"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -6942,7 +7821,15 @@ export interface operations {
     };
     list_members: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 team_id: string;
@@ -6956,7 +7843,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TeamMember"][];
+                    "application/json": components["schemas"]["Page_TeamMember"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7076,7 +7963,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ToolPolicyView"][];
+                    "application/json": components["schemas"]["Page_ToolPolicyView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7180,6 +8067,8 @@ export interface operations {
         parameters: {
             query?: {
                 agentId?: string | null;
+                limit?: number | null;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -7192,7 +8081,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Trigger"][];
+                    "application/json": components["schemas"]["Page_Trigger"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7294,7 +8183,15 @@ export interface operations {
     };
     list_users: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7306,7 +8203,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"][];
+                    "application/json": components["schemas"]["Page_User"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7352,7 +8249,11 @@ export interface operations {
     };
     list_launches: {
         parameters: {
-            query?: never;
+            query?: {
+                includeInactive?: boolean;
+                limit?: number | null;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7364,7 +8265,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerLaunch"][];
+                    "application/json": components["schemas"]["Page_WorkerLaunch"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7516,7 +8417,15 @@ export interface operations {
     };
     list_profiles: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7528,7 +8437,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerProfile"][];
+                    "application/json": components["schemas"]["Page_WorkerProfile"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7742,7 +8651,15 @@ export interface operations {
     };
     profile_mappings: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 profile_id: string;
@@ -7756,7 +8673,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EnvMapping"][];
+                    "application/json": components["schemas"]["Page_EnvMapping"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7826,7 +8743,12 @@ export interface operations {
     };
     list_tokens: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Include revoked tokens. Off by default; revoked tokens can be viewed when needed. */
+                includeRevoked?: boolean | null;
+                limit?: number | null;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7838,7 +8760,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerTokenView"][];
+                    "application/json": components["schemas"]["Page_WorkerTokenView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];
@@ -7908,7 +8830,15 @@ export interface operations {
     };
     list_workers: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Items per page. Must be 1 to 500; each endpoint documents its default.
+                 *     Values outside the range are rejected with 400.
+                 */
+                limit?: number;
+                /** @description Opaque cursor from the previous page's `nextCursor`. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7920,7 +8850,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkerView"][];
+                    "application/json": components["schemas"]["Page_WorkerView"];
                 };
             };
             400: components["responses"]["ErrorResponse"];

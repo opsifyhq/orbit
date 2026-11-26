@@ -229,7 +229,13 @@ export function useAgentVersions(id: string | undefined) {
   return useQuery<AgentVersionView[]>({
     queryKey: queryKeys.agentVersions(id ?? ""),
     queryFn: async () =>
-      unwrap(await api.GET("/api/v1/agents/{agent_id}/versions", { params: { path: { agent_id: id! } } })),
+      (
+        unwrap(
+          await api.GET("/api/v1/agents/{agent_id}/versions", {
+            params: { path: { agent_id: id! }, query: { limit: 500 } },
+          }),
+        )
+      ).items,
     enabled: Boolean(id),
   });
 }
@@ -378,7 +384,8 @@ export function useDefaultHarness() {
 export function useHarnesses() {
   return useQuery<HarnessView[]>({
     queryKey: queryKeys.harnesses,
-    queryFn: async () => unwrap(await api.GET("/api/v1/harnesses")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/harnesses", { params: { query: { limit: 500 } } }))).items,
     staleTime: 60_000,
   });
 }
@@ -386,14 +393,16 @@ export function useHarnesses() {
 export function useProviders() {
   return useQuery<ProviderView[]>({
     queryKey: queryKeys.providers,
-    queryFn: async () => unwrap(await api.GET("/api/v1/providers")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/providers", { params: { query: { limit: 500 } } }))).items,
   });
 }
 
 export function useConnectors() {
   return useQuery<ConnectorView[]>({
     queryKey: queryKeys.connectors,
-    queryFn: async () => unwrap(await api.GET("/api/v1/connectors")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/connectors", { params: { query: { limit: 500 } } }))).items,
     staleTime: 5 * 60_000,
   });
 }
@@ -401,21 +410,24 @@ export function useConnectors() {
 export function useConnections() {
   return useQuery<ConnectionView[]>({
     queryKey: queryKeys.connections,
-    queryFn: async () => unwrap(await api.GET("/api/v1/connections")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/connections", { params: { query: { limit: 500 } } }))).items,
   });
 }
 
 export function useApiTokens() {
   return useQuery<ApiTokenView[]>({
     queryKey: queryKeys.tokens,
-    queryFn: async () => unwrap(await api.GET("/api/v1/api-tokens")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/api-tokens", { params: { query: { limit: 500 } } }))).items,
   });
 }
 
 export function useWorkers() {
   return useQuery<WorkerView[]>({
     queryKey: queryKeys.workers,
-    queryFn: async () => unwrap(await api.GET("/api/v1/workers")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/workers", { params: { query: { limit: 500 } } }))).items,
     refetchInterval: 10_000,
   });
 }
@@ -423,7 +435,8 @@ export function useWorkers() {
 export function useSkills() {
   return useQuery<Skill[]>({
     queryKey: queryKeys.skills,
-    queryFn: async () => unwrap(await api.GET("/api/v1/skills")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/skills", { params: { query: { limit: 500 } } }))).items,
   });
 }
 
@@ -438,7 +451,8 @@ export function useSkill(id: string | undefined) {
 export function useWorkerProfiles() {
   return useQuery<WorkerProfile[]>({
     queryKey: queryKeys.workerProfiles,
-    queryFn: async () => unwrap(await api.GET("/api/v1/worker-profiles")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/worker-profiles", { params: { query: { limit: 500 } } }))).items,
   });
 }
 
@@ -590,11 +604,13 @@ export function useApprovals(
       : queryKeys.approvals(status),
     enabled: options.enabled ?? true,
     queryFn: async () =>
-      unwrap(
-        await api.GET("/api/v1/approvals", {
-          params: { query: { status, executionId, limit } },
-        }),
-      ),
+      (
+        unwrap(
+          await api.GET("/api/v1/approvals", {
+            params: { query: { status, executionId, limit } },
+          }),
+        )
+      ).items,
     refetchInterval: options.refetchInterval ?? 5_000,
   });
 }

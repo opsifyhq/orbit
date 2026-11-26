@@ -13,6 +13,7 @@ use crate::audit;
 use crate::dto::{AuditListQuery, CreateApiTokenRequest, CreatedApiToken, MeResponse};
 use crate::error::ApiError;
 use crate::handlers::limit;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 #[utoipa::path(get, path = "/api/v1/me", tag = "account", responses((status = 200, body = MeResponse)))]
@@ -40,11 +41,12 @@ pub async fn current_organization(
     Ok(Json(state.store.get_organization(auth.org_id).await?))
 }
 
-#[utoipa::path(get, path = "/api/v1/users", tag = "account", responses((status = 200, body = [User])))]
+#[utoipa::path(get, path = "/api/v1/users", tag = "account", params(PageQuery), responses((status = 200, body = Page<User>)))]
 pub async fn list_users(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<User>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<User>>, ApiError> {
     auth.require(Permission::MembersRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let mut users = state.store.list_users(auth.org_id).await?;
@@ -56,7 +58,7 @@ pub async fn list_users(
             user.oidc_subject = None;
         }
     }
-    Ok(Json(users))
+    Ok(Json(Page::from_vec(users, &query, 100)?))
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
@@ -145,18 +147,41 @@ pub async fn update_user_role(
     Ok(Json(user))
 }
 
-#[utoipa::path(get, path = "/api/v1/api-tokens", tag = "account", responses((status = 200, body = [ApiTokenView])))]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiTokenListQuery {
+    /// Include revoked tokens. Off by default so a long-lived installation's list stays
+    /// useful; they remain queryable when an audit needs them.
+    pub include_revoked: Option<bool>,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl ApiTokenListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/api-tokens", tag = "account", params(ApiTokenListQuery), responses((status = 200, body = Page<ApiTokenView>)))]
 pub async fn list_api_tokens(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<ApiTokenView>>, ApiError> {
+    Query(query): Query<ApiTokenListQuery>,
+) -> Result<Json<Page<ApiTokenView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     // Owners and admins see every token; everyone else only their own.
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let only_user = (!access.is_privileged()).then_some(auth.user_id);
-    Ok(Json(
-        state.store.list_api_tokens(auth.org_id, only_user).await?,
-    ))
+    let tokens = state.store.list_api_tokens(auth.org_id, only_user).await?;
+    let tokens = tokens
+        .into_iter()
+        .filter(|token| query.include_revoked.unwrap_or(false) || token.revoked_at.is_none())
+        .collect();
+    Ok(Json(Page::from_vec(tokens, &query.page(), 100)?))
 }
 
 /// Longest API token lifetime, in days (ten years).
@@ -290,6 +315,7 @@ pub async fn revoke_api_token(
 pub struct AuditLogPage {
     pub items: Vec<orbit_store::AuditLogRecord>,
     pub next_cursor: Option<String>,
+    pub total: i64,
 }
 
 #[utoipa::path(get, path = "/api/v1/audit-logs", tag = "account", params(AuditListQuery), responses((status = 200, body = AuditLogPage)))]
@@ -316,14 +342,19 @@ pub async fn list_audit_logs(
         .store
         .list_audit_log_page(
             auth.org_id,
-            limit(query.limit),
+            limit(query.limit)?,
             query.before_id,
             action,
             area,
         )
         .await?;
+    let total = state
+        .store
+        .count_audit_logs(auth.org_id, action, area)
+        .await?;
     Ok(Json(AuditLogPage {
         items,
         next_cursor: next.map(|id| id.to_string()),
+        total,
     }))
 }

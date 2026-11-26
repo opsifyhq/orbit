@@ -1,6 +1,6 @@
 //! Custom roles: named permission sets per organization (enterprise RBAC foundation).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -12,6 +12,8 @@ use orbit_store::CustomRole;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
@@ -107,13 +109,15 @@ fn validated(body: &RoleRequest) -> Result<(String, Vec<String>), ApiError> {
     Ok((name, permissions))
 }
 
-#[utoipa::path(get, path = "/api/v1/roles", tag = "roles", responses((status = 200, body = [CustomRole])))]
+#[utoipa::path(get, path = "/api/v1/roles", tag = "roles", params(PageQuery), responses((status = 200, body = Page<CustomRole>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<CustomRole>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<CustomRole>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
-    Ok(Json(state.store.list_custom_roles(auth.org_id).await?))
+    let roles = state.store.list_custom_roles(auth.org_id).await?;
+    Ok(Json(Page::from_vec(roles, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/roles", tag = "roles", request_body = RoleRequest, responses((status = 201, body = CustomRole)))]
@@ -147,12 +151,21 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(role_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<RoleRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<CustomRole>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     state.require_feature(orbit_security::license::FEATURE_CUSTOM_ROLES)?;
-    let (name, permissions) = validated(&body)?;
     let current = state.store.get_custom_role(auth.org_id, role_id).await?;
+    let merged = merge_patch(
+        serde_json::json!({
+            "name": current.name,
+            "permissions": current.permissions,
+        }),
+        patch,
+        &[],
+    )?;
+    let body: RoleRequest = parse_patch(merged)?;
+    let (name, permissions) = validated(&body)?;
     require_role_ceiling(&state, &auth, &permissions, Some(&current)).await?;
     let role = state
         .store

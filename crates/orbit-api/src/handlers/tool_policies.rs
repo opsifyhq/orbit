@@ -14,16 +14,29 @@ use orbit_store::ToolPolicy;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct ListToolPoliciesQuery {
     #[serde(default)]
     pub agent_id: Option<Uuid>,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+impl ListToolPoliciesQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolPolicyRequest {
     pub name: String,
@@ -140,12 +153,12 @@ async fn require_agent_manage(
     Ok(())
 }
 
-#[utoipa::path(get, path = "/api/v1/tool-policies", tag = "tool-policies", params(("agentId" = Option<Uuid>, Query, description = "Include agent rules and org defaults")), responses((status = 200, body = [ToolPolicyView])))]
+#[utoipa::path(get, path = "/api/v1/tool-policies", tag = "tool-policies", params(("agentId" = Option<Uuid>, Query, description = "Include agent rules and org defaults")), responses((status = 200, body = Page<ToolPolicyView>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Query(query): Query<ListToolPoliciesQuery>,
-) -> Result<Json<Vec<ToolPolicyView>>, ApiError> {
+) -> Result<Json<Page<ToolPolicyView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let rows = state
@@ -156,7 +169,7 @@ pub async fn list(
     for row in rows {
         views.push(ToolPolicyView::try_from(row)?);
     }
-    Ok(Json(views))
+    Ok(Json(Page::from_vec(views, &query.page(), 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/tool-policies", tag = "tool-policies", request_body = ToolPolicyRequest, responses((status = 201, body = ToolPolicyView)))]
@@ -210,7 +223,7 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(policy_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<ToolPolicyRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<ToolPolicyView>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let existing = state.store.get_tool_policy(auth.org_id, policy_id).await?;
@@ -223,6 +236,21 @@ pub async fn update(
     )?;
     // Both the agent the policy is moving away from and the one it targets.
     require_agent_manage(&state, &auth, &access, existing.agent_id).await?;
+    let merged = merge_patch(
+        serde_json::json!({
+            "name": existing.name,
+            "agentId": existing.agent_id,
+            "priority": existing.priority,
+            "enabled": existing.enabled,
+            "action": existing.action,
+            "matcher": existing.matcher,
+            "reason": existing.reason,
+            "impact": existing.impact,
+        }),
+        patch,
+        &[],
+    )?;
+    let body: ToolPolicyRequest = parse_patch(merged)?;
     let rule = validated(&body)?;
     require_agent_manage(&state, &auth, &access, body.agent_id).await?;
     let matcher = serde_json::to_value(&rule.matcher)

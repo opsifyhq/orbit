@@ -115,6 +115,29 @@ impl Store {
         Ok((rows, next))
     }
 
+    /// Total rows visible to the same filters as `list_audit_log_page`, for the shared
+    /// `{items,nextCursor,total}` list envelope.
+    pub async fn count_audit_logs(
+        &self,
+        org_id: Uuid,
+        action: Option<&str>,
+        area: Option<&str>,
+    ) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT count(*) FROM audit_logs
+            WHERE org_id = $1
+              AND ($2::text IS NULL OR action = $2)
+              AND ($3::text IS NULL OR split_part(action, '.', 1) = $3)
+            "#,
+        )
+        .bind(org_id)
+        .bind(action)
+        .bind(area)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Delete audit log rows created before `before`; returns the number removed.
     /// Driven by `ORBIT_AUDIT_RETENTION_DAYS` in the API background loop.
     ///

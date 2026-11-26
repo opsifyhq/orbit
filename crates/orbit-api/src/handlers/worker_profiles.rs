@@ -1,8 +1,8 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use orbit_domain::{HarnessKind, ValidationIssue};
@@ -11,10 +11,12 @@ use orbit_store::WorkerProfile;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 use crate::worker_tokens::{issue_profile_token, IssuedWorkerToken};
 
-#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorkerProfileRequest {
     pub name: String,
@@ -462,11 +464,30 @@ pub async fn create_token(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-tokens", tag = "workers", responses((status = 200, body = [WorkerTokenView])))]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerTokenListQuery {
+    /// Include revoked tokens. Off by default; revoked tokens can be viewed when needed.
+    pub include_revoked: Option<bool>,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl WorkerTokenListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/worker-tokens", tag = "workers", params(WorkerTokenListQuery), responses((status = 200, body = Page<WorkerTokenView>)))]
 pub async fn list_tokens(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<WorkerTokenView>>, ApiError> {
+    Query(query): Query<WorkerTokenListQuery>,
+) -> Result<Json<Page<WorkerTokenView>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     // Tokens follow the visibility of their profile; org-wide tokens are privileged-only.
@@ -477,28 +498,28 @@ pub async fn list_tokens(
         .into_iter()
         .map(|profile| profile.id)
         .collect();
-    Ok(Json(
-        state
-            .store
-            .list_worker_tokens(auth.org_id)
-            .await?
-            .into_iter()
-            .filter(|record| match record.profile_id {
-                Some(id) => visible_profiles.contains(&id),
-                None => access.is_privileged(),
-            })
-            .map(|record| WorkerTokenView {
-                id: record.id,
-                name: record.name,
-                profile_id: record.profile_id,
-                harnesses: record.harnesses,
-                token_prefix: record.token_prefix,
-                last_used_at: record.last_used_at,
-                revoked_at: record.revoked_at,
-                created_at: record.created_at,
-            })
-            .collect(),
-    ))
+    let tokens = state
+        .store
+        .list_worker_tokens(auth.org_id)
+        .await?
+        .into_iter()
+        .filter(|record| match record.profile_id {
+            Some(id) => visible_profiles.contains(&id),
+            None => access.is_privileged(),
+        })
+        .filter(|record| query.include_revoked.unwrap_or(false) || record.revoked_at.is_none())
+        .map(|record| WorkerTokenView {
+            id: record.id,
+            name: record.name,
+            profile_id: record.profile_id,
+            harnesses: record.harnesses,
+            token_prefix: record.token_prefix,
+            last_used_at: record.last_used_at,
+            revoked_at: record.revoked_at,
+            created_at: record.created_at,
+        })
+        .collect();
+    Ok(Json(Page::from_vec(tokens, &query.page(), 100)?))
 }
 
 #[utoipa::path(delete, path = "/api/v1/worker-tokens/{token_id}", tag = "workers", responses((status = 204)))]
@@ -535,19 +556,19 @@ pub async fn revoke_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-profiles", tag = "workers", responses((status = 200, body = [WorkerProfile])))]
+#[utoipa::path(get, path = "/api/v1/worker-profiles", tag = "workers", params(PageQuery), responses((status = 200, body = Page<WorkerProfile>)))]
 pub async fn list_profiles(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<WorkerProfile>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<WorkerProfile>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_worker_profiles(auth.org_id, Some(&access.store_access()))
-            .await?,
-    ))
+    let profiles = state
+        .store
+        .list_worker_profiles(auth.org_id, Some(&access.store_access()))
+        .await?;
+    Ok(Json(Page::from_vec(profiles, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/worker-profiles", tag = "workers", request_body = CreateWorkerProfileRequest, responses((status = 201, body = WorkerProfile)))]
@@ -685,21 +706,72 @@ pub async fn create_profile(
     Ok((StatusCode::CREATED, Json(profile)))
 }
 
+/// Stored profile as a request body. Env values are write-only, so each stored name is
+/// represented by `null`: with no `env` in the PATCH body every stored value is kept.
+fn stored_profile_request(profile: &WorkerProfile, env_mapping_ids: &[Uuid]) -> serde_json::Value {
+    let env = profile
+        .env
+        .as_object()
+        .map(|map| {
+            map.keys()
+                .map(|name| (name.clone(), serde_json::Value::Null))
+                .collect::<serde_json::Map<_, _>>()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "name": profile.name,
+        "harnessKind": profile.harness_kind,
+        "target": profile.target,
+        "executionDriver": profile.execution_driver,
+        "image": profile.image,
+        "imageTag": profile.image_tag,
+        "agentScope": profile.agent_scope,
+        "agentIds": profile.agent_ids,
+        "skillSlugs": profile.skill_slugs,
+        "provider": profile.provider,
+        "model": profile.model,
+        "authSecretName": profile.auth_secret_name,
+        "env": env,
+        "envMappings": profile.env_mappings,
+        "envMappingIds": env_mapping_ids,
+        "resources": profile.resources,
+        "allowWebSearch": profile.allow_web_search,
+        "allowWebFetch": profile.allow_web_fetch,
+        "allowGlab": profile.allow_glab,
+        "allowGh": profile.allow_gh,
+        "nativeToolPermissions": profile.native_tool_permissions,
+    })
+}
+
 #[utoipa::path(patch, path = "/api/v1/worker-profiles/{profile_id}", tag = "workers", request_body = CreateWorkerProfileRequest, responses((status = 200, body = WorkerProfile)))]
 pub async fn update_profile(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(profile_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<CreateWorkerProfileRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<WorkerProfile>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    validate_native_tool_permissions(&body.native_tool_permissions)?;
-    validate_auth_secret_name(body.auth_secret_name.as_deref())?;
-    validate_inline_env_mappings(&body.env_mappings)?;
     let existing = state
         .store
         .get_worker_profile(auth.org_id, profile_id)
         .await?;
+    let mut attached_before: Vec<Uuid> = state
+        .store
+        .list_worker_profile_env_mappings(profile_id)
+        .await?
+        .into_iter()
+        .map(|mapping| mapping.id)
+        .collect();
+    attached_before.sort();
+    let merged = merge_patch(
+        stored_profile_request(&existing, &attached_before),
+        patch,
+        &[],
+    )?;
+    let body: CreateWorkerProfileRequest = parse_patch(merged)?;
+    validate_native_tool_permissions(&body.native_tool_permissions)?;
+    validate_auth_secret_name(body.auth_secret_name.as_deref())?;
+    validate_inline_env_mappings(&body.env_mappings)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     access.require_manage(
         "worker profile",
@@ -723,14 +795,6 @@ pub async fn update_profile(
         &body.env_mapping_ids,
     )
     .await?;
-    let mut attached_before: Vec<Uuid> = state
-        .store
-        .list_worker_profile_env_mappings(profile_id)
-        .await?
-        .into_iter()
-        .map(|mapping| mapping.id)
-        .collect();
-    attached_before.sort();
     // Worker seats are consumed by running launches, not by enabled profile definitions;
     // launch_profile_internal enforces the limit when a worker is actually started.
     let harness = HarnessKind::from_str_compat(&body.harness_kind)?;

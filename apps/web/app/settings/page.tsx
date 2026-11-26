@@ -748,11 +748,11 @@ function UsersSection() {
   const currentUserId = (me.data?.user as { id?: string } | undefined)?.id;
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: () => request<UserRow[]>("/api/v1/users"),
+    queryFn: async () => (await request<{ items: UserRow[] }>("/api/v1/users?limit=500")).items,
   });
   const roles = useQuery({
     queryKey: ["custom-roles"],
-    queryFn: () => request<RoleRow[]>("/api/v1/roles"),
+    queryFn: async () => (await request<{ items: RoleRow[] }>("/api/v1/roles?limit=500")).items,
   });
 
   const setRole = useMutation({
@@ -839,7 +839,7 @@ function RolesSection() {
   const confirm = useConfirm();
   const roles = useQuery({
     queryKey: ["custom-roles"],
-    queryFn: () => request<RoleRow[]>("/api/v1/roles"),
+    queryFn: async () => (await request<{ items: RoleRow[] }>("/api/v1/roles?limit=500")).items,
   });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<RoleRow | null>(null);

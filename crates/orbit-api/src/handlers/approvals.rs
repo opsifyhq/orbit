@@ -9,6 +9,7 @@ use orbit_store::Approval;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
@@ -19,7 +20,17 @@ pub struct ApprovalListQuery {
     pub status: Option<String>,
     /// Only approvals requested by this execution.
     pub execution_id: Option<Uuid>,
-    pub limit: Option<u32>,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl ApprovalListQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -29,12 +40,12 @@ pub struct ApprovalDecisionRequest {
     pub comment: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/approvals", tag = "approvals", params(ApprovalListQuery), responses((status = 200, body = [orbit_store::ApprovalWithExecution])))]
+#[utoipa::path(get, path = "/api/v1/approvals", tag = "approvals", params(ApprovalListQuery), responses((status = 200, body = Page<orbit_store::ApprovalWithExecution>)))]
 pub async fn list_approvals(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Query(query): Query<ApprovalListQuery>,
-) -> Result<Json<Vec<orbit_store::ApprovalWithExecution>>, ApiError> {
+) -> Result<Json<Page<orbit_store::ApprovalWithExecution>>, ApiError> {
     auth.require(Permission::ApprovalsDecide)?;
     let status = query.status.as_deref().filter(|s| !s.is_empty());
     if let Some(status) = status {
@@ -53,11 +64,13 @@ pub async fn list_approvals(
             auth.org_id,
             status,
             query.execution_id,
-            query.limit.unwrap_or(50).clamp(1, 200) as i64,
+            // A fixed window keeps the offset cursor stable across pages; the response
+            // itself is bounded by the validated `limit`.
+            crate::paging::MAX_PAGE_LIMIT,
             Some(&store_access),
         )
         .await?;
-    Ok(Json(approvals))
+    Ok(Json(Page::from_window(approvals, &query.page(), 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/approvals/{approval_id}/approve", tag = "approvals", request_body = ApprovalDecisionRequest, responses((status = 200, body = Approval)))]

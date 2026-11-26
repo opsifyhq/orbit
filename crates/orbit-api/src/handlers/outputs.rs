@@ -15,6 +15,8 @@ use orbit_store::{Output, OutputDelivery};
 use crate::audit;
 use crate::error::ApiError;
 use crate::output_delivery::{deliver, guard_credential, redact_urls, with_note};
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -342,11 +344,12 @@ async fn output_target_visible(
     true
 }
 
-#[utoipa::path(get, path = "/api/v1/outputs", tag = "outputs", responses((status = 200, body = [OutputView])))]
+#[utoipa::path(get, path = "/api/v1/outputs", tag = "outputs", params(PageQuery), responses((status = 200, body = Page<OutputView>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<OutputView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<OutputView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     // One visibility query for the whole list instead of one lookup per output.
@@ -374,28 +377,22 @@ pub async fn list(
             last.map(|delivery| OutputDeliveryView::from_delivery(delivery, false));
         visible.push(view);
     }
-    Ok(Json(visible))
-}
-
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-pub struct DeliveriesQuery {
-    /// How many deliveries to return, newest first (1–200, default 50).
-    pub limit: Option<i64>,
+    Ok(Json(Page::from_vec(visible, &query, 100)?))
 }
 
 #[utoipa::path(
     get,
     path = "/api/v1/outputs/{output_id}/deliveries",
     tag = "outputs",
-    params(("output_id" = Uuid, Path), DeliveriesQuery),
-    responses((status = 200, body = [OutputDeliveryView]), (status = 404))
+    params(("output_id" = Uuid, Path), PageQuery),
+    responses((status = 200, body = Page<OutputDeliveryView>), (status = 404))
 )]
 pub async fn deliveries(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(output_id): Path<Uuid>,
-    Query(query): Query<DeliveriesQuery>,
-) -> Result<Json<Vec<OutputDeliveryView>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<OutputDeliveryView>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let output = state.store.get_output(auth.org_id, output_id).await?;
@@ -408,13 +405,13 @@ pub async fn deliveries(
         access.is_privileged() || !output.agent_ids.is_empty() || output.team_id.is_some();
     let rows = state
         .store
-        .list_output_deliveries(auth.org_id, output_id, query.limit.unwrap_or(50))
+        .list_output_deliveries(auth.org_id, output_id, crate::paging::MAX_PAGE_LIMIT)
         .await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|delivery| OutputDeliveryView::from_delivery(delivery, with_run))
-            .collect(),
-    ))
+    let items: Vec<OutputDeliveryView> = rows
+        .into_iter()
+        .map(|delivery| OutputDeliveryView::from_delivery(delivery, with_run))
+        .collect();
+    Ok(Json(Page::from_window(items, &query, 50)?))
 }
 
 /// The request's `config`: `None` when absent or `null`, an object as given, anything
@@ -502,17 +499,53 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(OutputView::from(output))))
 }
 
+/// A PATCH body is merged onto the stored output. Credentials are write-only, so they
+/// are accepted as extra keys but never filled from the stored row (#443).
+fn stored_output_request(output: &Output) -> serde_json::Value {
+    serde_json::json!({
+        "name": output.name,
+        "kind": output.kind,
+        "agentId": output.agent_id,
+        "agentIds": output.agent_ids,
+        "teamId": output.team_id,
+        "events": output.events,
+        "chatId": output.telegram_chat_id,
+        "messageThreadId": output.telegram_message_thread_id,
+        "config": output.config,
+        "template": output.template,
+        "enabled": output.enabled,
+    })
+}
+
 #[utoipa::path(patch, path = "/api/v1/outputs/{output_id}", tag = "outputs", request_body = OutputRequest, responses((status = 200, body = OutputView)))]
 pub async fn update(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(output_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<OutputRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<OutputView>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
-    let (name, events, kind, telegram) = validated(&body)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
     let existing = load_managed_output(&state, &auth, &access, output_id).await?;
+    // A target is either one agent (`agentId`) or several (`agentIds`). A partial patch
+    // that sets one must clear the other, or the stored target would win.
+    let patch_sets_agent_ids = patch.get("agentIds").is_some();
+    let patch_sets_agent_id = patch.get("agentId").is_some();
+    let mut merged = merge_patch(
+        stored_output_request(&existing),
+        patch,
+        &["webhookUrl", "botToken", "s3Credential"],
+    )?;
+    if let Some(object) = merged.as_object_mut() {
+        if patch_sets_agent_ids {
+            object.insert("agentId".into(), serde_json::Value::Null);
+        }
+        if patch_sets_agent_id {
+            object.insert("agentIds".into(), serde_json::json!([]));
+        }
+    }
+    let body: OutputRequest = parse_patch(merged)?;
+    let (name, events, kind, telegram) = validated(&body)?;
     let target_agents = if body.agent_ids.is_empty() {
         body.agent_id.into_iter().collect::<Vec<_>>()
     } else {

@@ -35,6 +35,8 @@ export function workerLaunchLogs(launchId: string): Promise<{ logs: string }> {
 }
 
 export function workerLaunches(includeInactive = false): Promise<WorkerLaunch[]> {
-  const query = includeInactive ? "?includeInactive=true" : "";
-  return request<WorkerLaunch[]>(`/api/v1/worker-launches${query}`);
+  const query = includeInactive ? "?includeInactive=true&limit=500" : "?limit=500";
+  return request<{ items: WorkerLaunch[] }>(`/api/v1/worker-launches${query}`).then(
+    (page) => page.items,
+  );
 }

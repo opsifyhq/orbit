@@ -269,7 +269,8 @@ export default function TeamDetailPage() {
   const team = teams.data?.find((candidate) => candidate.id === teamId);
   const users = useQuery({
     queryKey: ["users"],
-    queryFn: async () => unwrap(await api.GET("/api/v1/users")),
+    queryFn: async () =>
+      (unwrap(await api.GET("/api/v1/users", { params: { query: { limit: 500 } } }))).items,
   });
   const members = useQuery({
     queryKey: ["access-team-members", teamId],

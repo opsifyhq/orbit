@@ -15,6 +15,7 @@ use orbit_store::WorkerLaunch;
 
 use crate::error::ApiError;
 use crate::launches::{call_launcher, launch_profile_internal, refresh, stop_launch_internal};
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -90,19 +91,30 @@ async fn load_managed_launch(
     Ok(launch)
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerLaunchesQuery {
     #[serde(default)]
     pub include_inactive: bool,
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-launches", tag = "workers", responses((status = 200, body = [WorkerLaunch])))]
+impl WorkerLaunchesQuery {
+    fn page(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/worker-launches", tag = "workers", params(WorkerLaunchesQuery), responses((status = 200, body = Page<WorkerLaunch>)))]
 pub async fn list_launches(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Query(query): Query<WorkerLaunchesQuery>,
-) -> Result<Json<Vec<WorkerLaunch>>, ApiError> {
+) -> Result<Json<Page<WorkerLaunch>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let launches = if query.include_inactive {
         state.store.list_worker_launches(auth.org_id, None).await?
@@ -125,7 +137,7 @@ pub async fn list_launches(
     // unreachable launcher costs one timeout, not one per launch (#306).
     let refreshed =
         futures::future::join_all(launches.into_iter().map(|launch| refresh(&state, launch))).await;
-    Ok(Json(refreshed))
+    Ok(Json(Page::from_window(refreshed, &query.page(), 100)?))
 }
 
 #[utoipa::path(get, path = "/api/v1/worker-launches/{launch_id}", tag = "workers", responses((status = 200, body = WorkerLaunch)))]

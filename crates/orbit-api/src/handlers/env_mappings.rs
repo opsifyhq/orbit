@@ -1,6 +1,6 @@
 //! Reusable environment mappings shared across worker profiles.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Extension;
 use axum::Json;
@@ -12,6 +12,8 @@ use orbit_store::EnvMapping;
 
 use crate::audit;
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
+use crate::patch::{merge_patch, parse_patch};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
@@ -151,19 +153,19 @@ async fn validate_references(
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/env-mappings", tag = "env-mappings", responses((status = 200, body = [EnvMapping])))]
+#[utoipa::path(get, path = "/api/v1/env-mappings", tag = "env-mappings", params(PageQuery), responses((status = 200, body = Page<EnvMapping>)))]
 pub async fn list(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<EnvMapping>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<EnvMapping>>, ApiError> {
     auth.require(Permission::SettingsRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_env_mappings(auth.org_id, Some(&access.store_access()))
-            .await?,
-    ))
+    let mappings = state
+        .store
+        .list_env_mappings(auth.org_id, Some(&access.store_access()))
+        .await?;
+    Ok(Json(Page::from_vec(mappings, &query, 100)?))
 }
 
 #[utoipa::path(post, path = "/api/v1/env-mappings", tag = "env-mappings", request_body = EnvMappingRequest, responses((status = 201, body = EnvMapping)))]
@@ -200,7 +202,7 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(mapping_id): Path<Uuid>,
-    crate::extract::ApiJson(body): crate::extract::ApiJson<EnvMappingRequest>,
+    crate::extract::ApiJson(patch): crate::extract::ApiJson<serde_json::Value>,
 ) -> Result<Json<EnvMapping>, ApiError> {
     auth.require(Permission::SettingsWrite)?;
     let existing = state.store.get_env_mapping(auth.org_id, mapping_id).await?;
@@ -211,6 +213,16 @@ pub async fn update(
         existing.owner_team_id,
         &existing.visibility,
     )?;
+    let merged = merge_patch(
+        serde_json::json!({
+            "name": existing.name,
+            "description": existing.description,
+            "mappings": existing.mappings,
+        }),
+        patch,
+        &[],
+    )?;
+    let body: EnvMappingRequest = parse_patch(merged)?;
     let (name, description, mappings) = validated(&body)?;
     validate_references(&state, &auth, &mappings).await?;
     let mapping = state
@@ -260,12 +272,13 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(get, path = "/api/v1/worker-profiles/{profile_id}/env-mappings", tag = "workers", responses((status = 200, body = [EnvMapping])))]
+#[utoipa::path(get, path = "/api/v1/worker-profiles/{profile_id}/env-mappings", tag = "workers", params(PageQuery), responses((status = 200, body = Page<EnvMapping>)))]
 pub async fn profile_mappings(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(profile_id): Path<Uuid>,
-) -> Result<Json<Vec<EnvMapping>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<EnvMapping>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let profile = state
         .store
@@ -289,7 +302,7 @@ pub async fn profile_mappings(
             &mapping.visibility,
         )
     });
-    Ok(Json(mappings))
+    Ok(Json(Page::from_vec(mappings, &query, 100)?))
 }
 
 /// Every mapping attached to a worker profile must be visible and usable by the caller.

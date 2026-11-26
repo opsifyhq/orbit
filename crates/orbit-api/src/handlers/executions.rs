@@ -137,7 +137,7 @@ pub async fn list_executions(
         .store
         .list_executions(
             auth.org_id,
-            limit(query.limit),
+            limit(query.limit)?,
             query.cursor.as_deref(),
             status.as_deref(),
             query.agent_id,
@@ -179,7 +179,7 @@ pub async fn list_execution_events(
             auth.org_id,
             execution_id,
             query.after_seq.unwrap_or(0),
-            query.limit.unwrap_or(200).clamp(1, 1000) as i64,
+            super::limit_i64(query.limit.map(i64::from), 200)?,
             &event_filter(&query)?,
         )
         .await?;
@@ -199,7 +199,7 @@ pub async fn list_agent_executions(
         .store
         .list_executions(
             auth.org_id,
-            limit(query.limit),
+            limit(query.limit)?,
             query.cursor.as_deref(),
             query.status.as_deref(),
             Some(agent_id),

@@ -15,6 +15,7 @@ use orbit_store::AgentTeam;
 
 use crate::dto::{TeamRunListQuery, TeamRunPage};
 use crate::error::ApiError;
+use crate::paging::{Page, PageQuery};
 use crate::state::AppState;
 use crate::team_runs::{
     announce_cancel, approval_mode_label, auto_launch_step, default_mode, parse_definition,
@@ -855,19 +856,19 @@ fn changed_keys(before: &AgentTeam, after: &AgentTeam) -> Vec<String> {
     keys
 }
 
-#[utoipa::path(get, path = "/api/v1/agent-teams", tag = "agent-teams", responses((status = 200, body = [orbit_store::AgentTeam])))]
+#[utoipa::path(get, path = "/api/v1/agent-teams", tag = "agent-teams", params(PageQuery), responses((status = 200, body = Page<orbit_store::AgentTeam>)))]
 pub async fn list_teams(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Vec<AgentTeam>>, ApiError> {
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<AgentTeam>>, ApiError> {
     auth.require(Permission::HarnessesRead)?;
     let access = crate::access::AccessScope::load(&state, &auth).await?;
-    Ok(Json(
-        state
-            .store
-            .list_agent_teams(auth.org_id, Some(&access.store_access()))
-            .await?,
-    ))
+    let teams = state
+        .store
+        .list_agent_teams(auth.org_id, Some(&access.store_access()))
+        .await?;
+    Ok(Json(Page::from_vec(teams, &query, 100)?))
 }
 
 #[utoipa::path(get, path = "/api/v1/agent-teams/{team_id}", tag = "agent-teams", responses((status = 200, body = orbit_store::AgentTeam)))]
@@ -1122,7 +1123,7 @@ pub async fn list_runs(
             query.team_id,
             query.cursor.as_deref(),
             query.q.as_deref(),
-            query.limit.unwrap_or(100).clamp(1, 200) as i64,
+            crate::handlers::limit_i64(query.limit.map(i64::from), 100)?,
             Some(&access.store_access()),
         )
         .await?;

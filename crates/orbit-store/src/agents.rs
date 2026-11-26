@@ -373,7 +373,7 @@ impl Store {
             AgentStatus::Draft => false,
         };
         if !allowed {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::Conflict(format!(
                 "cannot transition agent from {} to {}",
                 current_status.as_str(),
                 target.as_str()

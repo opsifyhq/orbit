@@ -18,7 +18,7 @@ export interface TeamMemberRecord {
 }
 
 export function listAccessTeams(): Promise<AccessTeam[]> {
-  return request<AccessTeam[]>("/api/v1/teams");
+  return request<{ items: AccessTeam[] }>("/api/v1/teams?limit=500").then((page) => page.items);
 }
 
 export function createAccessTeam(body: { name: string; slug: string }): Promise<AccessTeam> {
@@ -30,7 +30,9 @@ export function deleteAccessTeam(id: string): Promise<void> {
 }
 
 export function listTeamMembers(teamId: string): Promise<TeamMemberRecord[]> {
-  return request<TeamMemberRecord[]>(`/api/v1/teams/${teamId}/members`);
+  return request<{ items: TeamMemberRecord[] }>(`/api/v1/teams/${teamId}/members?limit=500`).then(
+    (page) => page.items,
+  );
 }
 
 export function addTeamMember(

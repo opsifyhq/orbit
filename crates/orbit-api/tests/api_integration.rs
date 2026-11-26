@@ -727,7 +727,7 @@ async fn approvals_can_be_listed_and_decided() {
 
     let (status, body) = send(&app.router, get("/api/v1/approvals?status=pending")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body
+    assert!(body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -791,7 +791,7 @@ async fn every_provider_kind_can_be_saved() {
 
     let (status, body) = send(&app.router, get("/api/v1/providers")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let kinds: Vec<&str> = body
+    let kinds: Vec<&str> = body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -901,7 +901,7 @@ async fn provider_credentials_are_write_only() {
     let (status, body) = send(&app.router, get("/api/v1/providers")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!body.to_string().contains("sk-test-should-never-leak"));
-    assert_eq!(body[0]["hasCredential"], true);
+    assert_eq!(body["items"][0]["hasCredential"], true);
 
     // Secrets are stored encrypted.
     let ciphertext: String =
@@ -951,7 +951,7 @@ async fn connections_are_org_scoped_and_credentials_hidden() {
 
     let (status, body) = send(&app.router, get("/api/v1/connections")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 
     // Unknown connector → 404
     let (status, body) = send(
@@ -1446,7 +1446,7 @@ async fn private_skills_are_hidden_from_other_users() {
 
     let (status, body) = send(&app.router, auth_get("/api/v1/skills", &alice_token)).await;
     assert_eq!(status, StatusCode::OK);
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert!(items.iter().any(|item| item["id"] == alice_id));
     assert!(items.iter().all(|item| item["id"] != bob_id));
 
@@ -1672,7 +1672,7 @@ async fn private_resources_are_hidden_from_other_users() {
     ] {
         let (status, body) = send(&app.router, auth_get(path, &alice_token)).await;
         assert_eq!(status, StatusCode::OK, "{path} list");
-        let items = body
+        let items = body["items"]
             .as_array()
             .unwrap_or_else(|| panic!("{path} list is not an array"));
         assert!(
@@ -1705,7 +1705,7 @@ async fn private_resources_are_hidden_from_other_users() {
     // The owner still sees their own resource.
     let (status, body) = send(&app.router, auth_get("/api/v1/providers", &bob_token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body
+    assert!(body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1773,7 +1773,7 @@ async fn private_agent_teams_and_runs_are_hidden_from_other_users() {
 
     let (status, body) = send(&app.router, auth_get("/api/v1/agent-teams", &alice_token)).await;
     assert_eq!(status, StatusCode::OK);
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert!(items
         .iter()
         .any(|item| item["id"] == alice_team.id.to_string()));
@@ -1898,7 +1898,7 @@ async fn private_execution_events_and_approvals_are_hidden() {
     assert!(
         status == StatusCode::FORBIDDEN
             || (status == StatusCode::OK
-                && body
+                && body["items"]
                     .as_array()
                     .unwrap()
                     .iter()
@@ -4459,7 +4459,7 @@ async fn env_mapping_edit_requires_manage_access() {
 
     let (status, body) = send(&app.router, auth_get("/api/v1/env-mappings", &bob_token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body
+    assert!(body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -4923,7 +4923,7 @@ async fn team_queue_batches_are_atomic_and_pageable() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let (_, listed) = send(&app.router, get(&path)).await;
     assert_eq!(
-        listed.as_array().unwrap().len(),
+        listed["items"].as_array().unwrap().len(),
         0,
         "nothing stored: {listed}"
     );
@@ -4962,21 +4962,23 @@ async fn team_queue_batches_are_atomic_and_pageable() {
     let (status, _) = send(&app.router, post(&path, json!({ "items": items }))).await;
     assert_eq!(status, StatusCode::CREATED);
     let (_, page) = send(&app.router, get(&format!("{path}?limit=2"))).await;
-    let page = page.as_array().unwrap().clone();
+    let items = page["items"].as_array().unwrap().clone();
+    assert_eq!(page["total"], 6);
     assert_eq!(
-        page.iter()
+        items
+            .iter()
             .map(|i| i["externalKey"].clone())
             .collect::<Vec<_>>(),
         [json!("k3"), json!("k4")]
     );
-    let oldest = page[0]["id"].as_str().unwrap();
+    let cursor = page["nextCursor"].as_str().unwrap();
     let (_, older) = send(
         &app.router,
-        get(&format!("{path}?limit=10&before={oldest}")),
+        get(&format!("{path}?limit=10&cursor={cursor}")),
     )
     .await;
     assert_eq!(
-        older
+        older["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -4984,8 +4986,9 @@ async fn team_queue_batches_are_atomic_and_pageable() {
             .collect::<Vec<_>>(),
         [json!("a"), json!("k0"), json!("k1"), json!("k2")]
     );
-    let (status, _) = send(&app.router, get(&format!("{path}?limit=0"))).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(older["nextCursor"], Value::Null);
+    let (status, body) = send(&app.router, get(&format!("{path}?limit=0"))).await;
+    assert_envelope(status, &body, StatusCode::BAD_REQUEST, "bad_request");
 }
 
 #[tokio::test]
@@ -6558,7 +6561,7 @@ mod output_delivery {
         let path = format!("/api/v1/outputs/{}/deliveries", output.id);
         let (status, body) = send(&app.router, get(&path)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let rows = body.as_array().unwrap();
+        let rows = body["items"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["status"], "failed");
         assert_eq!(rows[0]["attempts"], 1);
@@ -6578,7 +6581,7 @@ mod output_delivery {
         // The list carries the newest delivery, without run details.
         let (status, body) = send(&app.router, get("/api/v1/outputs")).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let listed = body
+        let listed = body["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -6592,7 +6595,7 @@ mod output_delivery {
         let fx = d2_fixture(&app).await;
         let (status, body) = send(&app.router, auth_get(&path, &fx.mallory_token)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let rows = body.as_array().unwrap();
+        let rows = body["items"].as_array().unwrap();
         assert_eq!(rows[0]["status"], "failed");
         assert!(rows[0]["executionId"].is_null());
         assert!(rows[0]["task"].is_null());
@@ -7449,7 +7452,7 @@ async fn worker_launches_follow_profile_visibility() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(listed
+    assert!(listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -7473,7 +7476,7 @@ async fn worker_launches_follow_profile_visibility() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(listed
+    assert!(listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -9037,6 +9040,289 @@ async fn path_query_route_and_method_rejections_use_the_error_envelope() {
     );
 }
 
+/// #443: every growing collection uses the same `{items,nextCursor,total}` envelope and
+/// rejects out-of-range page inputs with 400 instead of silently clamping them.
+#[tokio::test]
+async fn paged_collections_share_one_envelope_and_validate_page_queries() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    let paths = [
+        "/api/v1/agents",
+        "/api/v1/approvals",
+        "/api/v1/agent-teams",
+        "/api/v1/skills",
+        "/api/v1/providers",
+        "/api/v1/connections",
+        "/api/v1/connectors",
+        "/api/v1/harnesses",
+        "/api/v1/workers",
+        "/api/v1/outputs",
+        "/api/v1/env-mappings",
+        "/api/v1/tool-policies",
+        "/api/v1/triggers",
+        "/api/v1/worker-profiles",
+        "/api/v1/worker-tokens",
+        "/api/v1/worker-launches",
+        "/api/v1/api-tokens",
+        "/api/v1/teams",
+        "/api/v1/users",
+        "/api/v1/roles",
+        "/api/v1/audit-logs",
+    ];
+    for path in paths {
+        let (status, body) = send(&app.router, get(path)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert!(body["items"].is_array(), "{path}: {body}");
+        assert!(body["total"].is_number(), "{path}: {body}");
+        assert!(body.get("nextCursor").is_some(), "{path}: {body}");
+
+        for query in ["limit=0", "limit=-1", "limit=501"] {
+            let (status, body) = send(&app.router, get(&format!("{path}?{query}"))).await;
+            assert_envelope(status, &body, StatusCode::BAD_REQUEST, "bad_request");
+        }
+    }
+
+    // Audit logs keep their replay-specific `before_id` cursor; every other page uses the
+    // shared opaque offset cursor.
+    for path in paths.iter().filter(|path| **path != "/api/v1/audit-logs") {
+        let (status, body) = send(&app.router, get(&format!("{path}?cursor=%25%25%25"))).await;
+        assert_envelope(status, &body, StatusCode::BAD_REQUEST, "bad_request");
+    }
+
+    // A cursor from one page fetches the next one, not the first page again. Add an agent
+    // so a two-item page exists in every environment.
+    let (status, created) = send(&app.router, post("/api/v1/agents", definition())).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (_, first) = send(&app.router, get("/api/v1/agents?limit=1")).await;
+    let cursor = first["nextCursor"].as_str().expect("another agent");
+    let (status, second) = send(
+        &app.router,
+        get(&format!("/api/v1/agents?limit=1&cursor={cursor}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
+}
+
+/// #443: PATCH merges one field onto the stored resource for every resource that used to
+/// require a full replacement body.
+#[tokio::test]
+async fn patch_is_partial_on_formerly_replacing_resources() {
+    let Some(app) = licensed_test_app().await else {
+        return;
+    };
+    let suffix = Uuid::now_v7().simple().to_string();
+
+    async fn create(app: &TestApp, path: &str, body: Value) -> String {
+        let (status, body) = send(&app.router, post(path, body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["id"].as_str().unwrap().to_string()
+    }
+    async fn patch(app: &TestApp, path: &str, body: Value) -> Value {
+        let (status, body) = send(&app.router, patch_json(path, body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    let profile_id = create(
+        &app,
+        "/api/v1/worker-profiles",
+        json!({ "name": format!("profile-{suffix}"), "harnessKind": "mock" }),
+    )
+    .await;
+    let renamed = format!("renamed-{suffix}");
+    let body = patch(
+        &app,
+        &format!("/api/v1/worker-profiles/{profile_id}"),
+        json!({ "name": renamed }),
+    )
+    .await;
+    assert_eq!(body["name"], renamed);
+    assert_eq!(body["harnessKind"], "mock", "stored fields must survive");
+
+    let output_id = create(
+        &app,
+        "/api/v1/outputs",
+        json!({
+            "name": format!("output-{suffix}"),
+            "kind": "webhook",
+            "webhookUrl": "https://api.github.com/hook",
+        }),
+    )
+    .await;
+    let body = patch(
+        &app,
+        &format!("/api/v1/outputs/{output_id}"),
+        json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["kind"], "webhook", "stored fields must survive");
+
+    let connection_id = create(
+        &app,
+        "/api/v1/connections",
+        json!({
+            "connectorSlug": "telegram",
+            "name": format!("connection-{suffix}"),
+            "credential": "123456:bot-secret",
+            "scopes": ["messages.list"],
+        }),
+    )
+    .await;
+    let mapping_id = create(
+        &app,
+        "/api/v1/env-mappings",
+        json!({
+            "name": format!("mapping-{suffix}"),
+            "description": "before",
+            "mappings": [{ "envVar": "TEST_TOKEN", "connectionId": connection_id }],
+        }),
+    )
+    .await;
+    let body = patch(
+        &app,
+        &format!("/api/v1/env-mappings/{mapping_id}"),
+        json!({ "description": "after" }),
+    )
+    .await;
+    assert_eq!(body["description"], "after");
+    assert_eq!(body["mappings"][0]["envVar"], "TEST_TOKEN");
+
+    let policy_id = create(
+        &app,
+        "/api/v1/tool-policies",
+        json!({
+            "name": format!("policy-{suffix}"),
+            "action": "deny",
+            "matcher": { "tool": "*" },
+        }),
+    )
+    .await;
+    let body = patch(
+        &app,
+        &format!("/api/v1/tool-policies/{policy_id}"),
+        json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["action"], "deny", "stored fields must survive");
+
+    let team_id = create(
+        &app,
+        "/api/v1/teams",
+        json!({ "name": format!("Team {suffix}"), "slug": format!("team-{suffix}") }),
+    )
+    .await;
+    let renamed = format!("Renamed {suffix}");
+    let body = patch(
+        &app,
+        &format!("/api/v1/teams/{team_id}"),
+        json!({ "name": renamed }),
+    )
+    .await;
+    assert_eq!(body["name"], renamed);
+    assert_eq!(
+        body["slug"],
+        format!("team-{suffix}"),
+        "stored slug must survive"
+    );
+
+    let role_id = create(
+        &app,
+        "/api/v1/roles",
+        json!({ "name": format!("role-{suffix}"), "permissions": ["agents:read"] }),
+    )
+    .await;
+    let body = patch(
+        &app,
+        &format!("/api/v1/roles/{role_id}"),
+        json!({ "permissions": ["agents:read", "settings:read"] }),
+    )
+    .await;
+    assert_eq!(body["permissions"], json!(["agents:read", "settings:read"]));
+    assert_eq!(
+        body["name"],
+        format!("role-{suffix}"),
+        "stored name must survive"
+    );
+}
+
+/// #443: invalid state transitions are conflicts and oversized requests are normal
+/// envelope errors, not bare framework text or a dropped connection.
+#[tokio::test]
+async fn invalid_transitions_and_oversize_requests_use_envelopes() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let user_id = app.state.dev_identity.as_ref().unwrap().user_id;
+    let agent_id = create_demo_agent(&app.store, app.org_id, user_id).await;
+    let (status, body) = send(
+        &app.router,
+        post(&format!("/api/v1/agents/{agent_id}/activate"), json!({})),
+    )
+    .await;
+    assert_envelope(status, &body, StatusCode::CONFLICT, "conflict");
+
+    let (status, body) = send(
+        &app.router,
+        post(
+            "/api/v1/agents",
+            json!({ "padding": "x".repeat(2 * 1024 * 1024 + 1) }),
+        ),
+    )
+    .await;
+    assert_envelope(
+        status,
+        &body,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    );
+
+    let path = format!("/api/v1/agents?padding={}", "x".repeat(9000));
+    let (status, body) = send(&app.router, get(&path)).await;
+    assert_envelope(status, &body, StatusCode::URI_TOO_LONG, "uri_too_long");
+}
+
+/// #443: caller-supplied request ids are only echoed when they are plain ASCII ids.
+#[tokio::test]
+async fn caller_request_ids_are_validated() {
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+
+    for (incoming, accepted) in [("trace.123-abc", true), ("inj\"ect", false)] {
+        let request = Request::builder()
+            .uri("/api/v1/no/such/route")
+            .header("x-request-id", incoming)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let echoed = response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_envelope(status, &body, StatusCode::NOT_FOUND, "not_found");
+        if accepted {
+            assert_eq!(echoed, incoming);
+            assert_eq!(body["error"]["requestId"], incoming);
+        } else {
+            assert_ne!(echoed, incoming);
+            assert_eq!(body["error"]["requestId"], echoed);
+        }
+    }
+}
+
 #[tokio::test]
 async fn settings_updates_are_validated_enveloped_and_audited() {
     let Some(app) = test_app(true).await else {
@@ -9327,7 +9613,7 @@ async fn approval_list_applies_visibility_in_sql() {
     assert_eq!(all.len(), 7);
     let (status, body) = send(&app.router, get("/api/v1/approvals?status=pending")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body.as_array().unwrap().len(), 7);
+    assert_eq!(body["items"].as_array().unwrap().len(), 7);
 }
 
 // ---------------------------------------------------------------------------
@@ -10826,7 +11112,8 @@ async fn connection_test_endpoint_is_routed_and_honest_about_unsupported_connect
         let router = app.router.clone();
         async move {
             let (_, list) = send(&router, get("/api/v1/connections")).await;
-            list.as_array()
+            list["items"]
+                .as_array()
                 .unwrap()
                 .iter()
                 .find(|row| row["id"] == id.as_str())
@@ -10849,7 +11136,7 @@ async fn connection_test_endpoint_is_routed_and_honest_about_unsupported_connect
     // `active` is the only status workers accept; the check time proves it ran.
     assert_eq!(status_of(mock_id.clone()).await, "active");
     let (_, list) = send(&app.router, get("/api/v1/connections")).await;
-    let row = list
+    let row = list["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -11214,7 +11501,7 @@ async fn execution_team_run_and_approval_lists_filter_server_side() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let rows = body.as_array().unwrap();
+    let rows = body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{body}");
     assert_eq!(rows[0]["executionId"], queued.to_string());
 
@@ -12231,7 +12518,7 @@ async fn profile_editors_cannot_bind_another_teams_auth_secret() {
             "PATCH",
             &profile_url(&team_b_profile),
             m,
-            json!({ "name": "Team B worker", "harnessKind": "mock" }),
+            json!({ "name": "Team B worker", "harnessKind": "mock", "authSecretName": null }),
         ),
     )
     .await;
@@ -12565,7 +12852,7 @@ async fn settings_write_holder_cannot_touch_other_teams_worker_objects() {
     }
     let (status, listed) = send(&app.router, auth_get("/api/v1/worker-tokens", m)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(listed
+    assert!(listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -12703,7 +12990,7 @@ async fn settings_write_holder_cannot_attach_other_teams_mappings_or_profiles() 
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, listed) = send(&app.router, auth_get("/api/v1/env-mappings", m)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(listed
+    assert!(listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -13867,7 +14154,7 @@ async fn outputs_require_manage_on_their_target() {
     }
     let (status, listed) = send(&app.router, auth_get("/api/v1/outputs", m)).await;
     assert_eq!(status, StatusCode::OK);
-    let ids: Vec<&str> = listed
+    let ids: Vec<&str> = listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -13879,7 +14166,7 @@ async fn outputs_require_manage_on_their_target() {
         "{ids:?}"
     );
     let (_, owner_list) = send(&app.router, auth_get("/api/v1/outputs", "test-token")).await;
-    assert!(owner_list.as_array().unwrap().len() >= 3);
+    assert!(owner_list["items"].as_array().unwrap().len() >= 3);
 }
 
 #[tokio::test]
@@ -13944,9 +14231,9 @@ async fn settings_write_holder_cannot_escalate_roles_or_revoke_foreign_tokens() 
     token_for(&app.store, app.org_id, victim.id, "victim").await;
     let (status, listed) = send(&app.router, auth_get("/api/v1/api-tokens", m)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1, "{listed}");
     let (_, all) = send(&app.router, auth_get("/api/v1/api-tokens", "test-token")).await;
-    let victim_token_id = all
+    let victim_token_id = all["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -13995,7 +14282,8 @@ async fn user_list_hides_other_users_oidc_identity_from_non_privileged_callers()
         .await
         .unwrap();
     let find = |list: &Value| {
-        list.as_array()
+        list["items"]
+            .as_array()
             .unwrap()
             .iter()
             .find(|u| u["id"] == json!(linked.id))
@@ -14579,7 +14867,7 @@ async fn team_resource_overview_enforces_scope_and_isolation() {
         auth_get(&format!("{url}?type=outputs"), &member_token),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     // Team lead and org admin may change membership; API enforces it independently of UI.
     let (status, body) = send(
@@ -16233,7 +16521,7 @@ async fn decided_approvals_are_listed_apart_from_pending_ones() {
 
     let (status, body) = send(&app.router, get("/api/v1/approvals?status=decided&limit=2")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let rows = body.as_array().unwrap();
+    let rows = body["items"].as_array().unwrap();
     let ids: Vec<&str> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
     // Newest decision first.
     assert_eq!(
@@ -16251,7 +16539,7 @@ async fn decided_approvals_are_listed_apart_from_pending_ones() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body.as_array().unwrap().len(), 5);
+    assert_eq!(body["items"].as_array().unwrap().len(), 5);
 }
 
 fn delete_req(path: &str) -> Request<Body> {

@@ -64,11 +64,13 @@ export interface OutputInput {
 }
 
 export function listOutputs(): Promise<OutputView[]> {
-  return request<OutputView[]>("/api/v1/outputs");
+  return request<{ items: OutputView[] }>("/api/v1/outputs?limit=500").then((page) => page.items);
 }
 
 export function listOutputDeliveries(id: string, limit = 25): Promise<OutputDelivery[]> {
-  return request<OutputDelivery[]>(`/api/v1/outputs/${id}/deliveries?limit=${limit}`);
+  return request<{ items: OutputDelivery[] }>(`/api/v1/outputs/${id}/deliveries?limit=${limit}`).then(
+    (page) => page.items,
+  );
 }
 
 /** Add an existing output to an agent, or assign its single team target. */
