@@ -18,6 +18,8 @@ export interface EnvMappingRecord {
   name: string;
   description: string;
   mappings: EnvMappingEntry[];
+  ownerTeamId?: string | null;
+  visibility?: string | null;
   createdAt: string;
   updatedAt: string;
 }

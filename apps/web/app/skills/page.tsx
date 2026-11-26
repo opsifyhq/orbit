@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Plus } from "lucide-react";
 
 import { BulkActionsBar } from "@/components/bulk-actions-bar";
@@ -24,9 +24,12 @@ import {
   toggleId,
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
+import { Select } from "@/components/ui/select";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { Status, type StatusMeta } from "@/components/ui/status";
 import { cleanDescription } from "@/lib/presentation";
 import { queryKeys, useSkills } from "@/lib/queries";
+import { listAccessTeams } from "@/lib/access-teams";
 import { usageSummary, useSkillUsage } from "@/lib/skill-usage";
 import type { Skill } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
@@ -54,6 +57,9 @@ export default function SkillsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
+  const accessTeams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -68,10 +74,13 @@ export default function SkillsPage() {
       const used = usersOf(skill.slug).length > 0;
       if (filter === "used" && !used) return false;
       if (filter === "unused" && used) return false;
+      if (teamFilter === "none" && skill.ownerTeamId) return false;
+      if (teamFilter !== "all" && teamFilter !== "none" && skill.ownerTeamId !== teamFilter) return false;
+      if (visibilityFilter !== "all" && skill.visibility !== visibilityFilter) return false;
       const haystack = `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [all, search, filter, usersOf]);
+  }, [all, search, filter, usersOf, teamFilter, visibilityFilter]);
 
   // Bulk actions only ever touch rows that are on screen: a selection made under
   // another filter or search must not be changed or deleted unseen.
@@ -114,6 +123,19 @@ export default function SkillsPage() {
             count: skills.data ? counts[value] : undefined,
           }))}
         />
+        <div className="flex flex-wrap gap-2">
+          <Select aria-label="Filter by team" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All teams</option>
+            <option value="none">No team</option>
+            {(accessTeams.data ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+          </Select>
+          <Select aria-label="Filter by visibility" value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value)} className="w-auto min-w-40">
+            <option value="all">All access</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="org">Organization</option>
+          </Select>
+        </div>
       </ListToolbar>
 
       {selectedIds.length ? (
@@ -160,7 +182,7 @@ export default function SkillsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Skill", "Status", "Used by", "Updated"]}>
+          <ListCard columns={["Skill", "Status", "Used by", "Updated"]} accessColumn="Team & access">
             {visible.map((skill) => {
               const users = usersOf(skill.slug);
               const description = cleanDescription(skill.description);
@@ -200,6 +222,7 @@ export default function SkillsPage() {
                     </>
                   }
                   status={<Status meta={users.length ? IN_USE : UNUSED} />}
+                  access={<ResourceAccess ownerTeamId={skill.ownerTeamId} visibility={skill.visibility} />}
                   details={
                     <>
                       <p className="truncate">{users.length ? users.map((user) => user.name).join(", ") : "Nothing yet"}</p>
