@@ -27,6 +27,7 @@ pub mod preflight;
 pub mod rate_limit;
 pub mod request_id;
 pub mod routes;
+pub mod smtp_output;
 pub mod state;
 pub mod supervisor;
 pub mod team_outcomes;

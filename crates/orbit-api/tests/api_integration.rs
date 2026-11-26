@@ -6089,6 +6089,111 @@ mod output_delivery {
         Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
     }
 
+    /// Minimal SMTP server for the output Test button. Plaintext only; the test config
+    /// explicitly selects `security: none`.
+    fn start_smtp_hook() -> (u16, Arc<StdMutex<String>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = Arc::new(StdMutex::new(String::new()));
+        let recorded = received.clone();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _ = stream.write_all(b"220 test ESMTP\r\n");
+            let mut body = String::new();
+            let mut in_data = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if in_data {
+                    if line == ".\r\n" {
+                        in_data = false;
+                        let _ = stream.write_all(b"250 queued\r\n");
+                    } else {
+                        body.push_str(&line);
+                    }
+                    continue;
+                }
+                let command = line.trim_end().to_ascii_uppercase();
+                if command.starts_with("EHLO") || command.starts_with("HELO") {
+                    let _ = stream.write_all(b"250-test\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n");
+                } else if command.starts_with("AUTH") {
+                    let _ = stream.write_all(b"235 authentication successful\r\n");
+                } else if command.starts_with("DATA") {
+                    in_data = true;
+                    let _ = stream.write_all(b"354 send data\r\n");
+                } else if command.starts_with("QUIT") {
+                    let _ = stream.write_all(b"221 bye\r\n");
+                    break;
+                } else {
+                    let _ = stream.write_all(b"250 OK\r\n");
+                }
+            }
+            *recorded.lock().unwrap() = body;
+        });
+        (port, received)
+    }
+
+    fn smtp_form_body(name: &str, port: u16) -> Value {
+        json!({
+            "name": name,
+            "kind": "smtp",
+            "agentIds": [],
+            "teamId": null,
+            "events": ["succeeded", "failed"],
+            "smtpCredential": json!({ "username": "orbit", "password": "secret" }).to_string(),
+            "config": {
+                "host": "127.0.0.1",
+                "port": port,
+                "security": "none",
+                "from": "orbit@example.test",
+                "to": ["ops@example.test"],
+                "subject": "ORBIT test"
+            },
+            "template": null,
+            "enabled": true
+        })
+    }
+
+    #[tokio::test]
+    async fn smtp_output_created_like_the_web_form_sends_a_test_message() {
+        let Some(app) = delivery_app().await else {
+            return;
+        };
+        let _guard = guard().lock().await;
+        let (port, received) = start_smtp_hook();
+        let (status, body) = send(
+            &app.router,
+            post(
+                "/api/v1/outputs",
+                smtp_form_body(&format!("smtp-{}", Uuid::now_v7()), port),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().unwrap();
+
+        let (status, body) = send(
+            &app.router,
+            post(&format!("/api/v1/outputs/{id}/test"), json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let message = received.lock().unwrap().clone();
+        assert!(message.contains("Subject: ORBIT test"), "{message}");
+        assert!(message.contains("ops@example.test"), "{message}");
+
+        let mut invalid = smtp_form_body("smtp-invalid", port);
+        invalid["config"]["to"] = json!([]);
+        let (status, body) = send(&app.router, post("/api/v1/outputs", invalid)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+
     #[tokio::test]
     async fn s3_output_created_like_the_web_form_delivers() {
         let Some(app) = delivery_app().await else {

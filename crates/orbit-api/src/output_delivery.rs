@@ -135,6 +135,48 @@ pub async fn send(
             })?;
         return Ok(());
     }
+    if kind == OutputKind::Smtp {
+        let settings =
+            crate::smtp_output::Settings::parse(&output.config).map_err(|message| SendError {
+                status: None,
+                message,
+                retryable: false,
+            })?;
+        let credential =
+            crate::smtp_output::Credential::parse(&secret).map_err(|message| SendError {
+                status: None,
+                message,
+                retryable: false,
+            })?;
+        // Resolve the SMTP host through the same outbound guard as HTTP destinations.
+        orbit_security::check_outbound_url(
+            &format!("https://{}:{}/", settings.host, settings.port),
+            &state.outbound,
+        )
+        .await
+        .map_err(|error| SendError {
+            status: None,
+            message: format!("SMTP host refused: {error}"),
+            retryable: false,
+        })?;
+        let settings_for_send = settings.clone();
+        let text = text.to_string();
+        tokio::task::spawn_blocking(move || {
+            crate::smtp_output::send(&settings_for_send, &credential, &text)
+        })
+        .await
+        .map_err(|error| SendError {
+            status: None,
+            message: format!("SMTP send task failed: {error}"),
+            retryable: true,
+        })?
+        .map_err(|error| SendError {
+            status: None,
+            message: error.message,
+            retryable: error.retryable,
+        })?;
+        return Ok(());
+    }
     if kind == OutputKind::Telegram {
         let target = TelegramTarget::parse(
             output.telegram_chat_id.as_deref().unwrap_or(""),
@@ -578,6 +620,9 @@ pub(crate) async fn guard_credential(
             })?;
             Ok(())
         }
+        OutputKind::Smtp => crate::smtp_output::validate_credential(value).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("smtpCredential", message)])
+        }),
         _ => guard_webhook_url(value, policy).await,
     }
 }

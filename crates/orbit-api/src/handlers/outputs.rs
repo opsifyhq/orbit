@@ -42,6 +42,9 @@ pub struct OutputRequest {
     /// S3 credential as JSON: `{ accessKeyId, secretAccessKey, sessionToken? }`.
     #[serde(default)]
     pub s3_credential: Option<String>,
+    /// SMTP credential as JSON: `{ username, password }`. Write-only.
+    #[serde(default)]
+    pub smtp_credential: Option<String>,
     /// Non-secret S3 settings: bucket, endpoint, region, keyPrefix, pathStyle, etc. On
     /// update, absent or `null` keeps the stored settings and an object replaces them.
     #[serde(default)]
@@ -159,6 +162,7 @@ fn credential_field(kind: OutputKind) -> &'static str {
     match kind {
         OutputKind::Telegram => "botToken",
         OutputKind::S3 => "s3Credential",
+        OutputKind::Smtp => "smtpCredential",
         _ => "webhookUrl",
     }
 }
@@ -167,6 +171,7 @@ fn credential(body: &OutputRequest, kind: OutputKind) -> Option<&str> {
     match kind {
         OutputKind::Telegram => body.bot_token.as_deref(),
         OutputKind::S3 => body.s3_credential.as_deref(),
+        OutputKind::Smtp => body.smtp_credential.as_deref(),
         _ => body.webhook_url.as_deref(),
     }
     .map(str::trim)
@@ -215,7 +220,7 @@ fn validated(
     let Some(kind) = OutputKind::parse(&body.kind) else {
         issues.push(ValidationIssue::new(
             "kind",
-            "kind must be slack, mattermost, webhook, telegram or s3",
+            "kind must be slack, mattermost, webhook, telegram, s3 or smtp",
         ));
         return Err(ApiError::validation(issues));
     };
@@ -455,6 +460,14 @@ pub async fn create(
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
+    if kind == OutputKind::Smtp {
+        crate::smtp_output::validate_config(&config).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("config", message)])
+        })?;
+        crate::smtp_output::validate_credential(value).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("smtpCredential", message)])
+        })?;
+    }
     let secret_ref = store_credential(&state, auth.org_id, &name, value).await?;
     let output = match state
         .store
@@ -566,8 +579,18 @@ pub async fn update(
             ApiError::validation(vec![ValidationIssue::new("config", message)])
         })?;
     }
+    if kind == OutputKind::Smtp {
+        crate::smtp_output::validate_config(&config).map_err(|message| {
+            ApiError::validation(vec![ValidationIssue::new("config", message)])
+        })?;
+    }
     let secret_ref = if let Some(value) = credential(&body, kind) {
         guard_credential(kind, value, &state.outbound).await?;
+        if kind == OutputKind::Smtp {
+            crate::smtp_output::validate_credential(value).map_err(|message| {
+                ApiError::validation(vec![ValidationIssue::new("smtpCredential", message)])
+            })?;
+        }
         if kind == OutputKind::S3 {
             orbit_s3::S3Config::for_output(&config, Some(value)).map_err(|message| {
                 ApiError::validation(vec![ValidationIssue::new("config", message)])
