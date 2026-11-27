@@ -39,6 +39,8 @@ uses `DOMAIN\user` for EWS Basic auth.
    - `mail.send` (only on a send binding; see below)
    - `mail.reply`
    - `mail.forward`
+   - `mail.markRead`
+   - `mail.move`
 
 Use **Test connection** to verify DNS/TLS, authentication and EWS access.
 
@@ -60,8 +62,12 @@ The recipient list accepts exact addresses (`ops@example.com`), domain wildcards
 (`*@example.com`) and the explicit global wildcard `*` (any recipient). `*` still requires
 the normal approval/autonomy rules and is shown as a warning in the connection form.
 
-All other capabilities are read-only. Bounded mailbox changes are a separate follow-up
-slice; use the SMTP output for notifications.
+`mail.markRead` and `mail.move` are bounded write capabilities for a 24/7 mailbox loop.
+They are limited to the configured mailbox and allowed folders. A loop can search with
+`unreadOnly`, process a message, then mark it read or move it to a processed folder. That
+last step is what prevents the same message being handled repeatedly.
+
+Use the SMTP output for notifications.
 
 ## Security limits
 

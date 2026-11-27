@@ -161,8 +161,15 @@ impl ExchangeClient {
     }
 
     pub async fn test(&self) -> Result<(), ExchangeError> {
-        self.call(&find_item_body("inbox", None, 1, &self.config.mailbox))
-            .await?;
+        self.call(&find_item_body(
+            "inbox",
+            None,
+            1,
+            &self.config.mailbox,
+            false,
+            None,
+        ))
+        .await?;
         Ok(())
     }
 
@@ -174,6 +181,8 @@ impl ExchangeClient {
             "mail.send" => self.send(args).await.map_err(|e| e.to_string()),
             "mail.reply" => self.reply(args).await.map_err(|e| e.to_string()),
             "mail.forward" => self.forward(args).await.map_err(|e| e.to_string()),
+            "mail.markRead" => self.mark_read(args).await.map_err(|e| e.to_string()),
+            "mail.move" => self.move_item(args).await.map_err(|e| e.to_string()),
             other => Err(format!("unsupported Exchange capability '{other}'")),
         }
     }
@@ -310,6 +319,37 @@ impl ExchangeClient {
         .await
     }
 
+    async fn mark_read(&self, args: &Value) -> Result<Value, ExchangeError> {
+        let item_id = required(args, "itemId")?;
+        let read = args.get("read").and_then(Value::as_bool).unwrap_or(true);
+        let xml = self.call(&update_read_body(item_id, read)).await?;
+        if let Some(error) = parse_ews_error(&xml) {
+            return Err(ExchangeError::Ews(error));
+        }
+        Ok(json!({ "id": item_id, "read": read }))
+    }
+
+    async fn move_item(&self, args: &Value) -> Result<Value, ExchangeError> {
+        let item_id = required(args, "itemId")?;
+        let folder = args
+            .get("folder")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExchangeError::Config("folder is required".into()))?
+            .to_ascii_lowercase();
+        if !self.allowed_folders().contains(&folder) {
+            return Err(ExchangeError::Config(format!(
+                "folder '{folder}' is not in allowedFolders"
+            )));
+        }
+        let xml = self.call(&move_item_body(item_id, &folder)).await?;
+        if let Some(error) = parse_ews_error(&xml) {
+            return Err(ExchangeError::Ews(error));
+        }
+        Ok(json!({ "id": item_id, "folder": folder }))
+    }
+
     async fn search(&self, args: &Value) -> Result<Value, ExchangeError> {
         let folder = args
             .get("folder")
@@ -332,8 +372,24 @@ impl ExchangeClient {
             .map(|value| value as usize)
             .unwrap_or(25)
             .min(self.config.max_results.max(1));
+        let unread_only = args
+            .get("unreadOnly")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let received_after = args
+            .get("receivedAfter")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let xml = self
-            .call(&find_item_body(&folder, query, limit, &self.config.mailbox))
+            .call(&find_item_body(
+                &folder,
+                query,
+                limit,
+                &self.config.mailbox,
+                unread_only,
+                received_after,
+            ))
             .await?;
         Ok(parse_find_items(&xml, limit))
     }
@@ -544,6 +600,26 @@ fn create_message_body(
     )
 }
 
+fn update_read_body(item_id: &str, read: bool) -> String {
+    format!(
+        r#"<m:UpdateItem ConflictResolution="AlwaysOverwrite" MessageDisposition="SaveOnly"><m:ItemChanges><t:ItemChange><t:ItemId Id="{}"/><t:Updates><t:SetItemField><t:FieldURI FieldURI="message:IsRead"/><t:Message><t:IsRead>{read}</t:IsRead></t:Message></t:SetItemField></t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#,
+        xml_escape(item_id)
+    )
+}
+
+fn move_item_body(item_id: &str, folder: &str) -> String {
+    let folder_id = match folder {
+        "inbox" | "sentitems" | "drafts" | "deleteditems" | "archive" | "outbox" => {
+            format!(r#"<t:DistinguishedFolderId Id="{folder}"/>"#)
+        }
+        _ => format!(r#"<t:FolderId Id="{}"/>"#, xml_escape(folder)),
+    };
+    format!(
+        r#"<m:MoveItem><m:ToFolderId>{folder_id}</m:ToFolderId><m:ItemIds><t:ItemId Id="{}"/></m:ItemIds></m:MoveItem>"#,
+        xml_escape(item_id)
+    )
+}
+
 fn parse_sent_item_id(xml: &str) -> Option<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -600,7 +676,14 @@ fn parse_ews_error(xml: &str) -> Option<String> {
     }
 }
 
-fn find_item_body(folder: &str, query: Option<&str>, limit: usize, mailbox: &str) -> String {
+fn find_item_body(
+    folder: &str,
+    query: Option<&str>,
+    limit: usize,
+    mailbox: &str,
+    unread_only: bool,
+    received_after: Option<&str>,
+) -> String {
     let folder_id = match folder {
         "inbox" | "sentitems" | "drafts" | "deleteditems" | "archive" | "outbox" => {
             format!(
@@ -612,14 +695,32 @@ fn find_item_body(folder: &str, query: Option<&str>, limit: usize, mailbox: &str
     };
     // The mailbox is filled by the caller's config; this function is called with a body
     // template and replaced below to keep XML escaping in one place.
-    let restriction = query
-        .map(|query| {
-            format!(
-                r#"<m:Restriction><t:Contains ContainmentMode="Substring" ContainmentComparison="IgnoreCase"><t:FieldURI FieldURI="item:Subject"/><t:Constant Value="{}"/></t:Contains></m:Restriction>"#,
-                xml_escape(query)
-            )
-        })
-        .unwrap_or_default();
+    let mut restriction_parts = Vec::new();
+    if let Some(query) = query {
+        restriction_parts.push(format!(
+            r#"<t:Contains ContainmentMode="Substring" ContainmentComparison="IgnoreCase"><t:FieldURI FieldURI="item:Subject"/><t:Constant Value="{}"/></t:Contains>"#,
+            xml_escape(query)
+        ));
+    }
+    if unread_only {
+        restriction_parts.push(
+            r#"<t:IsEqualTo><t:FieldURI FieldURI="message:IsRead"/><t:FieldValue><t:Boolean>false</t:Boolean></t:FieldValue></t:IsEqualTo>"#.into(),
+        );
+    }
+    if let Some(received_after) = received_after {
+        restriction_parts.push(format!(
+            r#"<t:IsGreaterThan><t:FieldURI FieldURI="item:DateTimeReceived"/><t:FieldValue><t:DateTime>{}</t:DateTime></t:FieldValue></t:IsGreaterThan>"#,
+            xml_escape(received_after)
+        ));
+    }
+    let restriction = match restriction_parts.len() {
+        0 => String::new(),
+        1 => format!("<m:Restriction>{}</m:Restriction>", restriction_parts[0]),
+        _ => format!(
+            "<m:Restriction><t:And>{}</t:And></m:Restriction>",
+            restriction_parts.join("")
+        ),
+    };
     format!(
         r#"<m:FindItem Traversal="Shallow"><m:ItemShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties><t:FieldURI FieldURI="item:Subject"/><t:FieldURI FieldURI="item:DateTimeReceived"/><t:FieldURI FieldURI="message:From"/><t:FieldURI FieldURI="item:Preview"/></t:AdditionalProperties></m:ItemShape><m:IndexedPageItemView MaxEntriesReturned="{limit}" Offset="0" BasePoint="Beginning"/><m:ParentFolderIds>{folder_id}</m:ParentFolderIds>{restriction}</m:FindItem>"#
     )
@@ -870,7 +971,9 @@ pub fn capability_input_schema(capability: &str) -> Value {
             "properties": {
                 "query": { "type": "string", "description": "Subject substring; omit for the newest messages" },
                 "folder": { "type": "string", "description": "Allowed folder, default inbox" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                "unreadOnly": { "type": "boolean" },
+                "receivedAfter": { "type": "string", "description": "EWS DateTime, for example 2026-01-01T00:00:00Z" }
             }
         }),
         "mail.get" => json!({
@@ -882,6 +985,22 @@ pub fn capability_input_schema(capability: &str) -> Value {
             "type": "object",
             "properties": { "attachmentId": { "type": "string" } },
             "required": ["attachmentId"]
+        }),
+        "mail.markRead" => json!({
+            "type": "object",
+            "properties": {
+                "itemId": { "type": "string" },
+                "read": { "type": "boolean", "default": true }
+            },
+            "required": ["itemId"]
+        }),
+        "mail.move" => json!({
+            "type": "object",
+            "properties": {
+                "itemId": { "type": "string" },
+                "folder": { "type": "string" }
+            },
+            "required": ["itemId", "folder"]
         }),
         "mail.reply" => json!({
             "type": "object",
@@ -973,6 +1092,29 @@ mod tests {
         )
         .unwrap();
         assert!(everyone.recipient_allowed("anyone@anywhere.test"));
+    }
+
+    #[test]
+    fn unread_and_received_after_become_combined_restrictions() {
+        let xml = find_item_body(
+            "inbox",
+            None,
+            10,
+            "box@example.test",
+            true,
+            Some("2026-01-01T00:00:00Z"),
+        );
+        assert!(xml.contains("<t:And>"));
+        assert!(xml.contains("message:IsRead"));
+        assert!(xml.contains("item:DateTimeReceived"));
+        assert!(xml.contains("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn mark_read_and_move_build_item_operations() {
+        assert!(update_read_body("ID", true).contains("<t:IsRead>true</t:IsRead>"));
+        assert!(update_read_body("ID", false).contains("<t:IsRead>false</t:IsRead>"));
+        assert!(move_item_body("ID", "archive").contains(r#"DistinguishedFolderId Id="archive""#));
     }
 
     #[test]
