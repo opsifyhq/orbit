@@ -14,7 +14,6 @@ in-cluster launcher; the API mints a scoped token per launch and revokes it on s
 | `agentScope` | `all` (dynamic: new agents included) or `selected` |
 | `agentIds` | Allowlist when scope is `selected` |
 | `skillSlugs`, `agentIds` | What the worker may run |
-| `provider` / `model` | Optional model selection for the worker |
 | `authSecretName` | Existing Secret with harness auth (OpenCode/Pi). Must be allowed by the installer (`launcher.authSecrets`, default `orbit-opencode-auth*,orbit-pi-auth*`). Binding a new Secret takes an Owner or Admin; other profile editors can keep, clear or reuse a Secret already bound to a profile they manage. See [Kubernetes launcher](../development/kubernetes-launcher.md) |
 | `env` | Static env. Values are write-only: responses list names as `{ "NAME": { "hasValue": true } }` and never return a value |
 | `envMappings` | Connection/secret → env mappings (inline). References only (`envVar` plus `connectionId`, `secretKey` or `secretRef`); other keys are rejected |
@@ -24,6 +23,10 @@ in-cluster launcher; the API mints a scoped token per launch and revokes it on s
 | `allowGlab` / `allowGh` | Inject GitLab or GitHub CLI tokens; see [CLI tools](cli-tools.md) |
 | `nativeToolPermissions` | OpenCode per-tool `allow`/`ask`/`deny` map; see [below](#native-opencode-tool-permissions) |
 | `enabled` | Only enabled profiles launch |
+
+Provider and model are chosen on the **agent or team**, not on the worker profile. Older
+profiles may still contain a provider/model pair; it is ignored and migration `0070` clears
+those values. The harness auth secret remains a profile field.
 
 ## Updating `env`
 

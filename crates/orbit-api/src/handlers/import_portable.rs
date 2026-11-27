@@ -572,8 +572,6 @@ async fn translate(
                     agent_scope: spec.agent_scope,
                     agent_ids,
                     skill_slugs: spec.skills,
-                    provider: spec.provider,
-                    model: spec.model,
                     auth_secret_name: None,
                     env: Value::Object(env),
                     env_mappings: Value::Null,

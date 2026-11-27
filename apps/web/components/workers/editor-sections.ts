@@ -1,5 +1,4 @@
 import { brandName } from "@/lib/presentation";
-import { harnessMismatch, type WorkerProviderLike } from "@/lib/worker-harness";
 
 import { targetLabel } from "./shared";
 import { nativeToolsError, type WorkerFormValues } from "./worker-form";
@@ -25,7 +24,7 @@ export const SECTION_ORDER: SectionId[] = [
 
 export const SECTION_TITLES: Record<SectionId, string> = {
   runtime: "Runtime",
-  model: "Model and auth",
+  model: "Harness auth",
   scope: "Agents and skills",
   permissions: "Permissions",
   environment: "Environment",
@@ -35,7 +34,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
 
 export const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   runtime: "What the worker is, where it runs and which image it starts from.",
-  model: "The provider and model its agents use, and the secret the harness signs in with.",
+  model: "The secret the harness signs in with. Provider and model are chosen on each agent or team.",
   scope: "Which agents this worker may claim, and the skills it prepares at startup.",
   permissions: "Which tools the worker may use. Everything is off until you allow it.",
   environment: "Credentials the worker fetches at startup and injects into its process and every script it spawns.",
@@ -50,18 +49,13 @@ export function isSectionId(value: string): value is SectionId {
 export type EditorIssue = { section: SectionId; message: string };
 
 /** Problems that stop a save. Everything else the API accepts is left to the API. */
-export function validateWorkerForm(
-  values: WorkerFormValues,
-  providers: WorkerProviderLike[],
-): EditorIssue[] {
+export function validateWorkerForm(values: WorkerFormValues): EditorIssue[] {
   const issues: EditorIssue[] = [];
   if (!values.name.trim()) issues.push({ section: "runtime", message: "Give the profile a name." });
   if (!values.harness) issues.push({ section: "runtime", message: "Choose a harness." });
   if (nativeToolsError(values.nativeToolsText)) {
     issues.push({ section: "permissions", message: "Native tool permissions are not valid JSON." });
   }
-  const mismatch = harnessMismatch(values.harness, values.provider, providers);
-  if (mismatch) issues.push({ section: "model", message: mismatch.message });
   return issues;
 }
 
@@ -106,9 +100,7 @@ export function sectionSummaries(
       missing: !values.name.trim() || !values.harness,
     },
     model: {
-      value: values.provider
-        ? [values.provider, values.model].filter(Boolean).join(" · ")
-        : "Harness default",
+      value: values.authSecret || "No harness auth secret",
     },
     scope: {
       value: [

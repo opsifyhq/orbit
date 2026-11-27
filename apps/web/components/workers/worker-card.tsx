@@ -73,7 +73,6 @@ export function WorkerCard({
   const following = !profile.imageTag;
   const updateAvailable = Boolean(platformVersion && profile.imageTag && profile.imageTag !== platformVersion);
   const shownTag = profile.imageTag || platformVersion || "platform tag";
-  const modelLabel = [profile.provider, profile.model].filter(Boolean).join(" · ");
 
   return (
     <li className="border-b px-4 py-3.5 last:border-b-0 sm:px-5">
@@ -120,11 +119,7 @@ export function WorkerCard({
             <Badge variant="secondary">
               {profile.skillSlugs.length} {profile.skillSlugs.length === 1 ? "skill" : "skills"}
             </Badge>
-            {modelLabel ? (
-              <Badge variant="outline" title={modelLabel}>
-                <span className="max-w-[16rem] truncate">{modelLabel}</span>
-              </Badge>
-            ) : null}
+
           </div>
         </div>
 
