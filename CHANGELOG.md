@@ -8,6 +8,14 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.33.3] - 2026-11-27
+
+### Fixed
+
+- Image scans now upgrade Debian packages at build time and use current Docker/kubectl
+  binaries. The remaining Next.js- and kubectl-bundled dependency findings with no upstream
+  fix are documented in `.trivyignore` until patched releases are available.
+
 ## [0.33.2] - 2026-11-27
 
 ### Fixed
