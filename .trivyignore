@@ -6,3 +6,12 @@ CVE-2026-109383
 CVE-2026-109869
 CVE-2026-19534
 CVE-2026-87018
+
+# kubectl 1.35.11 is the current patch for the cluster's 1.35 minor, but still embeds
+# golang.org/x/net and x/text versions with fixed upstream findings. The launcher only
+# calls the configured Kubernetes API, not untrusted user input; remove these after the
+# next kubectl patch includes the dependency bumps.
+CVE-2026-39821
+CVE-2026-78661
+CVE-2026-78669
+CVE-2026-56851
