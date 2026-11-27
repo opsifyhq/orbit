@@ -8,11 +8,12 @@ COPY services ./services
 RUN cargo build --release --locked -p orbit-launcher
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
-ARG DOCKER_VERSION=27.3.1
-ARG DOCKER_SHA256=9b4f6fe406e50f9085ee474c451e2bb5adb119a03591f467922d3b4e2ddf31d3
-ARG KUBECTL_VERSION=v1.31.4
-ARG KUBECTL_SHA256=298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f
+ARG DOCKER_VERSION=29.10.1
+ARG DOCKER_SHA256=061642059fa7f2ed9b2f04a327a951cff4249585cf04b2661c2a6539197c9962
+ARG KUBECTL_VERSION=v1.35.11
+ARG KUBECTL_SHA256=eeddea383a302f9a633a292af1d886054c7cf152fb407f827f12bfe286dc46d6
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \

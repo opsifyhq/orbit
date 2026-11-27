@@ -1,0 +1,8 @@
+# Next.js 16.4.6 bundles these language packages; no newer Next.js release is available
+# yet. Re-check every dependency-watch run and remove this file entry after the upgrade.
+CVE-2026-102276
+CVE-2026-102278
+CVE-2026-109383
+CVE-2026-109869
+CVE-2026-19534
+CVE-2026-87018
