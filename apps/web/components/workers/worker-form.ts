@@ -11,8 +11,6 @@ export type WorkerFormValues = {
   driver: string;
   image: string;
   tag: string;
-  provider: string;
-  model: string;
   authSecret: string;
   envMappings: InlineMapping[];
   envMappingIds: string[];
@@ -45,8 +43,8 @@ type Resources = {
 
 /**
  * Harness-neutral starting point. Image and tag stay empty so the API applies the
- * installation's registry and version; provider and model come from the catalog, never
- * from a hardcoded default.
+ * installation's registry and version. The model is chosen on the agent/team, not on the
+ * worker profile.
  */
 export const DEFAULT_WORKER_FORM: WorkerFormValues = {
   name: "New worker profile",
@@ -55,8 +53,6 @@ export const DEFAULT_WORKER_FORM: WorkerFormValues = {
   driver: "process",
   image: "",
   tag: "",
-  provider: "",
-  model: "",
   authSecret: "",
   envMappings: [],
   envMappingIds: [],
@@ -92,8 +88,6 @@ export function valuesFromProfile(profile: WorkerProfile): WorkerFormValues {
     driver: profile.executionDriver,
     image: profile.image,
     tag: profile.imageTag,
-    provider: profile.provider ?? "",
-    model: profile.model ?? "",
     authSecret: profile.authSecretName ?? "",
     envMappings: mappings.map((m) => ({
       envVar: m.envVar ?? "",
@@ -154,8 +148,6 @@ export function buildProfileBody(values: WorkerFormValues, editing: WorkerProfil
     agentScope: values.agentScope,
     agentIds: values.agentScope === "selected" ? values.agentIds : [],
     skillSlugs: values.skillSlugs,
-    provider: values.provider || undefined,
-    model: values.model || undefined,
     authSecretName: values.authSecret || undefined,
     // Stored values are never sent back by the API. `null` keeps each one as it is; this
     // form does not edit them (they are set through the API or an import).
@@ -187,8 +179,6 @@ export function restartFieldsChanged(editing: WorkerProfile | null, values: Work
     editing.executionDriver !== values.driver ||
     editing.harnessKind !== values.harness ||
     (editing.authSecretName ?? "") !== values.authSecret ||
-    (editing.provider ?? "") !== (values.provider || "") ||
-    (editing.model ?? "") !== (values.model || "") ||
     JSON.stringify(existingResources) !== JSON.stringify(resourcesFrom(values))
   );
 }

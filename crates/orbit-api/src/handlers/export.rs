@@ -312,8 +312,6 @@ pub(crate) async fn build_document(
                 "agentScope": profile.agent_scope,
                 "agents": agents,
                 "skills": profile.skill_slugs,
-                "provider": profile.provider,
-                "model": profile.model,
                 "envMappings": env_mappings,
                 "resources": profile.resources,
                 "allowWebSearch": profile.allow_web_search,

@@ -2369,11 +2369,9 @@ export interface components {
             harnessKind: string;
             image?: string;
             imageTag?: string;
-            model?: string | null;
             name: string;
             /** @description Native harness tool name -> allow|ask|deny (OpenCode permission map). */
             nativeToolPermissions?: unknown;
-            provider?: string | null;
             resources?: unknown;
             skillSlugs?: string[];
             target?: string;

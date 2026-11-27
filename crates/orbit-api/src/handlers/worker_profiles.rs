@@ -37,10 +37,6 @@ pub struct CreateWorkerProfileRequest {
     #[serde(default)]
     pub skill_slugs: Vec<String>,
     #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
     pub auth_secret_name: Option<String>,
     /// Variable name -> value. A string sets or replaces the value; `null` keeps the
     /// stored value (422 when none is stored); a name left out is removed. Responses never
@@ -673,8 +669,8 @@ pub async fn create_profile(
             &agent_scope,
             &body.agent_ids,
             &body.skill_slugs,
-            body.provider.as_deref(),
-            body.model.as_deref(),
+            None,
+            None,
             body.auth_secret_name.as_deref(),
             &env,
             &body.env_mappings,
@@ -728,8 +724,6 @@ fn stored_profile_request(profile: &WorkerProfile, env_mapping_ids: &[Uuid]) -> 
         "agentScope": profile.agent_scope,
         "agentIds": profile.agent_ids,
         "skillSlugs": profile.skill_slugs,
-        "provider": profile.provider,
-        "model": profile.model,
         "authSecretName": profile.auth_secret_name,
         "env": env,
         "envMappings": profile.env_mappings,
@@ -871,8 +865,8 @@ pub async fn update_profile(
             &agent_scope,
             &body.agent_ids,
             &body.skill_slugs,
-            body.provider.as_deref(),
-            body.model.as_deref(),
+            None,
+            None,
             body.auth_secret_name.as_deref(),
             &env,
             &body.env_mappings,
@@ -905,8 +899,6 @@ pub async fn update_profile(
         || existing.agent_scope != profile.agent_scope
         || existing.agent_ids != profile.agent_ids
         || existing.skill_slugs != profile.skill_slugs
-        || existing.provider != profile.provider
-        || existing.model != profile.model
         || existing.auth_secret_name != profile.auth_secret_name
         || existing.env != profile.env
         || existing.env_mappings != profile.env_mappings

@@ -9,13 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { brandName } from "@/lib/presentation";
 
-import { resolveProvider, type ProviderRow } from "./model-section";
 import type { WorkerFormApi } from "./worker-form";
 
 /** Name, harness and target. */
-export function BasicsFields({ form, providers }: { form: WorkerFormApi; providers: ProviderRow[] }) {
+export function BasicsFields({ form }: { form: WorkerFormApi }) {
   const { values, set } = form;
-  const { selectedProvider } = resolveProvider(providers, values.provider, values.harness);
   return (
     <>
       <Field label="Name" htmlFor="wp-name">
@@ -30,10 +28,6 @@ export function BasicsFields({ form, providers }: { form: WorkerFormApi; provide
               const nextHarness = event.target.value;
               // An empty image lets the API choose the installation's image for this harness.
               set({ harness: nextHarness, image: "" });
-              const currentConfig = (selectedProvider?.config ?? {}) as Record<string, unknown>;
-              if (selectedProvider && String(currentConfig.harness ?? "") !== nextHarness) {
-                set({ provider: "", model: "" });
-              }
               if (nextHarness === "opencode" && !values.authSecret) {
                 set({ authSecret: "orbit-opencode-auth" });
               } else if (nextHarness === "pi" && !values.authSecret) {

@@ -20,7 +20,6 @@ import {
   useConnections,
   useEnvMappings,
   useMeta,
-  useProviders,
   useSkills,
   useWorkerProfileEnvMappings,
 } from "@/lib/queries";
@@ -40,7 +39,7 @@ import {
 } from "./editor-sections";
 import { EnvironmentFields } from "./environment-section";
 import { RelaunchOnSaveDialog } from "./launch-dialogs";
-import { AuthSecretField, ModelFields } from "./model-section";
+import { AuthSecretField } from "./model-section";
 import { PermissionGroups } from "./permissions-section";
 import { ResourceFields } from "./resources-section";
 import { BasicsFields, ImageFields, VersionFields } from "./runtime-section";
@@ -103,8 +102,6 @@ export function WorkerEditor({
   const [confirmRelaunch, setConfirmRelaunch] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
-  const providers = useProviders();
-  const providerRows = providers.data ?? [];
   const agents = useAllAgents({ status: "current" });
   const skills = useSkills();
   const connections = useConnections();
@@ -254,7 +251,7 @@ export function WorkerEditor({
     onError: (error) => toast.error(errorMessage(error)),
   });
 
-  const issues = validateWorkerForm(values, providerRows);
+  const issues = validateWorkerForm(values);
   const summaries = sectionSummaries(values, Boolean(editing));
 
   async function requestSave() {
@@ -379,13 +376,12 @@ export function WorkerEditor({
           ) : null}
 
           <SectionCard id="runtime" active={active} onGo={goToSection}>
-            <BasicsFields form={form} providers={providerRows} />
+            <BasicsFields form={form} />
             <ImageFields form={form} />
             <VersionFields form={form} platformVersion={platformVersion} />
           </SectionCard>
 
           <SectionCard id="model" active={active} onGo={goToSection}>
-            <ModelFields form={form} providers={providerRows} />
             <AuthSecretField form={form} />
           </SectionCard>
 

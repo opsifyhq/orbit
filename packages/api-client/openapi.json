@@ -9929,23 +9929,11 @@
           "imageTag": {
             "type": "string"
           },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "name": {
             "type": "string"
           },
           "nativeToolPermissions": {
             "description": "Native harness tool name -> allow|ask|deny (OpenCode permission map)."
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "resources": {},
           "skillSlugs": {
