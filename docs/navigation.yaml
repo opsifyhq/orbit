@@ -58,6 +58,8 @@ sections:
         title: Outputs
       - path: guide/cli-tools.md
         title: CLI tools (gh, glab)
+      - path: guide/control-plane-mcp.md
+        title: Control-plane MCP server
       - path: guide/kubernetes-connector.md
         title: Kubernetes connector
       - path: guide/exchange-connector.md
