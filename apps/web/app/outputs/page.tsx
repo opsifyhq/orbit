@@ -18,6 +18,7 @@ import {
   SearchField,
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
+import { ResourceAccess } from "@/components/ui/resource-access";
 import { Status } from "@/components/ui/status";
 import {
   OUTPUT_STATUS,
@@ -87,6 +88,23 @@ export default function OutputsPage() {
     };
   }, [agents.data, teams.data]);
 
+  const targetAccess = useMemo(() => {
+    const agentMap = new Map((agents.data?.items ?? []).map((agent) => [agent.id, agent]));
+    const teamMap = new Map((teams.data ?? []).map((team) => [team.id, team]));
+    return (output: OutputView) => {
+      if (output.teamId) {
+        const team = teamMap.get(output.teamId);
+        return team ? { ownerTeamId: team.ownerTeamId, visibility: team.visibility } : { ownerTeamId: null, visibility: "private" };
+      }
+      const ids = output.agentIds?.length ? output.agentIds : output.agentId ? [output.agentId] : [];
+      if (!ids.length) return { ownerTeamId: null, visibility: "org" };
+      const agentsForTarget = ids.map((id) => agentMap.get(id)).filter((agent): agent is NonNullable<typeof agent> => Boolean(agent));
+      return agentsForTarget.length === 1
+        ? { ownerTeamId: agentsForTarget[0].ownerTeamId, visibility: agentsForTarget[0].visibility }
+        : { ownerTeamId: null, visibility: "org" };
+    };
+  }, [agents.data, teams.data]);
+
   const all = useMemo(() => outputs.data ?? [], [outputs.data]);
   const counts = useMemo(() => {
     const result: Record<Filter, number> = { all: all.length, sending: 0, failing: 0, off: 0, incomplete: 0 };
@@ -143,7 +161,7 @@ export default function OutputsPage() {
         </Callout>
       ) : visible.length ? (
         <>
-          <ListCard columns={["Output", "Status", "Sends", "Updated"]} selectable={false}>
+          <ListCard columns={["Output", "Status", "Sends", "Updated"]} accessColumn="Applies to" selectable={false}>
             {visible.map((output) => {
               const problem = outputProblem(output);
               const target = appliesTo(output);
@@ -171,6 +189,12 @@ export default function OutputsPage() {
                     </>
                   }
                   status={<Status meta={OUTPUT_STATUS[outputState(output)]} />}
+                  access={
+                    <>
+                      <span className="block truncate text-[13px] font-medium">{target}</span>
+                      <ResourceAccess {...targetAccess(output)} />
+                    </>
+                  }
                   details={
                     <>
                       <p className="truncate">{when}</p>

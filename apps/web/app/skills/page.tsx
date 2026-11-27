@@ -21,6 +21,7 @@ import {
   ListToolbar,
   ROW_LINK,
   SearchField,
+  SelectAllButton,
   toggleId,
 } from "@/components/ui/resource-list";
 import { Segmented } from "@/components/ui/segmented";
@@ -135,6 +136,11 @@ export default function SkillsPage() {
             <option value="team">Team</option>
             <option value="org">Organization</option>
           </Select>
+          <SelectAllButton
+            count={visible.length}
+            selected={selectedIds.length}
+            onSelectAll={() => setSelected(new Set(visible.map((skill) => skill.id)))}
+          />
         </div>
       </ListToolbar>
 

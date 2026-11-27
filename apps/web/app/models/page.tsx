@@ -20,6 +20,7 @@ import {
   ListToolbar,
   ROW_LINK,
   SearchField,
+  SelectAllButton,
   SelectionBar,
   toggleId,
   toggleShown,
@@ -136,6 +137,11 @@ export default function ModelsPage() {
             <option value="team">Team</option>
             <option value="org">Organization</option>
           </Select>
+          <SelectAllButton
+            count={visible.length}
+            selected={selected.size}
+            onSelectAll={() => setSelected(new Set(visible.map((provider) => provider.id)))}
+          />
         </div>
       </ListToolbar>
 

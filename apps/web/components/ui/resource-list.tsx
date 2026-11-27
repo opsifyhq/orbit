@@ -217,6 +217,24 @@ export function ListRow({
   );
 }
 
+/** Select every row in the current filter/search result. */
+export function SelectAllButton({
+  count,
+  selected,
+  onSelectAll,
+}: {
+  count: number;
+  selected: number;
+  onSelectAll: () => void;
+}) {
+  if (!count || selected >= count) return null;
+  return (
+    <Button type="button" size="sm" variant="outline" onClick={onSelectAll}>
+      Select all {count}
+    </Button>
+  );
+}
+
 export function ListSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <Card className="overflow-hidden">
