@@ -57,6 +57,7 @@ pub struct BulkLifecycleResponse {
 
 #[derive(Debug, Clone, Copy)]
 enum Operation {
+    ActivateAgent,
     ArchiveAgent,
     DeleteAgent,
     DeleteSkill,
@@ -71,6 +72,7 @@ enum Outcome {
 impl Operation {
     fn audit_action(self) -> &'static str {
         match self {
+            Self::ActivateAgent => "agent.bulk_activated",
             Self::ArchiveAgent => "agent.bulk_archived",
             Self::DeleteAgent => "agent.bulk_deleted",
             Self::DeleteSkill => "skill.bulk_deleted",
@@ -106,6 +108,38 @@ async fn run_bulk(
     for id in ids {
         let outcome: Result<Outcome, ApiError> = async {
             match operation {
+                Operation::ActivateAgent => {
+                    let agent = state.store.get_agent(auth.org_id, id).await?;
+                    access.require_manage(
+                        "agent",
+                        agent.owner_user_id,
+                        agent.owner_team_id,
+                        &agent.visibility,
+                    )?;
+                    let status = AgentStatus::parse(&agent.status).unwrap_or(AgentStatus::Draft);
+                    if status == AgentStatus::Active {
+                        return Ok(Outcome::Unchanged);
+                    }
+                    if !status.can_activate() {
+                        return Err(ApiError::bad_request(format!(
+                            "cannot transition agent from {} to active",
+                            status.as_str()
+                        )));
+                    }
+                    // Restoring an archived agent consumes a seat. Hold the limit lock
+                    // while counting and writing, like the single-agent endpoint.
+                    let agent_limit = state.license_limit_lock("agents").await?;
+                    if agent_limit.is_some() && status == AgentStatus::Archived {
+                        state.enforce_agent_limit().await?;
+                    }
+                    if !body.dry_run {
+                        state
+                            .store
+                            .set_agent_status(auth.org_id, id, AgentStatus::Active)
+                            .await?;
+                    }
+                    drop(agent_limit);
+                }
                 Operation::ArchiveAgent | Operation::DeleteAgent => {
                     let agent = state.store.get_agent(auth.org_id, id).await?;
                     access.require_manage(
@@ -161,7 +195,7 @@ async fn run_bulk(
 
         match outcome {
             Ok(Outcome::Changed) => match operation {
-                Operation::ArchiveAgent => result.updated.push(id),
+                Operation::ActivateAgent | Operation::ArchiveAgent => result.updated.push(id),
                 Operation::DeleteAgent | Operation::DeleteSkill => result.deleted.push(id),
             },
             Ok(Outcome::Unchanged) => result.unchanged.push(id),
@@ -193,6 +227,15 @@ async fn run_bulk(
         .await;
     }
     Ok(Json(result))
+}
+
+#[utoipa::path(post, path = "/api/v1/agents/bulk/activate", tag = "agents", request_body = BulkLifecycleRequest, responses((status = 200, body = BulkLifecycleResponse)))]
+pub async fn bulk_activate_agents(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    crate::extract::ApiJson(body): crate::extract::ApiJson<BulkLifecycleRequest>,
+) -> Result<Json<BulkLifecycleResponse>, ApiError> {
+    run_bulk(&state, &auth, body, Operation::ActivateAgent).await
 }
 
 #[utoipa::path(post, path = "/api/v1/agents/bulk/archive", tag = "agents", request_body = BulkLifecycleRequest, responses((status = 200, body = BulkLifecycleResponse)))]

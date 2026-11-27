@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Archive, Trash2 } from "lucide-react";
+import { Archive, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessage } from "@orbit/api-client";
 
@@ -11,7 +11,7 @@ import { useConfirm } from "@/components/ui/confirm";
 import { request } from "@/lib/http";
 
 type Resource = "agents" | "skills";
-type Action = "archive" | "delete";
+type Action = "activate" | "archive" | "delete";
 type BulkResult = {
   updated?: string[];
   deleted?: string[];
@@ -28,11 +28,15 @@ function noun(count: number, word: string) {
 }
 
 function summary(result: BulkResult, action: Action) {
-  const changed = (action === "archive" ? result.updated : result.deleted)?.length ?? 0;
+  const changed = (action === "delete" ? result.deleted : result.updated)?.length ?? 0;
   const unchanged = result.unchanged?.length ?? 0;
   const failed = result.failed.length;
   const parts: string[] = [];
-  if (action === "archive") {
+  if (action === "activate") {
+    parts.push(`${noun(changed, "agent")} activated`);
+    if (unchanged) parts.push(`${noun(unchanged, "agent")} already active`);
+    if (failed) parts.push(`${noun(failed, "agent")} could not be activated`);
+  } else if (action === "archive") {
     parts.push(`${noun(changed, "agent")} archived`);
     if (unchanged) parts.push(`${noun(unchanged, "agent")} already archived`);
     if (failed) parts.push(`${noun(failed, "agent")} could not be archived`);
@@ -82,11 +86,31 @@ export function BulkActionsBar({
     return (
       <div className="space-y-2">
         <ul className="list-disc space-y-1 pl-5">
-          {changed ? <li>{noun(changed, action === "archive" ? "agent" : "resource")} will be {action === "archive" ? "archived" : "deleted"}.</li> : null}
-          {unchanged ? <li>{noun(unchanged, "agent")} {unchanged === 1 ? "is" : "are"} already archived and will not change.</li> : null}
-          {failed ? <li>{noun(failed, "resource")} cannot be {action === "archive" ? "archived" : "deleted"} and will stay selected.</li> : null}
+          {changed ? (
+            <li>
+              {noun(changed, action === "delete" ? "resource" : "agent")} will be{" "}
+              {action === "activate" ? "activated" : action === "archive" ? "archived" : "deleted"}.
+            </li>
+          ) : null}
+          {unchanged ? (
+            <li>
+              {noun(unchanged, "agent")} {unchanged === 1 ? "is" : "are"} already{" "}
+              {action === "activate" ? "active" : "archived"} and will not change.
+            </li>
+          ) : null}
+          {failed ? (
+            <li>
+              {noun(failed, action === "delete" ? "resource" : "agent")} cannot be{" "}
+              {action === "activate" ? "activated" : action === "archive" ? "archived" : "deleted"} and will stay selected.
+            </li>
+          ) : null}
         </ul>
-        {action === "archive" ? (
+        {action === "activate" ? (
+          <p>
+            These agents become active again. If an agent is still a draft because its model or
+            connections are incomplete, fix that before anyone runs it.
+          </p>
+        ) : action === "archive" ? (
           <p>
             Archived agents disappear from the normal list and the Archived filter keeps them
             available. Their versions and execution history are kept, and you can restore them.
@@ -107,20 +131,32 @@ export function BulkActionsBar({
       // Preview first: the dialog explains mixed states and the confirm button can name
       // the real number of items that will change.
       const preview = await call(action, true);
-      const changed = (action === "archive" ? preview.updated : preview.deleted)?.length ?? 0;
+      const changed = (action === "delete" ? preview.deleted : preview.updated)?.length ?? 0;
       if (!changed) {
-        toast.warning(action === "archive" ? "Nothing to archive" : "Nothing can be deleted", {
-          description: preview.failed[0]?.message,
-        });
+        toast.warning(
+          action === "activate"
+            ? "Nothing to activate"
+            : action === "archive"
+              ? "Nothing to archive"
+              : "Nothing can be deleted",
+          { description: preview.failed[0]?.message },
+        );
         return;
       }
       const confirmed = await confirm({
         title:
-          action === "archive"
-            ? `Archive ${noun(changed, "agent")}?`
-            : `Permanently delete ${noun(changed, "resource")}?`,
+          action === "activate"
+            ? `Activate ${noun(changed, "agent")}?`
+            : action === "archive"
+              ? `Archive ${noun(changed, "agent")}?`
+              : `Permanently delete ${noun(changed, "resource")}?`,
         description: describe(preview, action),
-        confirmLabel: action === "archive" ? `Archive ${changed}` : `Delete ${changed} permanently`,
+        confirmLabel:
+          action === "activate"
+            ? `Activate ${changed}`
+            : action === "archive"
+              ? `Archive ${changed}`
+              : `Delete ${changed} permanently`,
         destructive: action === "delete",
       });
       if (!confirmed) return;
@@ -134,7 +170,13 @@ export function BulkActionsBar({
       if (result.failed.length) {
         toast.warning(summary(result, action), { description: result.failed[0]?.message });
       } else {
-        toast.success(action === "archive" ? "Agents archived" : "Resources deleted");
+        toast.success(
+          action === "activate"
+            ? "Agents activated"
+            : action === "archive"
+              ? "Agents archived"
+              : "Resources deleted",
+        );
       }
       onSucceeded(done);
     } catch (error) {
@@ -155,6 +197,17 @@ export function BulkActionsBar({
       <Button size="sm" variant="outline" onClick={onChangeAccess} disabled={busy !== null}>
         Change access
       </Button>
+      {resource === "agents" ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void run("activate")}
+          loading={busy === "activate"}
+          disabled={busy !== null}
+        >
+          <Play /> Activate
+        </Button>
+      ) : null}
       {resource === "agents" ? (
         <Button
           size="sm"
