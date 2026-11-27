@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::agents::list_agents).post(handlers::agents::create_agent),
         )
         .route(
+            "/api/v1/agents/bulk/activate",
+            post(handlers::bulk_lifecycle::bulk_activate_agents),
+        )
+        .route(
             "/api/v1/agents/bulk/archive",
             post(handlers::bulk_lifecycle::bulk_archive_agents),
         )

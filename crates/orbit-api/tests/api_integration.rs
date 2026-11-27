@@ -16829,3 +16829,68 @@ async fn in_use_providers_connections_and_agents_refuse_delete() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 }
+
+#[tokio::test]
+async fn bulk_activate_restores_archived_agents_with_a_preview() {
+    let _serial = AGENT_COUNT_LOCK.lock().await;
+    let Some(app) = test_app(true).await else {
+        return;
+    };
+    let owner = app
+        .store
+        .ensure_user(
+            app.org_id,
+            "bulk-activate@test.local",
+            "Owner",
+            UserRole::Owner,
+        )
+        .await
+        .unwrap();
+    let token = token_for(&app.store, app.org_id, owner.id, "bulk-activate").await;
+    let first = create_demo_agent(&app.store, app.org_id, owner.id).await;
+    let second = create_demo_agent(&app.store, app.org_id, owner.id).await;
+    for id in [first, second] {
+        app.store
+            .set_agent_status(app.org_id, id, orbit_domain::AgentStatus::Archived)
+            .await
+            .unwrap();
+    }
+    let body = json!({ "ids": [first, second], "dryRun": true });
+    let (status, preview) = send(
+        &app.router,
+        auth_post("/api/v1/agents/bulk/activate", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["updated"].as_array().unwrap().len(), 2);
+    for id in [first, second] {
+        assert_eq!(
+            app.store.get_agent(app.org_id, id).await.unwrap().status,
+            "archived"
+        );
+    }
+
+    let (status, result) = send(
+        &app.router,
+        auth_post(
+            "/api/v1/agents/bulk/activate",
+            &token,
+            json!({ "ids": [first, second] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["updated"].as_array().unwrap().len(), 2);
+    for id in [first, second] {
+        assert_eq!(
+            app.store.get_agent(app.org_id, id).await.unwrap().status,
+            "active"
+        );
+    }
+    let (logs, _) = app
+        .store
+        .list_audit_logs(app.org_id, 20, None, Some("agent.bulk_activated"))
+        .await
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+}

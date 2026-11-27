@@ -188,6 +188,16 @@ export default function AgentsPage() {
             <option value="team">Team</option>
             <option value="org">Organization</option>
           </Select>
+          {visible.length && selectedIds.length < visible.length ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setSelected(new Set(visible.map((agent) => agent.id)))}
+            >
+              Select all {visible.length}
+            </Button>
+          ) : null}
         </div>
       </ListToolbar>
 
