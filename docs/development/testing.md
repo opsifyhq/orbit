@@ -125,10 +125,11 @@ tags:
 | Helm | `helm lint`, and `helm template` for the default values, `values-prod.example.yaml`, a variant with the network policy and a fixed worker, and one with the ServiceMonitor; every render is validated with `kubeconform -strict` against Kubernetes 1.30 (and the default values without the launcher admission policies against 1.27, the chart's floor). ServiceMonitor, a CRD, is skipped |
 | Migrations | Pull requests and pushes to `main`: a migration that already exists may not be edited, renamed or deleted |
 | Image build check | Pull requests only: the api, worker, web and launcher Dockerfiles build, and the OpenCode and Pi worker images build on that worker image through a local registry (nothing is published) |
+| Image vulnerability scan | Pushes with `push_images` and release tags: Trivy scans the six pushed images for fixable CRITICAL/HIGH OS and library findings, fails the release gate, and uploads a CycloneDX SBOM per image |
 
 Container images, the Helm chart and the worker binary are published only from `v*`
-tags after the Rust, MSRV and web jobs pass, and the chart and the GitHub release only after all six images were pushed; see
-[releasing.md](releasing.md). Images are not scanned for vulnerabilities in CI.
+tags after the Rust, MSRV and web jobs pass, and the chart and the GitHub release only after all six images were pushed and passed the
+Trivy scan; see [releasing.md](releasing.md).
 
 ## What to run for a change
 
