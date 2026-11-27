@@ -143,6 +143,20 @@ pub fn builtin_manifests() -> Vec<ConnectorManifest> {
                     CapabilityEffect::ExternalSideEffect,
                     orbit_exchange::capability_input_schema("mail.forward"),
                 ),
+                capability_with_input_schema(
+                    "mail.markRead",
+                    "Mark mail read",
+                    "Marks one message read or unread so a loop can consume it.",
+                    CapabilityEffect::Write,
+                    orbit_exchange::capability_input_schema("mail.markRead"),
+                ),
+                capability_with_input_schema(
+                    "mail.move",
+                    "Move mail",
+                    "Moves one message into an allowed folder.",
+                    CapabilityEffect::Write,
+                    orbit_exchange::capability_input_schema("mail.move"),
+                ),
             ],
             config_schema: serde_json::json!({
                 "type": "object",
