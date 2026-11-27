@@ -5666,3 +5666,62 @@ async fn a_released_claim_is_queued_and_claimable_again() {
     assert_eq!(again.id, execution.id);
     assert_eq!(again.worker_id.as_deref(), Some("worker-b"));
 }
+
+#[tokio::test]
+async fn provider_rename_updates_current_agent_and_team_references() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let (org, user) = seed_org(&store).await;
+    let provider = store
+        .create_provider(
+            org,
+            "Rename Gateway",
+            "openai_compatible",
+            &serde_json::json!({ "baseUrl": "http://localhost:8000/v1", "model": "qwen" }),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    let mut def = definition("Provider references");
+    def.spec.model.management = orbit_domain::ModelManagement::Platform;
+    def.spec.model.provider = Some(provider.name.clone());
+    let (agent, _) = store.create_agent(org, Some(user), &def).await.unwrap();
+    let team = store
+        .create_agent_team(
+            org,
+            "Provider team",
+            "",
+            &serde_json::json!({
+                "mode": "pipeline",
+                "model": { "provider": provider.name },
+                "steps": [{ "agentId": agent.id, "model": { "provider": provider.name } }]
+            }),
+            Some(user),
+        )
+        .await
+        .unwrap();
+
+    store
+        .update_provider(org, provider.id, Some("Renamed Gateway"), None, None, None)
+        .await
+        .unwrap();
+
+    let version = store.get_current_version(org, &agent).await.unwrap();
+    assert_eq!(version.spec["model"]["provider"], "Renamed Gateway");
+    assert!(version
+        .definition_yaml
+        .contains("provider: Renamed Gateway"));
+    assert!(!version.definition_yaml.contains("provider: Rename Gateway"));
+
+    let stored_team = store.get_agent_team(org, team.id).await.unwrap();
+    assert_eq!(
+        stored_team.definition["model"]["provider"],
+        "Renamed Gateway"
+    );
+    assert_eq!(
+        stored_team.definition["steps"][0]["model"]["provider"],
+        "Renamed Gateway"
+    );
+}
