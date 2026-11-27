@@ -105,3 +105,10 @@ you want ORBIT-managed credentials instead of a harness auth Secret.
 The agent stores a default harness/model. Work and team runs can override the harness for
 that run; model selection can be per agent, per team step, or worker-profile-level. There
 is no hardcoded provider or model inventory in the control plane.
+
+## Renaming a provider
+
+Renaming a provider updates current agent specifications, Agent Team model/step overrides
+and worker profile provider fields in the same transaction. Historical agent versions are
+left unchanged so their checksums and audit trail stay intact. If a provider is removed,
+delete is refused while any agent, team or worker profile still references it.

@@ -179,7 +179,16 @@ impl Store {
         secret_ref: Option<&str>,
         enabled: Option<bool>,
     ) -> StoreResult<Provider> {
-        sqlx::query_as::<_, Provider>(
+        let mut tx = self.begin().await?;
+        let old_name: String = sqlx::query_scalar(
+            "SELECT name FROM providers WHERE org_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(org_id)
+        .bind(provider_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| StoreError::NotFound("provider".into()))?;
+        let provider = sqlx::query_as::<_, Provider>(
             r#"
             UPDATE providers
             SET name = COALESCE($3, name),
@@ -197,9 +206,14 @@ impl Store {
         .bind(config)
         .bind(secret_ref)
         .bind(enabled)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
-        .ok_or_else(|| StoreError::NotFound("provider".into()))
+        .ok_or_else(|| StoreError::NotFound("provider".into()))?;
+        if let Some(new_name) = name.map(str::trim).filter(|name| *name != old_name) {
+            rename_provider_references(&mut tx, org_id, &old_name, new_name).await?;
+        }
+        tx.commit().await?;
+        Ok(provider)
     }
 
     /// Delete a provider. Refused with [`StoreError::InUse`] while an agent, agent team or
@@ -484,4 +498,93 @@ impl Store {
         .await?;
         Ok(())
     }
+}
+
+/// Rename the provider name inside current agent specs, team model overrides and worker
+/// profiles. Historical agent versions are deliberately left untouched.
+async fn rename_provider_references(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+    old_name: &str,
+    new_name: &str,
+) -> StoreResult<()> {
+    let agents: Vec<(Uuid, String, Value)> = sqlx::query_as(
+        r#"
+        SELECT av.id, av.definition_yaml, av.spec
+        FROM agent_versions av
+        JOIN agents a ON a.id = av.agent_id AND a.current_version = av.version
+        WHERE av.org_id = $1 AND av.version = a.current_version
+          AND av.spec -> 'model' ->> 'provider' = $2
+        "#,
+    )
+    .bind(org_id)
+    .bind(old_name)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (version_id, yaml, mut spec) in agents {
+        if let Some(model) = spec.get_mut("model").and_then(Value::as_object_mut) {
+            model.insert("provider".into(), Value::String(new_name.into()));
+        }
+        let definition_yaml = orbit_domain::AgentDefinition::from_yaml(&yaml)
+            .ok()
+            .and_then(|mut definition| {
+                definition.spec.model.provider = Some(new_name.to_string());
+                definition.to_yaml().ok()
+            })
+            .unwrap_or(yaml);
+        let checksum = orbit_domain::AgentDefinition::from_yaml(&definition_yaml)
+            .map(|definition| definition.checksum())
+            .unwrap_or_default();
+        sqlx::query(
+            "UPDATE agent_versions SET spec = $2, definition_yaml = $3, checksum = $4 WHERE id = $1",
+        )
+        .bind(version_id)
+        .bind(&spec)
+        .bind(&definition_yaml)
+        .bind(&checksum)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    let teams: Vec<(Uuid, Value)> = sqlx::query_as(
+        "SELECT id, definition FROM agent_teams WHERE org_id = $1 AND definition::text LIKE '%' || $2 || '%'",
+    )
+    .bind(org_id)
+    .bind(old_name)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (team_id, mut definition) in teams {
+        let mut changed = false;
+        if let Some(model) = definition.get_mut("model").and_then(Value::as_object_mut) {
+            if model.get("provider").and_then(Value::as_str) == Some(old_name) {
+                model.insert("provider".into(), Value::String(new_name.into()));
+                changed = true;
+            }
+        }
+        if let Some(steps) = definition.get_mut("steps").and_then(Value::as_array_mut) {
+            for step in steps {
+                if let Some(model) = step.get_mut("model").and_then(Value::as_object_mut) {
+                    if model.get("provider").and_then(Value::as_str) == Some(old_name) {
+                        model.insert("provider".into(), Value::String(new_name.into()));
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            sqlx::query("UPDATE agent_teams SET definition = $2, updated_at = now() WHERE id = $1")
+                .bind(team_id)
+                .bind(&definition)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+
+    sqlx::query("UPDATE worker_profiles SET provider = $3 WHERE org_id = $1 AND provider = $2")
+        .bind(org_id)
+        .bind(old_name)
+        .bind(new_name)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
