@@ -4,7 +4,7 @@ import { type CommitAccess } from "@/components/resource-access-fields";
 import { resourceSaveOutcome } from "@/lib/resource-save";
 import { validationDetails } from "@/lib/http";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -21,6 +21,10 @@ export default function NewAgentPage() {
   const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
   const [serverIssues, setServerIssues] = useState<Array<{ path: string; message: string }>>([]);
+  const [returnToWork, setReturnToWork] = useState(false);
+  useEffect(() => {
+    setReturnToWork(new URLSearchParams(window.location.search).get("returnTo") === "work");
+  }, []);
 
   async function handleSubmit(definition: AgentDefinition, commitAccess: CommitAccess) {
     setSubmitting(true);
@@ -41,7 +45,9 @@ export default function NewAgentPage() {
         accessSaved,
       });
       toast[outcome.tone](outcome.message);
-      if (outcome.href) router.push(outcome.href);
+      if (returnToWork && accessSaved) {
+        router.push(`/work?createdAgent=${created.id}`);
+      } else if (outcome.href) router.push(outcome.href);
     } catch (error) {
       const details = validationDetails(error);
       setServerIssues(details);
@@ -54,7 +60,7 @@ export default function NewAgentPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        back={{ href: "/agents", label: "Agents" }}
+        back={returnToWork ? { href: "/work", label: "Start work" } : { href: "/agents", label: "Agents" }}
         title="New agent"
         description="Define who the agent is, what it does and how much it may do alone. Saving creates version 1, which is immutable."
       />
