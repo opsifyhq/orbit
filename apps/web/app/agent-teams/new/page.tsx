@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -17,6 +17,10 @@ export default function NewAgentTeamPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
+  const [returnToWork, setReturnToWork] = useState(false);
+  useEffect(() => {
+    setReturnToWork(new URLSearchParams(window.location.search).get("returnTo") === "work");
+  }, []);
 
   async function handleSubmit(input: TeamInput, commitAccess: CommitAccess) {
     setSubmitting(true);
@@ -31,7 +35,9 @@ export default function NewAgentTeamPage() {
         accessSaved,
       });
       toast[outcome.tone](outcome.message);
-      if (outcome.href) router.push(outcome.href);
+      if (returnToWork && accessSaved) {
+        router.push(`/work?createdTeam=${team.id}`);
+      } else if (outcome.href) router.push(outcome.href);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -42,11 +48,11 @@ export default function NewAgentTeamPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        back={{ href: "/agent-teams", label: "Agent teams" }}
+        back={returnToWork ? { href: "/work", label: "Start work" } : { href: "/agent-teams", label: "Agent teams" }}
         title="New agent team"
         description="Choose the agents, how they work together and the goal they share. Everything after Agents is optional."
       />
-      <TeamForm submitLabel="Create agent team" submitting={submitting} onSubmit={handleSubmit} cancelHref="/agent-teams" />
+      <TeamForm submitLabel="Create agent team" submitting={submitting} onSubmit={handleSubmit} cancelHref={returnToWork ? "/work" : "/agent-teams"} />
     </div>
   );
 }

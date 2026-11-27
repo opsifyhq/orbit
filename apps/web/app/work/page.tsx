@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, CalendarClock, Play, Plug, Server, Sparkles, Workflow, Zap } from "lucide-react";
+import { Bot, CalendarClock, Play, Plug, Plus, Server, Sparkles, Workflow, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { ScheduleEditor, type ScheduleValue } from "@/components/schedule-editor";
@@ -115,6 +115,49 @@ export default function WorkPage() {
   const [name, setName] = useState("");
   const [task, setTask] = useState("");
   const [repository, setRepository] = useState("");
+
+  // The Work draft survives a detour through Agent/Team Studio. Create Studio saves this
+  // marker before leaving; returning to Work restores the task and selection.
+  useEffect(() => {
+    const creating = sessionStorage.getItem("orbit.work.creating");
+    if (!creating) return;
+    const raw = sessionStorage.getItem("orbit.work.draft");
+    sessionStorage.removeItem("orbit.work.creating");
+    sessionStorage.removeItem("orbit.work.draft");
+    if (!raw) return;
+    try {
+      const draft = JSON.parse(raw) as Record<string, unknown>;
+      if (draft.when === "manual" || draft.when === "schedule") setWhen(draft.when);
+      if (draft.schedule && typeof draft.schedule === "object") setSchedule(draft.schedule as ScheduleValue);
+      if (draft.where === "auto" || draft.where === "local" || draft.where === "docker" || draft.where === "kubernetes") setWhere(draft.where);
+      if (typeof draft.harness === "string") setHarness(draft.harness);
+      if (draft.whoType === "agent" || draft.whoType === "team") setWhoType(draft.whoType);
+      if (typeof draft.who === "string") setWho(draft.who);
+      if (typeof draft.name === "string") setName(draft.name);
+      if (typeof draft.task === "string") setTask(draft.task);
+      if (typeof draft.repository === "string") setRepository(draft.repository);
+    } catch {
+      // A malformed draft must not block starting work.
+    }
+    const params = new URLSearchParams(window.location.search);
+    const createdAgent = params.get("createdAgent");
+    const createdTeam = params.get("createdTeam");
+    if (createdAgent) {
+      setWhoType("agent");
+      setWho(createdAgent);
+    } else if (createdTeam) {
+      setWhoType("team");
+      setWho(createdTeam);
+    }
+  }, []);
+
+  function saveWorkDraft() {
+    sessionStorage.setItem("orbit.work.creating", "1");
+    sessionStorage.setItem(
+      "orbit.work.draft",
+      JSON.stringify({ when, schedule, where, harness, whoType, who, name, task, repository }),
+    );
+  }
 
   // New schedules start in the viewer's own time zone (set after mount: the server
   // render cannot know it).
@@ -475,6 +518,19 @@ export default function WorkPage() {
                 { value: "team", label: <><Workflow className="h-3.5 w-3.5" /> An agent team</> },
               ]}
             />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[13px] text-muted-foreground">
+                {whoType === "agent" ? "Choose an existing agent, or create one here." : "Choose an existing team, or create one here."}
+              </p>
+              <Button asChild size="sm" variant="outline">
+                <Link
+                  href={`${whoType === "agent" ? "/agents/new" : "/agent-teams/new"}?returnTo=work`}
+                  onClick={saveWorkDraft}
+                >
+                  <Plus /> {whoType === "agent" ? "New agent" : "New team"}
+                </Link>
+              </Button>
+            </div>
             {whoType === "agent" ? (
               agents.isLoading ? (
                 <div className="grid gap-2 sm:grid-cols-2" aria-busy="true">
@@ -505,7 +561,7 @@ export default function WorkPage() {
               ) : (
                 <p className="text-sm text-muted-foreground">
                   There are no agents to run yet.{" "}
-                  <Link href="/agents/new" className="font-medium text-primary underline-offset-4 hover:underline">
+                  <Link href="/agents/new?returnTo=work" onClick={saveWorkDraft} className="font-medium text-primary underline-offset-4 hover:underline">
                     Create an agent
                   </Link>
                   .
@@ -535,7 +591,7 @@ export default function WorkPage() {
             ) : (
               <p className="text-sm text-muted-foreground">
                 There are no agent teams yet.{" "}
-                <Link href="/agent-teams/new" className="font-medium text-primary underline-offset-4 hover:underline">
+                <Link href="/agent-teams/new?returnTo=work" onClick={saveWorkDraft} className="font-medium text-primary underline-offset-4 hover:underline">
                   Create a team
                 </Link>
                 .
