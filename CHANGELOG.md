@@ -8,6 +8,20 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-27
+
+### Added
+
+- Optional read-only control-plane MCP server (`orbit-mcp`) for external MCP clients:
+  list/read agents, teams, executions, events and team runs with the caller's ORBIT token.
+- Exchange EWS mailbox-consumption capabilities: `mail.search` can filter unread mail and
+  received-after, and `mail.markRead`/`mail.move` let a 24/7 agent consume messages and
+  avoid processing the same mail repeatedly.
+- Exchange EWS `mail.send`, `mail.reply` and `mail.forward` capabilities. Replies use the
+  original sender/subject; forwards carry attachments. Recipient allowlists support exact
+  addresses, `*@domain` and explicit `*`; sending remains an external side effect and
+  requires a send binding.
+
 ## [0.31.0] - 2026-11-26
 
 ### Added
