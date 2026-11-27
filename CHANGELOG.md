@@ -8,6 +8,34 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-27
+
+### Added
+
+- Start work can create a new agent or agent team inline. The Work draft survives the Studio
+  detour, and the new resource is selected on return; nothing starts automatically.
+- Agents list: bulk **Activate** for restored/draft agents, with a dry-run preview and the
+  same license and audit rules as single activation, plus **Select all** for the current
+  filtered result.
+- Container image vulnerability scanning: Trivy scans the six published images for
+  fixable CRITICAL/HIGH findings before the chart or GitHub release is created, and emits
+  a CycloneDX SBOM per image.
+
+### Changed
+
+- Consistent resource-list controls: Select all on every selectable list, team/visibility
+  filters on worker profiles, and an Applies-to/access column on outputs. Worker profiles
+  can be selected for bulk access changes.
+- Worker profiles no longer carry a provider/model selection. Provider and model are chosen
+  on the agent or team; migration 0070 clears stale profile values so they cannot drift
+  from the provider catalog or block provider deletion.
+
+### Fixed
+
+- Renaming a model provider now updates current agent specs and definition YAML, and Agent
+  Team model and step overrides in the same transaction. Historical agent versions stay
+  unchanged.
+
 ## [0.32.0] - 2026-11-27
 
 ### Added
