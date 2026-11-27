@@ -19,6 +19,7 @@ import {
   ListToolbar,
   ROW_LINK,
   SearchField,
+  SelectAllButton,
   SelectionBar,
   toggleId,
   toggleShown,
@@ -134,6 +135,11 @@ export default function EnvironmentsPage() {
             <option value="team">Team</option>
             <option value="org">Organization</option>
           </Select>
+          <SelectAllButton
+            count={visible.length}
+            selected={selected.size}
+            onSelectAll={() => setSelected(new Set(visible.map(({ mapping }) => mapping.id)))}
+          />
         </div>
       </ListToolbar>
 

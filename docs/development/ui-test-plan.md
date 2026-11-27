@@ -191,6 +191,7 @@ approvals UI is still being finished.
 | Open `/work` (sidebar **Start work**) | The Studio layout: a section rail (Who, What, When, Where, Then) that shows each answer, one section on screen at a time, and the start button in the rail (pinned at the bottom on phones) |
 | Who → Agent or Agent Team | Active and draft agents (drafts marked); teams are listed |
 | Who → New agent / New team | Opens the normal Studio with **Start work** as Back. Saving returns to `/work`, restores the task/payload and selects the new resource. Cancel also returns without losing the draft. No run starts automatically |
+| Resource lists | Agents, teams, connections, providers, skills, environments, worker profiles and outputs all expose the owning/target team and visibility; team/visibility filters and **Select all** are present where bulk actions apply |
 | What | Task, plus optional name and repository (hidden for a schedule: a schedule only carries its task) |
 | When → Now | Default; **Start work** queues one execution |
 | When → On a schedule | Schedule picker: Minutes, Hourly, Daily, Weekly, Monthly or Custom, with only the controls that frequency needs, a time zone (yours by default), a plain-English summary, the next three runs and the cron it stores. The button reads **Create schedule**; saving adds a schedule trigger with this task and time zone to the agent (new version) and opens the agent, where it reads e.g. “Every weekday at 09:00 Amsterdam time”. Disabled for an agent team |

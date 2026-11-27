@@ -44,6 +44,7 @@ function runState(runningCount: number, enabled: boolean): StatusMeta {
 /** One worker profile in the Profiles list: state, what it runs, and the next action. */
 export function WorkerCard({
   profile,
+  checkbox,
   runningCount,
   platformVersion,
   launching,
@@ -57,6 +58,7 @@ export function WorkerCard({
   onDelete,
 }: {
   profile: WorkerProfile;
+  checkbox?: React.ReactNode;
   runningCount: number;
   platformVersion: string | undefined;
   launching: boolean;
@@ -79,6 +81,7 @@ export function WorkerCard({
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {checkbox ? <span className="relative z-10">{checkbox}</span> : null}
             <h3 className="min-w-0 break-words text-sm font-semibold">{profile.name}</h3>
             <Status meta={runState(runningCount, profile.enabled)} />
             {runningCount && !profile.enabled ? <Badge variant="outline">Disabled</Badge> : null}

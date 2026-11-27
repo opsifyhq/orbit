@@ -24,6 +24,7 @@ import {
   ListToolbar,
   ROW_LINK,
   SearchField,
+  SelectAllButton,
   SelectionBar,
   toggleId,
   toggleShown,
@@ -181,6 +182,11 @@ export default function AgentTeamsPage() {
             <option value="team">Team</option>
             <option value="org">Organization</option>
           </Select>
+          <SelectAllButton
+            count={visible.length}
+            selected={selectedIds.length}
+            onSelectAll={() => setSelected(new Set(visible.map((team) => team.id)))}
+          />
         </div>
       </ListToolbar>
 

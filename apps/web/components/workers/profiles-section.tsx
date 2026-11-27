@@ -1,11 +1,18 @@
 import { Plus, Server } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { BulkAccessDialog } from "@/components/bulk-access-dialog";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select } from "@/components/ui/select";
+import { SelectAllButton, SelectionBar, toggleShown } from "@/components/ui/resource-list";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Section } from "@/components/ui/section";
 import { Skeleton } from "@/components/ui/skeleton";
+import { listAccessTeams } from "@/lib/access-teams";
 import type { useWorkerProfiles } from "@/lib/queries";
 import type { WorkerLaunch, WorkerProfile } from "@/lib/types";
 import { errorMessage } from "@orbit/api-client";
@@ -44,6 +51,22 @@ export function ProfilesSection({
   onToggle: (profile: WorkerProfile) => void;
   onDelete: (profile: WorkerProfile) => void;
 }) {
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [visibilityFilter, setVisibilityFilter] = useState("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const accessTeams = useQuery({ queryKey: ["access-teams"], queryFn: listAccessTeams, staleTime: 60_000 });
+  const visible = useMemo(
+    () =>
+      (profiles.data ?? []).filter((profile) => {
+        if (teamFilter === "none" && profile.ownerTeamId) return false;
+        if (teamFilter !== "all" && teamFilter !== "none" && profile.ownerTeamId !== teamFilter) return false;
+        if (visibilityFilter !== "all" && profile.visibility !== visibilityFilter) return false;
+        return true;
+      }),
+    [profiles.data, teamFilter, visibilityFilter],
+  );
+  const selectedIds = visible.filter((profile) => selected.has(profile.id)).map((profile) => profile.id);
   return (
     <Section
       title="Profiles"
@@ -74,12 +97,50 @@ export function ProfilesSection({
           }
         />
       ) : (
-        <Card className="overflow-hidden">
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Select aria-label="Filter profiles by team" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} className="w-auto min-w-40">
+              <option value="all">All teams</option>
+              <option value="none">No team</option>
+              {(accessTeams.data ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+            </Select>
+            <Select aria-label="Filter profiles by visibility" value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value)} className="w-auto min-w-40">
+              <option value="all">All access</option>
+              <option value="private">Private</option>
+              <option value="team">Team</option>
+              <option value="org">Organization</option>
+            </Select>
+            <SelectAllButton count={visible.length} selected={selectedIds.length} onSelectAll={() => setSelected(new Set(visible.map((profile) => profile.id)))} />
+          </div>
+          <SelectionBar
+            count={selectedIds.length}
+            noun="worker profiles"
+            allShownSelected={visible.length > 0 && selectedIds.length === visible.length}
+            onSelectAllShown={(checked) => setSelected((current) => toggleShown(current, visible.map((profile) => profile.id), checked))}
+            onClear={() => setSelected(new Set())}
+          >
+            <Button size="sm" variant="outline" onClick={() => setBulkOpen(true)}>Change access</Button>
+          </SelectionBar>
+          <BulkAccessDialog
+            open={bulkOpen}
+            onOpenChange={setBulkOpen}
+            resource="worker_profiles"
+            ids={selectedIds}
+            onDone={() => setSelected(new Set())}
+          />
+          <Card className="overflow-hidden">
           <ul>
-            {profiles.data.map((profile) => (
+            {visible.map((profile) => (
               <WorkerCard
                 key={profile.id}
                 profile={profile}
+                checkbox={
+                  <Checkbox
+                    aria-label={`Select ${profile.name}`}
+                    checked={selected.has(profile.id)}
+                    onChange={(event) => setSelected((current) => toggleShown(current, [profile.id], event.target.checked))}
+                  />
+                }
                 runningCount={
                   launches.filter((item) => item.profileId === profile.id && isActive(item)).length
                 }
@@ -96,7 +157,8 @@ export function ProfilesSection({
               />
             ))}
           </ul>
-        </Card>
+          </Card>
+        </>
       )}
     </Section>
   );
