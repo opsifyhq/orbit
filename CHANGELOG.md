@@ -8,6 +8,13 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-11-27
+
+### Fixed
+
+- Refresh the workspace lockfile for the release so `cargo check --locked` passes on the
+  declared MSRV.
+
 ## [0.33.1] - 2026-11-27
 
 ### Fixed
