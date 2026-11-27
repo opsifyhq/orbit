@@ -290,9 +290,6 @@ The full matrix is in [idor-matrix.md](idor-matrix.md).
 
 These are known gaps. They are not mitigated by ORBIT today:
 
-- **No vulnerability scan of container images.** CI audits dependencies and scans for
-  secrets, but there is no image scanner (Trivy or similar). Scan the published images in
-  your own registry pipeline.
 - **No per-agent network egress control.** An agent's `spec.resources.network` setting
   is recorded but not enforced. The chart's NetworkPolicies (`networkPolicy.enabled=true`,
   on in the production example) keep workers away from the database, NATS, the launcher
