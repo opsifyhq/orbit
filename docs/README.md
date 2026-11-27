@@ -18,7 +18,7 @@ The sections follow the app's sidebar. Each one documents the screens of the sam
 |---|---|
 | **Run work** | [Start work](guide/start-work.md), [executions](guide/executions.md) and [approvals](guide/approvals.md) |
 | **Build** | [Agents](guide/agents.md), [agent teams](guide/agent-teams.md), [skills](guide/skills.md), [tool policies](guide/tool-policies.md) and [export and import](guide/portable-export-import.md) |
-| **Connect** | [Connectors](guide/connections.md), [model providers](guide/providers.md), [outputs](guide/outputs.md), [CLI tools](guide/cli-tools.md) and the [Kubernetes connector](guide/kubernetes-connector.md), [Exchange on-premises connector](guide/exchange-connector.md) |
+| **Connect** | [Connectors](guide/connections.md), [model providers](guide/providers.md), [outputs](guide/outputs.md), [CLI tools](guide/cli-tools.md) and the [Kubernetes connector](guide/kubernetes-connector.md), [Exchange on-premises connector](guide/exchange-connector.md) and the [control-plane MCP server](guide/control-plane-mcp.md) |
 | **Infrastructure** | [Workers and profiles](guide/worker-profiles.md) and the [Kubernetes launcher](development/kubernetes-launcher.md) |
 | **Admin** | [Settings](guide/settings.md), [access teams](guide/access-teams.md), [roles and permissions](guide/rbac.md), [single sign-on](development/oidc.md) and [licensing](guide/licensing.md) |
 
