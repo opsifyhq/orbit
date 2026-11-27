@@ -8,6 +8,13 @@ Release process: [docs/development/releasing.md](docs/development/releasing.md).
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-11-27
+
+### Fixed
+
+- Release image scanning uses valid pinned Trivy and artifact-upload action revisions, so
+  the release gate can actually run.
+
 ## [0.33.0] - 2026-11-27
 
 ### Added
